@@ -1,3 +1,5 @@
+UI Hint 每轮退出／重扫释放会话堆缓冲、扫描终态释放融合缓存，见 [性能](07-rendering-and-performance.md) 与 [验证](08-build-docs-and-tests.md)。
+
 输入循环冷状态隔离、配置构造分配与 Hint 重复扫描的防回退改动见 [运行时](02-runtime-and-api.md)、[配置](03-configuration.md)、[性能](07-rendering-and-performance.md) 和 [门禁](08-build-docs-and-tests.md)。
 
 Restore 内恢复／删除状态合并、移除独立 Delete 配置见 [配置](03-configuration.md)、[模式状态机](04-modes-and-lifecycle.md) 和 [验证](08-build-docs-and-tests.md)。

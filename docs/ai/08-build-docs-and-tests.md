@@ -1,3 +1,5 @@
+UI Hint 清理回归：连续30轮循环1/24/512/2000/10000候选，检查目标、搜索名字、索引、标签及延后增量 capacity 归零；小容量与大容量 Deactivated 回归均要求释放。扫描 finish 回归要求融合索引空、图像/OCR缓存 capacity 归零。
+
 > 清理记录：本轮 UI Hint 临时 Python 脚本、截图语料、离线报告、基线副本及 Rust 截图回放探针已删除；下文相关路径和命令仅为历史测量记录，不再提供执行入口。正式识别实现和无外部文件依赖的 Rust 回归测试保留。
 
 Contour 验证（2026-09-26）：全量 Rust 1,144 passed／89 ignored；随后新增的 4K/8K 有界分析与负桌面坐标专项 1 passed。Clippy all-targets（benchmark-hooks）、macOS ARM/Intel tests Rust 交叉检查、网页 143 项与 TypeScript 检查通过。共享 detector 测试覆盖带 halo 分块与整图 Canny 一致、跨块 weak-edge hysteresis、跨块按钮唯一性、负坐标、空白/非法输入、逐阶段取消、嵌套过滤与输出上限；Windows provider 测试覆盖 OCR 与 contour 同批独立发布。`cargo test --release --lib contour_analysis_timing -- --ignored --nocapture --test-threads=1` 为合成按钮帧七轮测量：720p 中位数 7.9254ms、最大 9.1622ms；1080p 中位数 16.8116ms、最大 21.4306ms。仅算法耗时，不含截屏、OCR、覆盖层，也不是原生端到端延迟或进程 RSS。macOS Objective-C bridge 与屏幕录制/坐标映射尚需实机验收；Windows 未运行完整交互式截图到 Hint 的原生验收。

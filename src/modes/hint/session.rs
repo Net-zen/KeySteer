@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 
 use crate::api::{Rect, SemanticRole, UiTarget};
 
-use super::MAX_IDLE_RETAINED_TARGETS;
+use super::MAX_INLINE_TARGETS;
 use super::labeling::CompactHint;
 use crate::api::hint::LabelDirection;
 
@@ -34,32 +34,17 @@ pub(super) struct ScanSession {
 }
 
 impl ScanSession {
-    pub(super) fn clear_results(&mut self, release_large_buffers: bool) {
-        self.scanned.clear();
-        self.scanned_names_lower.clear();
+    pub(super) fn clear_results(&mut self) {
+        self.scanned = Vec::new();
+        self.scanned_names_lower = Vec::new();
         self.search_names_initialized = false;
-        self.seen_targets.clear();
-        self.hints.clear();
+        self.seen_targets = HashMap::new();
+        self.hints = Vec::new();
         self.label_plan_count = 0;
         self.next_label_index = 0;
         self.pending_relabel = false;
         self.deferred_targets = Vec::new();
         self.deferred_retired = Vec::new();
-        if !release_large_buffers {
-            return;
-        }
-        if self.scanned.capacity() > MAX_IDLE_RETAINED_TARGETS {
-            self.scanned = Vec::new();
-        }
-        if self.scanned_names_lower.capacity() > MAX_IDLE_RETAINED_TARGETS {
-            self.scanned_names_lower = Vec::new();
-        }
-        if self.hints.capacity() > MAX_IDLE_RETAINED_TARGETS {
-            self.hints = Vec::new();
-        }
-        if self.seen_targets.capacity() > MAX_IDLE_RETAINED_TARGETS {
-            self.seen_targets = HashMap::new();
-        }
     }
 
     pub(super) fn defer_update(&mut self, mut targets: Vec<UiTarget>, retired: Vec<Rect>) {
@@ -108,7 +93,7 @@ impl ScanSession {
         if !retired.is_empty() {
             // Existing semantic-key buckets identify exact removals without
             // quadratic rectangle comparisons or a second hash table.
-            let mut remap = SmallVec::<[usize; MAX_IDLE_RETAINED_TARGETS]>::new();
+            let mut remap = SmallVec::<[usize; MAX_INLINE_TARGETS]>::new();
             remap.resize(before, 0);
             for rect in retired {
                 if let Some(indices) = self.seen_targets.get(&rect_key(*rect)) {
@@ -178,14 +163,13 @@ impl ScanSession {
                 .total_cmp(&b.bounds.center().y)
                 .then(a.value.cmp(&b.value))
         });
-        let mut replacements = SmallVec::<[usize; MAX_IDLE_RETAINED_TARGETS]>::new();
+        let mut replacements = SmallVec::<[usize; MAX_INLINE_TARGETS]>::new();
         replacements.resize(added, usize::MAX);
-        let mut used = SmallVec::<[bool; MAX_IDLE_RETAINED_TARGETS]>::new();
+        let mut used = SmallVec::<[bool; MAX_INLINE_TARGETS]>::new();
         used.resize(removed_hints.len(), false);
         // Give a nested checkbox/button its own anchor before its enclosing
         // row chooses one. Output order and code-space order stay unchanged.
-        let mut association_order: SmallVec<[usize; MAX_IDLE_RETAINED_TARGETS]> =
-            (0..added).collect();
+        let mut association_order: SmallVec<[usize; MAX_INLINE_TARGETS]> = (0..added).collect();
         association_order.sort_unstable_by(|&a, &b| {
             let area = |i: usize| {
                 let r = self.scanned[retained + i].rect;
@@ -268,8 +252,8 @@ impl ScanSession {
     pub(super) fn append_targets(&mut self, targets: Vec<UiTarget>) -> bool {
         let before = self.scanned.len();
 
-        // Take the first platform batch by ownership. Large buffers are still
-        // released on exit; retained small buffers are cheaper to refill.
+        // Take the first platform batch by ownership; every scan buffer is
+        // released on exit or before the next scan.
         if self.scanned.is_empty()
             && self.scanned.capacity() == 0
             && self.seen_targets.is_empty()
@@ -396,6 +380,32 @@ mod tests {
         session.label_plan_count = count;
         session.next_label_index = count;
         session
+    }
+
+    #[test]
+    fn repeated_scans_release_all_result_capacity() {
+        let mut session = ScanSession::default();
+        for count in [24, 512, 2000, 24, 10000, 1].into_iter().cycle().take(30) {
+            session.append_targets(
+                (0..count)
+                    .map(|i| UiTarget {
+                        rect: Rect::new(i as f64 * 30., 0., 20., 20.),
+                        name: format!("target {i}"),
+                        role: SemanticRole::Button,
+                    })
+                    .collect(),
+            );
+            session.ensure_search_names();
+            session.deferred_targets = session.scanned.clone();
+            session.deferred_retired = session.scanned.iter().map(|t| t.rect).collect();
+            session.clear_results();
+            assert_eq!(session.scanned.capacity(), 0);
+            assert_eq!(session.scanned_names_lower.capacity(), 0);
+            assert_eq!(session.seen_targets.capacity(), 0);
+            assert_eq!(session.hints.capacity(), 0);
+            assert_eq!(session.deferred_targets.capacity(), 0);
+            assert_eq!(session.deferred_retired.capacity(), 0);
+        }
     }
 
     #[test]
@@ -593,9 +603,9 @@ mod tests {
             assert!(!session.append_targets(expected.clone()));
             assert_eq!(session.scanned, expected);
             assert_eq!(session.scanned_names_lower.len(), count);
-            session.clear_results(true);
+            session.clear_results();
             assert!(session.scanned.is_empty());
-            assert!(session.scanned.capacity() <= MAX_IDLE_RETAINED_TARGETS);
+            assert_eq!(session.scanned.capacity(), 0);
         }
     }
 }

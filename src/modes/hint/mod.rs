@@ -42,11 +42,8 @@ enum Match<T> {
 const SCAN_RETRY_TIMER_ID: &str = "ui_hint.scan_retry";
 const NO_WINDOW_UNDER_POINTER: &str =
     "No window under the pointer — move the pointer over a window";
-/// Reuse the small container backing needed by the common UIHint session.
-/// Elements and their strings are still dropped on exit; only empty capacity
-/// is retained, and larger scans cannot become an Idle high-water mark.
 use crate::api::presentation::hint_cache::INLINE_LABELS;
-const MAX_IDLE_RETAINED_TARGETS: usize = INLINE_LABELS;
+const MAX_INLINE_TARGETS: usize = INLINE_LABELS;
 const MAX_SCAN_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -146,19 +143,16 @@ impl HintMode {
         }
     }
 
-    fn clear_scan_results(&mut self, release_large_buffers: bool) {
-        self.session.clear_results(release_large_buffers);
-        self.overlap_plan.clear();
-        if release_large_buffers {
-            self.overlap_plan.release_retained();
-            self.wide_placements = None;
-        }
+    fn clear_scan_results(&mut self) {
+        self.session.clear_results();
+        self.overlap_plan.release_retained();
+        self.wide_placements = None;
     }
 
     fn request_scan(&mut self, ctx: &HostContext<'_>) -> CommandBatch {
         self.session.scanning = true;
         self.session.status = None;
-        self.clear_scan_results(false);
+        self.clear_scan_results();
         self.input = Input::Labels(OverlayText::default());
         self.session.selected = None;
         self.session.finished = false;
@@ -824,11 +818,12 @@ impl Mode for HintMode {
             ),
             ModeEvent::Deactivated => {
                 self.session.active = false;
-                self.clear_scan_results(true);
+                self.clear_scan_results();
                 self.session.scanning = false;
                 self.session.scan_bounds = None;
                 self.input = Input::Labels(OverlayText::default());
-                self.held_overlap_keys.clear();
+                self.held_overlap_keys = SmallVec::new();
+                self.session.status = None;
                 self.overlap_cycle = 0;
                 self.session.retry_pending = false;
                 self.session.selected = None;
@@ -1175,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn deactivation_reuses_only_small_empty_container_capacity() {
+    fn deactivation_releases_small_container_capacity_too() {
         let env = Env::new();
         let mut mode = crate::app::mode_catalog::hint(&env.config);
         activate(&mut mode, &env);
@@ -1191,12 +1186,12 @@ mod tests {
         mode.handle(&ModeEvent::Deactivated, &env.ctx());
 
         assert!(mode.session.scanned.is_empty());
-        assert!(mode.session.scanned.capacity() >= 100);
+        assert_eq!(mode.session.scanned.capacity(), 0);
         assert_eq!(mode.session.scanned_names_lower.capacity(), 0);
         assert!(mode.session.seen_targets.is_empty());
-        assert!(mode.session.seen_targets.capacity() >= 100);
+        assert_eq!(mode.session.seen_targets.capacity(), 0);
         assert!(mode.session.hints.is_empty());
-        assert!(mode.session.hints.capacity() >= 100);
+        assert_eq!(mode.session.hints.capacity(), 0);
         assert!(mode.overlap_plan.retained_capacity() <= INLINE_LABELS);
     }
 

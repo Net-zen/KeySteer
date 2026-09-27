@@ -152,7 +152,11 @@ impl ScanAccumulator {
     }
 
     pub(crate) fn finish(&mut self) -> Option<Vec<UiTarget>> {
-        self.batches.finish()
+        let pending = self.batches.finish();
+        // Fusion evidence is no longer needed after terminal publication.
+        // Release it even if a native completion token still owns the session.
+        *self = Self::new();
+        pending
     }
 }
 
@@ -187,6 +191,26 @@ fn image_name(image: &mut UiTarget, text: &[UiTarget]) {
 mod tests {
     use super::*;
     use crate::api::geometry::SemanticRole;
+
+    #[test]
+    fn finish_releases_fusion_evidence_and_description_caches() {
+        let mut scan = ScanAccumulator::new();
+        scan.push(
+            TargetSource::SystemOcr,
+            vec![UiTarget {
+                rect: Rect::new(0., 0., 20., 20.),
+                name: "text".into(),
+                role: SemanticRole::StaticText,
+            }],
+            0.5,
+        );
+        scan.images.reserve(1000);
+        scan.finish();
+        assert_eq!(scan.index.len(), 0);
+        assert_eq!(scan.images.capacity(), 0);
+        assert_eq!(scan.visual_text.capacity(), 0);
+        assert!(!scan.published_any);
+    }
 
     #[test]
     fn image_ocr_and_native_action_converge_in_every_source_order() {
