@@ -1,8 +1,7 @@
-//! Reusable UI style blocks, mirroring neru's `[<mode>.ui]` tables.
+//! Reusable UI style blocks.
 //!
 //! Every color is optional: omitted values are derived from the theme palette
-//! at resolve time, exactly as neru documents. `-1` means "auto" for the
-//! numeric fields that neru documents that way.
+//! at resolve time, `-1` means "auto" for the
 
 use std::collections::BTreeMap;
 
@@ -160,7 +159,6 @@ pub struct ModeIndicatorEntry {
     pub ui: IndicatorUiOverride,
 }
 
-/// `-1` sentinel used by neru for "let the implementation decide".
 pub const AUTO: i32 = -1;
 
 fn auto() -> i32 {

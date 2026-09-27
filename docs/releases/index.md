@@ -7,11 +7,15 @@ outline: false
 
 ## 0.10.25
 
+优化 UI Hint。
+
 优化按键响应，按键处理耗时降低约 15%。
 
 配置模拟器新增 TOML 文件对比和导入／导出变更预览，清晰展示新增、删除与修改，忽略注释和格式差异。
 
 Reload Configuration 现在会完整重启程序并重新加载配置；配置有误时保持原状态。
+
+Improved UI Hint.
 
 Improved keyboard responsiveness, reducing key processing time by about 15%.
 

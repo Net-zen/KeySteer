@@ -26,7 +26,7 @@ const AX_CANNOT_COMPLETE: i32 = -25204;
 const AX_VALUE_CGPOINT: i32 = 1;
 const AX_VALUE_CGSIZE: i32 = 2;
 const SCAN_BUDGET: Duration = Duration::from_millis(500);
-const MAX_TARGETS: usize = 2_000;
+const MAX_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 // Apple declares AXUIElementSetMessagingTimeout's value as a C `float`.
 // Keeping the constant typed prevents an accidental ABI-widening to `double`.
 const NODE_TIMEOUT_SECONDS: c_float = 0.05;
@@ -786,6 +786,8 @@ fn semantic_role(native_role: &str) -> SemanticRole {
         "AXIncrementor" => SemanticRole::Spinner,
         "AXScrollBar" => SemanticRole::Scrollbar,
         "AXImage" => SemanticRole::Image,
+        "AXStaticText" => SemanticRole::StaticText,
+        "AXCell" => SemanticRole::Cell,
         _ => SemanticRole::Control,
     }
 }

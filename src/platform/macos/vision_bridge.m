@@ -12,6 +12,7 @@
 typedef struct {
     bool detect_text;
     bool detect_rectangles;
+    bool detect_contours;
     uint64_t timeout_ms;
     double minimum_confidence;
     uint64_t rectangle_max_candidates;
@@ -43,6 +44,10 @@ typedef struct {
     char *message;
     uint64_t message_len;
     CGRect captured_bounds;
+    CGImageRef image;
+    uint8_t *gray;
+    uint64_t gray_width;
+    uint64_t gray_height;
 } NmkVisionResult;
 
 enum {
@@ -53,7 +58,7 @@ enum {
     NMK_VISION_CONTEXT_CHANGED = 4,
 };
 
-enum { NMK_VISION_ABI_VERSION = 2, NMK_MAX_VISION_REGIONS = 2000 };
+enum { NMK_VISION_ABI_VERSION = 3, NMK_MAX_VISION_REGIONS = 10000 };
 
 static _Atomic uint64_t latestVisionScan = 0;
 static _Atomic bool captureInFlight = false;
@@ -255,6 +260,51 @@ NmkVisionResult *NmkDetectVisionElements(
             return resultWithStatus(NMK_VISION_CONTEXT_CHANGED, nil);
         }
 
+        NmkVisionResult *result = resultWithStatus(NMK_VISION_OK, nil);
+        if (result == NULL) { CGImageRelease(image); return NULL; }
+        result->captured_bounds = capturedBounds;
+        result->image = image;
+        if (config.detect_contours) {
+            size_t width = CGImageGetWidth(image), height = CGImageGetHeight(image);
+            double scale = MIN(1.0, MIN(2560.0 / MAX(width, height),
+                sqrt(2073600.0 / ((double)width * height))));
+            width = MAX(1, (size_t)floor(width * scale));
+            height = MAX(1, (size_t)floor(height * scale));
+            result->gray = calloc(width, height);
+            CGColorSpaceRef space = CGColorSpaceCreateDeviceGray();
+            CGContextRef context = result->gray != NULL && space != NULL
+                ? CGBitmapContextCreate(result->gray, width, height, 8, width, space, kCGImageAlphaNone)
+                : NULL;
+            if (space != NULL) CGColorSpaceRelease(space);
+            if (context == NULL) {
+                NmkFreeVisionResult(result);
+                return resultWithStatus(NMK_VISION_FAILED, @"Cannot prepare contour luma frame");
+            }
+            // Bitmap row zero is the top row of the untransformed image.
+            CGContextSetInterpolationQuality(context, kCGInterpolationLow);
+            CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
+            CGContextRelease(context);
+            result->gray_width = width;
+            result->gray_height = height;
+        }
+        if (!scanIsCurrent(scanID)) {
+            NmkFreeVisionResult(result);
+            return resultWithStatus(NMK_VISION_CONTEXT_CHANGED, nil);
+        }
+        return result;
+    }
+}
+
+// The capture result retains imageHandle until this synchronous call returns.
+NmkVisionResult *NmkRecognizeVisionImage(
+    uintptr_t imageHandle, CGRect capturedBounds, NmkVisionConfig config, uint64_t scanID) {
+    @autoreleasepool {
+        CGImageRef image = (CGImageRef)imageHandle;
+        if (image == NULL || !scanIsCurrent(scanID)) {
+            return resultWithStatus(NMK_VISION_CONTEXT_CHANGED, nil);
+        }
+        config.rectangle_max_candidates = MIN(MAX(config.rectangle_max_candidates, 1),
+            (uint64_t)NMK_MAX_VISION_REGIONS);
         NSMutableArray<VNRequest *> *requests = [NSMutableArray array];
         VNDetectRectanglesRequest *rectangleRequest = nil;
         VNRecognizeTextRequest *textRequest = nil;
@@ -276,7 +326,6 @@ NmkVisionResult *NmkDetectVisionElements(
         VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:image options:@{}];
         NSError *error = nil;
         BOOL performed = [handler performRequests:requests error:&error];
-        CGImageRelease(image);
         if (!scanIsCurrent(scanID)) {
             return resultWithStatus(NMK_VISION_CONTEXT_CHANGED, nil);
         }
@@ -342,6 +391,8 @@ NmkVisionResult *NmkDetectVisionElements(
 void NmkFreeVisionResult(NmkVisionResult *result) {
     if (result == NULL) return;
     for (uint64_t index = 0; index < result->count; index++) free(result->regions[index].label);
+    if (result->image != NULL) CGImageRelease(result->image);
+    free(result->gray);
     free(result->regions);
     free(result->message);
     free(result);

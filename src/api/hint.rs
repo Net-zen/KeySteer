@@ -26,6 +26,8 @@ impl HintCode {
 
 pub struct CompactHint<T> {
     pub(crate) label: HintCode,
+    /// Visual placement anchor. Hint may retain this within a refined control
+    /// to avoid jumps; its authoritative click rectangle remains in UiTarget.
     pub(crate) bounds: Rect,
     pub(crate) value: T,
 }

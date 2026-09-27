@@ -211,8 +211,9 @@ export const frequentFields: ConfigField[] = [
     { value: 'window', label: '鼠标下窗口（默认）' },
     { value: 'screen', label: '当前整屏' },
   ] },
-  { path: 'ui_hint.strategy', label: 'UI 扫描', description: '视觉、辅助功能树，或两者并行合并', kind: 'select', options: [
+  { path: 'ui_hint.strategy', label: 'UI 扫描', description: '辅助功能、OCR、轮廓检测，或全部并行合并', kind: 'select', options: [
     { value: 'vision', label: 'Vision' },
+    { value: 'contour', label: 'Contour' },
     { value: 'hybrid', label: 'Hybrid（默认）' },
     { value: 'axtree', label: 'Accessibility Tree' },
   ] },

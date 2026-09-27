@@ -144,6 +144,7 @@ pub struct WindowsBackend {
     console_control: Option<console_control::ConsoleControl>,
     ui_automation: Option<accessibility::UiAutomationWorker>,
     vision: vision::VisionWorker,
+    prewarm_ocr: bool,
     update_worker: Option<crate::platform::common::update::UpdateWorker>,
     window_worker: Option<crate::platform::common::window_session::WindowWorker>,
     held_buttons: Cell<u8>,
@@ -257,6 +258,10 @@ impl WindowsBackend {
             console_control,
             ui_automation,
             vision,
+            prewarm_ocr: !matches!(
+                strategy,
+                Some(crate::api::UiScanStrategy::Contour | crate::api::UiScanStrategy::AxTree)
+            ),
             update_worker: None,
             window_worker: None,
             held_buttons: Cell::new(0),
@@ -329,7 +334,9 @@ impl WindowsBackend {
         if let Some(event) = self.next_hook_event()? {
             return Ok(Some(event));
         }
-        self.vision.begin_discovery();
+        if self.prewarm_ocr {
+            self.vision.begin_discovery();
+        }
         self.vision.reap_finished();
         if let Some(event) = self.pending.pop_front() {
             return Ok(Some(event));
@@ -841,7 +848,7 @@ impl Backend for WindowsBackend {
         );
         let wants_vision = matches!(
             plan.strategy,
-            UiScanStrategy::Vision | UiScanStrategy::Hybrid
+            UiScanStrategy::Vision | UiScanStrategy::Contour | UiScanStrategy::Hybrid
         );
         if wants_uia && self.ui_automation.is_none() {
             self.ui_automation = Some(accessibility::UiAutomationWorker::start()?);

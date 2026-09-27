@@ -48,7 +48,7 @@ use crate::platform::common::partial_batcher::PartialBatcher;
 use crate::support::worker::WorkerJoin;
 
 const PARTIAL_BATCH_SIZE: usize = 24;
-const MAX_TARGETS: usize = 2_000;
+const MAX_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 const MAX_VISITED_ELEMENTS: usize = 20_000;
 const MAX_SCAN_WINDOWS: usize = 16;
 const MAX_SCREEN_WINDOWS: usize = 64;
@@ -1337,9 +1337,6 @@ fn variant_i32(value: i32) -> VARIANT {
     variant
 }
 
-/// Mirrors mousemaster's provider-side filter: visible and enabled elements
-/// which expose at least one interaction affordance. Keeping this condition
-/// in UIA avoids materializing every static text/container in large WebView
 /// trees, while the Rust-side role filter still honours user configuration.
 fn create_interactive_condition(
     automation: &IUIAutomation,
@@ -1460,9 +1457,6 @@ fn target_from_element(
     // control type. Their interaction pattern is more reliable than the type,
     // and also lets shared macOS-oriented role lists work on Windows.
     let role_matches = allowed.contains(&control_type);
-    // When FindAllBuildCache used mousemaster's provider-side interaction
-    // condition, the returned set is already interactive even if the cached
-    // keyboard-focus property is false (common for WebView buttons).
     let interactive = provider_filters_interactive || is_interactive(element);
     if !role_matches && !interactive {
         return None;

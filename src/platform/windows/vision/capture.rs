@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) struct FallbackInput {
+pub(super) struct ContourInput {
     pub(super) gray: Vec<u8>,
     pub(super) width: usize,
     pub(super) height: usize,
@@ -63,9 +63,7 @@ pub(super) fn system_ocr_concurrency_for(tile_count: usize, parallelism: usize) 
         .clamp(1, MAX_SYSTEM_OCR_IN_FLIGHT)
 }
 
-pub(super) fn scaled_partition(value: u32, index: u32, divisions: u32) -> u32 {
-    ((u64::from(value) * u64::from(index)) / u64::from(divisions)) as u32
-}
+pub(super) use crate::platform::common::image_tiles::partition as scaled_partition;
 
 pub(super) fn capture_pixel_rect(
     geometry: CaptureGeometry,
@@ -250,19 +248,19 @@ pub(super) fn stream_system_ocr_tiles(
 }
 
 #[cfg(test)]
-pub(super) fn fallback_input_from_bgra(
+pub(super) fn contour_input_from_bgra(
     pixels: &[u8],
     geometry: CaptureGeometry,
-) -> Result<FallbackInput, String> {
-    fallback_input_from_bgra_with_progress(pixels, geometry, || Ok(false))?
-        .ok_or_else(|| "fallback grayscale conversion was cancelled".into())
+) -> Result<ContourInput, String> {
+    contour_input_from_bgra_with_progress(pixels, geometry, || Ok(false))?
+        .ok_or_else(|| "contour grayscale conversion was cancelled".into())
 }
 
-pub(super) fn fallback_input_from_bgra_with_progress(
+pub(super) fn contour_input_from_bgra_with_progress(
     pixels: &[u8],
     geometry: CaptureGeometry,
     mut cancelled: impl FnMut() -> Result<bool, String>,
-) -> Result<Option<FallbackInput>, String> {
+) -> Result<Option<ContourInput>, String> {
     let source_width = geometry.width as usize;
     let source_height = geometry.height as usize;
     let expected = source_width
@@ -272,13 +270,13 @@ pub(super) fn fallback_input_from_bgra_with_progress(
     if pixels.len() != expected {
         return Err("captured BGRA length does not match its geometry".into());
     }
-    let edge_scale = (MAX_FALLBACK_EDGE / source_width.max(source_height) as f64).min(1.0);
-    let pixel_scale = (MAX_FALLBACK_PIXELS / (source_width * source_height) as f64)
+    let edge_scale = (MAX_CONTOUR_EDGE / source_width.max(source_height) as f64).min(1.0);
+    let pixel_scale = (MAX_CONTOUR_PIXELS / (source_width * source_height) as f64)
         .sqrt()
         .min(1.0);
     let analysis_scale = edge_scale.min(pixel_scale);
-    let width = (source_width as f64 * analysis_scale).round().max(2.0) as usize;
-    let height = (source_height as f64 * analysis_scale).round().max(2.0) as usize;
+    let width = (source_width as f64 * analysis_scale).floor().max(2.0) as usize;
+    let height = (source_height as f64 * analysis_scale).floor().max(2.0) as usize;
     let mut gray = Vec::with_capacity(width * height);
     if width == source_width && height == source_height {
         // 1080p and smaller captures need no coordinate tables or zero-fill.
@@ -298,9 +296,13 @@ pub(super) fn fallback_input_from_bgra_with_progress(
                 return Ok(None);
             }
             let row = &pixels[source_y * source_width * 4..][..source_width * 4];
-            for source_x in (0..source_width).step_by(x_step) {
-                gray.push(bgra_luma(&row[source_x * 4..source_x * 4 + 4]));
-            }
+            gray.extend(
+                row.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .step_by(x_step)
+                    .map(|pixel| bgra_luma(pixel)),
+            );
         }
     } else {
         let source_x_offsets = nearest_offsets(source_width, width);
@@ -309,13 +311,15 @@ pub(super) fn fallback_input_from_bgra_with_progress(
             if y.is_multiple_of(32) && cancelled()? {
                 return Ok(None);
             }
-            for source_x in source_x_offsets.iter().copied() {
-                let source = (source_y * source_width + source_x) * 4;
-                gray.push(bgra_luma(&pixels[source..source + 4]));
-            }
+            let row = &pixels[source_y * source_width * 4..(source_y + 1) * source_width * 4];
+            gray.extend(
+                source_x_offsets
+                    .iter()
+                    .map(|&source_x| bgra_luma(&row[source_x * 4..source_x * 4 + 4])),
+            );
         }
     }
-    Ok(Some(FallbackInput {
+    Ok(Some(ContourInput {
         gray,
         width,
         height,

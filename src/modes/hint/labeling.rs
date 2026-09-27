@@ -9,7 +9,7 @@ trait LabelBuffer {
 }
 
 #[derive(Clone, Copy)]
-enum LabelPlan {
+pub(super) enum LabelPlan {
     Direct,
     NormalPairs { singles: usize },
     FixedForward { width: usize, divisor: usize },
@@ -40,6 +40,33 @@ impl LabelPlan {
                 width: fixed_width_for(count, alphabet_len),
             },
         }
+    }
+
+    pub(super) fn capacity(self, radix: usize) -> usize {
+        match self {
+            Self::Direct => radix,
+            Self::NormalPairs { singles } => singles + (radix - singles) * radix,
+            Self::FixedForward { width, .. } | Self::FixedReverse { width } => {
+                radix.saturating_pow(width as u32)
+            }
+        }
+    }
+}
+
+impl LabelPlan {
+    /// Keep the original prefix-free code space during streamed refinements.
+    pub(super) fn for_stream(
+        count: usize,
+        alphabet_len: usize,
+        direction: LabelDirection,
+    ) -> Option<Self> {
+        (count != 0 && alphabet_len >= 2).then(|| Self::new(count, alphabet_len, direction))
+    }
+
+    pub(super) fn code(self, index: usize, alphabet: &[char]) -> HintCode {
+        let mut code = HintCode::default();
+        write_label(&mut code, index, alphabet, self);
+        code
     }
 }
 
@@ -307,7 +334,7 @@ mod tests {
     fn precomputed_plans_preserve_labels_across_capacity_boundaries() {
         let alphabet = chars("arstneioqwfpjluy");
         for direction in [LabelDirection::Normal, LabelDirection::Reverse] {
-            for count in [1, 16, 17, 128, 129, 256, 257, 500, 2_000] {
+            for count in [1, 16, 17, 128, 129, 256, 257, 500, 511, 512, 513, 2_000] {
                 let assigned = assign_labels(count, &alphabet, direction).unwrap();
                 for (index, hint) in assigned.iter().enumerate() {
                     assert_eq!(

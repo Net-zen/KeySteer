@@ -48,7 +48,9 @@ use std::path::{Path, PathBuf};
 // share one checked accessor. No new production FFI was introduced.
 // Resource-boundary split moves existing blocks to focused owners; activation
 // submissions now share one wrapper instead of two raw call sites.
-const MAX_UNSAFE_EXPRESSIONS: usize = 382;
+// Contour adds one checked, bounded luma slice borrow from an owned macOS
+// capture result. The scoped worker joins before that native owner is freed.
+const MAX_UNSAFE_EXPRESSIONS: usize = 383;
 const MAX_UNSAFE_FILES: usize = 40;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
@@ -70,7 +72,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // the retained main-thread status target; no new raw native calls or Send/Sync.
     ("src/platform/macos/status_item.rs", 7),
     ("src/platform/windows/text_prompt.rs", 7),
-    ("src/platform/macos/vision.rs", 5),
+    ("src/platform/macos/vision.rs", 6),
     ("src/platform/windows/accessibility.rs", 30),
     ("src/platform/windows/autostart.rs", 4),
     ("src/platform/windows/gpu_overlay.rs", 28),

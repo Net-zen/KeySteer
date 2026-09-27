@@ -1,3 +1,5 @@
+`ui_hint.strategy` 新增跨平台 `contour`；默认仍为 `hybrid`，但合并辅助功能、OCR 和 contour 全部目标。Contour 复用 vision 的超时与候选上限，独立策略忽略 detect_text/detect_rectangles 开关；只有 vision 用 detect_text/detect_rectangles 选择视觉来源；hybrid 固定启用辅助功能、所有可用 OCR 和 contour，忽略这两个开关与 rectangle_max_candidates 的较小值，沿用全局 10000 目标上限。rectangle_max_candidates 默认 10000，单独 vision/contour 仍遵守显式配置值。用户说明见 reference/configuration。
+
 # 配置、按键和持久化
 
 运行时响应优先的键存储采用 `SmolStr`：短键名内联，长键名共享堆存储，公开字符串与 serde 表示不变。别名作用域和公开配置保持 `BTreeMap<String, String>`；CompiledKeymap 编译整张表共用一次别名作用域，退出恢复原作用域，非法条目仍跳过。长名称、Unicode、嵌套恢复、借用查找和排序测试保留。CompactString 单独及组合实验仍未满足运行时验收，未采用；扫描索引独立采用 FxHashMap，见扫描主题。先前因初始化 p99 而撤回 SmolStr 的记录属于旧验收条件。

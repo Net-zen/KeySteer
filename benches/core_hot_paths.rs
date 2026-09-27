@@ -85,6 +85,7 @@ fn measure_hint_owned_delivery(config: &Config, context: &HostContext<'_>, count
     let started = Instant::now();
     black_box(mode.handle_owned(
         ModeEvent::UiScanned(UiScanResult {
+            retired: Vec::new(),
             id: 1,
             targets: values,
             status: UiScanStatus::Partial,

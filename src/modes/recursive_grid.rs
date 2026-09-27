@@ -4,10 +4,6 @@
 //! Pressing a cell key narrows the area and re-draws, so each keystroke
 //! multiplies precision. `backspace` widens back out, `space` resets, and
 //! `enter` clicks the centre of the current selected area.
-//!
-//! Supports neru's `[recursive_grid.layers]` per-depth overrides, `label_char`,
-//! autohide thresholds and sub-key previews. `enter` finishes at the centre of
-//! the current area without clicking.
 
 use crate::api::binding::Binding;
 use crate::api::command::{Command, CommandBatch, FinishCause, HostContext, Mode, ModeEvent};

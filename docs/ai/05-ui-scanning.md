@@ -1,5 +1,7 @@
 # UI Hint 扫描链路
 
+默认 `hybrid` 固定合并 AX/UIA、所有可用 OCR 和 contour，忽略单独 vision 的来源开关与较小候选上限；两端也支持独立 `contour`。轮廓来源、分块、边界与内存上限见下方平台管线；MIT 署名见根目录 NOTICE。
+
 公共 `SpatialIndex` 的整数坐标 cell 表采用 `rustc_hash::FxHashMap`，cell 内 SmallVec 不变，输出不依赖哈希表迭代顺序。此次在 SmolStr 基础上分别比较 CompactString、FxHashMap、组合及相同二进制 A/A，独立 FxHashMap 的 12 个扫描场景 p99 均下降，按键、Normal 和六规模 Hint 交付 p99 均未增加，故恢复采用。先前组合未通过不等于 FxHashMap 导致回退；CompactString 仍未采用。不同密度、负坐标、重复及超大矩形的逐项穷举参考对照测试保留。该哈希仅用于内部整数坐标，不推广到任意外部字符串键。
 
 `UiTarget.role` 使用单字节 `SemanticRole`，平台扫描和 OCR/视觉 provider 在生成目标时映射，序列化仍为原 snake_case 名称。配置 clickable_roles 保持字符串及原平台别名；未使用的 native_role 不再携带，旧序列化输入仍可忽略该字段。64 位 UiTarget 从 104 降到 64 字节，不再为角色分配字符串；name 和原有去重算法保留。
@@ -32,7 +34,7 @@ macOS 窗口命中通过 `common/accessibility_window::resolve` 优先验证命�
 - macOS 扫描 worker 由 Backend 懒创建并拥有，不再是进程静态 detached worker。退出时先使
   generation 失效、丢弃 pending，再唤醒并有界等待 worker；已经提交且系统不支持取消的
   ScreenCaptureKit completion 由进程退出兜底，不能阻塞 Quit。
-- Vision timeout 限制为 1..=30000ms，rectangle candidates 限制为 1..=2000，Rust 与 Objective-C 两侧均校验。
+- Vision timeout 限制为 1..=30000ms，rectangle candidates 限制为 1..=10000，Rust 与 Objective-C 两侧均校验。
 
 ## 公共请求模型
 
@@ -51,28 +53,27 @@ Engine 用 scan id 记录 owner；HintMode 也只接受当前 `scan_id`。旧 wo
 接管平台 Vec，后续目标逐项 move，名称、role 和 native role 不再跨层 clone。
 
 退出、切换到 Normal/Idle 或完成 owner 时 Engine 显式取消 scan。HintMode 先进入 inactive 状态，迟到的 Partial/terminal 不能重新启动扫描；Windows 随后使 UIA/Vision generation 失效、丢弃 pending plan 和 mailbox，并取消进行中的 WinRT OCR、终止微信
-helper、让纯 Rust fallback 在行/连通区域边界退出，并 join 本次 provider 线程；generation-scoped
+helper、让纯 Rust contour 在行/连通区域边界退出，并 join 本次 provider 线程；generation-scoped
 vision coordinator 在当前与 latest pending 请求完成后直接退出，不留常驻视觉线程。Hint 退出会 drop 目标、标签和字符串，下一次进入
-重新扫描。仅复用最多 128 项的空容器
-backing，以降低常见不足 100 个标签时的重入分配；大型扫描容量不会留在 Idle。
+重新扫描。仅复用最多 512 项的空容器
+backing，以降低常见数百个标签时的重入分配；大型扫描容量不会留在 Idle。
 
 Windows 每个 generation 只创建一个不可变 `Arc<WindowsScanPlan>`。它拥有请求、目标 HWND/PID、窗口组边界、候选窗口和共享扁平遮挡数组；UIA、Vision 和发布器只复制 `Arc`，不各自 clone roles、应用字符串或遮挡 `Vec`。候选和遮挡在常见 16 个窗口以内使用 `SmallVec` 内联存储，每代最多执行一次 Z-order `EnumWindows`，不使用 `GetWindow` 链式枚举。
 
 Windows 每个 generation 的 GDI top-down DIB 只截图一次。视觉线程不会再复制或让 provider
 持有一份完整 BGRA `Vec`。DIB 字节稳定且前台 HWND/PID/generation 复核通过后立即释放 overlay
 capture gate；系统 OCR 从同一个 DIB 构造重叠小块，微信 OCR 构造一份完整 `SoftwareBitmap`，
-fallback 直接下采样灰度图。源窗口与目标 DIB 尺寸相同时使用 `BitBlt` 直接复制；8,388,608
+contour 直接下采样灰度图。源窗口与目标 DIB 尺寸相同时使用 `BitBlt` 直接复制；8,388,608
 像素的上限完整覆盖 3840x2160，只有 5K/8K 或更大的跨屏交集才使用
 `StretchBlt + HALFTONE`。截图始终是一张完整图片，绝不对桌面重复截图。
 
-系统 OCR、微信 OCR 都在 provider 内最多保留 2000 个有效目标。三种 provider 通过本代拥有的
-`ProviderMailbox` 发布：系统 OCR、微信 OCR 和 fallback 各占一个固定槽，槽内只保留有界目标
+系统 OCR、微信 OCR 都在 provider 内最多保留 10000 个有效目标。三种 provider 通过本代拥有的
+`ProviderMailbox` 发布：系统 OCR、微信 OCR 和 contour 各占一个固定槽，槽内只保留有界目标
 与 terminal；ready bit 合并 empty→ready 唤醒，producer 以所有权追加到自己的槽，不会因为
 coordinator 尚未消费第 4 个批次而阻塞。coordinator 排空时取得 Vec 所有权；关闭 mailbox
 会唤醒所有等待者并拒绝后续发布。
 
-任一 OCR provider 返回非空有效结果便取消并丢弃 fallback；这个判定发生在 UIA/空间索引
-去重之前，因此 Hybrid 中 OCR 与 UIA 重叠也不会误跑纯像素检测。系统 OCR 使用 WinRT
+Contour 与 OCR 独立运行，任一 OCR 的有效结果都不取消轮廓检测；轮廓批次到达即进入同一空间索引，独有图标得以保留。系统 OCR 使用 WinRT
 completion handler 唤醒，不做固定 5ms 状态轮询。取消先关闭结果 mailbox，再通过现有系统/
 微信输入通道非阻塞发送 `CancelWake`；provider 批量 Cancel 并等待 completion，不新增 timer、
 sleep 或轮询线程。provider 取消后按 generation deadline join；违反取消契约的线程转入有
@@ -84,8 +85,8 @@ owner 的 quarantine，本进程后续禁用视觉扫描，不能阻塞 Engine �
 `src/modes/hint/mod.rs` 与 `session.rs` 的职责：
 
 1. 启动 scan 时清空上一轮目标、标签、搜索和完成态。
-2. 每个 Partial 立即 append，按矩形/名称/role 空间 key 去重。
-3. 使用 `modes::hint::labeling` 给当前候选重新分配标签并 redraw。
+2. 每个 Partial 先应用 retired 精确矩形撤回，再 append 新目标，按矩形/名称/role 空间 key 去重；标签前缀输入中暂存整个增量。
+3. 使用 `modes::hint::labeling` 分配键码；流式更新优先保留已有键码，只有编码空间不足或显式搜索/清前缀时重建。
 4. 搜索模式只过滤已扫描目标，不重新遍历平台树。
 5. 完整标签选中后保存 target、warp pointer、建立 finished 状态。
 6. 只有 `Success`/`TimedOut` 且没有出现标签时才按 `scan_retry_count`/delay 重试；每次预算递增，单次最多 30s。`ContextChanged`、焦点变化和显示器变化清空旧 Hint 并立即创建新 generation，不消耗失败重试次数。
@@ -139,18 +140,17 @@ owner 的 quarantine，本进程后续禁用视觉扫描，不能阻塞 Engine �
 
 ### Windows strategy 与视觉管线
 
-- 发布默认是 `hybrid`：UIA 与完整视觉管线由独立 worker 同时调度，共用下述发布器流式去重并合并空间并集；`axtree` 或 `vision` 可分别只调度其中一条管线。
+- 发布默认是 `hybrid`：UIA 与完整视觉管线由独立 worker 同时调度，共用下述发布器流式去重并合并空间并集；`axtree` 或 `vision` 可分别只调度其中一条管线；`contour` 仅调度视觉 worker 中的轮廓 provider。
 - `src/platform/windows/ui_scan.rs` 是 Windows 唯一发布点；底层复用跨平台安全 Rust
-  `src/platform/spatial_index.rs`。Windows 与 macOS 都把矩形连续保存一次，64px 网格只保存
+  `src/platform/common/spatial_index.rs`。Windows 与 macOS 都把矩形连续保存一次，64px 网格只保存
   `u32` 索引；覆盖超过 32 格的大矩形进入有界 oversize 列表，查询用 generation mark
-  去重且不构造候选临时容器。IoU、包含和同行近邻使用同一个判定，先显示的目标不被后到
-  重复项替换。Windows 发布器继续统一 24/48/96…累计边界和 2000 项上限。
+  去重且不构造候选临时容器。TargetIndex 按来源、语义角色、覆盖率抑制重复；较晚的高优先级控件可通过 retired 矩形增量替换视觉碎片。Windows 发布器继续统一 24/48/96…累计边界和 10000 项上限。
 - Hybrid 中任一 provider 报告 `ContextChanged` 都会立即发布本代 terminal，不等待另一 provider；HintMode 随即提交新 generation，Engine 的 owner 取消路径使另一 provider 释放 capture/OCR/plan。旧坐标不会作为 terminal tail 再发布。
 - Backend ready 后的首次事件轮询只异步执行一次 OCR discovery：系统探测在临时 MTA 中创建并立即销毁 `OcrEngine`，微信探测只缓存已验证的绝对路径与文件标识。系统 OCR/WIC 通过本代拥有的 activation factory 调用，禁止使用会跨临时 MTA 残留悬空指针的投影静态 factory cache。这样 ready 热路径不承担探测线程创建；成功和失败结果都缓存到进程退出，不保留 OCR、helper、COM 或 vision worker。首次扫描若探测尚未完成，只由视觉协调线程等待同一个 single-flight 结果。
-- `src/platform/windows/vision/mod.rs` 是 `VisionWorker` façade、队列和 generation 调度；`providers.rs` 拥有本代系统/微信 OCR 执行与清理，`discovery.rs` 缓存 provider descriptor，`provider_mailbox.rs` 管理有界发布/终态/取消，`system_ocr.rs` 持有 WinRT operation，`capture.rs` 负责坐标和 BGRA 输入，`fallback.rs` 保存纯 Rust detector 与 scratch。每个 generation 只取得一张 GDI top-down DIB 截图；等待 OCR 时只检查原子 generation，不轮询 HWND。目标 HWND/PID/边界只在捕获、每批发布和 terminal 前复核；视觉候选使用 scan plan 的共享遮挡矩形过滤，不创建全屏 mask。当前与 latest pending 请求完成后 coordinator 自行退出。
+- `src/platform/windows/vision/mod.rs` 是 `VisionWorker` façade、队列和 generation 调度；`providers.rs` 拥有本代系统/微信 OCR 执行与清理，`discovery.rs` 缓存 provider descriptor，`provider_mailbox.rs` 管理有界发布/终态/取消，`system_ocr.rs` 持有 WinRT operation，`capture.rs` 负责坐标和 BGRA 输入，`common/contour.rs` 保存两端共用的纯 Rust detector 与块级 scratch。每个 generation 只取得一张 GDI top-down DIB 截图；等待 OCR 时只检查原子 generation，不轮询 HWND。目标 HWND/PID/边界只在捕获、每批发布和 terminal 前复核；视觉候选使用 scan plan 的共享遮挡矩形过滤，不创建全屏 mask。当前与 latest pending 请求完成后 coordinator 自行退出。
 - 截图前由 `overlay_worker.rs` 建立 generation capture gate：渲染线程清空 GPU/CPU overlay。若 overlay 从未显示，或上次隐藏已经由 DWM 确认，则直接 ACK；仅在存在尚未确认消失的可见像素时执行一次 `DwmFlush`。ACK 前 UIA/OCR 提交只覆盖 latest deferred frame；截图复制完成立即释放 gate，只显示最新帧。旧 lease、取消和 shutdown 不能释放新 generation。
-- `detect_text=true` 时先从进程内 discovery 快照生成 `None`、`SystemOnly`、`WechatOnly` 或 `Dual` 执行计划。`SystemOnly` 只创建系统 tile，绝不进入微信专用完整位图、WIC、PNG、helper、job、pipe 或 reader 路径；只有 `WechatOnly`/`Dual` 才构造 `WechatFullFrame`。系统 OCR 按可用逻辑线程的下一个平方数选择 `N×N` 网格，并由图片尺寸限制核心块的宽、高都至少为 64px；没有固定 `7×7` 上限。各块向相邻核心区重叠 64px，bitmap 就绪后立即提交独立 `RecognizeAsync`；tile 输入与 completion 共用有界事件通道，provider 在继续接收 tile 时立即消费已完成结果。它先计算文字行的联合矩形和核心区归属，丢弃接缝副本后才取得文字并直接组成最多 24 项的批次，避免为最终丢弃的重叠行分配字符串。块内坐标映射回桌面，目标中心只归属于一个半开核心矩形，因此接缝文字不会漏掉或重复发布。`Dual` 在首个系统 tile 后才提交微信专用完整帧，随后继续排空两路结果；微信结果先发布、再清理 helper 与 PNG。terminal 严格等待全部块和 helper 清理完成，两路最终发布空间并集。
-- `detect_rectangles=true` 时并行计算灰度、局部对比/梯度、形态闭合和八邻域连通区域。分析图限制为 2,073,600 像素、最长边 2560，候选最小边为 6px；scratch 只属于本次 generation，连通区域使用逐行 run-length 和活跃组件，不保留最坏覆盖全图的像素队列。形态位图复用且候选维持有界 top-K。任一 OCR 产生有效目标就立即取消这项 CPU-heavy 工作；只有全部 OCR 没有有效目标时才发布缓存。
+- hybrid 或 vision 的 `detect_text=true` 时先从进程内 discovery 快照生成 `None`、`SystemOnly`、`WechatOnly` 或 `Dual` 执行计划。`SystemOnly` 只创建系统 tile，绝不进入微信专用完整位图、WIC、PNG、helper、job、pipe 或 reader 路径；只有 `WechatOnly`/`Dual` 才构造 `WechatFullFrame`。系统 OCR 按可用逻辑线程的下一个平方数选择 `N×N` 网格，并由图片尺寸限制核心块的宽、高都至少为 64px；没有固定 `7×7` 上限。各块向相邻核心区重叠 64px，bitmap 就绪后立即提交独立 `RecognizeAsync`；tile 输入与 completion 共用有界事件通道，provider 在继续接收 tile 时立即消费已完成结果。它先计算文字行的联合矩形和核心区归属，丢弃接缝副本后才取得文字并直接组成最多 24 项的批次，避免为最终丢弃的重叠行分配字符串。块内坐标映射回桌面，目标中心只归属于一个半开核心矩形，因此接缝文字不会漏掉或重复发布。`Dual` 在首个系统 tile 后才提交微信专用完整帧，随后继续排空两路结果；微信结果先发布、再清理 helper 与 PNG。terminal 严格等待全部块和 helper 清理完成，两路最终发布空间并集。
+- hybrid 固定启用 OCR 与共享 contour；vision 在 `detect_rectangles=true` 时并行运行共享 contour；独立 `strategy=contour` 强制启用且跳过 UIA、OCR discovery 和 COM/OCR provider 创建。分析灰度图限制 2,073,600 像素、最长边 2560，逐块 256×256 core 加 4px halo 计算 Gaussian/Sobel/NMS，scratch 只分配一次并复用；共用 `common/image_tiles::partition` 的 OCR 分区算术。全图 hysteresis、膨胀、8 邻域连通区域保留跨块目标，嵌套启发式过滤后映射到桌面。组件最多 32768，超限舍弃该 contour pass；hybrid 的 contour 使用 10000 候选预算，不受旧 100 配置截断；vision/contour 最多配置 rectangle_max_candidates（默认／上限 10000）。像素 DFS 栈使用 u32，受分析像素数限制（最坏约 8MiB），不随原始 4K/8K 截图增长；行和每 1024 次遍历都检查取消/截止时间。原 Windows fallback detector 已移除。
 - `src/platform/windows/wechat_ocr.rs` 自动查找可执行文件旁的 `wcocr.dll`，以及 `%APPDATA%\Tencent\xwechat\XPlugin\plugins\WeChatOcr\<版本>\extracted\wxocr.dll` 中版本最高的微信 4 OCR 组件；微信 4 运行目录按 `Weixin.dll`、`WeixinExt.exe` 或旧布局的 `Weixin.exe` 验证，不要求版本子目录内必须存在主程序。微信 3 继续作为后备。所有 PE 架构都会验证，并且组件只在隐藏 helper 子进程中加载。IPC 与响应有界，超时/崩溃/owner 取消会终止 helper，临时 WIC PNG 总会清理；组件不进入发行包。
 - 每次扫描只创建执行计划真正需要的 `OcrEngine`/helper；冷启动和 overlay 隐藏重叠。系统 OCR 各块拥有独立的 `SoftwareBitmap` 与 operation，同一 generation 复用 factory，DIB 区域直接逐行写入 bitmap，不经过 tile BGRA `Vec`。取消先对全部 operation 调用 `Cancel`，并通过现有 completion channel 收敛终态，不创建 timer、sleep 或轮询线程；generation deadline 到达也不得 drop 仍为 `Started` 的 operation，完整 tile owner（COM apartment、engine、bitmap、operation）继续留在 provider thread，由 coordinator 的有界 join 转交显式 quarantine。终态后立即 `Close`。微信 WIC PNG 使用完整 `SoftwareBitmap` 直接编码到临时文件，不生成完整内存 PNG，并在编码后立即关闭完整 bitmap。terminal 发布前必须删除 PNG、关闭 IPC、终止并等待 helper、join reader/provider、关闭所有块、释放截图与 GDI surface 并 drop 本次 COM apartment。源码禁止 `SetWindowDisplayAffinity`/`WDA_EXCLUDEFROMCAPTURE`，避免自捕获只依赖上述隐藏确认屏障。
 
@@ -189,8 +189,8 @@ AX：`src/platform/macos/accessibility.rs`。
 Vision：`src/platform/macos/vision.rs` + `vision_bridge.m`。
 
 - 获取 focused window bounds，与请求屏幕 bounds 取交集。
-- ScreenCaptureKit 截图后使用 Vision text/rectangle requests。
-- Retina 原生分辨率保持不变；Objective-C bridge 直接填充最多 2000 项的 C region 数组，
+- ScreenCaptureKit 只截图一次；ABI v3 的 owned result 保留 CGImage 与有界灰度缓冲。Rust scoped worker 借用灰度执行共享 contour，当前 worker 同时执行 Vision text/rectangle requests，两路完成即独立交给 PartialPublisher。join 后释放灰度与 CGImage；没有跨代像素缓存。独立 contour 通过 Quartz 窗口元数据取范围，不读取 AX 树或调用 OCR。
+- Retina 原生分辨率保持不变；Objective-C bridge 直接填充最多 10000 项的 C region 数组，
   不为每个 observation 创建 `NSDictionary`/`NSNumber` 中间对象。
 - Rust 侧按 confidence、尺寸、宽高比和 IoU 分类/合并候选。
 - 原生请求超时后可能晚结束，但单 worker 保证不会叠加第二次全分辨率 capture。
@@ -203,10 +203,10 @@ Vision：`src/platform/macos/vision.rs` + `vision_bridge.m`。
 - retry 只属于 HintMode 生命周期，Backend 不应自行无限重试。
 - Windows 鼠标目标、焦点或显示器变化必须使旧结果失效并立即重定向；无目标时不得启动 provider、隐藏 overlay 或截图。
 - 过滤应尽可能下推 provider，但必须保留失败后的安全 fallback。
-# Performance invariants added for 256-target Hint/OCR workloads
+# Performance invariants for Hint/OCR workloads
 
-- `128` remains the zero-allocation inline Hint layer boundary. Active sessions
-  lazily retain a reusable dynamic workspace for `129..=256`; deactivation
+- `512` is the inline Hint layer boundary. Active sessions
+  lazily retain a reusable dynamic workspace for scans above `512`; deactivation
   releases it, and larger scans retain a safe dynamic fallback.
 - The wide path runs the same exact X sweep before allocating its conflict
   bitset. A generation with no visual conflicts finishes with an empty layer

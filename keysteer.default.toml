@@ -591,10 +591,12 @@ font_size = 28
 # window: pointer window; screen: complete display containing the pointer.
 scan_scope = "window"
 enabled = true
-# Element detection: both macOS and Windows support "axtree", "vision", and
-# "hybrid". The default runs the accessibility tree and visual pipeline in
-# parallel, then merges their unique targets. Windows vision probes available
-# OCR internally and falls back to built-in pixel-region detection.
+# Both macOS and Windows support "axtree", "vision", "contour", and "hybrid".
+# Default hybrid merges accessibility, OCR and contour targets concurrently.
+# vision combines OCR and contours; contour uses pixels only, without OCR/AX.
+# Contour targets have no text names. Timeout and target limit reuse the vision
+# section below; detect_rectangles controls contours in vision/hybrid, while
+# strategy="contour" always enables them. macOS capture needs Screen Recording.
 strategy = "hybrid"
 # Characters used to build hint labels.
 hint_characters = "asdfghjkl"
@@ -660,13 +662,16 @@ after_click = "normal"
 "primary+r" = "rescan"
 "primary+q" = "normal"
 
+# Hybrid always combines accessibility, every available OCR provider and contour.
+# Source switches below apply to vision; candidate limits apply to vision/contour.
+# Hybrid uses the shared 10000-target scan budget regardless of these switches/caps.
 [ui_hint.vision]
 detect_text = true
 detect_rectangles = true
 request_timeout_ms = 5000
 minimum_confidence = 0.0
 merge_iou_threshold = 0.5
-rectangle_max_candidates = 100
+rectangle_max_candidates = 10000
 rectangle_min_size = 0.01
 rectangle_min_aspect = 0.3
 rectangle_max_aspect = 10.0
@@ -719,7 +724,6 @@ font_size = 14
 
 [grid]
 enabled = true
-# A Mousemaster-style keyboard layout, read left-to-right then top-to-bottom:
 # qwert / asdfg / zxcvb / yuiop / hjkl; / nm,./
 grid_cols = 5
 grid_rows = 4

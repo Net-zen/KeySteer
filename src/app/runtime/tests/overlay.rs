@@ -837,7 +837,8 @@ fn key_help_cache_rebuilds_on_routes_theme_and_mode_events() {
     assert!(contains(&engine, "F23"));
     assert!(!contains(&engine, "F22"));
     engine.dispatch_owned_to(&ModeId::normal(), ModeEvent::UiScanned(crate::api::command::UiScanResult {
-        id: 1, targets: Vec::new(), status: UiScanStatus::Partial,
+        retired: Vec::new(),
+id: 1, targets: Vec::new(), status: UiScanStatus::Partial,
     }), &mut backend).unwrap();
     assert!(contains(&engine, "F24"));
     assert!(!contains(&engine, "F23"));

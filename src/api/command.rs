@@ -5,6 +5,9 @@
 //! [`Command`]s. It never touches a platform API, which is what makes the
 //! built-in modes and third-party plugins interchangeable.
 
+/// Shared per-source and merged UI scan ceiling. Buffers grow with actual results.
+pub const MAX_UI_SCAN_TARGETS: usize = 10_000;
+
 use std::iter::FusedIterator;
 use std::ops::Index;
 use std::sync::Arc;
@@ -572,8 +575,11 @@ pub enum UiScanStrategy {
     #[serde(rename = "axtree")]
     AxTree,
     Vision,
-    /// Run accessibility and visual detection concurrently; the backend
-    /// streams their de-duplicated spatial union.
+    /// Detect targets from screen contours without OCR or accessibility.
+    Contour,
+    /// Run accessibility, OCR and contour detection concurrently; the backend
+    /// streams their de-duplicated spatial union. Visual source switches and
+    /// per-provider candidate caps do not disable or truncate Hybrid sources.
     #[default]
     Hybrid,
 }
@@ -581,11 +587,14 @@ pub enum UiScanStrategy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct VisionOptions {
+    /// Vision-only source switch; Hybrid always runs every available source.
     pub detect_text: bool,
+    /// Vision-only source switch; Hybrid and Contour always detect contours.
     pub detect_rectangles: bool,
     pub request_timeout_ms: u64,
     pub minimum_confidence: f64,
     pub merge_iou_threshold: f64,
+    /// Vision/Contour candidate cap; Hybrid uses MAX_UI_SCAN_TARGETS.
     pub rectangle_max_candidates: usize,
     pub rectangle_min_size: f64,
     pub rectangle_min_aspect: f64,
@@ -610,7 +619,7 @@ impl Default for VisionOptions {
             request_timeout_ms: 5_000,
             minimum_confidence: 0.0,
             merge_iou_threshold: 0.5,
-            rectangle_max_candidates: 100,
+            rectangle_max_candidates: MAX_UI_SCAN_TARGETS,
             rectangle_min_size: 0.01,
             rectangle_min_aspect: 0.3,
             rectangle_max_aspect: 10.0,
@@ -668,6 +677,9 @@ pub enum UiScanStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiScanResult {
+    /// Remove these prior rectangles before appending this batch. Sources may
+    /// refine earlier visual candidates without waiting for the full scan.
+    pub retired: Vec<Rect>,
     pub id: u64,
     pub targets: Vec<UiTarget>,
     pub status: UiScanStatus,
@@ -843,9 +855,101 @@ pub trait Mode: Send {
     }
 }
 
+/// Preserve searchable text when overlapping runs or visual fragments are
+/// replaced by a refined target.
+pub(crate) fn enrich_replacements(
+    targets: &mut [UiTarget],
+    previous: &[UiTarget],
+    retired: &[Rect],
+) {
+    if retired.is_empty() {
+        return;
+    }
+    // Filter once per delta, not once per replacement. Large refinements used
+    // to repeat a linear retired lookup for every target/previous pair.
+    let key =
+        |r: Rect| [r.x, r.y, r.width, r.height].map(|v| if v == 0.0 { 0 } else { v.to_bits() });
+    let keys: rustc_hash::FxHashSet<_> = retired.iter().map(|&r| key(r)).collect();
+    let descriptions: Vec<_> = previous
+        .iter()
+        .filter(|old| !old.name.is_empty() && keys.contains(&key(old.rect)))
+        .collect();
+    if descriptions.is_empty() {
+        return;
+    }
+    for target in targets.iter_mut().filter(|t| {
+        matches!(
+            t.role,
+            crate::api::SemanticRole::ListItem
+                | crate::api::SemanticRole::Image
+                | crate::api::SemanticRole::StaticText
+        )
+    }) {
+        let inherit_descriptions =
+            target.name.is_empty() || target.role == crate::api::SemanticRole::StaticText;
+        for old in &descriptions {
+            if (!inherit_descriptions && old.rect != target.rect)
+                || !target.rect.contains(&old.rect.center())
+                || target.name.contains(&old.name)
+            {
+                continue;
+            }
+            if !target.name.is_empty() {
+                target.name.push(' ');
+            }
+            target.name.push_str(&old.name);
+        }
+    }
+}
+
+/// Apply the removal half of a scan delta. Exact geometry identifies an earlier
+/// published candidate; no fuzzy matching or source policy belongs in a mode.
+pub(crate) fn remove_retired_targets(targets: &mut Vec<UiTarget>, retired: &[Rect]) {
+    if retired.is_empty() || targets.is_empty() {
+        return;
+    }
+    if retired.len() <= 8 {
+        targets.retain(|target| !retired.contains(&target.rect));
+    } else {
+        let key =
+            |r: Rect| [r.x, r.y, r.width, r.height].map(|v| if v == 0.0 { 0 } else { v.to_bits() });
+        let keys: rustc_hash::FxHashSet<_> = retired.iter().map(|&r| key(r)).collect();
+        targets.retain(|target| !keys.contains(&key(target.rect)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn region_replacements_inherit_only_retired_descriptions_and_keep_native_names() {
+        let text = UiTarget {
+            rect: Rect::new(20.0, 10.0, 40.0, 20.0),
+            name: "member".into(),
+            role: crate::api::SemanticRole::StaticText,
+        };
+        let mut independent = text.clone();
+        independent.rect.x = 80.0;
+        independent.name = "independent action".into();
+        let previous = [text.clone(), independent];
+        let mut row = [UiTarget {
+            rect: Rect::new(0.0, 0.0, 150.0, 40.0),
+            name: String::new(),
+            role: crate::api::SemanticRole::ListItem,
+        }];
+        enrich_replacements(&mut row, &previous, &[text.rect]);
+        assert_eq!(row[0].name, "member");
+        let mut refinement = row.clone();
+        refinement[0].name = "description".into();
+        enrich_replacements(&mut refinement, &row, &[row[0].rect]);
+        assert_eq!(refinement[0].name, "description member");
+        enrich_replacements(&mut refinement, &row, &[row[0].rect]);
+        assert_eq!(refinement[0].name, "description member");
+        row[0].name = "native name".into();
+        enrich_replacements(&mut row, &previous, &[text.rect]);
+        assert_eq!(row[0].name, "native name");
+    }
 
     #[test]
     fn dismiss_hides_before_switching() {

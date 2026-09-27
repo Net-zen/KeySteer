@@ -2,7 +2,7 @@
 
 //! Configuration.
 //!
-//! The section layout and theming model follow neru, but bindings are our own:
+//! The section layout but bindings are our own:
 //! a value is a [`Binding`] from the public API, so `h = "move_left"` and
 //! `g = "grid"` read the same whether the target is a built-in verb, a built-in
 //! mode or a plugin mode. There is no `action` prefix and no separate internal
@@ -230,7 +230,6 @@ fn default_plugin_modes() -> BTreeMap<String, PluginModeConfig> {
 
 /// Defaults for `idle`: only what is needed to wake the program up.
 ///
-/// Modelled on neru's launcher bindings, which use `Primary+Shift+<letter>`:
 /// `Primary` is Cmd on macOS and Ctrl elsewhere, so one file works on both.
 ///
 /// `Primary+Shift` rather than a bare modifier matters on macOS, where

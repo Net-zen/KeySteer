@@ -1,6 +1,7 @@
 //! Generation-scoped system and WeChat OCR provider execution.
 
 use super::*;
+use crate::platform::common::spatial_index::TargetSource;
 
 pub(super) struct WechatFullFrame {
     pub(super) geometry: CaptureGeometry,
@@ -188,7 +189,9 @@ fn run_scan_inner(
         cancellation.cancel();
         return UiScanStatus::ContextChanged;
     }
-    let discovery_snapshot = if job.request.vision.detect_text {
+    let (detect_text, detect_contours) =
+        crate::platform::common::contour::sources(job.request.strategy, &job.request.vision);
+    let discovery_snapshot = if detect_text {
         match discovery.wait(deadline, || cancellation.is_cancelled()) {
             Some(snapshot) => snapshot,
             None if cancellation.is_cancelled() => return UiScanStatus::ContextChanged,
@@ -199,8 +202,7 @@ fn run_scan_inner(
     };
 
     let (system_descriptor, wechat_descriptor) =
-        OcrExecutionPlan::from_snapshot(&discovery_snapshot, job.request.vision.detect_text)
-            .into_descriptors();
+        OcrExecutionPlan::from_snapshot(&discovery_snapshot, detect_text).into_descriptors();
     let mut providers = ProviderThreads::new(cancellation.clone(), shared);
     let mut system_input = None;
     let mut wechat_input = None;
@@ -278,8 +280,7 @@ fn run_scan_inner(
             pending_ocr += 1;
         }
     }
-    let fallback_cancelled = Arc::new(AtomicBool::new(false));
-    let mut ocr_had_valid_targets = false;
+    let mut contour_pending = false;
     let mut early_events = ProviderEvents::new();
 
     let Some(mut capture_lease) = job.capture.take() else {
@@ -369,15 +370,62 @@ fn run_scan_inner(
                 return Err("visual capture context changed".into());
             }
             // The DIB already contains a stable desktop frame. Release the
-            // generation gate before constructing OCR/fallback artifacts so a
+            // generation gate before constructing OCR/contour artifacts so a
             // deferred UIA frame can be shown without waiting for pixel work.
             if let Some(lease) = capture_lease.take() {
                 lease.release()?;
             }
+            // Fill the first OCR concurrency window before preparing contour
+            // pixels. Grayscale overlaps in-flight recognition instead of
+            // delaying those tiles; contour starts before the first credit wait.
+            let contour_start_after = system_input.as_ref().map_or(0, |input| {
+                input.layout.max_in_flight.min(input.layout.tile_count)
+            });
+            let mut contour_attempted = false;
+            let mut launch_contour = || -> Result<(), String> {
+                if contour_attempted {
+                    return Ok(());
+                }
+                contour_attempted = true;
+                if detect_contours
+                    && let Some(image) =
+                        contour_input_from_bgra_with_progress(pixels, geometry, || {
+                            Ok(cancellation.is_cancelled() || Instant::now() >= deadline)
+                        })?
+                {
+                    let result_mailbox = Arc::clone(&provider_mailbox);
+                    let provider_cancellation = cancellation.clone();
+                    let limit = crate::platform::common::contour::candidate_limit(
+                        job.request.strategy,
+                        &job.request.vision,
+                    );
+                    contour_pending = providers.spawn("keysteer-contour", move || {
+                        let _ledger = crate::support::perf_probe::ResourceGuard::new(
+                            crate::support::perf_probe::ResourceKind::Provider,
+                        );
+                        let targets = crate::platform::common::contour::detect(
+                            &image.gray,
+                            image.width,
+                            image.height,
+                            image.desktop_bounds,
+                            limit,
+                            || provider_cancellation.is_cancelled() || Instant::now() >= deadline,
+                        );
+                        let _ = send_contour_batches(&result_mailbox, targets);
+                    });
+                    if !contour_pending {
+                        return Err("cannot start contour provider".into());
+                    }
+                }
+                Ok(())
+            };
             if let Some(input) = system_input.take() {
                 if let Some(factory) = bitmap_factory.as_ref() {
                     if let Err(error) =
                         stream_system_ocr_tiles(pixels, geometry, factory, &input, |index| {
+                            if index.is_some_and(|index| index + 1 == contour_start_after) {
+                                launch_contour()?;
+                            }
                             if index == Some(0) && wechat_input.is_some() {
                                 submit_wechat_full_frame(
                                     &mut wechat_input,
@@ -390,8 +438,6 @@ fn run_scan_inner(
                             if !drain_early_ocr_events(
                                 &provider_mailbox,
                                 &job.source,
-                                &fallback_cancelled,
-                                &mut ocr_had_valid_targets,
                                 &mut early_events,
                                 || context_is_current(shared, job.generation, &job.request),
                             ) {
@@ -413,6 +459,7 @@ fn run_scan_inner(
                     let _ = input.sender.send(SystemOcrInput::Done);
                 }
             }
+            launch_contour()?;
             if wechat_input.is_some() {
                 submit_wechat_full_frame(
                     &mut wechat_input,
@@ -422,36 +469,13 @@ fn run_scan_inner(
                     bitmap_factory_error.as_deref(),
                 );
             }
-            if !drain_early_ocr_events(
-                &provider_mailbox,
-                &job.source,
-                &fallback_cancelled,
-                &mut ocr_had_valid_targets,
-                &mut early_events,
-                || context_is_current(shared, job.generation, &job.request),
-            ) {
+            if !drain_early_ocr_events(&provider_mailbox, &job.source, &mut early_events, || {
+                context_is_current(shared, job.generation, &job.request)
+            }) {
                 context_changed_during_capture = true;
                 return Err("visual capture context changed".into());
             }
-            let fallback = if job.request.vision.detect_rectangles && !ocr_had_valid_targets {
-                fallback_input_from_bgra_with_progress(pixels, geometry, || {
-                    if !drain_early_ocr_events(
-                        &provider_mailbox,
-                        &job.source,
-                        &fallback_cancelled,
-                        &mut ocr_had_valid_targets,
-                        &mut early_events,
-                        || context_is_current(shared, job.generation, &job.request),
-                    ) {
-                        context_changed_during_capture = true;
-                        return Ok(true);
-                    }
-                    Ok(ocr_had_valid_targets || cancellation.is_cancelled())
-                })?
-            } else {
-                None
-            };
-            Ok(fallback)
+            Ok(())
         },
     );
     drop(prepared_capture);
@@ -461,44 +485,21 @@ fn run_scan_inner(
     {
         crate::support::logging::report_error("windows-overlay", error);
     }
-    let fallback_input = match captured {
-        Ok(artifact) => artifact,
+    match captured {
+        Ok(()) => {}
         Err(_) if context_changed_during_capture => return UiScanStatus::ContextChanged,
         Err(error) => return UiScanStatus::Failed(error),
-    };
+    }
     if !context_is_current(shared, job.generation, &job.request) {
         return UiScanStatus::ContextChanged;
     }
-
     drop(system_input);
     drop(wechat_input);
-
-    let fallback_pending = if let Some(fallback_input) = fallback_input {
-        let result_mailbox = Arc::clone(&provider_mailbox);
-        let options = job.request.vision.clone();
-        let provider_cancellation = cancellation.clone();
-        let fallback_cancelled = Arc::clone(&fallback_cancelled);
-        providers.spawn("keysteer-vision-fallback", move || {
-            let _provider_ledger = crate::support::perf_probe::ResourceGuard::new(
-                crate::support::perf_probe::ResourceKind::Provider,
-            );
-            crate::support::perf_probe::mark("vision_fallback_started");
-            let mut scratch = FallbackScratch::default();
-            let targets = detect_regions(&fallback_input, &options, &mut scratch, || {
-                provider_cancellation.is_cancelled() || fallback_cancelled.load(Ordering::Acquire)
-            });
-            let _ = send_fallback_batches(&result_mailbox, targets);
-            crate::support::perf_probe::mark("vision_fallback_finished");
-        })
-    } else {
-        false
-    };
-    let mut fallback = Vec::new();
-    let mut fallback_done = !fallback_pending;
+    let mut contour_done = !contour_pending;
     let mut timed_out = false;
     let mut context_changed = false;
     let mut cleanup_errors = crate::support::errors::ErrorBundle::default();
-    while pending_ocr != 0 || !fallback_done {
+    while pending_ocr != 0 || !contour_done {
         if !generation_is_current(shared, job.generation) {
             cancellation.cancel();
             context_changed = true;
@@ -530,8 +531,15 @@ fn run_scan_inner(
         let mut ocr_done: SmallVec<[CompletedOcr; 2]> = SmallVec::new();
         for event in events {
             match event {
-                ProviderEvent::FallbackBatch(mut targets) => fallback.append(&mut targets),
-                ProviderEvent::FallbackDone => fallback_done = true,
+                ProviderEvent::ContourBatch(targets) => {
+                    if context_is_current(shared, job.generation, &job.request) {
+                        job.source.push_from(TargetSource::Contour, targets);
+                    } else {
+                        cancellation.cancel();
+                        context_changed = true;
+                    }
+                }
+                ProviderEvent::ContourDone => contour_done = true,
                 ProviderEvent::OcrBatch {
                     provider,
                     elapsed,
@@ -552,11 +560,8 @@ fn run_scan_inner(
                 break;
             }
             let count = targets.len();
-            if count != 0 {
-                ocr_had_valid_targets = true;
-                fallback_cancelled.store(true, Ordering::Release);
-            }
-            let accepted = job.source.push(targets);
+            let source = ocr_source(provider);
+            let accepted = job.source.push_from(source, targets);
             if accepted != 0 {
                 crate::support::perf_probe::mark("vision_targets_accepted");
             }
@@ -587,7 +592,7 @@ fn run_scan_inner(
                         );
                     } else {
                         // Operational provider failures can be masked by the
-                        // other OCR or the Rust fallback, so this coordinator
+                        // other OCR or the Rust contour, so this coordinator
                         // is their final reporting boundary.
                         crate::report_error!(
                             "windows-vision",
@@ -599,17 +604,6 @@ fn run_scan_inner(
         }
     }
 
-    if !context_changed
-        && should_publish_fallback(ocr_had_valid_targets, job.request.vision.detect_rectangles)
-        && fallback_done
-        && !fallback.is_empty()
-    {
-        if context_is_current(shared, job.generation, &job.request) {
-            job.source.push(fallback);
-        } else {
-            context_changed = true;
-        }
-    }
     cleanup_errors.record(
         "provider join",
         providers.join_all(Instant::now() + PROVIDER_STOP_TIMEOUT),
@@ -621,7 +615,7 @@ fn run_scan_inner(
             crate::support::logging::report_error("windows-vision", error);
         }
         UiScanStatus::ContextChanged
-    } else if timed_out {
+    } else if timed_out || Instant::now() >= deadline {
         if let Err(error) = cleanup_result {
             crate::support::logging::report_error("windows-vision", error);
         }
@@ -631,13 +625,6 @@ fn run_scan_inner(
     } else {
         UiScanStatus::Success
     }
-}
-
-pub(super) fn should_publish_fallback(
-    ocr_had_valid_targets: bool,
-    rectangles_enabled: bool,
-) -> bool {
-    rectangles_enabled && !ocr_had_valid_targets
 }
 
 fn wait_provider_image(

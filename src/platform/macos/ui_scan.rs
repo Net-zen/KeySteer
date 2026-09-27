@@ -5,18 +5,15 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::api::command::{UiScanRequest, UiScanStatus, UiScanStrategy};
-use crate::platform::common::partial_batcher::PartialBatcher;
+use crate::platform::common::scan_accumulator::ScanAccumulator;
 use crate::platform::common::scan_mailbox::ScanMailbox;
-use crate::platform::common::spatial_index::{SpatialIndex, rectangles_match};
+use crate::platform::common::spatial_index::TargetSource;
 use crate::support::worker::WorkerJoin;
 use objc2::rc::autoreleasepool;
 
 use super::{EventSender, accessibility, vision};
 
 static LATEST_SCAN: AtomicU64 = AtomicU64::new(0);
-const FIRST_PARTIAL_TARGETS: usize = 24;
-const MAX_TARGETS: usize = 2_000;
-const MINIMUM_SPACING: f64 = 8.0;
 const STOP_TIMEOUT: Duration = Duration::from_millis(500);
 
 struct ScanJob {
@@ -179,12 +176,7 @@ impl Drop for UiScanWorker {
 struct PartialPublisher<'a> {
     job: &'a ScanJob,
     pid: libc::pid_t,
-    state: Mutex<PublisherState>,
-}
-
-struct PublisherState {
-    batches: PartialBatcher<crate::api::UiTarget>,
-    index: SpatialIndex,
+    state: Mutex<ScanAccumulator>,
 }
 
 impl<'a> PartialPublisher<'a> {
@@ -192,14 +184,11 @@ impl<'a> PartialPublisher<'a> {
         Self {
             job,
             pid,
-            state: Mutex::new(PublisherState {
-                batches: PartialBatcher::new(FIRST_PARTIAL_TARGETS, MAX_TARGETS),
-                index: SpatialIndex::new(64.0, MINIMUM_SPACING, 2.0),
-            }),
+            state: Mutex::new(ScanAccumulator::new()),
         }
     }
 
-    fn push(&self, mut targets: Vec<crate::api::UiTarget>) {
+    fn push(&self, source: TargetSource, mut targets: Vec<crate::api::UiTarget>) {
         if !scan_is_current(self.job.generation, self.pid) {
             return;
         }
@@ -214,31 +203,35 @@ impl<'a> PartialPublisher<'a> {
         // 24-target batch after two sources cross thresholds concurrently.
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let iou_threshold = self.job.request.vision.merge_iou_threshold;
-        targets.retain(|target| {
-            state.index.len() < MAX_TARGETS
-                && state
-                    .index
-                    .insert_if_unique(target.rect, |existing, candidate| {
-                        rectangles_match(existing, candidate, iou_threshold, MINIMUM_SPACING)
-                    })
-        });
-        let ready = state.batches.extend(targets);
-        for batch in ready {
-            self.send(batch);
+        let mut update = state.push(source, targets, iou_threshold);
+        for batch in update.batches {
+            self.send_update(batch, std::mem::take(&mut update.retired));
         }
     }
 
     fn finish(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let pending = state.batches.finish();
+        let pending = state.finish();
         if let Some(batch) = pending {
             self.send(batch);
         }
     }
 
     fn send(&self, targets: Vec<crate::api::UiTarget>) {
+        self.send_update(targets, Vec::new());
+    }
+
+    fn send_update(&self, targets: Vec<crate::api::UiTarget>, retired: Vec<crate::api::Rect>) {
         if scan_is_current(self.job.generation, self.pid) {
-            self.job.publish(targets, UiScanStatus::Partial);
+            if self.job.mailbox.publish_update(
+                self.job.generation,
+                self.job.request.id,
+                targets,
+                retired,
+                UiScanStatus::Partial,
+            ) {
+                self.job.wake.wake();
+            }
         }
     }
 }
@@ -346,7 +339,7 @@ fn run_scan(job: ScanJob) {
 fn scan_sources(strategy: UiScanStrategy) -> (bool, bool) {
     match strategy {
         UiScanStrategy::AxTree => (true, false),
-        UiScanStrategy::Vision => (false, true),
+        UiScanStrategy::Vision | UiScanStrategy::Contour => (false, true),
         UiScanStrategy::Hybrid => (true, true),
     }
 }
@@ -356,7 +349,7 @@ fn stream_ax(job: &ScanJob, pid: libc::pid_t, publisher: &PartialPublisher<'_>) 
         return accessibility::scan_screen_stream(
             &job.request,
             || scan_id_is_current(job.generation),
-            |batch| publisher.push(batch),
+            |batch| publisher.push(TargetSource::Accessibility, batch),
         )
         .map(|_| UiScanStatus::Success)
         .unwrap_or_else(UiScanStatus::Failed);
@@ -365,7 +358,7 @@ fn stream_ax(job: &ScanJob, pid: libc::pid_t, publisher: &PartialPublisher<'_>) 
         pid,
         &job.request,
         || scan_id_is_current(job.generation),
-        |batch| publisher.push(batch),
+        |batch| publisher.push(TargetSource::Accessibility, batch),
     )
     .map(|_| UiScanStatus::Success)
     .unwrap_or_else(UiScanStatus::Failed)
@@ -376,9 +369,7 @@ fn stream_vision(
     pid: libc::pid_t,
     publisher: &PartialPublisher<'_>,
 ) -> UiScanStatus {
-    let (targets, status) = scan_vision(pid, job.generation, &job.request);
-    publisher.push(targets);
-    status
+    scan_vision(pid, job.generation, &job.request, publisher)
 }
 
 fn combined_status(ax: UiScanStatus, vision: UiScanStatus) -> UiScanStatus {
@@ -436,27 +427,51 @@ fn scan_vision(
     pid: libc::pid_t,
     generation: u64,
     request: &UiScanRequest,
-) -> (Vec<crate::api::UiTarget>, UiScanStatus) {
+    publisher: &PartialPublisher<'_>,
+) -> UiScanStatus {
     if request.scope == crate::api::UiScanScope::Screen {
         return match request.bounds {
-            Some(bounds) => vision::detect(generation, bounds, &request.vision),
-            None => (
-                Vec::new(),
-                UiScanStatus::Failed("screen scan requires display bounds".into()),
+            Some(bounds) => vision::detect(
+                generation,
+                bounds,
+                &request.vision,
+                request.strategy,
+                || !scan_id_is_current(generation),
+                |source, targets| publisher.push(source, targets),
             ),
+            None => UiScanStatus::Failed("screen scan requires display bounds".into()),
         };
     }
-    let window_bounds = match accessibility::focused_window_bounds(pid) {
+    let window_bounds = if request.strategy == UiScanStrategy::Contour {
+        // Quartz window metadata needs no AX tree traversal or AX permission.
+        accessibility::window_manager::visible_windows().and_then(|windows| {
+            windows
+                .into_iter()
+                .find(|window| window.pid == pid)
+                .map(|window| window.bounds)
+                .ok_or_else(|| "No visible window is available for contour capture".into())
+        })
+    } else {
+        accessibility::focused_window_bounds(pid)
+    };
+    let window_bounds = match window_bounds {
         Ok(bounds) => bounds,
-        Err(error) => return (Vec::new(), UiScanStatus::Failed(error)),
+        Err(error) => return UiScanStatus::Failed(error),
     };
     let Some(bounds) = requested_window_bounds(window_bounds, request) else {
-        return (Vec::new(), UiScanStatus::Success);
+        return UiScanStatus::Success;
     };
     // Vision is deliberately executed on this one persistent worker. A timed
     // out native capture may finish late, but another full-resolution capture
     // can never overlap it and multiply memory consumption.
-    vision::detect(generation, bounds, &request.vision)
+    vision::detect(
+        generation,
+        bounds,
+        &request.vision,
+        request.strategy,
+        || !scan_id_is_current(generation),
+        |source, targets| publisher.push(source, targets),
+    )
 }
 
 #[cfg(test)]
@@ -484,6 +499,7 @@ mod tests {
     fn scan_strategies_use_only_their_configured_sources() {
         assert_eq!(scan_sources(UiScanStrategy::AxTree), (true, false));
         assert_eq!(scan_sources(UiScanStrategy::Vision), (false, true));
+        assert_eq!(scan_sources(UiScanStrategy::Contour), (false, true));
         assert_eq!(scan_sources(UiScanStrategy::Hybrid), (true, true));
     }
 

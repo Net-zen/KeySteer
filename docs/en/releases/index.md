@@ -7,6 +7,8 @@ outline: false
 
 ## 0.10.25
 
+Improved UI Hint.
+
 Improved keyboard responsiveness, reducing key processing time by about 15%.
 
 The configuration simulator now compares TOML files and previews import/export changes, highlighting added, removed and modified values while ignoring comments and formatting.

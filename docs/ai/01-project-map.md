@@ -1,3 +1,5 @@
+共享 `platform/common/contour.rs`（及 tests）实现轮廓检测，`common/image_tiles.rs` 提供 OCR/contour 共用分块坐标。Windows 原 `vision/fallback.rs` 已移除；macOS vision bridge ABI v3 拆分一次捕获与图像识别。
+
 # 项目目录与代码地图
 
 `app/restart.rs` 拥有完整 Reload 的新进程、配置快照管道和放弃时的进程回收；runtime 仅使用 `PreparedRestart` 端口。bootstrap 销毁旧 Engine/Backend，CLI 结束日志后提交启动，状态栏与快捷键共用该路径。
@@ -72,6 +74,7 @@ keysteer/
 - `src/platform/windows/window_manager.rs` 与 `src/platform/macos/accessibility/window_manager.rs`：worker 私有窗口身份、枚举、尺寸写入与回读。Windows 与旧 Window Mover 共用原生 placement helpers；macOS 复用 `MovableWindow` 和原生全屏过渡状态机。
 - `src/platform/common/partial_batcher.rs` / `scan_mailbox.rs`：两端共用的纯计数流式批次与
   generation-aware latest-only 扫描邮箱。
+- `src/platform/common/scan_accumulator.rs`：Windows UIA/macOS AX 共用的来源融合、待发布目标撤回、首批立即交付和替换增量组装；原生层只负责可见性、取消、完成状态及唤醒。
 - `src/platform/macos/latest_point_mailbox.rs`：macOS EventTap 使用的无锁 latest-point
   seqlock；只合并高频位置，不承载按键或控制事件。
 
@@ -102,7 +105,7 @@ Windows：
 - `hook.rs` 键盘 Hook 与同步 consume/forward 握手。
 - `input.rs` 鼠标、滚轮、键盘注入。
 - `overlay.rs` click-through layered window 与软件栅格化。
-- `accessibility.rs` UIA 流式扫描、popup HWND、遮挡过滤；`ui_scan.rs` 统一 UIA/视觉流式发布与空间去重；`vision/` 按 worker façade、generation providers、discovery、mailbox、system OCR、capture 和 fallback 分层；`wechat_ocr.rs` 负责微信组件发现与隔离 helper。
+- `accessibility.rs` UIA 流式扫描、popup HWND、遮挡过滤；`ui_scan.rs` 统一 UIA/视觉流式发布与空间去重；`vision/` 按 worker façade、generation providers、discovery、mailbox、system OCR 和 capture 分层，contour 使用共享模块；`wechat_ocr.rs` 负责微信组件发现与隔离 helper。
 - `frame_clock.rs` DWM 合成帧时钟。
 - `status_item.rs` 托盘菜单、更新提示与浏览器打开；`update_installer/` 负责 Windows 签名校验、
   同卷 staging、临时 helper、原子替换、启动就绪确认和回滚；`autostart.rs` 登录启动；
@@ -177,3 +180,5 @@ macOS：
 - `platform/common/window_session/layout_confirmation.rs`：布局提交、独立确认、失败回滚与取消编辑恢复；复用 confirmation 的原生状态／几何状态机。
 
 - `src/modes/text_input.rs`：临时文本输入透传模式，退出使用标准可配置绑定。
+
+`src/platform/common/contour/regions.rs`：Windows/macOS 共用的有界纹理图像候选；归属与晚到 OCR 描述更新复用 spatial_index / scan_accumulator，详见 05-ui-scanning。

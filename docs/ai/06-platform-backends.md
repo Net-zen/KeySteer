@@ -1,3 +1,5 @@
+Contour 是跨平台安全 Rust 扫描算法。Windows 复用单次 DIB 与有界 provider mailbox，OCR 不再取消轮廓 provider；macOS ABI v3 的 owned capture result 持有 CGImage/灰度缓冲，scoped contour 与原生 Vision 并行，join 后释放。独立 contour 跳过 OCR/AX，macOS 窗口范围使用 Quartz 元数据。
+
 # Windows 与 macOS 原生后端
 
 面板几何查询复用窗口 worker 的有界队列，同类待执行查询只保留最新一项；它不属于 Window 编辑会话，取消编辑不丢弃面板查询。Windows 校验请求进程仍为前台后读取矩形；macOS 在 worker 内查询对应进程的 AX 属性。
@@ -32,7 +34,7 @@ Grouped 按 WindowScope 筛选逻辑快照；活动组的隐藏成员仍继承�
 
 - Windows DIB/GPU/window 尺寸先通过 `NativeDimensions`；i32 narrowing、BGRA 长度和 `isize::MAX` 约束均在 FFI 前完成。
 - 低级 Hook callback 使用 `try_send`，队列忙时新按键 fail-open；Windows 已按住的键仍遵循原生 down/up 配对；timeout warning 以原子单槽合并。
-- Vision result 由 Rust RAII owner 释放，读取 slice 前验证 count<=2000 和非空指针。
+- Vision result 由 Rust RAII owner 释放，读取 slice 前验证 count<=10000 和非空指针。
 - COM apartment 显式 `!Send/!Sync`，确保 `CoUninitialize` 回到初始化线程。
 - 两个平台入口不放行 undocumented unsafe；每个最小块记录 `SAFETY` 契约。机械门禁当前为
   预算以 `tests/safety_budget.rs` 为准；Window Mover 增加四个 Win32 调用和五个 AX 操作（含保留窗口的 messaging timeout），并同时禁止 `transmute`/`transmute_copy`；`domain` 与其余 portable 层使用编译期

@@ -70,7 +70,7 @@ fn dictionary(value: &CFType) -> Option<CFDictionary<CFString, CFType>> {
     Some(unsafe { CFDictionary::wrap_under_get_rule(dict.as_concrete_TypeRef()) })
 }
 
-pub(super) fn visible_windows() -> Result<Vec<Visible>, String> {
+pub(in crate::platform::macos) fn visible_windows() -> Result<Vec<Visible>, String> {
     let list = copy_window_info(
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
         0,

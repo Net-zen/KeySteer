@@ -420,7 +420,6 @@ pub fn mouse_button(
 
 pub fn scroll(dx: f64, dy: f64) -> Result<(), String> {
     let at = cursor_position()?;
-    // Match neru's proven macOS path exactly: raw configured pixel deltas,
     // NULL event source, both axes declared, and session-level posting.
     let vertical = (-dy).round() as i32;
     let horizontal = (-dx).round() as i32;

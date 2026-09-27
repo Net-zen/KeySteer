@@ -17,6 +17,7 @@ struct State {
     generation: u64,
     request_id: Option<u64>,
     targets: Vec<UiTarget>,
+    retired: Vec<crate::api::Rect>,
     terminal: Option<UiScanStatus>,
 }
 
@@ -36,6 +37,7 @@ impl ScanMailbox {
         state.generation = generation;
         state.request_id = Some(request_id);
         state.targets = Vec::new();
+        state.retired = Vec::new();
         state.terminal = None;
         self.ready.store(false, Ordering::Release);
         generation
@@ -49,6 +51,7 @@ impl ScanMailbox {
         }
         state.request_id = None;
         state.targets = Vec::new();
+        state.retired = Vec::new();
         state.terminal = None;
         self.ready.store(false, Ordering::Release);
         true
@@ -66,11 +69,26 @@ impl ScanMailbox {
         targets: Vec<UiTarget>,
         status: UiScanStatus,
     ) -> bool {
+        self.publish_update(generation, request_id, targets, Vec::new(), status)
+    }
+
+    pub(crate) fn publish_update(
+        &self,
+        generation: u64,
+        request_id: u64,
+        mut targets: Vec<UiTarget>,
+        retired: Vec<crate::api::Rect>,
+        status: UiScanStatus,
+    ) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.generation != generation || state.request_id != Some(request_id) {
             return false;
         }
-        let was_ready = !state.targets.is_empty() || state.terminal.is_some();
+        let was_ready =
+            !state.targets.is_empty() || !state.retired.is_empty() || state.terminal.is_some();
+        crate::api::command::enrich_replacements(&mut targets, &state.targets, &retired);
+        crate::api::command::remove_retired_targets(&mut state.targets, &retired);
+        state.retired.extend(retired);
         if state.targets.is_empty() {
             // Preserve the producer's allocation for the common first batch;
             // extending an empty Vec would allocate and move every target.
@@ -81,7 +99,8 @@ impl ScanMailbox {
         if status != UiScanStatus::Partial {
             state.terminal = Some(status);
         }
-        let became_ready = !was_ready && (!state.targets.is_empty() || state.terminal.is_some());
+        let became_ready = !was_ready
+            && (!state.targets.is_empty() || !state.retired.is_empty() || state.terminal.is_some());
         if became_ready {
             self.ready.store(true, Ordering::Release);
         }
@@ -95,7 +114,7 @@ impl ScanMailbox {
             return None;
         }
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if state.targets.is_empty() && state.terminal.is_none() {
+        if state.targets.is_empty() && state.retired.is_empty() && state.terminal.is_none() {
             self.ready.store(false, Ordering::Release);
             return None;
         }
@@ -110,6 +129,7 @@ impl ScanMailbox {
         // lost between draining the slot and exposing the empty fast path.
         self.ready.store(false, Ordering::Release);
         Some(UiScanResult {
+            retired: std::mem::take(&mut state.retired),
             id,
             targets,
             status,
@@ -141,6 +161,74 @@ mod tests {
         assert_eq!(result.targets.len(), 2);
         assert_eq!(result.status, UiScanStatus::Partial);
         assert!(mailbox.take().is_none());
+    }
+
+    #[test]
+    fn refinements_coalesce_in_order_even_when_reusing_original_geometry() {
+        let mailbox = ScanMailbox::default();
+        let generation = mailbox.begin(8);
+        let first = target("contour");
+        let mut middle = target("ocr");
+        middle.rect.x += 2.0;
+        let last = target("accessible button");
+        assert!(mailbox.publish(generation, 8, vec![first.clone()], UiScanStatus::Partial));
+        assert!(!mailbox.publish_update(
+            generation,
+            8,
+            vec![middle.clone()],
+            vec![first.rect],
+            UiScanStatus::Partial
+        ));
+        assert!(!mailbox.publish_update(
+            generation,
+            8,
+            vec![last.clone()],
+            vec![middle.rect],
+            UiScanStatus::Success
+        ));
+        let result = mailbox.take().unwrap();
+        assert_eq!(result.targets, vec![last]);
+        assert_eq!(result.retired, vec![first.rect, middle.rect]);
+        assert_eq!(result.status, UiScanStatus::Success);
+    }
+
+    #[test]
+    fn early_text_survives_a_coalesced_visual_owner_replacement() {
+        let mailbox = ScanMailbox::default();
+        let generation = mailbox.begin(8);
+        let mut text = target("searchable member");
+        text.role = SemanticRole::StaticText;
+        mailbox.publish(generation, 8, vec![text.clone()], UiScanStatus::Partial);
+        let mut row = target("");
+        row.role = SemanticRole::ListItem;
+        row.rect = Rect::new(0.0, 0.0, 100.0, 20.0);
+        mailbox.publish_update(
+            generation,
+            8,
+            vec![row],
+            vec![text.rect],
+            UiScanStatus::Success,
+        );
+        let result = mailbox.take().unwrap();
+        assert_eq!(result.targets.len(), 1);
+        assert_eq!(result.targets[0].name, text.name);
+        assert_eq!(result.targets[0].role, SemanticRole::ListItem);
+    }
+
+    #[test]
+    fn cancellation_also_discards_refinement_deltas() {
+        let mailbox = ScanMailbox::default();
+        let generation = mailbox.begin(9);
+        mailbox.publish_update(
+            generation,
+            9,
+            Vec::new(),
+            vec![target("old").rect],
+            UiScanStatus::Partial,
+        );
+        assert!(mailbox.cancel(9));
+        assert!(mailbox.take().is_none());
+        assert!(mailbox.state.lock().unwrap().retired.is_empty());
     }
 
     #[test]

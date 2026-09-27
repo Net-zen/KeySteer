@@ -4,6 +4,7 @@ use crate::api::hint::CompactHint;
 use crate::api::overlay::{
     Color, LabelStyle, OverlayLabel, OverlayScene, OverlayShape, SharedLabelStyle,
 };
+use crate::api::presentation::hint_cache::INLINE_LABELS;
 use crate::api::presentation::{
     HintContent, HintSelectionView, HintStyle, HintView, StatusView, VisualLayerPlan,
 };
@@ -142,7 +143,7 @@ pub(crate) fn prepare_hints(
             .count()
     };
     let stacked = |left, right| visually_stacked(left, right, visual_padding_x, visual_padding_y);
-    if visible > 128 {
+    if visible > INLINE_LABELS {
         let mut placements = workspace.take().unwrap_or_default();
         placements.clear();
         // Filtering loses the iterator's exact lower bound. The visible count
@@ -162,7 +163,7 @@ pub(crate) fn prepare_hints(
         build_visual_layer_plan(&placements, content.hints.len(), stacked, layers);
         *workspace = Some(placements);
     } else {
-        let placements: SmallVec<[(usize, Rect); 128]> = content
+        let placements: SmallVec<[(usize, Rect); INLINE_LABELS]> = content
             .hints
             .iter()
             .enumerate()
@@ -175,6 +176,7 @@ pub(crate) fn prepare_hints(
         build_visual_layer_plan(&placements, content.hints.len(), stacked, layers);
     }
 }
+
 impl HintView<'_> {
     pub(crate) fn scene(&self, ctx: &HostContext<'_>) -> OverlayScene {
         let palette = ctx.palette;

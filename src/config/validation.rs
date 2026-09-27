@@ -392,9 +392,11 @@ impl ConfigFile {
                 "ui_hint.vision.request_timeout_ms must be 1..=30000".into()
             ));
         }
-        if !(1..=2_000).contains(&vision.rectangle_max_candidates) {
+        if !(1..=crate::api::command::MAX_UI_SCAN_TARGETS)
+            .contains(&vision.rectangle_max_candidates)
+        {
             return Err(bad(
-                "ui_hint.vision.rectangle_max_candidates must be 1..=2000".into(),
+                "ui_hint.vision.rectangle_max_candidates must be 1..=10000".into(),
             ));
         }
         for (name, value) in [

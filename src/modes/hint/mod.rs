@@ -45,7 +45,8 @@ const NO_WINDOW_UNDER_POINTER: &str =
 /// Reuse the small container backing needed by the common UIHint session.
 /// Elements and their strings are still dropped on exit; only empty capacity
 /// is retained, and larger scans cannot become an Idle high-water mark.
-const MAX_IDLE_RETAINED_TARGETS: usize = 128;
+use crate::api::presentation::hint_cache::INLINE_LABELS;
+const MAX_IDLE_RETAINED_TARGETS: usize = INLINE_LABELS;
 const MAX_SCAN_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -211,7 +212,10 @@ impl HintMode {
             return CommandBatch::new();
         }
         let UiScanResult {
-            targets, status, ..
+            targets,
+            retired,
+            status,
+            ..
         } = result;
         if status == UiScanStatus::ContextChanged {
             // Context replacement is a normal retarget, not a failed scan.
@@ -220,14 +224,45 @@ impl HintMode {
             return self.request_scan(ctx);
         }
 
-        let added = self.session.append_targets(targets);
+        let can_relabel = self.input.text().is_empty() || matches!(self.input, Input::Search(_));
+        let (added, stable_labels) = if can_relabel {
+            let deferred = self.session.pending_relabel;
+            self.session.apply_deferred();
+            if !deferred
+                && matches!(self.input, Input::Labels(_))
+                && !self.session.hints.is_empty()
+                && self.session.hints.len() == self.session.scanned.len()
+            {
+                self.session.apply_stable_update(
+                    targets,
+                    &retired,
+                    &self.alphabet,
+                    self.config.label_direction,
+                    !self.config.boundary_highlight.enabled,
+                )
+            } else {
+                (
+                    self.session.apply_update(targets, &retired) || deferred,
+                    false,
+                )
+            }
+        } else {
+            if !targets.is_empty() || !retired.is_empty() {
+                self.session.defer_update(targets, retired);
+            }
+            (false, false)
+        };
         // Once the user starts typing, preserve the labels they can already
         // see and select. With no input, every partial remains visible. A
         // source-agnostic plan is rebuilt from the merged UIA/Vision labels at
         // each published batch, so overlap input never pays graph-build latency.
         let labels_changed =
             if added && (self.input.text().is_empty() || matches!(self.input, Input::Search(_))) {
-                self.relabel(ctx);
+                if stable_labels {
+                    self.refresh_overlap_plan(ctx);
+                } else {
+                    self.relabel(ctx);
+                }
                 true
             } else {
                 if added {
@@ -310,6 +345,7 @@ impl HintMode {
 
     /// Assign labels to the targets matching the current search query.
     fn relabel(&mut self, ctx: &HostContext<'_>) {
+        self.session.apply_deferred();
         let query = match &self.input {
             // Key names are normalized to lowercase before Mode delivery, so
             // the accumulated search query is already canonical.
@@ -350,6 +386,8 @@ impl HintMode {
             self.session.hints.clear();
             self.session.status = Some("Cannot assign Hint labels — check hint_characters".into());
         }
+        self.session.label_plan_count = self.session.hints.len();
+        self.session.next_label_index = self.session.hints.len();
         self.session.pending_relabel = false;
         self.refresh_overlap_plan(ctx);
     }
@@ -897,7 +935,7 @@ mod tests {
     }
     #[cfg(test)]
     fn rotate_overlapping_labels(labels: &mut [OverlayLabel], cycle: usize) {
-        let placements: SmallVec<[(usize, Rect); 128]> = labels
+        let placements: SmallVec<[(usize, Rect); INLINE_LABELS]> = labels
             .iter()
             .enumerate()
             .map(|(index, label)| (index, label.rect))
@@ -978,6 +1016,7 @@ mod tests {
     fn deliver(mode: &mut HintMode, env: &Env, targets: Vec<UiTarget>) -> Vec<Command> {
         mode.handle_owned(
             ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets,
                 status: UiScanStatus::Success,
@@ -1055,6 +1094,50 @@ mod tests {
     }
 
     #[test]
+    fn semantic_refinement_keeps_labels_but_clicks_the_authoritative_control() {
+        for highlight in [false, true] {
+            let mut config = Config::default();
+            config.ui_hint.boundary_highlight.enabled = highlight;
+            let env = Env::with(config);
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            let initial: Vec<_> = [0.0, 100.0, 200.0, 500.0]
+                .into_iter()
+                .map(|x| target("fragment", x))
+                .collect();
+            let retired = initial[..3].iter().map(|t| t.rect).collect();
+            deliver(&mut mode, &env, initial);
+            let code = mode.session.hints[1].label.clone();
+            let anchor = mode.session.hints[1].bounds;
+            let unaffected = mode.session.hints[3].label.clone();
+            let row = UiTarget {
+                rect: Rect::new(0.0, 90.0, 300.0, 44.0),
+                name: "file row".into(),
+                role: SemanticRole::ListItem,
+            };
+            let center = row.rect.center();
+            mode.handle_owned(
+                ModeEvent::UiScanned(UiScanResult {
+                    id: mode.session.scan_id,
+                    targets: vec![row.clone()],
+                    retired,
+                    status: UiScanStatus::Success,
+                }),
+                &env.ctx(),
+            );
+            assert_eq!(mode.session.hints.len(), 2);
+            assert_eq!(mode.session.hints[0].label, unaffected);
+            assert_eq!(mode.session.hints[1].label, code);
+            assert_eq!(
+                mode.session.hints[1].bounds,
+                if highlight { row.rect } else { anchor }
+            );
+            let commands = press(&mut mode, &env, code.as_str());
+            assert!(commands.iter().any(|command| matches!(command, Command::WarpPointer { x, y } if *x == center.x && *y == center.y)));
+        }
+    }
+
+    #[test]
     fn explicit_hint_padding_still_overrides_compact_auto_spacing() {
         let mut config = Config::default();
         config.ui_hint.ui.padding_x = 7;
@@ -1088,7 +1171,7 @@ mod tests {
         assert_eq!(mode.session.scanned_names_lower.capacity(), 0);
         assert_eq!(mode.session.seen_targets.capacity(), 0);
         assert_eq!(mode.session.hints.capacity(), 0);
-        assert_eq!(mode.overlap_plan.retained_capacity(), 128);
+        assert_eq!(mode.overlap_plan.retained_capacity(), INLINE_LABELS);
     }
 
     #[test]
@@ -1114,7 +1197,7 @@ mod tests {
         assert!(mode.session.seen_targets.capacity() >= 100);
         assert!(mode.session.hints.is_empty());
         assert!(mode.session.hints.capacity() >= 100);
-        assert!(mode.overlap_plan.retained_capacity() <= 128);
+        assert!(mode.overlap_plan.retained_capacity() <= INLINE_LABELS);
     }
 
     #[test]
@@ -1127,6 +1210,7 @@ mod tests {
         mode.handle(&ModeEvent::Deactivated, &env.ctx());
         let out = mode.handle_owned(
             ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: retired_scan_id,
                 targets: Vec::new(),
                 status: UiScanStatus::ContextChanged,
@@ -1220,6 +1304,7 @@ mod tests {
 
         let first = mode.handle(
             &ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: vec![target("First", 100.0)],
                 status: UiScanStatus::Partial,
@@ -1231,6 +1316,7 @@ mod tests {
 
         let second = mode.handle(
             &ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: vec![target("Second", 100.0)],
                 status: UiScanStatus::Partial,
@@ -1279,6 +1365,7 @@ mod tests {
 
         mode.handle(
             &ModeEvent::UiScanned(UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: vec![target("Vision one", 100.0), target("Vision two", 100.0)],
                 status: UiScanStatus::Partial,
@@ -1289,6 +1376,7 @@ mod tests {
 
         mode.handle(
             &ModeEvent::UiScanned(UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: vec![target("UIA one", 400.0), target("UIA two", 400.0)],
                 status: UiScanStatus::Partial,
@@ -1317,6 +1405,7 @@ mod tests {
             let scan_id = mode.session.scan_id;
             mode.handle_owned(
                 ModeEvent::UiScanned(UiScanResult {
+                    retired: Vec::new(),
                     id: scan_id,
                     targets: vec![target("Save", 0.0), target("Cancel", 200.0)],
                     status: UiScanStatus::Partial,
@@ -1351,6 +1440,7 @@ mod tests {
         let no_op = measure(|| {
             std::hint::black_box(fast.handle_owned(
                 ModeEvent::UiScanned(UiScanResult {
+                    retired: Vec::new(),
                     id: scan_id,
                     targets: Vec::new(),
                     status: UiScanStatus::Success,
@@ -1375,6 +1465,7 @@ mod tests {
         activate(&mut mode, &env);
         mode.handle(
             &ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: vec![target("First", 100.0)],
                 status: UiScanStatus::Partial,
@@ -2045,6 +2136,7 @@ mod tests {
         activate(&mut mode, &env);
         mode.handle(
             &ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: vec![target("One", 100.0), target("Two", 100.0)],
                 status: UiScanStatus::Partial,
@@ -2061,6 +2153,7 @@ mod tests {
 
         let streamed = mode.handle(
             &ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: vec![target("Three", 100.0), target("Four", 100.0)],
                 status: UiScanStatus::Partial,
@@ -2113,6 +2206,7 @@ mod tests {
         activate(&mut mode, &env);
         mode.handle(
             &ModeEvent::UiScanned(UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: (0..30)
                     .map(|index| target(&format!("Initial {index}"), index as f64 * 24.0))
@@ -2145,6 +2239,7 @@ mod tests {
 
         let late = mode.handle(
             &ModeEvent::UiScanned(UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: (0..5)
                     .map(|index| target(&format!("Late {index}"), 720.0 + index as f64 * 24.0))
@@ -2155,7 +2250,7 @@ mod tests {
         );
         assert!(late.is_empty(), "typed label codes must remain stable");
         assert_eq!(mode.session.hints.len(), original_hint_count);
-        assert_eq!(mode.session.scanned.len(), original_hint_count + 5);
+        assert_eq!(mode.session.scanned.len(), original_hint_count);
         assert!(mode.session.pending_relabel);
 
         deliver(&mut mode, &env, Vec::new());
@@ -2163,6 +2258,7 @@ mod tests {
         assert!(mode.session.pending_relabel);
 
         let merged = press(&mut mode, &env, "backspace");
+        assert_eq!(mode.session.scanned.len(), original_hint_count + 5);
         assert_eq!(scene_of(&merged).labels.len(), mode.session.scanned.len());
         assert_eq!(mode.session.hints.len(), mode.session.scanned.len());
         assert!(!mode.session.pending_relabel);
@@ -2252,6 +2348,7 @@ mod tests {
         activate(&mut mode, &env);
         let out = mode.handle(
             &ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id.wrapping_add(1),
                 targets: vec![target("stale", 0.0)],
                 status: UiScanStatus::Success,
@@ -2351,6 +2448,7 @@ mod tests {
 
         let timed_out = mode.handle(
             &ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: first_id,
                 targets: Vec::new(),
                 status: UiScanStatus::TimedOut,
@@ -2396,6 +2494,7 @@ mod tests {
 
         let out = mode.handle_owned(
             ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: retired_scan_id,
                 targets: Vec::new(),
                 status: UiScanStatus::ContextChanged,
@@ -2426,6 +2525,7 @@ mod tests {
 
         let out = mode.handle_owned(
             ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: Vec::new(),
                 status: UiScanStatus::Failed(NO_WINDOW_UNDER_POINTER.into()),
@@ -2455,6 +2555,7 @@ mod tests {
         activate(&mut mode, &env);
         mode.handle(
             &ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: vec![target("Ready", 100.0)],
                 status: UiScanStatus::Partial,
@@ -2464,6 +2565,7 @@ mod tests {
 
         let completed = mode.handle(
             &ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: Vec::new(),
                 status: UiScanStatus::TimedOut,
@@ -2486,6 +2588,7 @@ mod tests {
         activate(&mut mode, &env);
         let out = mode.handle(
             &ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: mode.session.scan_id,
                 targets: Vec::new(),
                 status: UiScanStatus::PermissionDenied("Screen Recording required".into()),
@@ -2695,6 +2798,7 @@ mod tests {
         let scan_id = mode.session.scan_id;
         let _ = mode.handle_owned(
             ModeEvent::UiScanned(UiScanResult {
+                retired: Vec::new(),
                 id: scan_id,
                 targets,
                 status: UiScanStatus::Partial,

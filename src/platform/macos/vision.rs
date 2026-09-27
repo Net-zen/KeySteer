@@ -3,7 +3,7 @@ use std::ptr::NonNull;
 
 use crate::api::command::{UiScanStatus, VisionOptions};
 use crate::api::geometry::{Rect, SemanticRole, UiTarget};
-use crate::platform::common::spatial_index::SpatialIndex;
+use crate::platform::common::spatial_index::{SpatialIndex, TargetSource};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -27,9 +27,11 @@ struct NativeRect {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct NativeConfig {
     detect_text: bool,
     detect_rectangles: bool,
+    detect_contours: bool,
     timeout_ms: u64,
     minimum_confidence: f64,
     rectangle_max_candidates: u64,
@@ -63,14 +65,18 @@ struct NativeResult {
     message: *mut c_char,
     message_len: u64,
     captured_bounds: NativeRect,
+    image: usize,
+    gray: *mut u8,
+    gray_width: u64,
+    gray_height: u64,
 }
 
-const MAX_VISION_REGIONS: usize = 2_000;
+const MAX_VISION_REGIONS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 const MAX_VISION_LABEL_BYTES: usize = 64 * 1024;
 const MAX_VISION_MESSAGE_BYTES: usize = 4 * 1024;
 const MAX_CAPTURE_PIXELS: u64 = 8_388_608;
 const MAX_CAPTURE_DIMENSION: u64 = 4_096;
-const VISION_ABI_VERSION: u32 = 2;
+const VISION_ABI_VERSION: u32 = 3;
 
 struct OwnedVisionResult(NonNull<NativeResult>);
 
@@ -89,6 +95,21 @@ impl OwnedVisionResult {
         // SAFETY: the bridge returned an owned non-null result and this wrapper
         // retains it until Drop. No mutable access is exposed while borrowed.
         unsafe { self.0.as_ref() }
+    }
+
+    fn gray(&self) -> Result<(&[u8], usize, usize), String> {
+        let raw = self.as_ref();
+        let width = usize::try_from(raw.gray_width).map_err(|_| "invalid contour width")?;
+        let height = usize::try_from(raw.gray_height).map_err(|_| "invalid contour height")?;
+        let length = width
+            .checked_mul(height)
+            .filter(|&n| n > 0 && n <= crate::platform::common::contour::MAX_PIXELS)
+            .ok_or("invalid contour frame dimensions")?;
+        let pixels = NonNull::new(raw.gray).ok_or("missing contour frame")?;
+        // SAFETY: the version-checked bridge allocates width*height bytes, capped
+        // above; this owner keeps them alive through the scoped contour worker.
+        let gray = unsafe { std::slice::from_raw_parts(pixels.as_ptr(), length) };
+        Ok((gray, width, height))
     }
 
     fn regions(&self) -> Result<&[NativeRegion], String> {
@@ -143,6 +164,12 @@ unsafe extern "C" {
         config: NativeConfig,
         scan_id: u64,
     ) -> *mut NativeResult;
+    safe fn NmkRecognizeVisionImage(
+        image: usize,
+        bounds: NativeRect,
+        config: NativeConfig,
+        scan_id: u64,
+    ) -> *mut NativeResult;
     fn NmkFreeVisionResult(result: *mut NativeResult);
 }
 
@@ -161,7 +188,41 @@ pub fn detect(
     scan_id: u64,
     bounds: Rect,
     options: &VisionOptions,
-) -> (Vec<UiTarget>, UiScanStatus) {
+    strategy: crate::api::UiScanStrategy,
+    cancelled: impl Fn() -> bool + Sync,
+    publish: impl Fn(TargetSource, Vec<UiTarget>) + Sync,
+) -> UiScanStatus {
+    detect_inner(scan_id, bounds, options, strategy, &cancelled, &publish)
+        .unwrap_or_else(UiScanStatus::Failed)
+}
+
+fn detect_inner(
+    scan_id: u64,
+    bounds: Rect,
+    options: &VisionOptions,
+    strategy: crate::api::UiScanStrategy,
+    cancelled: &(impl Fn() -> bool + Sync),
+    publish: &(impl Fn(TargetSource, Vec<UiTarget>) + Sync),
+) -> Result<UiScanStatus, String> {
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(options.request_timeout_ms.clamp(1, 30_000));
+    let contour_only = strategy == crate::api::UiScanStrategy::Contour;
+    let (detect_text, detect_contours) =
+        crate::platform::common::contour::sources(strategy, options);
+    let candidate_limit = crate::platform::common::contour::candidate_limit(strategy, options);
+    let config = NativeConfig {
+        detect_text,
+        detect_rectangles: !contour_only && detect_contours,
+        detect_contours,
+        timeout_ms: options.request_timeout_ms,
+        minimum_confidence: options.minimum_confidence,
+        rectangle_max_candidates: candidate_limit as u64,
+        rectangle_min_size: options.rectangle_min_size,
+        rectangle_min_aspect: options.rectangle_min_aspect,
+        rectangle_max_aspect: options.rectangle_max_aspect,
+        maximum_capture_pixels: MAX_CAPTURE_PIXELS,
+        maximum_capture_dimension: MAX_CAPTURE_DIMENSION,
+    };
     let native_bounds = NativeRect {
         origin: NativePoint {
             x: bounds.x,
@@ -172,29 +233,99 @@ pub fn detect(
             height: bounds.height,
         },
     };
-    let config = NativeConfig {
-        detect_text: options.detect_text,
-        detect_rectangles: options.detect_rectangles,
-        timeout_ms: options.request_timeout_ms,
-        minimum_confidence: options.minimum_confidence,
-        rectangle_max_candidates: options.rectangle_max_candidates as u64,
-        rectangle_min_size: options.rectangle_min_size,
-        rectangle_min_aspect: options.rectangle_min_aspect,
-        rectangle_max_aspect: options.rectangle_max_aspect,
-        maximum_capture_pixels: MAX_CAPTURE_PIXELS,
-        maximum_capture_dimension: MAX_CAPTURE_DIMENSION,
+    let capture = OwnedVisionResult::new(NmkDetectVisionElements(native_bounds, config, scan_id))?
+        .ok_or("Vision could not allocate a capture result")?;
+    // Validate the complete shared ABI even for an empty region list.
+    capture.regions()?;
+    let raw = capture.as_ref();
+    if raw.status != 0 {
+        return Ok(decode_result(&capture, bounds, options).1);
+    }
+    if cancelled() {
+        return Ok(UiScanStatus::ContextChanged);
+    }
+    if std::time::Instant::now() >= deadline {
+        return Ok(UiScanStatus::TimedOut);
+    }
+    if raw.image == 0 {
+        return Err("Vision returned no captured image".into());
+    }
+    let captured_bounds = raw.captured_bounds;
+    let coordinate_bounds = capture_bounds_or_window(native_rect_to_rect(captured_bounds), bounds);
+    let image = raw.image;
+    let gray = if config.detect_contours {
+        Some(capture.gray()?)
+    } else {
+        None
     };
-    let result =
-        match OwnedVisionResult::new(NmkDetectVisionElements(native_bounds, config, scan_id)) {
-            Ok(Some(result)) => result,
-            Ok(None) => {
-                return (
-                    Vec::new(),
-                    UiScanStatus::Failed("Vision could not allocate a result".into()),
-                );
+    // Only a borrowed byte slice enters the scoped worker. Native capture and
+    // image ownership stay here, and outlive both recognition and the join.
+    let status = std::thread::scope(|scope| -> Result<UiScanStatus, String> {
+        let contour = gray
+            .map(|(pixels, width, height)| {
+                std::thread::Builder::new()
+                    .name("keysteer-contour".into())
+                    .spawn_scoped(scope, move || {
+                        let targets = crate::platform::common::contour::detect(
+                            pixels,
+                            width,
+                            height,
+                            coordinate_bounds,
+                            candidate_limit,
+                            || cancelled() || std::time::Instant::now() >= deadline,
+                        );
+                        if !cancelled() && std::time::Instant::now() < deadline {
+                            publish(TargetSource::Contour, targets);
+                        }
+                    })
+                    .map_err(|error| format!("cannot start contour worker: {error}"))
+            })
+            .transpose()?;
+        let native_status = if config.detect_text || config.detect_rectangles {
+            match OwnedVisionResult::new(NmkRecognizeVisionImage(
+                image,
+                captured_bounds,
+                config,
+                scan_id,
+            )) {
+                Ok(Some(result)) => {
+                    let (targets, status) = decode_result(&result, coordinate_bounds, options);
+                    if !cancelled() && std::time::Instant::now() < deadline {
+                        publish(TargetSource::NativeVision, targets);
+                    }
+                    status
+                }
+                Ok(None) => {
+                    UiScanStatus::Failed("Vision could not allocate recognition result".into())
+                }
+                Err(error) => UiScanStatus::Failed(error),
             }
-            Err(error) => return (Vec::new(), UiScanStatus::Failed(error)),
+        } else {
+            UiScanStatus::Success
         };
+        if let Some(worker) = contour {
+            worker.join().map_err(|_| "contour worker panicked")?;
+            if let UiScanStatus::Failed(ref error) = native_status {
+                crate::support::logging::report_error("macos-vision", error);
+                return Ok(UiScanStatus::Success);
+            }
+        }
+        Ok(native_status)
+    })?;
+    if cancelled() {
+        Ok(UiScanStatus::ContextChanged)
+    } else if std::time::Instant::now() >= deadline {
+        Ok(UiScanStatus::TimedOut)
+    } else {
+        Ok(status)
+    }
+}
+
+fn decode_result(
+    result: &OwnedVisionResult,
+    bounds: Rect,
+    options: &VisionOptions,
+) -> (Vec<UiTarget>, UiScanStatus) {
     let raw = result.as_ref();
     let coordinate_bounds =
         capture_bounds_or_window(native_rect_to_rect(raw.captured_bounds), bounds);

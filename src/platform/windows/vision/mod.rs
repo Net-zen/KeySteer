@@ -2,8 +2,6 @@
 
 //! Native Windows visual UI-hint scanning without OpenCV.
 
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant};
@@ -24,14 +22,12 @@ use super::wechat_ocr::{WechatDescriptor, WechatOcr};
 
 mod capture;
 mod discovery;
-mod fallback;
 mod provider_mailbox;
 mod providers;
 mod system_ocr;
 
 use capture::*;
 use discovery::*;
-use fallback::{FallbackScratch, detect_regions};
 use provider_mailbox::*;
 use providers::*;
 use system_ocr::{OcrOperationGuard, stream_system_targets_from_result};
@@ -41,12 +37,12 @@ pub(super) use system_ocr::{image_to_desktop, trim_string_in_place, valid_target
 // path. Larger 5K/8K images are still scaled as a single capture.
 const MAX_CAPTURE_PIXELS: f64 = 8_388_608.0;
 const MAX_CAPTURE_EDGE: f64 = 4_096.0;
-const MAX_FALLBACK_PIXELS: f64 = 2_073_600.0;
-const MAX_FALLBACK_EDGE: f64 = 2_560.0;
+const MAX_CONTOUR_PIXELS: f64 = 2_073_600.0;
+const MAX_CONTOUR_EDGE: f64 = 2_560.0;
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const PROVIDER_STOP_TIMEOUT: Duration = Duration::from_millis(500);
 const PROVIDER_BATCH_SIZE: usize = 24;
-const MAX_OCR_TARGETS: usize = 2_000;
+const MAX_OCR_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 const MIN_SYSTEM_OCR_TILE_SIDE: u32 = 64;
 const SYSTEM_OCR_TILE_OVERLAP: u32 = 64;
 const MAX_SYSTEM_OCR_IN_FLIGHT: usize = 16;
@@ -369,7 +365,9 @@ impl VisionWorker {
         source: ScanSource,
         capture: CaptureLease,
     ) -> Result<(), String> {
-        self.discovery.start();
+        if crate::platform::common::contour::sources(request.strategy, &request.vision).0 {
+            self.discovery.start();
+        }
         self.reap_finished();
         if self.shared.vision_disabled.load(Ordering::Acquire) {
             return Err("visual OCR was disabled after a provider failed to stop".into());

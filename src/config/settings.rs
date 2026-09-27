@@ -362,7 +362,6 @@ impl Default for UiHint {
     }
 }
 
-/// Neru's semantic role vocabulary. Backends map these to native roles.
 fn default_clickable_roles() -> Vec<String> {
     [
         "button",

@@ -403,3 +403,12 @@ Quick Switch 松开触发键时先清理候选并走普通 Up 路由回复 nativ
 `text_input` 使用严格修饰匹配，不启动 Quick Switch。进入复用 `releases_toggle_session_on_entry` 清理锁定输入，模式切换停止连续手势。Enter／反斜杠／Esc 均由普通绑定路由切换并消费；可用 Send+Mode 序列提交后返回，无 Enter 专属分支。
 
 `Command::RetargetScreen` 将 `ScreenRetargeted` 发送给当前有效模式（display_mode），不固定发给 registry.active。这样 Text Input 等模式借用 Normal 时，插件 `screen next` 的结果由 Normal 执行 WarpPointer；未激活临时层时仍由基础模式维护定位／重扫。此规则适用于所有临时模式，不在 Text Input 添加切屏特例。
+
+
+UI 扫描增量增加 `UiScanResult.retired: Vec<Rect>`：先从当前扫描移除精确匹配的旧矩形，再追加 targets。
+普通 append 批次传空 Vec，不分配撤回列表。该字段不携带 native 身份或 provider 实现细节；Mode 不调用原生 API。
+同 generation 的 mailbox 合并时先移除已暂存旧 targets，再追加新 targets，同时累计 retired；取消/新 scan 清空两者。
+标签输入中由 Hint 暂存有序增量，避免重定向正在输入的键码。详见 [扫描](05-ui-scanning.md#按控件语义融合与增量修正)。
+
+
+文本拼接仍使用 UiScanResult 的 retired + targets 增量。`api::command::enrich_replacements` 在同批替换、pending、mailbox 和 Hint 应用／延后增量时保留被替换目标的搜索文字。已有名称的原生目标不会吸收不同几何的描述；拼接的静态文字可继承重叠片段文字。

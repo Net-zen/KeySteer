@@ -245,7 +245,7 @@ fn provider_mailbox_preserves_a_full_generation_without_blocking() {
             result: Ok(MAX_OCR_TARGETS),
         })
         .unwrap();
-    send_fallback_batches(&mailbox, targets(MAX_OCR_TARGETS * 2)).unwrap();
+    send_contour_batches(&mailbox, targets(MAX_OCR_TARGETS * 2)).unwrap();
 
     let mut events = ProviderEvents::new();
     mailbox.drain_into(&mut events);
@@ -254,10 +254,10 @@ fn provider_mailbox_preserves_a_full_generation_without_blocking() {
     let mut terminal_count = 0;
     for event in events {
         match event {
-            ProviderEvent::OcrBatch { targets, .. } | ProviderEvent::FallbackBatch(targets) => {
+            ProviderEvent::OcrBatch { targets, .. } | ProviderEvent::ContourBatch(targets) => {
                 target_count += targets.len()
             }
-            ProviderEvent::OcrDone { .. } | ProviderEvent::FallbackDone => {
+            ProviderEvent::OcrDone { .. } | ProviderEvent::ContourDone => {
                 terminal_count += 1;
             }
         }
@@ -275,7 +275,7 @@ fn provider_mailbox_close_wakes_and_rejects_late_results() {
         Err(VisionError::Cancelled)
     ));
     assert!(matches!(
-        mailbox.publish(ProviderEvent::FallbackDone),
+        mailbox.publish(ProviderEvent::ContourDone),
         Err(VisionError::Cancelled)
     ));
 }
@@ -284,7 +284,7 @@ fn provider_mailbox_close_wakes_and_rejects_late_results() {
 fn quarantined_provider_mailbox_discards_published_target_owners() {
     let mailbox = ProviderMailbox::new();
     mailbox
-        .publish(ProviderEvent::FallbackBatch(vec![UiTarget {
+        .publish(ProviderEvent::ContourBatch(vec![UiTarget {
             rect: Rect::new(0.0, 0.0, 4.0, 4.0),
             name: "discard me".into(),
             role: SemanticRole::StaticText,
@@ -316,17 +316,19 @@ fn pure_rust_detector_finds_a_closed_button_border() {
         desktop_bounds: Rect::new(0.0, 0.0, 120.0, 80.0),
         scale: 1.0,
     };
-    let image = fallback_input_from_bgra(&pixels, geometry).unwrap();
-    let targets = detect_regions(
-        &image,
-        &crate::api::VisionOptions::default(),
-        &mut FallbackScratch::default(),
+    let image = contour_input_from_bgra(&pixels, geometry).unwrap();
+    let targets = crate::platform::common::contour::detect(
+        &image.gray,
+        image.width,
+        image.height,
+        image.desktop_bounds,
+        100,
         || false,
     );
     assert!(
         targets
             .iter()
-            .any(|target| target.role == SemanticRole::Button)
+            .any(|target| target.role == SemanticRole::Control)
     );
 }
 
@@ -340,13 +342,6 @@ fn ready_ocr_batches_prefer_more_targets_then_lower_latency() {
         compare_ready(20, Duration::from_millis(30), 20, Duration::from_millis(80)),
         std::cmp::Ordering::Less
     );
-}
-
-#[test]
-fn valid_ocr_suppresses_fallback_even_when_spatial_dedup_accepts_nothing() {
-    assert!(!should_publish_fallback(true, true));
-    assert!(should_publish_fallback(false, true));
-    assert!(!should_publish_fallback(false, false));
 }
 
 #[test]
@@ -465,12 +460,14 @@ fn pure_rust_detector_stops_at_cancellation_checkpoints() {
         desktop_bounds: Rect::new(0.0, 0.0, 256.0, 256.0),
         scale: 1.0,
     };
-    let image = fallback_input_from_bgra(&vec![255; 256 * 256 * 4], geometry).unwrap();
+    let image = contour_input_from_bgra(&vec![255; 256 * 256 * 4], geometry).unwrap();
     let checks = AtomicUsize::new(0);
-    let targets = detect_regions(
-        &image,
-        &crate::api::VisionOptions::default(),
-        &mut FallbackScratch::default(),
+    let targets = crate::platform::common::contour::detect(
+        &image.gray,
+        image.width,
+        image.height,
+        image.desktop_bounds,
+        100,
         || checks.fetch_add(1, Ordering::Relaxed) >= 2,
     );
     assert!(targets.is_empty());
@@ -749,4 +746,283 @@ fn live_system_ocr_tiling_probe() -> Result<(), String> {
         .Close()
         .map_err(|error| format!("cannot close image stream: {error}"))?;
     Ok(())
+}
+
+#[test]
+fn early_ocr_and_contour_are_both_published_without_waiting_for_ocr_terminal() {
+    use crate::platform::common::scan_mailbox::ScanMailbox;
+    use crate::platform::windows::{EventSender, accessibility, ui_scan::ScanSession};
+    let input = crate::api::UiScanRequest {
+        id: 991,
+        scope: crate::api::UiScanScope::Screen,
+        timeout_ms: 1000,
+        bounds: Some(Rect::new(0.0, 0.0, 1920.0, 1080.0)),
+        roles: Vec::new(),
+        max_depth: 8,
+        visible_only: true,
+        clickable_only: true,
+        strategy: crate::api::UiScanStrategy::Hybrid,
+        vision: crate::api::VisionOptions::default(),
+        app: None,
+    };
+    let output = Arc::new(ScanMailbox::default());
+    let generation = output.begin(input.id);
+    let (events, _) = mpsc::channel();
+    let session = ScanSession::new(
+        accessibility::test_scan_plan(input),
+        generation,
+        1,
+        Arc::clone(&output),
+        EventSender::without_wake(events),
+    );
+    let source = session.source("visual");
+    let mailbox = ProviderMailbox::new();
+    let target = |x, name: &str| UiTarget {
+        rect: Rect::new(x, 20.0, 40.0, 20.0),
+        name: name.into(),
+        role: SemanticRole::Control,
+    };
+    mailbox
+        .publish(ProviderEvent::OcrBatch {
+            provider: "system",
+            elapsed: Duration::ZERO,
+            targets: vec![target(10.0, "OCR text")],
+        })
+        .unwrap();
+    mailbox
+        .publish(ProviderEvent::ContourBatch(vec![target(110.0, "")]))
+        .unwrap();
+    let mut deferred = ProviderEvents::new();
+    assert!(drain_early_ocr_events(
+        &mailbox,
+        &source,
+        &mut deferred,
+        || true
+    ));
+    assert!(deferred.is_empty());
+    source.finish(UiScanStatus::Success);
+    let result = output.take().unwrap();
+    assert_eq!(result.targets.len(), 2);
+    assert!(result.targets.iter().any(|t| t.name == "OCR text"));
+    assert!(result.targets.iter().any(|t| t.rect.x == 110.0));
+}
+
+#[test]
+fn early_and_late_visual_sources_use_identical_ownership() {
+    use crate::platform::common::scan_mailbox::ScanMailbox;
+    use crate::platform::common::spatial_index::TargetSource;
+    use crate::platform::windows::{EventSender, accessibility, ui_scan::ScanSession};
+    for provider in ["system", "wechat"] {
+        for early_mask in 0..8 {
+            for order in [
+                [0, 1, 2],
+                [0, 2, 1],
+                [1, 0, 2],
+                [1, 2, 0],
+                [2, 0, 1],
+                [2, 1, 0],
+            ] {
+                let request = crate::api::UiScanRequest {
+                    id: 992,
+                    scope: crate::api::UiScanScope::Screen,
+                    timeout_ms: 1000,
+                    bounds: Some(Rect::new(0., 0., 1920., 1080.)),
+                    roles: Vec::new(),
+                    max_depth: 8,
+                    visible_only: true,
+                    clickable_only: true,
+                    strategy: crate::api::UiScanStrategy::Hybrid,
+                    vision: crate::api::VisionOptions::default(),
+                    app: None,
+                };
+                let output = Arc::new(ScanMailbox::default());
+                let generation = output.begin(request.id);
+                let (events, _) = mpsc::channel();
+                let session = ScanSession::new(
+                    accessibility::test_scan_plan(request),
+                    generation,
+                    1,
+                    Arc::clone(&output),
+                    EventSender::without_wake(events),
+                );
+                let source = session.source("visual");
+                let mailbox = ProviderMailbox::new();
+                let targets = [
+                    UiTarget {
+                        rect: Rect::new(100., 100., 240., 160.),
+                        name: String::new(),
+                        role: SemanticRole::Image,
+                    },
+                    UiTarget {
+                        rect: Rect::new(130., 130., 80., 20.),
+                        name: "caption".into(),
+                        role: SemanticRole::StaticText,
+                    },
+                    UiTarget {
+                        rect: Rect::new(140., 135., 12., 12.),
+                        name: String::new(),
+                        role: SemanticRole::Control,
+                    },
+                ];
+                let button = UiTarget {
+                    rect: Rect::new(250., 190., 30., 25.),
+                    name: "action".into(),
+                    role: SemanticRole::Button,
+                };
+                source.push(vec![button.clone()]);
+                let mut visible = output.take().unwrap().targets;
+                for i in order {
+                    let batch = vec![targets[i].clone()];
+                    if early_mask & (1 << i) != 0 {
+                        let event = if i == 1 {
+                            ProviderEvent::OcrBatch {
+                                provider,
+                                elapsed: Duration::ZERO,
+                                targets: batch,
+                            }
+                        } else {
+                            ProviderEvent::ContourBatch(batch)
+                        };
+                        mailbox.publish(event).unwrap();
+                        assert!(drain_early_ocr_events(
+                            &mailbox,
+                            &source,
+                            &mut ProviderEvents::new(),
+                            || true
+                        ));
+                    } else {
+                        source.push_from(
+                            if i == 1 {
+                                ocr_source(provider)
+                            } else {
+                                TargetSource::Contour
+                            },
+                            batch,
+                        );
+                    }
+                    if let Some(update) = output.take() {
+                        crate::api::command::remove_retired_targets(&mut visible, &update.retired);
+                        visible.extend(update.targets);
+                    }
+                }
+                source.finish(UiScanStatus::Success);
+                if let Some(update) = output.take() {
+                    crate::api::command::remove_retired_targets(&mut visible, &update.retired);
+                    visible.extend(update.targets);
+                }
+                assert_eq!(
+                    visible.len(),
+                    2,
+                    "{provider} mask={early_mask} order={order:?}: {visible:?}"
+                );
+                assert!(visible.contains(&button));
+                assert!(
+                    visible
+                        .iter()
+                        .any(|t| t.role == SemanticRole::Image && t.name == "caption")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn contour_4k_and_8k_capture_analysis_stays_bounded_and_maps_back() {
+    for (width, height) in [(3840.0, 2160.0), (7680.0, 4320.0)] {
+        let bounds = Rect::new(-width, -100.0, width, height);
+        let geometry = capture_geometry(bounds).unwrap();
+        let mut pixels = vec![255u8; geometry.width as usize * geometry.height as usize * 4];
+        for y in 100..130 {
+            for x in 100..180 {
+                let i = (y * geometry.width as usize + x) * 4;
+                pixels[i..i + 3].fill(0);
+            }
+        }
+        let image = contour_input_from_bgra(&pixels, geometry).unwrap();
+        assert!(image.gray.len() <= crate::platform::common::contour::MAX_PIXELS);
+        assert!(image.width.max(image.height) <= 2560);
+        let targets = crate::platform::common::contour::detect(
+            &image.gray,
+            image.width,
+            image.height,
+            image.desktop_bounds,
+            100,
+            || false,
+        );
+        let center = crate::api::Point::new(
+            bounds.x + 140.0 * width / f64::from(geometry.width),
+            bounds.y + 115.0 * height / f64::from(geometry.height),
+        );
+        assert!(
+            targets.iter().any(|t| t.rect.contains(&center)),
+            "{targets:?}"
+        );
+    }
+}
+
+#[test]
+fn contour_mailbox_transfers_full_candidate_buffer_without_rebuilding_it() {
+    let mailbox = ProviderMailbox::new();
+    let targets: Vec<_> = (0..MAX_OCR_TARGETS)
+        .map(|i| UiTarget {
+            rect: Rect::new(i as f64 * 10.0, 0.0, 8.0, 8.0),
+            name: String::new(),
+            role: SemanticRole::Control,
+        })
+        .collect();
+    let original = targets.as_ptr();
+    send_contour_batches(&mailbox, targets).unwrap();
+    let mut events = ProviderEvents::new();
+    mailbox.drain_into(&mut events);
+    assert_eq!(events.len(), 2);
+    let ProviderEvent::ContourBatch(targets) = &events[0] else {
+        panic!("missing contours")
+    };
+    assert_eq!(targets.len(), 10_000);
+    assert_eq!(targets.as_ptr(), original);
+    assert!(matches!(events[1], ProviderEvent::ContourDone));
+}
+
+#[test]
+fn ocr_word_and_phrase_converge_across_engines_and_batch_order() {
+    use crate::platform::common::scan_accumulator::ScanAccumulator;
+    use crate::platform::common::spatial_index::TargetSource;
+    for reverse in [false, true] {
+        for swap_engines in [false, true] {
+            let phrase = UiTarget {
+                rect: Rect::new(10., 10., 140., 20.),
+                name: "full phrase".into(),
+                role: SemanticRole::StaticText,
+            };
+            let word = UiTarget {
+                rect: Rect::new(55., 11., 18., 18.),
+                name: "word".into(),
+                role: SemanticRole::StaticText,
+            };
+            let sources = if swap_engines {
+                [TargetSource::WechatOcr, TargetSource::SystemOcr]
+            } else {
+                [TargetSource::SystemOcr, TargetSource::WechatOcr]
+            };
+            let mut batches = vec![(sources[0], phrase.clone()), (sources[1], word)];
+            if reverse {
+                batches.reverse();
+            }
+            let mut scan = ScanAccumulator::new();
+            let mut visible = Vec::new();
+            for (source, target) in batches {
+                let update = scan.push(source, vec![target], 0.5);
+                crate::api::command::remove_retired_targets(&mut visible, &update.retired);
+                visible.extend(update.batches.into_iter().flatten());
+            }
+            let mut next_row = phrase.clone();
+            next_row.rect.y = 36.;
+            let update = scan.push(sources[1], vec![next_row.clone()], 0.5);
+            visible.extend(update.batches.into_iter().flatten());
+            visible.extend(scan.finish().into_iter().flatten());
+            assert_eq!(visible.len(), 2, "reverse={reverse} swap={swap_engines}");
+            assert!(visible.iter().any(|t| t.rect == phrase.rect));
+            assert!(visible.iter().any(|t| t.rect == next_row.rect));
+        }
+    }
 }

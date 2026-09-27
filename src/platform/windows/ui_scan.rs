@@ -15,16 +15,17 @@ use crate::api::command::UiScanStatus;
 use crate::api::geometry::UiTarget;
 #[cfg(test)]
 use crate::api::geometry::{Rect, SemanticRole};
-use crate::platform::common::partial_batcher::PartialBatcher;
+use crate::platform::common::scan_accumulator::ScanAccumulator;
 use crate::platform::common::scan_mailbox::ScanMailbox;
+use crate::platform::common::spatial_index::TargetSource;
+#[cfg(test)]
 use crate::platform::common::spatial_index::{SpatialIndex, rectangles_match};
 
 use super::EventSender;
 use super::accessibility::WindowsScanPlan;
 
-const FIRST_BATCH: usize = 24;
-const MAX_TARGETS: usize = 2_000;
-const MINIMUM_SPACING: f64 = 8.0;
+#[cfg(test)]
+const MAX_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 
 pub(super) struct ScanSession {
     id: u64,
@@ -37,11 +38,9 @@ pub(super) struct ScanSession {
 
 struct SessionState {
     remaining: usize,
-    batcher: PartialBatcher<UiTarget>,
-    index: SpatialIndex,
+    accumulator: ScanAccumulator,
     statuses: SmallVec<[UiScanStatus; 2]>,
     finished: bool,
-    published_any: bool,
 }
 
 impl ScanSession {
@@ -61,11 +60,9 @@ impl ScanSession {
             plan,
             state: Mutex::new(SessionState {
                 remaining: sources,
-                batcher: PartialBatcher::new(FIRST_BATCH, MAX_TARGETS),
-                index: SpatialIndex::new(64.0, MINIMUM_SPACING, 2.0),
+                accumulator: ScanAccumulator::new(),
                 statuses: SmallVec::new(),
                 finished: false,
-                published_any: false,
             }),
         })
     }
@@ -97,47 +94,34 @@ pub(super) struct ScanSource {
 
 impl ScanSource {
     pub(super) fn push(&self, targets: Vec<UiTarget>) -> usize {
-        let mut ready = SmallVec::<[Vec<UiTarget>; 2]>::new();
-        let merge_iou_threshold = self.session.plan.vision.merge_iou_threshold.clamp(0.0, 1.0);
-        let accepted = {
-            let mut state = self
-                .session
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if state.finished {
-                return 0;
-            }
-            let mut accepted = 0;
-            for target in targets {
-                if state.index.len() >= MAX_TARGETS {
-                    break;
-                }
-                if self.session.plan.target_center_is_visible(&target)
-                    && state.index.insert_if_unique(target.rect, |a, b| {
-                        rectangles_match(a, b, merge_iou_threshold, MINIMUM_SPACING)
-                    })
-                {
-                    accepted += 1;
-                    if let Some(batch) = state.batcher.push_one(target) {
-                        ready.push(batch);
-                    }
-                }
-            }
-            if accepted != 0
-                && ready.is_empty()
-                && !state.published_any
-                && let Some(batch) = state.batcher.flush_pending()
-            {
-                ready.push(batch);
-            }
-            state.published_any |= !ready.is_empty();
-            accepted
-        };
-        for batch in ready {
-            self.session.publish(batch, UiScanStatus::Partial);
+        self.push_from(TargetSource::Accessibility, targets)
+    }
+
+    pub(super) fn push_from(&self, source: TargetSource, mut targets: Vec<UiTarget>) -> usize {
+        let mut state = self
+            .session
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state.finished {
+            return 0;
         }
-        accepted
+        let threshold = self.session.plan.vision.merge_iou_threshold;
+        targets.retain(|target| self.session.plan.target_center_is_visible(target));
+        let mut update = state.accumulator.push(source, targets, threshold);
+        // Keep publication ordered with fusion, including removal-only deltas.
+        for batch in update.batches {
+            if self.session.mailbox.publish_update(
+                self.session.generation,
+                self.session.id,
+                batch,
+                std::mem::take(&mut update.retired),
+                UiScanStatus::Partial,
+            ) {
+                self.session.wake.wake();
+            }
+        }
+        update.accepted
     }
 
     pub(super) fn finish(mut self, status: UiScanStatus) {
@@ -161,10 +145,10 @@ impl ScanSource {
             let tail = if context_changed {
                 // Old coordinates are invalid. Drain them only to release their
                 // strings now; publishing them would delay the retarget.
-                drop(state.batcher.finish());
+                drop(state.accumulator.finish());
                 None
             } else {
-                state.batcher.finish()
+                state.accumulator.finish()
             };
             let terminal = combined_status(&state.statuses);
             let masked_failures = if terminal == UiScanStatus::Success {
@@ -263,6 +247,80 @@ mod tests {
             vision: VisionOptions::default(),
             app: None,
         }
+    }
+
+    #[test]
+    fn late_accessible_row_retires_both_published_and_pending_visual_fragments() {
+        let mailbox = Arc::new(ScanMailbox::default());
+        let generation = mailbox.begin(41);
+        let (events, _) = mpsc::channel();
+        let mut input = request(41);
+        input.scope = crate::api::UiScanScope::Screen;
+        let session = ScanSession::new(
+            super::super::accessibility::test_scan_plan(input),
+            generation,
+            2,
+            Arc::clone(&mailbox),
+            super::super::EventSender::without_wake(events),
+        );
+        let visual = session.source("visual");
+        let ax = session.source("accessibility");
+        let fragment = |x| UiTarget {
+            rect: rect(x, 100.0, 30.0, 20.0),
+            name: String::new(),
+            role: SemanticRole::Control,
+        };
+        visual.push_from(TargetSource::Contour, vec![fragment(20.0)]);
+        assert_eq!(mailbox.take().unwrap().targets.len(), 1);
+        visual.push_from(TargetSource::Contour, vec![fragment(200.0)]);
+        assert!(mailbox.take().is_none(), "second fragment is still batched");
+        let row = UiTarget {
+            rect: rect(10.0, 95.0, 400.0, 32.0),
+            name: "file".into(),
+            role: SemanticRole::ListItem,
+        };
+        ax.push(vec![row.clone()]);
+        let update = mailbox.take().unwrap();
+        assert_eq!(update.targets, vec![row]);
+        assert_eq!(update.retired.len(), 2);
+        visual.finish(UiScanStatus::Success);
+        ax.finish(UiScanStatus::Success);
+        assert!(mailbox.take().unwrap().targets.is_empty());
+    }
+
+    #[test]
+    fn merged_sources_accept_ten_thousand_and_bound_the_tail() {
+        let mailbox = Arc::new(ScanMailbox::default());
+        let generation = mailbox.begin(42);
+        let (events, _) = mpsc::channel();
+        let mut input = request(42);
+        input.scope = crate::api::UiScanScope::Screen;
+        input.bounds = Some(rect(0.0, 0.0, 4096.0, 4096.0));
+        let session = ScanSession::new(
+            super::super::accessibility::test_scan_plan(input),
+            generation,
+            2,
+            Arc::clone(&mailbox),
+            super::super::EventSender::without_wake(events),
+        );
+        let ax = session.source("accessibility");
+        let visual = session.source("OCR + contour");
+        let targets = |range: std::ops::Range<usize>| {
+            range
+                .map(|i| UiTarget {
+                    rect: rect((i % 101 * 32) as f64, (i / 101 * 32) as f64, 12.0, 12.0),
+                    name: String::new(),
+                    role: SemanticRole::Control,
+                })
+                .collect()
+        };
+        assert_eq!(ax.push(targets(0..5000)), 5000);
+        assert_eq!(visual.push(targets(4000..10001)), 5000);
+        ax.finish(UiScanStatus::Success);
+        visual.finish(UiScanStatus::Success);
+        let result = mailbox.take().unwrap();
+        assert_eq!(result.targets.len(), MAX_TARGETS);
+        assert_eq!(result.status, UiScanStatus::Success);
     }
 
     #[test]

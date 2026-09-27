@@ -216,6 +216,7 @@ fn owned_hint_delivery_stays_within_allocation_budget() {
     let region = Region::new(keysteer::TEST_ALLOCATOR);
     let commands = mode.handle_owned(
         ModeEvent::UiScanned(UiScanResult {
+            retired: Vec::new(),
             id: 1,
             targets,
             status: UiScanStatus::Partial,

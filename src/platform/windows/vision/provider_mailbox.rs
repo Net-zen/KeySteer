@@ -1,6 +1,15 @@
 //! Bounded provider result aggregation and publication.
 
 use super::*;
+use crate::platform::common::spatial_index::TargetSource;
+
+pub(super) fn ocr_source(provider: &str) -> TargetSource {
+    if provider == "wechat" {
+        TargetSource::WechatOcr
+    } else {
+        TargetSource::SystemOcr
+    }
+}
 
 pub(super) fn compare_ready(
     first_count: usize,
@@ -24,8 +33,8 @@ pub(super) enum ProviderEvent {
         elapsed: Duration,
         result: Result<usize, VisionError>,
     },
-    FallbackBatch(Vec<UiTarget>),
-    FallbackDone,
+    ContourBatch(Vec<UiTarget>),
+    ContourDone,
 }
 
 pub(super) type ProviderEvents = SmallVec<[ProviderEvent; 6]>;
@@ -34,7 +43,7 @@ pub(super) type CompletedOcr = (&'static str, Duration, Result<usize, VisionErro
 
 const SYSTEM_READY: u8 = 1 << 0;
 const WECHAT_READY: u8 = 1 << 1;
-const FALLBACK_READY: u8 = 1 << 2;
+const CONTOUR_READY: u8 = 1 << 2;
 
 /// Generation-owned provider mailbox with one fixed slot per provider.
 ///
@@ -52,7 +61,7 @@ pub(super) struct ProviderMailbox {
 struct ProviderMailboxState {
     system: OcrProviderSlot,
     wechat: OcrProviderSlot,
-    fallback: FallbackProviderSlot,
+    contour: ContourProviderSlot,
     ready: u8,
     closed: bool,
 }
@@ -67,7 +76,7 @@ struct OcrProviderSlot {
 }
 
 #[derive(Default)]
-struct FallbackProviderSlot {
+struct ContourProviderSlot {
     targets: Vec<UiTarget>,
     published_targets: usize,
     terminal_published: bool,
@@ -139,7 +148,7 @@ impl ProviderMailbox {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.system = OcrProviderSlot::default();
         state.wechat = OcrProviderSlot::default();
-        state.fallback = FallbackProviderSlot::default();
+        state.contour = ContourProviderSlot::default();
         state.ready = 0;
         self.ready_flags.store(0, Ordering::Release);
     }
@@ -166,41 +175,41 @@ impl ProviderMailboxState {
                 slot.finish(provider, elapsed, result)?;
                 self.ready |= ready;
             }
-            ProviderEvent::FallbackBatch(targets) => {
-                if targets.is_empty() || targets.len() > PROVIDER_BATCH_SIZE {
+            ProviderEvent::ContourBatch(targets) => {
+                if targets.is_empty() || targets.len() > MAX_OCR_TARGETS {
                     return Err(VisionError::Operational(format!(
-                        "fallback published an invalid batch of {} targets",
+                        "contour published an invalid batch of {} targets",
                         targets.len()
                     )));
                 }
                 let next = self
-                    .fallback
+                    .contour
                     .published_targets
                     .checked_add(targets.len())
                     .ok_or_else(|| {
-                        VisionError::Operational("fallback target count overflow".into())
+                        VisionError::Operational("contour target count overflow".into())
                     })?;
                 if next > MAX_OCR_TARGETS {
                     return Err(VisionError::Operational(format!(
-                        "fallback exceeded the {MAX_OCR_TARGETS}-target limit"
+                        "contour exceeded the {MAX_OCR_TARGETS}-target limit"
                     )));
                 }
-                self.fallback.published_targets = next;
-                if self.fallback.targets.is_empty() {
-                    self.fallback.targets = targets;
+                self.contour.published_targets = next;
+                if self.contour.targets.is_empty() {
+                    self.contour.targets = targets;
                 } else {
-                    self.fallback.targets.extend(targets);
+                    self.contour.targets.extend(targets);
                 }
-                self.ready |= FALLBACK_READY;
+                self.ready |= CONTOUR_READY;
             }
-            ProviderEvent::FallbackDone => {
-                if std::mem::replace(&mut self.fallback.terminal_published, true) {
+            ProviderEvent::ContourDone => {
+                if std::mem::replace(&mut self.contour.terminal_published, true) {
                     return Err(VisionError::Operational(
-                        "fallback published duplicate terminal results".into(),
+                        "contour published duplicate terminal results".into(),
                     ));
                 }
-                self.fallback.terminal_ready = true;
-                self.ready |= FALLBACK_READY;
+                self.contour.terminal_ready = true;
+                self.ready |= CONTOUR_READY;
             }
         }
         Ok(())
@@ -237,18 +246,18 @@ impl ProviderMailboxState {
             &mut self.ready,
             events,
         );
-        if self.ready & FALLBACK_READY != 0 {
-            if !self.fallback.targets.is_empty() {
-                events.push(ProviderEvent::FallbackBatch(std::mem::take(
-                    &mut self.fallback.targets,
+        if self.ready & CONTOUR_READY != 0 {
+            if !self.contour.targets.is_empty() {
+                events.push(ProviderEvent::ContourBatch(std::mem::take(
+                    &mut self.contour.targets,
                 )));
             }
-            if self.fallback.terminal_ready {
-                self.fallback.terminal_ready = false;
-                events.push(ProviderEvent::FallbackDone);
+            if self.contour.terminal_ready {
+                self.contour.terminal_ready = false;
+                events.push(ProviderEvent::ContourDone);
             }
-            if self.fallback.targets.is_empty() && !self.fallback.terminal_ready {
-                self.ready &= !FALLBACK_READY;
+            if self.contour.targets.is_empty() && !self.contour.terminal_ready {
+                self.ready &= !CONTOUR_READY;
             }
         }
     }
@@ -336,8 +345,6 @@ impl OcrProviderSlot {
 pub(super) fn drain_early_ocr_events(
     mailbox: &ProviderMailbox,
     source: &ScanSource,
-    fallback_cancelled: &AtomicBool,
-    ocr_had_valid_targets: &mut bool,
     deferred: &mut ProviderEvents,
     mut context_is_current: impl FnMut() -> bool,
 ) -> bool {
@@ -351,6 +358,12 @@ pub(super) fn drain_early_ocr_events(
                 elapsed,
                 targets,
             } => ready.push((provider, elapsed, targets)),
+            ProviderEvent::ContourBatch(targets) => {
+                if !context_is_current() {
+                    return false;
+                }
+                source.push_from(TargetSource::Contour, targets);
+            }
             event => deferred.push(event),
         }
     }
@@ -360,11 +373,7 @@ pub(super) fn drain_early_ocr_events(
             return false;
         }
         let count = targets.len();
-        if count != 0 {
-            *ocr_had_valid_targets = true;
-            fallback_cancelled.store(true, Ordering::Release);
-        }
-        let accepted = source.push(targets);
+        let accepted = source.push_from(ocr_source(provider), targets);
         if accepted != 0 {
             crate::support::perf_probe::mark("vision_targets_accepted");
         }
@@ -419,28 +428,21 @@ pub(super) fn send_ocr_batches(
     Ok(count)
 }
 
-pub(super) fn send_fallback_batches(
+pub(super) fn send_contour_batches(
     mailbox: &ProviderMailbox,
     targets: Vec<UiTarget>,
 ) -> Result<(), VisionError> {
     if targets.len() > MAX_OCR_TARGETS {
         return Err(VisionError::Operational(format!(
-            "fallback returned {} targets; limit is {MAX_OCR_TARGETS}",
+            "contour returned {} targets; limit is {MAX_OCR_TARGETS}",
             targets.len()
         )));
     }
-    let mut batch = Vec::with_capacity(PROVIDER_BATCH_SIZE);
-    for target in targets {
-        batch.push(target);
-        if batch.len() == PROVIDER_BATCH_SIZE {
-            mailbox.publish(ProviderEvent::FallbackBatch(std::mem::replace(
-                &mut batch,
-                Vec::with_capacity(PROVIDER_BATCH_SIZE),
-            )))?;
-        }
+    // Contour completes before it has candidates to publish. Moving its Vec
+    // once avoids splitting and rejoining hundreds of allocations at 10000
+    // candidates. ScanSession still emits the normal count-driven Partials.
+    if !targets.is_empty() {
+        mailbox.publish(ProviderEvent::ContourBatch(targets))?;
     }
-    if !batch.is_empty() {
-        mailbox.publish(ProviderEvent::FallbackBatch(batch))?;
-    }
-    mailbox.publish(ProviderEvent::FallbackDone)
+    mailbox.publish(ProviderEvent::ContourDone)
 }

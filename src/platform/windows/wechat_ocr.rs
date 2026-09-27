@@ -34,7 +34,7 @@ use super::vision::{CaptureGeometry, image_to_desktop, valid_target_rect};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
 const MAX_MESSAGE: usize = 8 * 1024 * 1024;
-const MAX_OCR_TARGETS: usize = 2_000;
+const MAX_OCR_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 const MAX_OCR_TEXT_BYTES: usize = 4 * 1024;
 const MAX_OCR_BATCH_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const READY_TIMEOUT: Duration = Duration::from_secs(3);
@@ -311,6 +311,12 @@ impl Helper {
     ) -> Result<Self, String> {
         let executable = std::env::current_exe()
             .map_err(|error| format!("cannot locate KeySteer executable: {error}"))?;
+        // The ignored image-corpus probe is a libtest executable, not the CLI
+        // that implements the helper protocol. Never used in production builds.
+        #[cfg(test)]
+        let executable = std::env::var_os("KEYSTEER_OCR_PROBE_EXECUTABLE")
+            .map(PathBuf::from)
+            .unwrap_or(executable);
         let job = super::native::KillOnCloseJob::create()?;
         let child = Command::new(executable)
             .arg("--internal-wechat-ocr-helper")

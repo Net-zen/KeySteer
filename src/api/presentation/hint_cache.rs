@@ -4,15 +4,24 @@ use smallvec::SmallVec;
 
 use crate::api::geometry::Rect;
 
-pub(crate) const INLINE_LABELS: usize = 128;
+pub(crate) const INLINE_LABELS: usize = 512;
 pub(crate) const COMPACT_UNSTACKED: u16 = u16::MAX;
 pub(crate) const WIDE_UNSTACKED: u32 = u32::MAX;
 pub(crate) const UNCOLORED: u16 = u16::MAX;
 
+/// Nonempty word interval in a dynamic conflict row. The scan ceiling fits
+/// u16 word offsets; only initialized edge words need visiting during coloring.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct GraphRowInfo {
+    pub(crate) degree: u16,
+    pub(crate) first_word: u16,
+    pub(crate) end_word: u16,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct WideVisualLayerWorkspace {
     pub(crate) graph_rows: Vec<u64>,
-    pub(crate) degrees: Vec<u16>,
+    pub(crate) degrees: Vec<GraphRowInfo>,
     pub(crate) visited: Vec<bool>,
     pub(crate) packed: Vec<u32>,
     pub(crate) component: Vec<usize>,
@@ -29,12 +38,12 @@ pub(crate) struct WideVisualLayerWorkspace {
 }
 
 #[derive(Debug)]
-// Keeping the common <=128-Hint plan inline avoids a heap allocation on every
+// Keeping the common <=512-Hint plan inline avoids a heap allocation on every
 // rebuild; boxing the rare wide variant would only add another allocation.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum LayerStorage {
     Compact(SmallVec<[u16; INLINE_LABELS]>),
-    Wide(Vec<u32>),
+    Wide(SmallVec<[u32; INLINE_LABELS]>),
 }
 
 impl Default for LayerStorage {
@@ -222,7 +231,7 @@ impl VisualLayerPlan {
             }
         } else {
             if !matches!(self.layers, LayerStorage::Wide(_)) {
-                self.layers = LayerStorage::Wide(Vec::new());
+                self.layers = LayerStorage::Wide(SmallVec::new());
             }
             let LayerStorage::Wide(layers) = &mut self.layers else {
                 return;

@@ -343,7 +343,7 @@ export const englishMessages: Record<string, string> = {
   "鼠标下窗口（默认）": "Window under pointer (default)",
   "当前整屏": "Whole current screen",
   "UI 扫描": "UI scanning",
-  "视觉、辅助功能树，或两者并行合并": "Vision, accessibility tree, or both combined",
+  "辅助功能、OCR、轮廓检测，或全部并行合并": "Accessibility, OCR, contours, or all combined",
   "Hybrid（默认）": "Hybrid (default)",
   "短按距离": "Tap distance",
   "极短方向键操作仍移动的像素": "Minimum pixels moved by a brief direction-key tap",

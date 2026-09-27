@@ -1,4 +1,4 @@
-//! Theme palette, following neru's `[theme]` model.
+//! Theme palette.
 //!
 //! Five base colors per appearance; every component default is derived from
 //! them. Explicit component colors in the config override the derivation.

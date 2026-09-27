@@ -1111,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn opacity_matches_neru_alpha_reference() {
+    fn opacity_matches_alpha_reference() {
         let c = Color::rgb(0, 0, 0);
         assert_eq!(c.with_opacity(0.95).a, 0xF2);
         assert_eq!(c.with_opacity(0.70).a, 0xB3);

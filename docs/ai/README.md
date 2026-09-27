@@ -48,7 +48,7 @@ macOS 缺失／无效 AXWindow 的有界顶层与父链回退、AXSubrole 缺失
 
 Normal 独立切换窗口的内置动作 `window_activate_next` / `window_activate_previous`、标签组优先与同程序归组规则复用见 [运行时/API](02-runtime-and-api.md) 和 [原生后端](06-platform-backends.md)。
 
-首页下载版本及资产链接在每次文档构建时从 GitHub 最新正式 Release 注入；本地开发允许 Release 请求失败后继续预览，生产构建仍严格校验，见 [构建与文档站](08-build-docs-and-tests.md)。
+首页下载版本及资产链接在每次文档构建时从 GitHub Release 注入，默认最新正式版，也可通过 Pages 的 release_tag 指定版本回退；本地开发允许 Release 请求失败后继续预览，生产构建仍严格校验，见 [构建与文档站](08-build-docs-and-tests.md)。
 
 窗口固定帮助预编译、Move/Resize 双版本及跨会话共享见 [运行时/API](02-runtime-and-api.md) 和 [渲染性能](07-rendering-and-performance.md)。
 

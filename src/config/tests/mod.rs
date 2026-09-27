@@ -898,7 +898,7 @@ fn plugin_modes_get_a_binding_table_like_built_ins() {
 }
 
 #[test]
-fn parses_neru_style_theme_and_ui_sections() {
+fn parses_style_theme_and_ui_sections() {
     let config = Config::parse(
         r##"
             [theme.dark]
@@ -1161,13 +1161,47 @@ fn mode_indicator_only_builds_a_display_name_when_needed() {
 }
 
 #[test]
+fn contour_strategy_round_trips_and_can_override_hybrid_per_app() {
+    let config = Config::parse(
+        r#"
+        [ui_hint]
+        strategy = "hybrid"
+        [[ui_hint.app_configs]]
+        bundle_id = "com.example.canvas"
+        strategy = "contour"
+    "#,
+    )
+    .unwrap();
+    let app = FocusedApp {
+        bundle_id: "com.example.canvas".into(),
+        window_title: String::new(),
+        process_id: 9,
+    };
+    assert_eq!(
+        config.ui_hint.strategy_for(Some(&app)),
+        UiScanStrategy::Contour
+    );
+    let standalone = Config::parse("[ui_hint]\nstrategy = \"contour\"").unwrap();
+    assert_eq!(standalone.ui_hint.strategy, UiScanStrategy::Contour);
+    let encoded = serde_json::to_string(&standalone.ui_hint.strategy).unwrap();
+    assert_eq!(encoded, "\"contour\"");
+    assert_eq!(
+        serde_json::from_str::<UiScanStrategy>(&encoded).unwrap(),
+        UiScanStrategy::Contour
+    );
+}
+
+#[test]
 fn scan_strategy_defaults_to_hybrid_and_allows_per_app_overrides() {
     let vision = VisionOptions::default();
     assert!(vision.detect_text && vision.detect_rectangles);
     assert_eq!(vision.request_timeout_ms, 5_000);
     assert_eq!(vision.minimum_confidence, 0.0);
     assert_eq!(vision.merge_iou_threshold, 0.5);
-    assert_eq!(vision.rectangle_max_candidates, 100);
+    assert_eq!(
+        vision.rectangle_max_candidates,
+        crate::api::command::MAX_UI_SCAN_TARGETS
+    );
     assert_eq!(vision.rectangle_min_size, 0.01);
     assert_eq!(vision.button_icon_max_size, 48.0);
     assert_eq!(vision.checkbox_max_size, 32.0);
@@ -1591,4 +1625,31 @@ fn temporary_passthrough_chords_round_trip_and_resolve_aliases() {
     );
     assert_eq!(restored.plugin_modes, config.plugin_modes);
     assert!(Config::parse("[grid]\ntemporary_mode_passthrough_keys = [\"q+q\"]").is_err());
+}
+
+#[test]
+fn visual_candidate_limit_accepts_ten_thousand_but_remains_bounded() {
+    for count in [1, 2000, 10_000] {
+        assert!(
+            Config::parse(&format!(
+                "[ui_hint.vision]\nrectangle_max_candidates = {count}"
+            ))
+            .and_then(|config| config.validate())
+            .is_ok()
+        );
+    }
+    for count in [0, 10_001] {
+        assert!(
+            Config::parse(&format!(
+                "[ui_hint.vision]\nrectangle_max_candidates = {count}"
+            ))
+            .and_then(|config| config.validate())
+            .is_err()
+        );
+    }
+    let native = include_str!("../../platform/macos/vision_bridge.m");
+    assert!(native.contains(&format!(
+        "NMK_MAX_VISION_REGIONS = {}",
+        crate::api::command::MAX_UI_SCAN_TARGETS
+    )));
 }

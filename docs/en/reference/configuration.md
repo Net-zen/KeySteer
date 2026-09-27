@@ -259,7 +259,7 @@ layers = [
 
 ```toml
 [ui_hint]
-strategy = "hybrid" # axtree, vision, or hybrid
+strategy = "hybrid" # axtree, vision, contour, or hybrid
 hint_characters = "asdfghjkl"
 scan_timeout_ms = 2500
 scan_retry_count = 1
@@ -272,7 +272,9 @@ after_finish = "normal"
 after_click = "normal"
 ```
 
-macOS supports Accessibility Tree, Vision, and Hybrid. Windows defaults to `hybrid`: UIA and the full visual pipeline run in parallel, stream their results, deduplicate, and merge them; this includes native minimise, maximise, and close buttons. `vision` uses available system OCR and automatically discovered WeChat OCR in parallel, then falls back to built-in pixel-region recognition. OCR needs no configuration and WeChat components are not distributed with KeySteer. `clickable_roles` are cross-platform semantic roles; use `ax:` or `uia:` for native roles.
+Windows and macOS support `axtree`, `vision`, `contour`, and `hybrid`. Default `hybrid` concurrently merges accessibility, OCR, and contour targets, streaming and deduplicating their union. Successful OCR does not suppress unique contour targets. `vision` combines OCR and contours (plus native Vision rectangles on macOS); `contour` detects pixel outlines without OCR or accessibility-tree scanning. Contour targets have no text names, so name search cannot match them. Windows discovers system and WeChat OCR automatically; WeChat components are not distributed. Visual capture on macOS requires Screen Recording permission.
+
+Set `strategy = "contour"` in `[ui_hint]` for contours alone; per-app overrides also work. Contour reuses `[ui_hint.vision]` settings `request_timeout_ms` and `rectangle_max_candidates` (default 10000); other confidence, size, and classification options apply only to existing visual recognition. `detect_text` and `detect_rectangles` select sources only for `vision`; standalone `contour` always enables contours. `hybrid` always combines accessibility, every available OCR provider, and contour. These switches and legacy 100-candidate settings cannot disable or reduce hybrid sources. De-duplicated output remains subject to the shared 10000-target budget, scope, and deadline; the 512-entry inline capacity is not a target limit. One capture is shared; contour analysis is capped at 2,073,600 pixels and a 2560-pixel longest edge. Overlapping convolution tiles are joined globally before desktop-coordinate mapping. Downsampling may lose very small targets. `clickable_roles` filters accessibility targets only.
 
 ## Window configuration
 

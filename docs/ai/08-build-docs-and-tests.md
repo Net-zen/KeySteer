@@ -1,3 +1,7 @@
+> 清理记录：本轮 UI Hint 临时 Python 脚本、截图语料、离线报告、基线副本及 Rust 截图回放探针已删除；下文相关路径和命令仅为历史测量记录，不再提供执行入口。正式识别实现和无外部文件依赖的 Rust 回归测试保留。
+
+Contour 验证（2026-09-26）：全量 Rust 1,144 passed／89 ignored；随后新增的 4K/8K 有界分析与负桌面坐标专项 1 passed。Clippy all-targets（benchmark-hooks）、macOS ARM/Intel tests Rust 交叉检查、网页 143 项与 TypeScript 检查通过。共享 detector 测试覆盖带 halo 分块与整图 Canny 一致、跨块 weak-edge hysteresis、跨块按钮唯一性、负坐标、空白/非法输入、逐阶段取消、嵌套过滤与输出上限；Windows provider 测试覆盖 OCR 与 contour 同批独立发布。`cargo test --release --lib contour_analysis_timing -- --ignored --nocapture --test-threads=1` 为合成按钮帧七轮测量：720p 中位数 7.9254ms、最大 9.1622ms；1080p 中位数 16.8116ms、最大 21.4306ms。仅算法耗时，不含截屏、OCR、覆盖层，也不是原生端到端延迟或进程 RSS。macOS Objective-C bridge 与屏幕录制/坐标映射尚需实机验收；Windows 未运行完整交互式截图到 Hint 的原生验收。
+
 # 构建、打包、文档站与测试
 
 完整进程 Reload 验证（2026-09-26）：全量 1,134 passed／88 ignored；Clippy all-targets（benchmark-hooks）无告警，macOS ARM／Intel tests 编译通过。固定 12 轮 A/A/B（A 与 A2 为相同旧二进制），默认按键 p50／p95／p99 为 137／139／155 → 136／138／148ns，WASD 为 141／143.5／154.5 → 138.5／141.5／151ns；setup p99 534.45 → 545.35µs（+2.04%）。初始化仍为 2,436 次分配、106,508B 存活，Engine 仍为 3,656B，不代表原生进程 RSS。先前同一候选七轮测试出现的 p99 增加未稳定复现，所有试验保留在 `target/perf-full-reload/report.md` 及相邻原始数据；不宣称端到端零回退。原生状态栏点击和 macOS 实机重启尚未验收。
@@ -308,8 +312,13 @@ Grid／Recursive Grid 预览通过 `grid-region.ts` 按选键路径逐层细分�
 DownloadSection 首屏直接包含版本和下载地址，浏览器不再请求版本 API；缺失的平台资产链接到
 本轮 Release 页面，不推测文件名或使用 Cargo 中尚未发布的版本。Pages 构建使用 github.token，
 本地可设置 GITHUB_TOKEN；token 仅用于请求，不进入注入数据。配置工厂使用 Vite 传入的 `command` 区分 `serve` 和 `build`。开发模式遇到 API 错误、断网、超时或无效元数据时打印警告并继续启动，版本标记为本地预览不可用，下载入口指向 GitHub latest Release 页面，不推测版本或资产名。生产构建遇到上述错误仍失败，
-不发布空版本或过期回退。Pages 仍按 workflow_dispatch 手动部署，每次运行自动解析当时最新正式版，
-无需修改组件或 workflow 中的版本号；后续新 Release 需要重新运行 Pages 才更新已部署静态页面。
+不发布空版本或过期回退。Pages 仍按 workflow_dispatch 手动部署，`release_tag` 默认 `latest`（空白也相同），
+每次运行解析当时最新正式版；也可填写完整 Release tag，通过 `KEYSTEER_DOCS_RELEASE_TAG` 传入构建，
+改用 releases/tags API 获取指定版本及真实资产。显式指定允许预发布，但拒绝草稿、返回 tag 不匹配和不存在的 Release；
+请求失败不会静默换成 latest。缺失资产或无效 Release URL 时指向该 tag 的页面，本地离线预览也保留指定 tag 的页面。
+此输入只控制下载入口，不改变 checkout 的文档源码分支，也不持久化到下一次工作流运行。
+新 Release、删除或撤回为 pre-release 都不会修改已部署的静态页面，需要重新运行 Pages；
+使用 latest 重新解析正式版，或填写已知可用的旧 tag 回退，无需修改 DownloadSection。
 
 模拟器重点是键位和 Grid/Recursive Grid/UI Hint 样式可视化，不是完整 Rust runtime。它：
 

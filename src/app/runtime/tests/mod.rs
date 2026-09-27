@@ -428,6 +428,7 @@ fn only_ui_scan_results_use_the_owned_mode_route() {
     engine
         .handle_backend_event(
             BackendEvent::UiScanned(crate::api::UiScanResult {
+                retired: Vec::new(),
                 id: 91,
                 targets: Vec::new(),
                 status: UiScanStatus::Success,

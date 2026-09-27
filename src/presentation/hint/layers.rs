@@ -3,16 +3,34 @@ use crate::api::geometry::Rect;
 use crate::api::presentation::hint_cache::*;
 use smallvec::SmallVec;
 
+// Inline capacity is 512 labels (INLINE_LABELS). 128 below is the bit width
+// of one u128 row: small batches use a single word, 129..=512 use multiple
+// words, and only batches above 512 require dynamic graph storage.
+const INLINE_GRAPH_WORDS: usize = INLINE_LABELS * INLINE_LABELS.div_ceil(128);
+
+// Select only the live inline row representation. The dynamic path does not
+// zero an unused 32 KiB inline matrix on every Partial. The first real edge
+// initializes inline rows; disjoint labels need none. All variants stay inline.
+#[allow(clippy::large_enum_variant)]
+enum InlineRows {
+    Single([u128; 128]),
+    Multi([u128; INLINE_GRAPH_WORDS]),
+    Unused,
+    Uninitialized,
+}
+
 struct ConflictGraph {
-    inline_rows: [u128; INLINE_LABELS],
+    // Fixed storage avoids a SmallVec representation check on each edge visit.
+    inline_rows: InlineRows,
     inline_degrees: [u16; INLINE_LABELS],
     dynamic_rows: Vec<u64>,
-    dynamic_degrees: Vec<u16>,
+    dynamic_degrees: Vec<GraphRowInfo>,
     len: usize,
     words: usize,
 }
 
 impl ConflictGraph {
+    #[inline(always)]
     fn new(len: usize) -> Self {
         let words = if len <= INLINE_LABELS {
             0
@@ -20,23 +38,32 @@ impl ConflictGraph {
             len.div_ceil(64)
         };
         Self {
-            inline_rows: [0; INLINE_LABELS],
+            inline_rows: if words != 0 {
+                InlineRows::Unused
+            } else {
+                InlineRows::Uninitialized
+            },
             inline_degrees: [0; INLINE_LABELS],
             dynamic_rows: vec![0; len.saturating_mul(words)],
-            dynamic_degrees: if words == 0 { Vec::new() } else { vec![0; len] },
+            dynamic_degrees: if words == 0 {
+                Vec::new()
+            } else {
+                vec![GraphRowInfo::default(); len]
+            },
             len,
             words,
         }
     }
 
-    fn new_wide(len: usize, mut rows: Vec<u64>, mut degrees: Vec<u16>) -> Self {
+    #[inline(always)]
+    fn new_wide(len: usize, mut rows: Vec<u64>, mut degrees: Vec<GraphRowInfo>) -> Self {
         let words = len.div_ceil(64);
         rows.resize(len.saturating_mul(words), 0);
         rows.fill(0);
-        degrees.resize(len, 0);
-        degrees.fill(0);
+        degrees.resize(len, GraphRowInfo::default());
+        degrees.fill(GraphRowInfo::default());
         Self {
-            inline_rows: [0; INLINE_LABELS],
+            inline_rows: InlineRows::Unused,
             inline_degrees: [0; INLINE_LABELS],
             dynamic_rows: rows,
             dynamic_degrees: degrees,
@@ -50,18 +77,55 @@ impl ConflictGraph {
         wide.degrees = self.dynamic_degrees;
     }
 
-    fn add_edge(&mut self, left: usize, right: usize) {
-        if self.words == 0 {
-            self.inline_rows[left] |= 1u128 << right;
-            self.inline_rows[right] |= 1u128 << left;
-            self.inline_degrees[left] += 1;
-            self.inline_degrees[right] += 1;
+    #[cold]
+    #[inline(never)]
+    fn initialize_inline_rows(&mut self) {
+        self.inline_rows = if self.len <= 128 {
+            InlineRows::Single([0; 128])
         } else {
-            self.dynamic_rows[left * self.words + right / 64] |= 1u64 << (right % 64);
-            self.dynamic_rows[right * self.words + left / 64] |= 1u64 << (left % 64);
-            self.dynamic_degrees[left] += 1;
-            self.dynamic_degrees[right] += 1;
+            InlineRows::Multi([0; INLINE_GRAPH_WORDS])
+        };
+    }
+
+    fn add_edge(&mut self, left: usize, right: usize) {
+        if matches!(self.inline_rows, InlineRows::Uninitialized) {
+            self.initialize_inline_rows();
         }
+        match &mut self.inline_rows {
+            InlineRows::Uninitialized => unreachable!(),
+            InlineRows::Single(rows) => {
+                rows[left] |= 1u128 << right;
+                rows[right] |= 1u128 << left;
+                self.inline_degrees[left] += 1;
+                self.inline_degrees[right] += 1;
+            }
+            InlineRows::Multi(rows) => {
+                let words = self.len.div_ceil(128);
+                rows[left * words + right / 128] |= 1u128 << (right % 128);
+                rows[right * words + left / 128] |= 1u128 << (left % 128);
+                self.inline_degrees[left] += 1;
+                self.inline_degrees[right] += 1;
+            }
+            InlineRows::Unused => {
+                self.dynamic_rows[left * self.words + right / 64] |= 1u64 << (right % 64);
+                self.dynamic_rows[right * self.words + left / 64] |= 1u64 << (left % 64);
+                Self::extend_row(&mut self.dynamic_degrees[left], right / 64);
+                Self::extend_row(&mut self.dynamic_degrees[right], left / 64);
+            }
+        }
+    }
+
+    fn extend_row(row: &mut GraphRowInfo, word: usize) {
+        debug_assert!(word < u16::MAX as usize);
+        let word = word as u16;
+        if row.degree == 0 {
+            row.first_word = word;
+            row.end_word = word + 1;
+        } else {
+            row.first_word = row.first_word.min(word);
+            row.end_word = row.end_word.max(word + 1);
+        }
+        row.degree += 1;
     }
 
     fn len(&self) -> usize {
@@ -72,27 +136,51 @@ impl ConflictGraph {
         if self.words == 0 {
             self.inline_degrees[vertex]
         } else {
-            self.dynamic_degrees[vertex]
+            self.dynamic_degrees[vertex].degree
         }
     }
 
     fn for_each_neighbor(&self, vertex: usize, mut visit: impl FnMut(usize)) {
-        if self.words == 0 {
-            let mut neighbors = self.inline_rows[vertex];
-            while neighbors != 0 {
-                let neighbor = neighbors.trailing_zeros() as usize;
-                neighbors &= neighbors - 1;
-                visit(neighbor);
-            }
-        } else {
-            let row = &self.dynamic_rows[vertex * self.words..vertex * self.words + self.words];
-            for (word_index, word) in row.iter().copied().enumerate() {
-                let mut neighbors = word;
+        match &self.inline_rows {
+            InlineRows::Uninitialized => {}
+            InlineRows::Single(rows) => {
+                let mut neighbors = rows[vertex];
                 while neighbors != 0 {
-                    let neighbor = word_index * 64 + neighbors.trailing_zeros() as usize;
+                    let neighbor = neighbors.trailing_zeros() as usize;
                     neighbors &= neighbors - 1;
-                    if neighbor < self.len {
+                    visit(neighbor);
+                }
+            }
+            InlineRows::Multi(rows) => {
+                let words = self.len.div_ceil(128);
+                for (word_index, &word) in rows[vertex * words..(vertex + 1) * words]
+                    .iter()
+                    .enumerate()
+                {
+                    let mut neighbors = word;
+                    while neighbors != 0 {
+                        let neighbor = word_index * 128 + neighbors.trailing_zeros() as usize;
+                        neighbors &= neighbors - 1;
                         visit(neighbor);
+                    }
+                }
+            }
+            InlineRows::Unused => {
+                let info = self.dynamic_degrees[vertex];
+                let first = usize::from(info.first_word);
+                let end = usize::from(info.end_word);
+                let start = vertex * self.words;
+                for (offset, &word) in self.dynamic_rows[start + first..start + end]
+                    .iter()
+                    .enumerate()
+                {
+                    let mut neighbors = word;
+                    while neighbors != 0 {
+                        let neighbor = (first + offset) * 64 + neighbors.trailing_zeros() as usize;
+                        neighbors &= neighbors - 1;
+                        if neighbor < self.len {
+                            visit(neighbor);
+                        }
                     }
                 }
             }
@@ -156,29 +244,45 @@ pub(crate) fn build_visual_layer_plan(
         }
     }
 
-    let mut visited: SmallVec<[bool; INLINE_LABELS]> = SmallVec::from_elem(false, graph.len());
-    let mut packed_component_layers: SmallVec<[u32; INLINE_LABELS]> =
-        SmallVec::from_elem(WIDE_UNSTACKED, graph.len());
+    if graph.inline_degrees[..placements.len()]
+        .iter()
+        .all(|&degree| degree == 0)
+    {
+        let packed = [WIDE_UNSTACKED; INLINE_LABELS];
+        plan.finish(placements, hint_count, &packed[..placements.len()], 0);
+        return;
+    }
+
+    let mut visited = [false; INLINE_LABELS];
+    let mut packed_component_layers = [WIDE_UNSTACKED; INLINE_LABELS];
     let mut global_layer_count = 0usize;
+    let mut component = [0; INLINE_LABELS];
+    let mut pending = [0; INLINE_LABELS];
+    let mut coloring = InlineColorWorkspace::default();
 
     for root in 0..graph.len() {
         if visited[root] || graph.degree(root) == 0 {
             visited[root] = true;
             continue;
         }
-        let mut component: SmallVec<[usize; INLINE_LABELS]> = SmallVec::new();
-        let mut pending: SmallVec<[usize; INLINE_LABELS]> = SmallVec::new();
+        let mut component_len = 0;
+        let mut pending_len = 1;
         visited[root] = true;
-        pending.push(root);
-        while let Some(vertex) = pending.pop() {
-            component.push(vertex);
+        pending[0] = root;
+        while pending_len > 0 {
+            pending_len -= 1;
+            let vertex = pending[pending_len];
+            component[component_len] = vertex;
+            component_len += 1;
             graph.for_each_neighbor(vertex, |neighbor| {
                 if !visited[neighbor] {
                     visited[neighbor] = true;
-                    pending.push(neighbor);
+                    pending[pending_len] = neighbor;
+                    pending_len += 1;
                 }
             });
         }
+        let component = &mut component[..component_len];
         component.sort_unstable();
 
         if component.len() == 2 {
@@ -188,23 +292,23 @@ pub(crate) fn build_visual_layer_plan(
             continue;
         }
 
-        let (colors, layer_count) = color_component(&graph, placements, &component);
+        let layer_count = color_component_inline(&graph, placements, component, &mut coloring);
         global_layer_count = global_layer_count.max(layer_count);
-        for &vertex in &component {
+        for &vertex in component.iter() {
             packed_component_layers[vertex] =
-                ((layer_count as u32) << u16::BITS) | u32::from(colors[vertex]);
+                ((layer_count as u32) << u16::BITS) | u32::from(coloring.best[vertex]);
         }
     }
 
     plan.finish(
         placements,
         hint_count,
-        &packed_component_layers,
+        &packed_component_layers[..placements.len()],
         global_layer_count,
     );
 }
 
-/// Use the same X-axis rejection as the wide plan, with inline byte indices.
+/// Use the same X-axis rejection as the wide plan, with inline 16-bit indices (including index 511).
 /// Invalid geometry keeps the exhaustive predicate path unchanged.
 fn inline_sweep_edges(
     placements: &[(usize, Rect)],
@@ -222,7 +326,11 @@ fn inline_sweep_edges(
         return false;
     }
     debug_assert!(placements.len() <= INLINE_LABELS);
-    let mut order: SmallVec<[u8; INLINE_LABELS]> = (0..placements.len() as u8).collect();
+    let mut order = [0u16; INLINE_LABELS];
+    let order = &mut order[..placements.len()];
+    for (i, slot) in order.iter_mut().enumerate() {
+        *slot = i as u16;
+    }
     order.sort_unstable_by(|left, right| {
         placements[usize::from(*left)]
             .1
@@ -230,18 +338,26 @@ fn inline_sweep_edges(
             .total_cmp(&placements[usize::from(*right)].1.x)
             .then_with(|| left.cmp(right))
     });
-    let mut active: SmallVec<[u8; INLINE_LABELS]> = SmallVec::new();
-    for &right in &order {
+    let mut active = [0u16; INLINE_LABELS];
+    let mut active_len = 0;
+    for &right in order.iter() {
         let right_rect = placements[usize::from(right)].1;
-        active.retain(|left| placements[usize::from(*left)].1.right() >= right_rect.x);
-        for &left in &active {
+        let mut kept = 0;
+        for i in 0..active_len {
+            let left = active[i];
             let left_rect = placements[usize::from(left)].1;
-            if left_rect.intersect(&right_rect).is_some() && visually_stacked(left_rect, right_rect)
-            {
-                graph.add_edge(usize::from(left), usize::from(right));
+            if left_rect.right() >= right_rect.x {
+                active[kept] = left;
+                kept += 1;
+                if left_rect.intersect(&right_rect).is_some()
+                    && visually_stacked(left_rect, right_rect)
+                {
+                    graph.add_edge(usize::from(left), usize::from(right));
+                }
             }
         }
-        active.push(right);
+        active[kept] = right;
+        active_len = kept + 1;
     }
     true
 }
@@ -496,45 +612,72 @@ fn canonicalize_colors_wide(
     classes.len()
 }
 
+#[derive(Default)]
+struct InlineColorWorkspace {
+    best: SmallVec<[u16; INLINE_LABELS]>,
+    colors: SmallVec<[u16; INLINE_LABELS]>,
+    order: SmallVec<[usize; INLINE_LABELS]>,
+    occupied: SmallVec<[u64; INLINE_LABELS.div_ceil(64)]>,
+    frontmost: SmallVec<[Option<usize>; INLINE_LABELS]>,
+    classes: SmallVec<[(u16, usize); INLINE_LABELS]>,
+    remap: SmallVec<[u16; INLINE_LABELS]>,
+}
+
+#[cfg(test)]
 fn color_component(
     graph: &ConflictGraph,
     placements: &[(usize, Rect)],
     component: &[usize],
 ) -> (SmallVec<[u16; INLINE_LABELS]>, usize) {
-    let mut best_colors: SmallVec<[u16; INLINE_LABELS]> =
-        SmallVec::from_elem(UNCOLORED, graph.len());
+    let mut workspace = InlineColorWorkspace::default();
+    let depth = color_component_inline(graph, placements, component, &mut workspace);
+    (workspace.best, depth)
+}
+
+fn color_component_inline(
+    graph: &ConflictGraph,
+    placements: &[(usize, Rect)],
+    component: &[usize],
+    w: &mut InlineColorWorkspace,
+) -> usize {
+    // Initialize each scan-sized array only once; later disconnected groups
+    // reset their own vertices, just like the dynamic workspace does.
+    w.best.resize(graph.len(), UNCOLORED);
+    w.colors.resize(graph.len(), UNCOLORED);
+    w.occupied.resize(component.len().div_ceil(64), 0);
     let mut best_layer_count = usize::MAX;
     let mut best_agreement = 0usize;
-    let mut order: SmallVec<[usize; INLINE_LABELS]> = SmallVec::new();
-    let mut colors: SmallVec<[u16; INLINE_LABELS]> = SmallVec::from_elem(UNCOLORED, graph.len());
-    let mut occupied: SmallVec<[u64; 4]> = SmallVec::from_elem(0, component.len().div_ceil(64));
-
     for candidate in CANDIDATE_ORDERS {
-        prepare_order(candidate, placements, graph, component, &mut order);
+        prepare_order(candidate, placements, graph, component, &mut w.order);
         for &vertex in component {
-            colors[vertex] = UNCOLORED;
+            w.colors[vertex] = UNCOLORED;
         }
-        greedy_color(graph, &order, &mut colors, &mut occupied);
+        greedy_color(graph, &w.order, &mut w.colors, &mut w.occupied);
         for _ in 0..2 {
-            compact_colors(graph, component, &mut colors, &mut occupied);
+            compact_colors(graph, component, &mut w.colors, &mut w.occupied);
         }
-        let layer_count = canonicalize_colors(component, &mut colors);
-        let agreement = visual_agreement(graph, component, &colors);
+        let layer_count = canonicalize_colors(
+            component,
+            &mut w.colors,
+            &mut w.frontmost,
+            &mut w.classes,
+            &mut w.remap,
+        );
+        let agreement = visual_agreement(graph, component, &w.colors);
         let better = layer_count < best_layer_count
             || (layer_count == best_layer_count
                 && (agreement > best_agreement
                     || (agreement == best_agreement
-                        && lexicographically_better(component, &colors, &best_colors))));
+                        && lexicographically_better(component, &w.colors, &w.best))));
         if better {
             best_layer_count = layer_count;
             best_agreement = agreement;
             for &vertex in component {
-                best_colors[vertex] = colors[vertex];
+                w.best[vertex] = w.colors[vertex];
             }
         }
     }
-
-    (best_colors, best_layer_count)
+    best_layer_count
 }
 
 fn prepare_order(
@@ -631,29 +774,37 @@ fn first_free_color(occupied: &[u64]) -> usize {
         .unwrap_or(occupied.len() * 64)
 }
 
-fn canonicalize_colors(component: &[usize], colors: &mut [u16]) -> usize {
+fn canonicalize_colors(
+    component: &[usize],
+    colors: &mut [u16],
+    frontmost: &mut SmallVec<[Option<usize>; INLINE_LABELS]>,
+    classes: &mut SmallVec<[(u16, usize); INLINE_LABELS]>,
+    remap: &mut SmallVec<[u16; INLINE_LABELS]>,
+) -> usize {
     let max_color = component
         .iter()
         .map(|vertex| colors[*vertex])
         .max()
         .unwrap_or(0) as usize;
-    let mut frontmost: SmallVec<[Option<usize>; INLINE_LABELS]> =
-        SmallVec::from_elem(None, max_color + 1);
+    frontmost.resize(max_color + 1, None);
+    frontmost.fill(None);
     for &vertex in component {
         let entry = &mut frontmost[usize::from(colors[vertex])];
         *entry = Some(entry.map_or(vertex, |current| current.max(vertex)));
     }
-    let mut classes: SmallVec<[(u16, usize); INLINE_LABELS]> = frontmost
-        .into_iter()
-        .enumerate()
-        .filter_map(|(color, front)| front.map(|front| (color as u16, front)))
-        .collect();
+    classes.clear();
+    classes.extend(
+        frontmost
+            .iter()
+            .enumerate()
+            .filter_map(|(color, front)| front.map(|front| (color as u16, front))),
+    );
     classes.sort_unstable_by(|(left_color, left_front), (right_color, right_front)| {
         right_front
             .cmp(left_front)
             .then_with(|| left_color.cmp(right_color))
     });
-    let mut remap: SmallVec<[u16; INLINE_LABELS]> = SmallVec::from_elem(UNCOLORED, max_color + 1);
+    remap.resize(max_color + 1, UNCOLORED);
     for (new_color, (old_color, _)) in classes.iter().enumerate() {
         remap[usize::from(*old_color)] = new_color as u16;
     }
@@ -757,6 +908,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ten_thousand_dynamic_rows_skip_empty_words_and_reset_on_reuse() {
+        let mut graph = ConflictGraph::new_wide(10_000, Vec::new(), Vec::new());
+        for (a, b) in [(0, 9999), (0, 127), (0, 129), (4999, 5000), (9998, 9999)] {
+            graph.add_edge(a, b);
+        }
+        for (vertex, expected) in [
+            (0, vec![127, 129, 9999]),
+            (127, vec![0]),
+            (4999, vec![5000]),
+            (9999, vec![0, 9998]),
+            (1234, vec![]),
+        ] {
+            let mut actual = Vec::new();
+            graph.for_each_neighbor(vertex, |v| actual.push(v));
+            assert_eq!(actual, expected);
+            assert_eq!(usize::from(graph.degree(vertex)), expected.len());
+        }
+        let mut wide = WideVisualLayerWorkspace::default();
+        graph.recycle(&mut wide);
+        let mut reused = ConflictGraph::new_wide(513, wide.graph_rows, wide.degrees);
+        reused.add_edge(128, 512);
+        let mut actual = Vec::new();
+        reused.for_each_neighbor(512, |v| actual.push(v));
+        assert_eq!(actual, vec![128]);
+        reused.for_each_neighbor(0, |_| panic!("stale word interval"));
+        assert_eq!(reused.degree(0), 0);
     }
 
     #[test]
@@ -884,7 +1064,7 @@ mod tests {
 
     #[test]
     fn wide_boundaries_cover_sparse_pairs_dense_and_dynamic_fallback() {
-        for count in [127, 128, 129, 192, 256] {
+        for count in [127, 128, 129, 192, 255, 256, 257, 511, 512, 513] {
             let placements = (0..count)
                 .map(|index| (index, Rect::new(index as f64 * 100.0, 0.0, 20.0, 20.0)))
                 .collect::<Vec<_>>();
@@ -982,6 +1162,58 @@ mod tests {
                 placements[count / 2].1.width = bad;
                 assert_matches_quadratic_reference(&placements);
             }
+        }
+    }
+
+    #[test]
+    fn inline_graph_crosses_word_and_512_boundaries_without_losing_edges() {
+        for count in [128, 129, 256, 257, 511, 512, 513, 2000] {
+            let mut graph = ConflictGraph::new(count);
+            graph.add_edge(0, count - 1);
+            graph.add_edge(count / 2, count - 1);
+            let mut actual = Vec::new();
+            graph.for_each_neighbor(count - 1, |n| actual.push(n));
+            assert_eq!(actual, vec![0, count / 2]);
+            assert_eq!(graph.degree(count - 1), 2);
+            assert_eq!(graph.words == 0, count <= INLINE_LABELS);
+        }
+        for count in [255, 256, 257, 511, 512, 513] {
+            let placements: Vec<_> = (0..count)
+                .map(|i| (i, Rect::new((i / 2) as f64 * 100.0, 0.0, 20.0, 20.0)))
+                .collect();
+            assert_matches_quadratic_reference(&placements);
+        }
+        // More than 255 layers must still use the 16-bit packed representation.
+        let placements: Vec<_> = (0..512)
+            .map(|i| (i, Rect::new(0.0, 0.0, 20.0, 20.0)))
+            .collect();
+        let mut plan = VisualLayerPlan::default();
+        build_visual_layer_plan(&placements, 512, overlap, &mut plan);
+        assert_eq!(plan.layer_count(), 512);
+        for i in 0..512 {
+            assert_eq!(plan.layer(i), Some(511 - i));
+        }
+        assert!(plan.wide.is_none());
+        let LayerStorage::Wide(layers) = &plan.layers else {
+            panic!("deep plan must use wide packing")
+        };
+        assert!(!layers.spilled());
+    }
+
+    #[test]
+    #[ignore = "allocation probe; run alone with --test-threads=1"]
+    fn up_to_512_labels_build_without_heap_allocations() {
+        for count in [129, 256, 257, 384, 511, 512] {
+            let placements: Vec<_> = (0..count)
+                .map(|i| (i, Rect::new((i / 2) as f64 * 100.0, 0.0, 20.0, 20.0)))
+                .collect();
+            let mut plan = VisualLayerPlan::default();
+            let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+            build_visual_layer_plan(&placements, count, overlap, &mut plan);
+            let change = region.change();
+            assert_eq!(change.allocations, 0, "count={count}: {change:?}");
+            assert_eq!(change.reallocations, 0, "count={count}: {change:?}");
+            assert!(plan.wide.is_none());
         }
     }
 

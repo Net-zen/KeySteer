@@ -1,4 +1,4 @@
-//! Grid mode: Mousemaster-style layered keyboard grid.
+//! Grid mode.
 //!
 //! The active display is divided into a row-major keyboard layout. Selecting a
 //! cell narrows the next layer to that cell; by default, two selections identify

@@ -139,7 +139,7 @@ impl GridView<'_> {
         }
 
         // The large prefix sits above the faint suffix grid, matching the
-        // visual hierarchy of Mousemaster's nested decorations. Its size is
+        // visual hierarchy of nested decorations. Its size is
         // relative to the outer cell rather than capped by the ordinary label
         // font, so the first key remains readable at a glance on any display.
         let primary_color = style.matched_text_color.with_opacity(0.92);

@@ -1,6 +1,6 @@
 //! Count-driven batching shared by native UI scan providers.
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 use smallvec::SmallVec;
 
 /// Accumulate provider items into deterministic, exponentially growing batches.
@@ -31,7 +31,7 @@ impl<T> PartialBatcher<T> {
         Some(self.take_boundary())
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(test)]
     pub(crate) fn extend(&mut self, items: impl IntoIterator<Item = T>) -> SmallVec<[Vec<T>; 1]> {
         let mut ready = SmallVec::new();
         for item in items {
@@ -42,6 +42,10 @@ impl<T> PartialBatcher<T> {
         ready
     }
 
+    pub(crate) fn pending_mut(&mut self) -> &mut Vec<T> {
+        &mut self.pending
+    }
+
     pub(crate) fn finish(&mut self) -> Option<Vec<T>> {
         (!self.pending.is_empty()).then(|| std::mem::take(&mut self.pending))
     }
@@ -50,7 +54,6 @@ impl<T> PartialBatcher<T> {
     ///
     /// If 10 items are flushed before the first 24-item boundary, the next
     /// boundary contains the following 14 items and still lands at total 24.
-    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn flush_pending(&mut self) -> Option<Vec<T>> {
         if self.pending.is_empty() {
             return None;

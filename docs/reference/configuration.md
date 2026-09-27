@@ -320,7 +320,7 @@ layers = [
 
 ```toml
 [ui_hint]
-strategy = "hybrid" # axtree、vision 或 hybrid
+strategy = "hybrid" # axtree、vision、contour 或 hybrid
 hint_characters = "asdfghjkl"
 scan_timeout_ms = 2500
 scan_retry_count = 1
@@ -333,7 +333,9 @@ after_finish = "normal"
 after_click = "normal"
 ```
 
-macOS 支持 Accessibility tree、Vision 和 Hybrid。Windows 默认使用 `hybrid`，将 UIA 与完整视觉管线并行执行、流式显示并去重合并；这能补足最小化、最大化、关闭等原生窗口按钮。`vision` 并行使用可用的系统 OCR 与自动发现的微信 OCR，并在 OCR 无结果时回退内置像素区域识别。OCR 不增加配置字段，也不随发行包分发微信组件。`clickable_roles` 是跨平台语义角色，也可以用 `ax:` 或 `uia:` 指定原生角色。
+Windows 和 macOS 都支持 `axtree`、`vision`、`contour` 和 `hybrid`。默认 `hybrid` 并行合并辅助功能、OCR 与 contour 轮廓检测，流式显示并统一去重；OCR 找到文字后仍保留 contour 的独有目标。`vision` 使用 OCR 与 contour（macOS 还保留原生 Vision 矩形检测），`contour` 仅从截图识别按钮、图标与文字轮廓，不启动 OCR 或辅助功能树扫描。轮廓目标没有文字名称，不能按名称搜索。Windows 自动发现系统及微信 OCR，不随发行包分发微信组件；macOS 的视觉/轮廓捕获需要屏幕录制权限。
+
+单独使用时设置 `[ui_hint]` 下的 `strategy = "contour"`，也支持应用覆盖。Contour 复用 `[ui_hint.vision]` 的 `request_timeout_ms` 和 `rectangle_max_candidates`（默认 10000）；其余置信度、尺寸和角色分类参数仅用于原有视觉识别。`detect_text` / `detect_rectangles` 仅在 `vision` 中控制来源，独立 `contour` 始终启用轮廓。`hybrid` 固定合并辅助功能、所有可用 OCR 和 contour；上述开关或旧的 100 候选配置不会关闭或缩减 hybrid 来源。合并去重后仍受扫描总上限 10000、范围和超时约束，512 内联容量不是标签上限。高分辨率截图只捕获一次，轮廓分析图最多 2,073,600 像素、最长边 2560，卷积按带重叠区的小块处理，跨块连接后再还原桌面坐标；细小目标可能因下采样丢失。`clickable_roles` 仅约束辅助功能语义角色。
 
 ## Window 配置
 
