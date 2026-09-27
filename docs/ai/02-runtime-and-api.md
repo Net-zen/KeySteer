@@ -412,3 +412,6 @@ UI 扫描增量增加 `UiScanResult.retired: Vec<Rect>`：先从当前扫描移�
 
 
 文本拼接仍使用 UiScanResult 的 retired + targets 增量。`api::command::enrich_replacements` 在同批替换、pending、mailbox 和 Hint 应用／延后增量时保留被替换目标的搜索文字。已有名称的原生目标不会吸收不同几何的描述；拼接的静态文字可继承重叠片段文字。
+
+
+WindowTarget 绑定经公共 API 分发。独立切换使用 CycleFrom，模式入口的一次性来源存于目标 WindowMode（跨异步布局交接保留）；普通入口清除此覆盖。模式内 ResolveTarget 在 worker 查一次身份，再按原 WindowAction 提交，连续帧只携带 ID。跨屏移动经独立 Backend capability 同时支持两个平台。

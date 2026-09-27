@@ -372,6 +372,7 @@ impl Mode for ProbeMode {
             ModeEvent::WindowPresets(_) => "window-presets",
             ModeEvent::WindowResult(_) => "window",
             ModeEvent::AudioResult(_) => "audio",
+            ModeEvent::PrepareWindowTarget(_) => "window-target",
             ModeEvent::TemporaryModeChanged { .. } => "temporary",
         };
         self.seen

@@ -1,4 +1,5 @@
 #![cfg(test)]
+mod target_selection;
 
 use super::*;
 use crate::api::Appearance;
@@ -320,6 +321,7 @@ fn window_idle_inventory_and_number_input_do_not_allocate() {
     };
     let w = &config.window;
     let mut mode = WindowSession::new(Settings {
+        target: None,
         all_screens: w.screens == crate::config::WindowScreens::All,
         include_minimized: w.include_minimized,
         lifecycle: crate::api::TargetingLifecycle::default(),

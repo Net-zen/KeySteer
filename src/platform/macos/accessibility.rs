@@ -125,6 +125,35 @@ unsafe extern "C" {
     fn AXValueGetValue(value: AXValueRef, value_type: c_int, output: *mut c_void) -> bool;
 }
 
+pub(super) fn movable_focused_window() -> Result<Option<MovableWindow>, String> {
+    let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+        return Ok(None);
+    };
+    if app.processIdentifier() as u32 == std::process::id() {
+        return Ok(None);
+    }
+    let application = AxApplication::new(app.processIdentifier())?;
+    let attributes = AxAttributes::new();
+    let Some(window) = copy_attribute(application.as_ptr(), &attributes.focused_window) else {
+        return Ok(None);
+    };
+    if !is_ax_element(window.as_ptr()) || !is_ordinary_ax_window(window.as_ptr()) {
+        return Ok(None);
+    }
+    let minimized = CFString::new("AXMinimized");
+    if copy_bool_attribute(window.as_ptr(), &minimized) == Some(true)
+        || element_rect(window.as_ptr(), &attributes).is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(MovableWindow {
+        window,
+        attributes,
+        fullscreen: CFString::new("AXFullScreen"),
+        minimized,
+    }))
+}
+
 /// Resolve the window from the physical pointer, never the focused window.
 pub(super) fn window_under_pointer(
     cursor: crate::api::geometry::Point,

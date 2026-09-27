@@ -126,6 +126,15 @@ pub enum Speed {
 /// A resolved binding: what a key should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Binding {
+    MoveWindowFromToScreen {
+        source: super::window::WindowTarget,
+        target: super::command::WindowScreenTarget,
+    },
+    /// A per-binding override, allocated only for explicitly targeted bindings.
+    WindowTarget {
+        binding: Box<Binding>,
+        source: super::window::WindowTarget,
+    },
     /// Execute each action in order. Mode changes do not stop the sequence.
     Sequence(Vec<Binding>),
     /// Enter a mode. Built-in and plugin modes are indistinguishable here.
@@ -244,6 +253,57 @@ impl Binding {
 
         if Self::DISABLED.contains(&head) && rest.is_empty() {
             return Ok(Binding::Disabled);
+        }
+
+        // Parse targeting only for window verbs; exec/send arguments remain opaque.
+        if (head.starts_with("window")
+            || head == "move_window"
+            || super::window::WindowAction::parse(head).is_some())
+            && let Some(value) = rest
+                .last()
+                .copied()
+                .filter(|s| matches!(*s, "active" | "mouse"))
+        {
+            let source = super::window::WindowTarget::parse(value)?;
+            let Some((base, _)) = text.rsplit_once(char::is_whitespace) else {
+                return Err("missing window action".into());
+            };
+            let base = base.trim_end();
+            let binding = Self::parse(base)?;
+            if let Self::Invoke { verb, args } = &binding
+                && verb == "move_window"
+                && args.len() == 1
+            {
+                use super::command::WindowScreenTarget as T;
+                let target = match args[0].as_str() {
+                    "next" => T::Next,
+                    "previous" | "prev" => T::Previous,
+                    value => T::Index(
+                        value
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|n| n.checked_sub(1))
+                            .ok_or(
+                                "move_window requires next, previous or a positive display number",
+                            )?,
+                    ),
+                };
+                return Ok(Self::MoveWindowFromToScreen { source, target });
+            }
+            let supported = match &binding {
+                Self::Window(action) => action.accepts_target(),
+                Self::ActivateWindow { .. } | Self::ActivateOverlappingWindow { .. } => true,
+                Self::Mode(id) => id.is_window(),
+
+                _ => false,
+            };
+            if !supported {
+                return Err(format!("{base} does not select a window target"));
+            }
+            return Ok(Self::WindowTarget {
+                binding: Box::new(binding),
+                source,
+            });
         }
 
         // Explicit forms, needed when the argument is not a bare word.
@@ -463,6 +523,7 @@ impl Binding {
     /// engine must deliver the release as well as the press.
     pub fn is_held(&self) -> bool {
         match self {
+            Binding::WindowTarget { binding, .. } => binding.is_held(),
             Binding::Sequence(actions) => actions.iter().any(Binding::is_held),
             Binding::Window(action) => action.is_held(),
             Binding::Move(_) | Binding::Scroll(..) | Binding::Speed(_) => true,
@@ -479,7 +540,16 @@ impl Binding {
     /// The mode this binding enters, if any.
     pub fn mode(&self) -> Option<&ModeId> {
         match self {
+            Binding::WindowTarget { binding, .. } => binding.mode(),
             Binding::Mode(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn window_action(&self) -> Option<super::window::WindowAction> {
+        match self {
+            Self::Window(action) => Some(*action),
+            Self::WindowTarget { binding, .. } => binding.window_action(),
             _ => None,
         }
     }
@@ -501,6 +571,18 @@ impl Binding {
             Direction::Right => "right",
         };
         match self {
+            B::MoveWindowFromToScreen { source, target } => {
+                use super::command::WindowScreenTarget as T;
+                let target = match target {
+                    T::Next => "next".into(),
+                    T::Previous => "previous".into(),
+                    T::Index(i) => (i + 1).to_string(),
+                };
+                format!("move_window {target} {}", source.name())
+            }
+            B::WindowTarget { binding, source } => {
+                format!("{} {}", binding.canonical(), source.name())
+            }
             B::Window(action) => action.name().into(),
             B::ActivateOverlappingWindow { backwards } => if *backwards {
                 "window_overlap_previous"
@@ -918,3 +1000,6 @@ mod tests {
         assert!(Binding::parse("move_left now").is_err());
     }
 }
+
+#[cfg(test)]
+mod target_tests;

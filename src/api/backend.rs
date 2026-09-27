@@ -181,6 +181,19 @@ pub trait Backend {
         Err("moving windows between displays is not supported by this backend".into())
     }
 
+    fn move_window_from_to_screen(
+        &self,
+        source: super::window::WindowTarget,
+        target: super::command::WindowScreenTarget,
+    ) -> Result<Option<Point>, String> {
+        match source {
+            super::window::WindowTarget::Mouse => self.move_window_to_screen(target),
+            super::window::WindowTarget::Active => {
+                Err("active window movement is not supported by this backend".into())
+            }
+        }
+    }
+
     fn warp_pointer(&self, to: Point) -> Result<(), String>;
     /// Move from the engine's authoritative position by a relative delta.
     /// Supplying `from` lets native backends avoid querying the cursor again.

@@ -365,6 +365,7 @@ fn window_settings(config: &Config, kind: modes::window::WindowKind) -> modes::w
         config.window.card.clone()
     };
     modes::window::Settings {
+        target: common.target,
         all_screens: common.screens == crate::config::WindowScreens::All,
         include_minimized: common.include_minimized,
         lifecycle: common.lifecycle.clone(),

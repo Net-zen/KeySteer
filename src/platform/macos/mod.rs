@@ -518,12 +518,24 @@ impl Backend for MacOsBackend {
         &self,
         target: crate::api::command::WindowScreenTarget,
     ) -> Result<Option<Point>, String> {
+        self.move_window_from_to_screen(crate::api::window::WindowTarget::Mouse, target)
+    }
+
+    fn move_window_from_to_screen(
+        &self,
+        source: crate::api::window::WindowTarget,
+        target: crate::api::command::WindowScreenTarget,
+    ) -> Result<Option<Point>, String> {
         let mut pending = self.window_move.borrow_mut();
         if pending.is_some() {
             return Ok(None);
         }
         let cursor = self.pointer()?;
-        let Some(window) = accessibility::window_under_pointer(cursor)? else {
+        let selected = match source {
+            crate::api::window::WindowTarget::Mouse => accessibility::window_under_pointer(cursor)?,
+            crate::api::window::WindowTarget::Active => accessibility::movable_focused_window()?,
+        };
+        let Some(window) = selected else {
             return Ok(None);
         };
         let (movement, pointer) = window_move::WindowMove::start(

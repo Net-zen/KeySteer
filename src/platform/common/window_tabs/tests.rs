@@ -2,6 +2,68 @@ use super::*;
 use crate::api::window_tabs::TabGroupId;
 use std::cell::Cell;
 
+#[test]
+fn indexed_application_order_matches_linear_with_reordered_and_missing_members() {
+    use crate::api::window_tabs::TabGroup;
+    let mut seed = 19u64;
+    for count in [
+        0, 1, 4, 7, 8, 9, 15, 16, 17, 23, 24, 25, 31, 32, 33, 48, 96, 128, 129, 257,
+    ] {
+        let mut windows: Vec<_> = (0..count)
+            .map(|i| WindowInfo {
+                id: WindowId(i + 1),
+                app: if i % 7 == 0 {
+                    String::new()
+                } else {
+                    format!("app{}", i % 5)
+                },
+                screen: (i % 3) as usize,
+                title: String::new(),
+                bounds: Rect::new(0.0, 0.0, 100.0, 100.0),
+                resizable: true,
+                maximized: false,
+                minimized: false,
+                fullscreen: false,
+            })
+            .collect();
+        let mut ring: Vec<_> = windows.iter().map(|w| w.id).collect();
+        let mut tabs = TabState::default();
+        for (i, chunk) in ring.chunks(5).enumerate() {
+            if chunk.len() >= 3 && i % 2 == 0 {
+                tabs.groups.push(TabGroup {
+                    id: TabGroupId(i as u32 + 1),
+                    active: chunk[0],
+                    members: chunk
+                        .iter()
+                        .rev()
+                        .copied()
+                        .chain([WindowId(1000 + i as u64)])
+                        .collect(),
+                });
+            }
+        }
+        for iteration in 0..20 {
+            for i in (1..ring.len()).rev() {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                ring.swap(i, seed as usize % (i + 1));
+            }
+            windows.reverse();
+            for state in [None, Some(&tabs)] {
+                let expected = linear_application_cycle_order(&ring, &windows, state);
+                with_application_cycle_order(&ring, &windows, state, |order| {
+                    assert_eq!(order, expected.as_slice());
+                });
+            }
+            if iteration % 3 == 0 {
+                windows.pop(); // Stale ring entry and missing group members.
+            }
+            if iteration % 4 == 0 {
+                ring.pop(); // A group may contain members outside the cycle scope.
+            }
+        }
+    }
+}
+
 struct Fake {
     excluded: BTreeSet<WindowId>,
     windows: BTreeMap<WindowId, Snapshot>,
@@ -2040,4 +2102,116 @@ fn deferred_actions_are_bounded_focus_is_coalesced_and_closed_identity_is_retain
     access.defer_event(TabNativeEvent::Closed(WindowId(1)));
     assert_eq!(access.deferred_events.len(), 64);
     assert_eq!(access.deferred_closed.len(), 1);
+}
+
+#[test]
+fn targeted_tabs_change_only_the_requested_group_without_composing_members() {
+    let mut access = setup();
+    choose(&mut access, 1);
+    choose(&mut access, 2);
+    access
+        .apply_tab(TabOperation::EndGroup, &screens(), &|| false)
+        .unwrap();
+    choose(&mut access, 3);
+    choose(&mut access, 4);
+    let other = access.groups.state.containing(WindowId(3)).unwrap().clone();
+    access
+        .apply_tab(
+            TabOperation::At {
+                target: WindowId(1),
+                operation: Box::new(TabOperation::Dissolve),
+            },
+            &screens(),
+            &|| false,
+        )
+        .unwrap();
+    assert!(access.groups.state.containing(WindowId(1)).is_none());
+    assert!(access.groups.state.containing(WindowId(2)).is_none());
+    assert_eq!(access.groups.state.containing(WindowId(3)), Some(&other));
+    let before = access.groups.state.clone();
+    assert!(
+        access
+            .apply_tab(
+                TabOperation::At {
+                    target: WindowId(99),
+                    operation: Box::new(TabOperation::RemoveActive)
+                },
+                &screens(),
+                &|| false
+            )
+            .is_err()
+    );
+    assert_eq!(access.groups.state, before);
+}
+
+// Frozen pre-optimization ordering algorithm used as an independent oracle.
+fn linear_application_cycle_order(
+    ring: &[WindowId],
+    windows: &[WindowInfo],
+    tabs: Option<&TabState>,
+) -> Vec<WindowId> {
+    let mut ordered = Vec::with_capacity(ring.len());
+    for id in ring {
+        if ordered.contains(id) {
+            continue;
+        }
+        if let Some(group) = tabs.and_then(|state| state.containing(*id)) {
+            ordered.extend(
+                group
+                    .members
+                    .iter()
+                    .copied()
+                    .filter(|member| ring.contains(member)),
+            );
+        } else if let Some(key) = windows
+            .iter()
+            .find(|w| w.id == *id)
+            .and_then(application_group_key)
+        {
+            ordered.extend(ring.iter().copied().filter(|candidate| {
+                !tabs.is_some_and(|state| state.containing(*candidate).is_some())
+                    && windows
+                        .iter()
+                        .any(|w| w.id == *candidate && application_group_key(w) == Some(key))
+            }));
+        } else {
+            ordered.push(*id);
+        }
+    }
+    ordered
+}
+
+#[test]
+#[ignore = "process-wide allocator; run alone with --ignored --test-threads=1"]
+fn cycle_scratch_storage_application_order_stays_inline_through_128_windows() {
+    for count in [
+        0, 1, 7, 8, 9, 15, 16, 17, 23, 24, 25, 31, 32, 33, 48, 96, 128, 129,
+    ] {
+        let windows: Vec<_> = (0..count)
+            .map(|i| WindowInfo {
+                id: WindowId(i + 1),
+                app: format!("app{}", i % 4),
+                screen: 0,
+                title: String::new(),
+                bounds: Rect::new(0.0, 0.0, 100.0, 100.0),
+                resizable: true,
+                maximized: false,
+                minimized: false,
+                fullscreen: false,
+            })
+            .collect();
+        let ring: Vec<_> = windows.iter().map(|w| w.id).collect();
+        let expected = linear_application_cycle_order(&ring, &windows, None);
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        with_application_cycle_order(&ring, &windows, None, |order| {
+            assert_eq!(order, expected.as_slice());
+        });
+        let stats = region.change();
+        assert_eq!(
+            stats.allocations,
+            2 * usize::from(count > 128),
+            "count={count}"
+        );
+        assert_eq!(stats.reallocations, 0, "count={count}");
+    }
 }

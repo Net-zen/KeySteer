@@ -244,7 +244,7 @@ c = "window_activate_previous"
 
 ## 相交窗口切换
 
-`window_overlap_next` / `window_overlap_previous` 复用上述切换逻辑，只选择当前鼠标下窗口所在相交连通组中的窗口（仅边缘接触不算）。相交关系可以传递：A 与 B 重叠、B 与 C 重叠时，A、B、C 属于同一组，即使 A 与 C 不直接重叠。鼠标下无有效窗口时使用前台窗口。已有 Tabs 组时优先按标签顺序检查组内候选，再检查全局其他窗口；逐个跳过连通组外候选，遍历完整列表仍无匹配时不操作，不切换到连通组外窗口。
+`window_overlap_next` / `window_overlap_previous` 复用上述切换逻辑，优先以当前焦点窗口为起点，只选择其所在相交连通组中的窗口（仅边缘接触不算）。相交关系可以传递：A 与 B 重叠、B 与 C 重叠时，A、B、C 属于同一组，即使 A 与 C 不直接重叠。无有效焦点窗口时回退到鼠标下窗口。已有 Tabs 组时优先按标签顺序检查组内候选，再检查全局其他窗口；逐个跳过连通组外候选，不会切换到连通组外窗口。若连通组只有起点窗口，则仅将鼠标移到该窗口中心，不重新激活；无有效起点或没有有效候选时不操作。
 每一步都核对最新窗口几何，未变化时复用连通组，变化后重新计算，不固定首次选择的窗口集合；最小化窗口不参与连通。激活成功后鼠标移到中心，不进入 Window 模式、不显示窗口标识。
 
 ```toml
@@ -372,3 +372,41 @@ macOS 的系统音频控制使用 Core Audio；应用独立音量、静音和输
 
 
 Window、Quick、Editor 中，`V+M` 切换当前应用静音，`Shift+V+M` 切换系统静音。按住不会反复切换；系统动作可重绑为 `window_system_volume_mute`。已有自定义绑定表需添加 `"shift+v+m" = "window_system_volume_mute"`。
+
+## 窗口目标来源
+
+Window、Quick、Editor、Restore、Tab 可以分别设置入口目标：
+
+```toml
+[window]
+target = "active"
+[window_quick]
+target = "mouse"
+[window_editor]
+target = "active"
+[window_restore]
+target = "mouse"
+[window_tab]
+target = "active"
+```
+
+`active` 表示激活窗口，`mouse` 表示鼠标下窗口。省略时保持原有行为：新会话从鼠标下开始，Window 子模式切换保留已选目标。显式设置时，每次进入该模式重新选择；需要结束的布局先等待提交完成。
+
+快捷键可以在动作后直接加 `active` 或 `mouse`，同一个动作的不同按键互不影响：
+
+```toml
+[normal.bindings]
+"alt+j" = "window_overlap_next active"
+"alt+k" = "window_overlap_next mouse"
+"alt+n" = "window_activate_next active"
+"alt+w" = "window mouse"
+"alt+d" = "move_window next active"
+[window.bindings]
+"x" = "window_close active"
+"shift+x" = "window_close mouse"
+"h" = "window_left mouse"
+```
+
+入口快捷键优先于模式的 `target`。模式内没有后缀的动作仍操作已选目标；有后缀的动作在开始时异步选窗，按住移动／缩放期间固定窗口，不随鼠标或焦点漂移。没有指定来源的有效窗口时不回退到另一窗口。原生窗口变化或权限拒绝仍可能使操作失败。
+
+后缀适用于窗口切换、模式入口、跨屏移动、窗口移动／缩放／状态／关闭／应用音频、布局方向／分割／比例／区域移除以及标签成员操作。布局操作只能选现有布局内的窗口；标签操作只影响选中窗口所在组，不会合并组。撤销／重做／恢复初始状态、预设保存／删除／确认、编号输入及系统音频各有独立作用范围，不接受窗口来源后缀。

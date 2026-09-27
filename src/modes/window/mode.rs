@@ -27,6 +27,7 @@ impl WindowKind {
 }
 
 pub struct WindowMode {
+    entry_target: Option<crate::api::window::WindowTarget>,
     kind: WindowKind,
     settings: Settings,
     session: Arc<Mutex<WindowSession>>,
@@ -41,6 +42,7 @@ impl WindowMode {
                     Arc::new(Mutex::new(WindowSession::new(settings.clone())))
                 });
                 Self {
+                    entry_target: settings.target,
                     kind,
                     settings,
                     session: Arc::clone(shared),
@@ -78,6 +80,13 @@ impl Mode for WindowMode {
             .session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if session.selection.is_some() {
+            let mut out = CommandBatch::new();
+            session.cancel_target_selection(&mut out);
+            out.push(Command::SwitchMode(target.clone()));
+            return Some(out);
+        }
+        session.targeted_audio = None;
         session.preserve_session = target.is_window();
         if session.kind == WindowKind::Tab
             && (session.tabs.in_flight.is_some() || !session.tabs.queue.is_empty())
@@ -126,6 +135,10 @@ impl Mode for WindowMode {
             .session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let ModeEvent::PrepareWindowTarget(source) = event {
+            self.entry_target = source;
+            return CommandBatch::new();
+        }
         let mut scope_changed = false;
         if matches!(
             event,
@@ -133,6 +146,7 @@ impl Mode for WindowMode {
         ) {
             scope_changed = session.settings.all_screens != self.settings.all_screens
                 || session.settings.include_minimized != self.settings.include_minimized;
+            session.entry_target = std::mem::replace(&mut self.entry_target, self.settings.target);
             session.kind = self.kind;
             session.settings = self.settings.clone();
             if scope_changed {

@@ -334,3 +334,8 @@ Normal 默认 `\` 绑定 `text_input`。`[text_input.bindings]` 默认 `'enter \
 `normal.targeting` 可覆盖 `grid_cols`、`grid_rows`、`keys`、`max_depth`，未写的字段继承所选 method 的原配置。`method = "recursive_grid"` 另支持 `min_size_width`、`min_size_height` 和 `layers`；显式 layers 整组替换继承列表，`layers = []` 清空。覆盖只影响 Normal，不改变独立网格模式，不接受 UI 字段。布局校验、键位冲突检测和控制器使用同一份合并结果，仅在加载配置时解析。完整注释示例见 `keysteer.default.toml`。
 
 配置任务在发布完成通知前释放工作副本；队列排空后关闭配置 worker，回收线程、通道和队列容量。Reload 失败同时丢弃当时已排队的 Reload／set_config 请求，保留当前有效实例，下次点击重新读取文件。普通 set_config 失败仍按原顺序处理后续独立请求。清理只发生在配置完成路径，不增加普通按键处理工作。
+
+
+Window 家族的可选 `target` 为 active/mouse，只影响模式入口；Binding::WindowTarget 使用紧凑后缀（如 `window_close mouse`），仅有来源配置的绑定分配 Box。入口绑定覆盖模式设置；未配置保留原有会话交接。全局历史、预设、系统音频等不接受来源。配置编辑器每个 Window 模式提供独立入口选项，空值删除覆盖。
+
+配置编译遍历普通路由、应用覆盖和动作序列，把模式入口默认来源与快捷键覆盖合成为最终类型化动作；执行按键时不再解析来源字符串或合并配置优先级。显式 move_window 的方向与来源同样提前编译。运行时只查询动态窗口身份，不能在配置加载时固定焦点或鼠标下窗口。

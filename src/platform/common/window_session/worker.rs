@@ -138,7 +138,13 @@ impl WindowWorker {
         queue.retain(|pending| {
             !matches!(
                 pending.operation(),
-                Some(WindowOperation::CycleOverlapping { .. })
+                Some(
+                    WindowOperation::CycleOverlapping { .. }
+                        | WindowOperation::CycleFrom {
+                            overlapping: true,
+                            ..
+                        }
+                )
             ) && !matches!(pending, Pending::ClearOverlap)
         });
         queue.push_back(Pending::ClearOverlap);
@@ -408,7 +414,9 @@ impl WindowWorker {
                         let id = request.session;
                         let acquisition = matches!(
                             request.operation,
-                            WindowOperation::Acquire(_) | WindowOperation::EndEdit { .. }
+                            WindowOperation::Acquire(_)
+                                | WindowOperation::AcquireFrom(_)
+                                | WindowOperation::EndEdit { .. }
                         );
                         let query = matches!(request.operation, WindowOperation::Enumerate);
                         let request_id = request.id;
@@ -618,7 +626,10 @@ impl WindowWorker {
             self.mailbox.notify();
             return Ok(());
         }
-        if matches!(request.operation, WindowOperation::Acquire(_)) {
+        if matches!(
+            request.operation,
+            WindowOperation::Acquire(_) | WindowOperation::AcquireFrom(_)
+        ) {
             self.mailbox
                 .session
                 .store(request.session, Ordering::Release);
@@ -652,6 +663,7 @@ impl WindowWorker {
                     p.operation(),
                     Some(
                         WindowOperation::Acquire(_)
+                            | WindowOperation::AcquireFrom(_)
                             | WindowOperation::BeginEdit { .. }
                             | WindowOperation::EndEdit { .. }
                     )
@@ -671,7 +683,11 @@ impl WindowWorker {
                     Pending::Audio(..) | Pending::ClearOverlap | Pending::FocusedBounds { .. }
                 ) || matches!(
                     p.operation(),
-                    Some(WindowOperation::Acquire(_) | WindowOperation::BeginEdit { .. })
+                    Some(
+                        WindowOperation::Acquire(_)
+                            | WindowOperation::AcquireFrom(_)
+                            | WindowOperation::BeginEdit { .. }
+                    )
                 )
             });
         }

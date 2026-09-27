@@ -33,3 +33,12 @@ test('search finds Chinese labels, mode names and exact configuration paths', ()
   assert.deepEqual(searchSettings(entries, '  '), [])
   assert.deepEqual(searchSettings(entries, 'missing_nonexistent_setting'), [])
 })
+
+
+test('each window mode exposes its own target source control', () => {
+  for (const mode of ['window', 'window_quick', 'window_editor', 'window_restore', 'window_tab']) {
+    const path = mode + '.target'
+    assert.deepEqual(fieldLocation(path), {page: mode, tab: 'behavior'})
+    assert.ok(styleSearchFields.some(field => field.path === path))
+  }
+})

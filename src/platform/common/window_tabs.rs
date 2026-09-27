@@ -17,40 +17,124 @@ pub(super) fn application_group_key(window: &WindowInfo) -> Option<(usize, &str)
     (!window.app.is_empty()).then_some((window.screen, window.app.as_str()))
 }
 
-/// Keep every candidate, placing peers next to each other in the stable ring.
-/// Do not rotate around the latest target: doing so would trap repeated moves
-/// in that target's application after every pointer warp.
-pub(super) fn application_cycle_order(
+const APPLICATION_CYCLE_SMALL_LIMIT: usize = 8;
+
+/// Borrow the completed order before dropping its size-specific scratch space.
+#[inline]
+pub(super) fn with_application_cycle_order<R>(
     ring: &[WindowId],
     windows: &[WindowInfo],
     tabs: Option<&TabState>,
-) -> Vec<WindowId> {
-    let mut ordered = Vec::with_capacity(ring.len());
-    for id in ring {
+    consume: impl FnOnce(&[WindowId]) -> R,
+) -> R {
+    if ring.len() <= APPLICATION_CYCLE_SMALL_LIMIT {
+        let mut ordered: smallvec::SmallVec<[WindowId; 8]> = smallvec::SmallVec::new();
+        for id in ring {
+            if ordered.contains(id) {
+                continue;
+            }
+            if let Some(group) = tabs.and_then(|state| state.containing(*id)) {
+                ordered.extend(group.members.iter().copied().filter(|id| ring.contains(id)));
+            } else if let Some(key) = windows
+                .iter()
+                .find(|window| window.id == *id)
+                .and_then(application_group_key)
+            {
+                ordered.extend(ring.iter().copied().filter(|candidate| {
+                    !tabs.is_some_and(|state| state.containing(*candidate).is_some())
+                        && windows.iter().any(|window| {
+                            window.id == *candidate && application_group_key(window) == Some(key)
+                        })
+                }));
+            } else {
+                ordered.push(*id);
+            }
+        }
+        consume(&ordered)
+    } else {
+        with_large_application_cycle_order(ring, windows, tabs, consume)
+    }
+}
+
+#[inline(never)]
+fn with_large_application_cycle_order<R>(
+    ring: &[WindowId],
+    windows: &[WindowInfo],
+    tabs: Option<&TabState>,
+    consume: impl FnOnce(&[WindowId]) -> R,
+) -> R {
+    consume(&large_application_cycle_order(ring, windows, tabs))
+}
+
+/// Keep every candidate, placing peers next to each other in the stable ring.
+/// Do not rotate around the latest target: doing so would trap repeated moves
+/// in that target's application after every pointer warp.
+#[inline(always)]
+fn large_application_cycle_order(
+    ring: &[WindowId],
+    windows: &[WindowInfo],
+    tabs: Option<&TabState>,
+) -> smallvec::SmallVec<[WindowId; 128]> {
+    let mut ordered = smallvec::SmallVec::with_capacity(ring.len());
+    for (start, id) in ring.iter().enumerate() {
         if ordered.contains(id) {
             continue;
         }
         if let Some(group) = tabs.and_then(|state| state.containing(*id)) {
-            ordered.extend(
-                group
-                    .members
-                    .iter()
-                    .copied()
-                    .filter(|member| ring.contains(member)),
-            );
-        } else if let Some(key) = windows
+            ordered.extend(group.members.iter().copied().filter(|id| ring.contains(id)));
+        } else if windows
             .iter()
-            .find(|w| w.id == *id)
+            .find(|window| window.id == *id)
             .and_then(application_group_key)
+            .is_some()
         {
-            ordered.extend(ring.iter().copied().filter(|candidate| {
-                !tabs.is_some_and(|state| state.containing(*candidate).is_some())
-                    && windows
-                        .iter()
-                        .any(|w| w.id == *candidate && application_group_key(w) == Some(key))
-            }));
+            // Explicit tab groups need no application metadata. Build the
+            // application index only when an ungrouped application needs it.
+            return append_application_order(ring, windows, tabs, start, ordered);
         } else {
             ordered.push(*id);
+        }
+    }
+    ordered
+}
+
+#[inline(never)]
+fn append_application_order(
+    ring: &[WindowId],
+    windows: &[WindowInfo],
+    tabs: Option<&TabState>,
+    start: usize,
+    mut ordered: smallvec::SmallVec<[WindowId; 128]>,
+) -> smallvec::SmallVec<[WindowId; 128]> {
+    // Resolve metadata and group membership once per ring entry. The same
+    // large-path algorithm spills scratch storage only above 128 entries.
+    let entries: smallvec::SmallVec<[_; 128]> = ring
+        .iter()
+        .map(|id| {
+            let group = tabs.and_then(|state| state.containing(*id));
+            (
+                *id,
+                group
+                    .is_none()
+                    .then(|| windows.iter().find(|window| window.id == *id))
+                    .flatten(),
+                group,
+            )
+        })
+        .collect();
+    for &(id, window, group) in &entries[start..] {
+        if ordered.contains(&id) {
+            continue;
+        }
+        if let Some(group) = group {
+            ordered.extend(group.members.iter().copied().filter(|id| ring.contains(id)));
+        } else if let Some(key) = window.and_then(application_group_key) {
+            ordered.extend(entries.iter().filter_map(|&(id, window, group)| {
+                (group.is_none() && window.and_then(application_group_key) == Some(key))
+                    .then_some(id)
+            }));
+        } else {
+            ordered.push(id);
         }
     }
     ordered
@@ -641,6 +725,29 @@ impl<A: WindowAccess> Grouped<A> {
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         match operation {
+            TabOperation::At { target, operation } => {
+                if !matches!(
+                    operation.as_ref(),
+                    TabOperation::RemoveActive
+                        | TabOperation::Dissolve
+                        | TabOperation::Cycle { .. }
+                        | TabOperation::Reorder { .. }
+                ) {
+                    return Err("Unsupported targeted tab operation".into());
+                }
+                let group = self
+                    .groups
+                    .state
+                    .containing(target)
+                    .ok_or("Window is not in a tab group")?;
+                let group_id = group.id;
+                if group.active != target {
+                    self.activate_tab(target, screens, cancelled)?;
+                }
+                self.groups.state.active = Some(target);
+                self.groups.state.target = Some(WindowTarget::Group(group_id));
+                self.apply_tab(*operation, screens, cancelled)?;
+            }
             TabOperation::EndGroup => self.groups.state.target = None,
             TabOperation::Activate(id) => self.activate_tab(id, screens, cancelled)?,
             TabOperation::Choose(target) => {
@@ -1417,6 +1524,17 @@ impl<A: WindowAccess> WindowAccess for Grouped<A> {
                     .map(|snapshot| snapshot.info)
             })
             .transpose()
+    }
+    fn resolve_window_target(
+        &mut self,
+        source: crate::api::window::WindowTarget,
+        screens: &[Screen],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<WindowId>, String> {
+        // Source lookup is independent of the current display's numbered inventory.
+        // Avoid constructing a second grouped inventory just to obtain one identity.
+        self.native
+            .resolve_window_target(source, screens, cancelled)
     }
     fn focused_window(&self, windows: &[WindowInfo]) -> Option<WindowId> {
         self.native.focused_window(windows)

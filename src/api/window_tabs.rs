@@ -43,6 +43,10 @@ impl TabState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TabOperation {
+    At {
+        target: WindowId,
+        operation: Box<TabOperation>,
+    },
     /// Refresh eligible windows and automatically group matching applications.
     Enter {
         screen: usize,

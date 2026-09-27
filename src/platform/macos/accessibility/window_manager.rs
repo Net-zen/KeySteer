@@ -215,6 +215,24 @@ fn wait_frame(
 }
 
 impl MacWindows {
+    fn retain_acquired(
+        &mut self,
+        window: MovableWindow,
+        screens: &[Screen],
+    ) -> Result<Option<WindowInfo>, String> {
+        let mut pid = 0;
+        // SAFETY: window is retained and pid is a writable out-parameter.
+        if unsafe { AXUIElementGetPid(window.window.as_ptr(), &mut pid) } != AX_OK
+            || pid as u32 == std::process::id()
+        {
+            return Ok(None);
+        }
+        if !is_ordinary_ax_window(window.window.as_ptr()) {
+            return Ok(None);
+        }
+        self.retain(window, pid, screens).map(Some)
+    }
+
     fn retain(
         &mut self,
         window: MovableWindow,
@@ -375,6 +393,26 @@ impl MacWindows {
 impl WindowAccess for MacWindows {
     fn focused_bounds(&self, process: u32) -> Result<Option<Rect>, String> {
         super::focused_window_bounds(process as libc::pid_t).map(Some)
+    }
+    fn resolve_window_target(
+        &mut self,
+        source: crate::api::window::WindowTarget,
+        screens: &[Screen],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<WindowId>, String> {
+        if cancelled() {
+            return Ok(None);
+        }
+        match source {
+            crate::api::window::WindowTarget::Mouse => self.pointer_window(screens),
+            crate::api::window::WindowTarget::Active => {
+                let Some(window) = super::movable_focused_window()? else {
+                    return Ok(None);
+                };
+                self.retain_acquired(window, screens)
+                    .map(|window| window.map(|w| w.id))
+            }
+        }
     }
     fn focused_window(&self, _windows: &[WindowInfo]) -> Option<WindowId> {
         self.focused_window_id()
@@ -544,17 +582,7 @@ impl WindowAccess for MacWindows {
         let Some(window) = window_under_pointer(point)? else {
             return Ok(None);
         };
-        let mut pid = 0;
-        // SAFETY: window is retained and pid is a writable out-parameter.
-        if unsafe { AXUIElementGetPid(window.window.as_ptr(), &mut pid) } != AX_OK
-            || pid as u32 == std::process::id()
-        {
-            return Ok(None);
-        }
-        if !is_ordinary_ax_window(window.window.as_ptr()) {
-            return Ok(None);
-        }
-        self.retain(window, pid, screens).map(Some)
+        self.retain_acquired(window, screens)
     }
     fn enumerate(
         &mut self,

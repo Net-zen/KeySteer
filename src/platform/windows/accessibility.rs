@@ -823,6 +823,11 @@ extern "system" fn collect_window_at_point(hwnd: HWND, _data: LPARAM) -> BOOL {
     })
 }
 
+pub(super) fn movable_focused_window() -> Option<(HWND, u32, Rect)> {
+    let foreground = super::native::foreground_window();
+    ordinary_window_target(foreground, false).filter(|(root, _, _)| *root == foreground)
+}
+
 pub(super) fn movable_window_under_pointer(
     cursor: crate::api::geometry::Point,
 ) -> Result<Option<(HWND, u32, Rect)>, String> {

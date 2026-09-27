@@ -218,3 +218,8 @@ mode logic and continue executing native close only in their backends.
 ## Text Input
 
 `src/modes/text_input.rs` 是无状态的透传模式，激活时隐藏覆盖层；进入／返回交给 Engine 普通绑定，没有 Enter 特殊处理。进入复用安全清理，停止 Normal 手势并释放 toggle／press，隐藏帮助且不启动 Quick Switch。Primary 临时层消费触发键，松开后停止借用的连续手势及锁定输入，保留物理边沿配对。路由支持标准继承、临时层和穿透键；不调用原生 API，不创建定时器。
+
+
+`window/target_selection.rs` 仅显式选窗时分配队列，串行处理窗口身份查询和动作，提前松键仍执行一次短按并释放；退出、挂起、临时层及重启清理队列。Quick 先提交旧布局再重新选窗；Tree 只改变已有成员的选中区域。每次新手势重新查询窗口身份，按住期间不漂移目标。模式入口配置等待旧编辑结束，保留会话历史。
+
+取消在途选窗时，模式忽略迟到结果，并排队 RestoreTarget 恢复后台会话锚点；该命令不激活窗口、不移动指针，避免后续库存重新带回已取消的目标。

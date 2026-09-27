@@ -248,10 +248,10 @@ c = "window_activate_previous"
 ## Cycle overlapping windows
 
 `window_overlap_next` / `window_overlap_previous` select windows in the overlap-connected component
-of the window under the pointer (foreground fallback). If A overlaps B and B overlaps C, all three belong to the same component even when A and C do not overlap directly. Touching edges do not count.
+of the focused window, falling back to the window under the pointer when focus is unavailable. If A overlaps B and B overlaps C, all three belong to the same component even when A and C do not overlap directly. Touching edges do not count.
 Existing Tabs groups take priority in their tab order, followed by the remaining global candidates.
-Candidates outside the component are skipped in the requested direction. If the entire ring has no
-other component member, focus and pointer remain unchanged; there is no fallback outside the component.
+Candidates outside the component are skipped in the requested direction. If the component contains only the starting window, the pointer moves to its center without reactivating it.
+Without a valid starting window or an available candidate, nothing changes; there is no fallback outside the component.
 Each step checks fresh window geometry, reusing the component while unchanged and recomputing when needed; minimized windows cannot connect components.
 The pointer follows the activated window's center; no Window mode or window labels appear.
 
@@ -365,3 +365,26 @@ On macOS, system audio uses Core Audio. Per-application volume, mute, and output
 
 
 In Window, Quick and Editor, `V+M` toggles application mute and `Shift+V+M` toggles system mute. Holding either chord does not toggle repeatedly. The system action is `window_system_volume_mute`; add `"shift+v+m" = "window_system_volume_mute"` to existing custom binding tables.
+
+## Window target source
+
+Each of `[window]`, `[window_quick]`, `[window_editor]`, `[window_restore]` and `[window_tab]` accepts optional `target = "active"` or `target = "mouse"`. These select the focused window or the window under the pointer on entry. Omission preserves existing behavior: pointer selection for a new session and the selected window across Window mode handoffs. Explicit entry selection waits for any required layout commit.
+
+Bindings can independently append a source:
+
+```toml
+[normal.bindings]
+"alt+j" = "window_overlap_next active"
+"alt+k" = "window_overlap_next mouse"
+"alt+n" = "window_activate_next active"
+"alt+w" = "window mouse"
+"alt+d" = "move_window next active"
+[window.bindings]
+"x" = "window_close active"
+"shift+x" = "window_close mouse"
+"h" = "window_left mouse"
+```
+
+An entry binding overrides the mode's `target`. In-mode actions without a suffix retain the selected window. Explicit actions resolve asynchronously once at gesture start and hold that identity throughout continuous movement or resizing. A missing source never falls back to another window. Native changes or permission rejection can still fail an operation.
+
+Supported operations include cycling, mode entry, moving across displays, movement/resize/state/close/application audio, layout navigation/split/ratio/region removal, and tab member operations. Layout actions require membership in the existing layout; tab actions affect the selected window's group without merging groups. History, initial-state restoration, preset save/delete/confirm, numeric input, and system audio have independent scopes and reject a source suffix.

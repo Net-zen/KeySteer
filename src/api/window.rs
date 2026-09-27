@@ -107,6 +107,27 @@ pub enum WindowAction {
 }
 
 impl WindowAction {
+    /// History, presets and system audio have their own explicit scope, not a window anchor.
+    pub fn accepts_target(self) -> bool {
+        !matches!(
+            self,
+            Self::Undo
+                | Self::Redo
+                | Self::ResetInitial
+                | Self::SaveLayout
+                | Self::DeletePreset
+                | Self::Confirm
+                | Self::TabEnd
+                | Self::TabPrefix
+                | Self::TabSeparator
+                | Self::SystemVolumeDown
+                | Self::SystemVolumeUp
+                | Self::SystemVolumeMute
+                | Self::SystemAudioPrevious
+                | Self::SystemAudioNext
+        )
+    }
+
     pub const fn is_held(self) -> bool {
         matches!(
             self,
@@ -264,9 +285,45 @@ pub enum WindowChange {
     ToggleMinimize,
 }
 
+/// Explicit window selection is strict: absence never falls back to another source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowTarget {
+    Active,
+    Mouse,
+}
+
+impl WindowTarget {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "active" => Ok(Self::Active),
+            "mouse" => Ok(Self::Mouse),
+            _ => Err("window target must be active or mouse".into()),
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Mouse => "mouse",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowOperation {
-    /// Scan for overlapping peers, preferring tabs; no match leaves focus unchanged.
+    CycleFrom {
+        backwards: bool,
+        overlapping: bool,
+        source: WindowTarget,
+    },
+    /// Resolve once on the worker; subsequent gesture frames use the returned identity.
+    ResolveTarget(WindowTarget),
+    /// Restore a cancelled lookup's session anchor without activating a window.
+    RestoreTarget(Option<WindowId>),
+    Retarget(WindowTarget),
+    AcquireFrom(WindowTarget),
+    /// Cycle peers of the focused window (pointer fallback), preferring tabs.
+    /// An isolated anchor only centers the pointer; no valid anchor is a no-op.
     CycleOverlapping {
         backwards: bool,
     },
@@ -337,13 +394,16 @@ impl WindowOperation {
     pub(crate) fn is_standalone_cycle(&self) -> bool {
         matches!(
             self,
-            Self::CycleActive { .. } | Self::CycleOverlapping { .. }
+            Self::CycleActive { .. } | Self::CycleOverlapping { .. } | Self::CycleFrom { .. }
         )
     }
     pub fn precedes_inventory(&self) -> bool {
         matches!(
             self,
-            Self::Tabs(_)
+            Self::Retarget(_)
+                | Self::ResolveTarget(_)
+                | Self::AcquireFrom(_)
+                | Self::Tabs(_)
                 | Self::BeginEdit { .. }
                 | Self::ApplyLayout { .. }
                 | Self::EndEdit { .. }

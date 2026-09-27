@@ -1953,3 +1953,40 @@ fn window_temporary_normal_screen_binding_beats_size_and_keeps_session() {
         );
     }
 }
+
+
+#[test]
+fn window_entry_binding_overrides_mode_target_and_default_binding_keeps_mode_setting() {
+    use crate::api::window::{WindowTarget, WindowOperation};
+    for (text, source) in [("window mouse", WindowTarget::Mouse), ("window active", WindowTarget::Active), ("window", WindowTarget::Active)] {
+        let mut config = Config::default();
+        config.window.target = Some(WindowTarget::Active);
+        config.normal.bindings.insert("g".into(), Binding::parse(text).unwrap());
+        let (mut engine, mut backend, log) = window_test_engine(&config);
+        for event in [key_down("g"), key_up("g")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        assert_eq!(engine.active_mode(), &ModeId::window());
+        assert_eq!(log.lock().unwrap().window_requests[0].operation, WindowOperation::AcquireFrom(source));
+        for event in [key_down("q"), key_up("q")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        engine.activate(ModeId::normal(), Some(ModeId::idle()), &mut backend).unwrap();
+        let before = log.lock().unwrap().window_requests.len();
+        for event in [key_down("left_alt"), key_down("w"), key_up("w"), key_up("left_alt")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        assert_eq!(log.lock().unwrap().window_requests[before].operation, WindowOperation::AcquireFrom(WindowTarget::Active));
+    }
+}
+
+#[test]
+fn targeted_cycle_bindings_compile_both_sources_without_entering_window_mode() {
+    use crate::api::window::{WindowTarget, WindowOperation};
+    let config = Config::parse(r#"[normal.bindings]
+x = "window_overlap_next active"
+c = "window_overlap_previous mouse"
+v = "window_activate_next active"
+b = "window_activate_previous mouse"
+"#).unwrap();
+    let (mut engine, mut backend, log) = window_test_engine(&config);
+    for (key, source, overlapping, backwards) in [("x", WindowTarget::Active, true, false), ("c", WindowTarget::Mouse, true, true), ("v", WindowTarget::Active, false, false), ("b", WindowTarget::Mouse, false, true)] {
+        for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        assert_eq!(engine.active_mode(), &ModeId::normal());
+        assert_eq!(log.lock().unwrap().window_requests.last().unwrap().operation, WindowOperation::CycleFrom { backwards, overlapping, source });
+    }
+}

@@ -49,7 +49,8 @@ export default defineComponent({
 
     function update(path: string, value: unknown): void {
       const next = cloneConfigDocument(props.document)
-      setConfigPath(next, path, value)
+      if (/^window(?:_quick|_editor|_restore|_tab)?\.target$/.test(path) && value === '') deleteConfigPath(next, path)
+      else setConfigPath(next, path, value)
       emit('change', next)
     }
 
@@ -185,7 +186,7 @@ export const StyleControl = defineComponent({
             }} />
           ) : field.kind === 'select' ? (
             <select value={String(value)} onChange={(event) => props.onUpdate((event.target as HTMLSelectElement).value)}>
-              {field.options?.map((option) => <option value={option}>{option}</option>)}
+              {field.options?.map((option) => <option value={option}>{option || t('保留现有行为')}</option>)}
             </select>
           ) : (
             <input

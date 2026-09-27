@@ -12,6 +12,12 @@ impl WindowSession {
         if result.session != self.session || result.id <= self.result {
             return out;
         }
+        if self.ignores_target_result(result.id) {
+            self.result = result.id;
+            return out;
+        }
+        let selected_action = self.take_target_action(result.id);
+        let selected_ok = result.message.is_none() && result.target.is_some();
         self.result = result.id;
         let full_inventory = result.windows.is_some()
             && (result.edit.is_none()
@@ -187,6 +193,10 @@ impl WindowSession {
             && self.target.is_some()
             && self.edit.is_none()
             && self.pending_transition.is_none()
+            && self
+                .selection
+                .as_ref()
+                .is_none_or(|s| s.ready_for_result(result.id))
             && (self.resume_quick || (!had_target && self.kind == WindowKind::Quick))
         {
             self.resume_quick = false;
@@ -220,6 +230,13 @@ impl WindowSession {
         }
         if result.id == 1 && !had_inventory {
             self.refresh(&mut out);
+        }
+        if let Some(action) = selected_action {
+            if selected_ok {
+                self.replay_target_action(action, ctx, &mut out);
+            }
+            self.start_target_selection(ctx, &mut out);
+            changed = true;
         }
         // Submission is not proof of closure. Reconcile immediately, without
         // waiting for the periodic inventory timer or retiring identities early.

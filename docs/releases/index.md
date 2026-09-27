@@ -5,6 +5,12 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.10.26
+
+Window、Quick、Editor、Restore 和 Tabs 现在支持配置入口目标：`active` 选择激活窗口，`mouse` 选择鼠标下窗口；单条快捷键也可追加目标后缀。未配置时保持原有行为。
+
+Window, Quick, Editor, Restore, and Tabs now support configurable entry targets: `active` selects the focused window and `mouse` selects the window under the pointer. Individual bindings can also append a target suffix; omitting it preserves the existing behavior.
+
 ## 0.10.25
 
 优化 UI Hint。

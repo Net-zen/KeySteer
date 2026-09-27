@@ -7,6 +7,7 @@ mod inventory;
 mod numbering;
 mod presets;
 mod tabs;
+mod target_selection;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -31,6 +32,7 @@ const INVENTORY_TIMER: &str = "window_inventory";
 
 #[derive(Clone, Debug)]
 pub struct Settings {
+    pub target: Option<crate::api::window::WindowTarget>,
     pub all_screens: bool,
     pub include_minimized: bool,
     pub lifecycle: crate::api::TargetingLifecycle,
@@ -54,6 +56,8 @@ enum EditModel {
 
 #[derive(Clone, Copy, Debug)]
 enum Finish {
+    TargetSelection,
+    TargetEntry(crate::api::window::WindowTarget),
     Commit,
     Cancel,
     QuickReset,
@@ -104,6 +108,13 @@ enum DeferredEdit {
 }
 
 pub struct WindowSession {
+    // Keep optional gesture bookkeeping out of the default session's inline state.
+    #[allow(clippy::box_collection)]
+    ignored_selections: Option<Box<std::collections::BTreeSet<u64>>>,
+    #[allow(clippy::box_collection)]
+    targeted_audio: Option<Box<BTreeMap<Key, WindowId>>>,
+    selection: Option<Box<target_selection::Selection>>,
+    entry_target: Option<crate::api::window::WindowTarget>,
     tabs: tabs::Interaction,
     settings: Settings,
     kind: WindowKind,
@@ -156,6 +167,10 @@ pub struct WindowSession {
 impl WindowSession {
     pub fn new(settings: Settings) -> Self {
         Self {
+            ignored_selections: None,
+            targeted_audio: None,
+            selection: None,
+            entry_target: None,
             tabs: tabs::Interaction::default(),
             settings,
             kind: WindowKind::Move,
@@ -266,7 +281,8 @@ impl WindowSession {
     }
 
     fn refresh(&mut self, out: &mut CommandBatch) {
-        if self.refresh_pending.is_none()
+        if self.selection.is_none()
+            && self.refresh_pending.is_none()
             && self.held.is_empty()
             && !self.temporary
             && self
@@ -558,6 +574,7 @@ impl WindowSession {
                     ModeEvent::Pushed { previous } => self.previous = previous.clone(),
                     _ => {}
                 }
+                self.cancel_target_selection(&mut out);
                 self.finished = false;
                 self.delete_selection = None;
                 self.deleting_presets = false;
@@ -567,7 +584,15 @@ impl WindowSession {
                 self.tabs.in_flight = None;
                 if self.session != 0 && !matches!(event, ModeEvent::Restarted) {
                     self.temporary = false;
-                    self.enter_kind(ctx, &mut out);
+                    if let Some(source) = self.entry_target.take() {
+                        if self.edit.is_some() {
+                            self.finish_edit(Finish::TargetEntry(source), &mut out);
+                        } else {
+                            self.retarget_entry(source, &mut out);
+                        }
+                    } else {
+                        self.enter_kind(ctx, &mut out);
+                    }
                     out.push(Command::SetTimer {
                         id: INVENTORY_TIMER.into(),
                         delay: Duration::from_millis(500),
@@ -582,6 +607,7 @@ impl WindowSession {
                     out.push(Command::CancelWindowSession(self.session));
                 }
                 self.session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+                self.ignored_selections = None;
                 self.request = 0;
                 self.result = 0;
                 self.group = 0;
@@ -616,7 +642,11 @@ impl WindowSession {
                     .position(|s| s.bounds.contains(&ctx.cursor))
                     .unwrap_or(0);
                 self.status = Some("Finding target…".into());
-                self.request(WindowOperation::Acquire(ctx.cursor), &mut out);
+                let acquire = self.entry_target.take().map_or(
+                    WindowOperation::Acquire(ctx.cursor),
+                    WindowOperation::AcquireFrom,
+                );
+                self.request(acquire, &mut out);
                 self.enter_pending = true;
                 if self.kind.is_library() {
                     self.open_library(&mut out);
@@ -628,6 +658,7 @@ impl WindowSession {
                 });
             }
             ModeEvent::Deactivated => {
+                self.cancel_target_selection(&mut out);
                 if self.kind == WindowKind::Tab {
                     self.tabs.restore = None;
                     self.tabs.restoring = None;
@@ -674,6 +705,7 @@ impl WindowSession {
                 return out;
             }
             ModeEvent::Suspended => {
+                self.cancel_target_selection(&mut out);
                 self.stop_movement(&mut out);
                 self.temporary = false;
                 self.group += 1;
@@ -704,6 +736,7 @@ impl WindowSession {
             }
             ModeEvent::TemporaryModeChanged { active } => {
                 if *active {
+                    self.cancel_target_selection(&mut out);
                     if self.edit.is_none() && self.kind != WindowKind::Tab {
                         self.cancel_pending(&mut out);
                     }
@@ -748,7 +781,11 @@ impl WindowSession {
                 state,
                 key,
             } => {
-                let action = match binding.as_ref() {
+                let (base, source) = match binding.as_ref() {
+                    Binding::WindowTarget { binding, source } => (binding.as_ref(), Some(*source)),
+                    other => (other, None),
+                };
+                let action = match base {
                     Binding::Window(action) => *action,
                     Binding::Move(direction) if self.kind == WindowKind::Tab => match direction {
                         Direction::Left => W::TabMoveLeft,
@@ -761,7 +798,11 @@ impl WindowSession {
                 if *state == KeyState::Down {
                     self.status = None;
                 }
-                self.action(action, *state, key, ctx, &mut out);
+                if source.is_some() || self.selection.is_some() {
+                    self.targeted_action(action, source, *state, key, ctx, &mut out);
+                } else {
+                    self.action(action, *state, key, ctx, &mut out);
+                }
                 redraw = *state == KeyState::Down;
             }
             ModeEvent::Key {

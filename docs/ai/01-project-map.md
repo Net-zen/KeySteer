@@ -182,3 +182,6 @@ macOS：
 - `src/modes/text_input.rs`：临时文本输入透传模式，退出使用标准可配置绑定。
 
 `src/platform/common/contour/regions.rs`：Windows/macOS 共用的有界纹理图像候选；归属与晚到 OCR 描述更新复用 spatial_index / scan_accumulator，详见 05-ui-scanning。
+
+
+`src/modes/window/target_selection.rs`：按键级窗口来源、异步选窗队列与固定身份手势；测试分别覆盖共享 worker、mode 与配置解析。

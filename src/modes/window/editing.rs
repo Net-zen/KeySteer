@@ -813,7 +813,9 @@ impl WindowSession {
                 if !committed
                     && matches!(
                         finish,
-                        Finish::Tree
+                        Finish::TargetSelection
+                            | Finish::TargetEntry(_)
+                            | Finish::Tree
                             | Finish::Tile
                             | Finish::Select(_)
                             | Finish::Cycle { .. }
@@ -822,12 +824,18 @@ impl WindowSession {
                             | Finish::ResetInitial
                     )
                 {
+                    self.selection = None;
                     self.restore_pending = false;
                     self.pending_template = None;
                     self.rebuild_numbers();
                     return;
                 }
                 match finish {
+                    Finish::TargetSelection => {
+                        self.resume_quick = self.kind == WindowKind::Quick;
+                        self.start_target_selection(ctx, out);
+                    }
+                    Finish::TargetEntry(source) => self.retarget_entry(source, out),
                     Finish::Tree => self.start_edit(true, ctx, out),
                     Finish::QuickReset => {
                         self.start_edit(false, ctx, out);

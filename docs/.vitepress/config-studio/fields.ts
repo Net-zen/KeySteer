@@ -27,6 +27,7 @@ export const fields = {
       { path: 'window.ui.border_color', label: '目标描边', kind: 'color' },
     ],
     layout: [
+      { path: 'window.target', label: '入口目标（active 激活窗口 / mouse 鼠标下窗口）', kind: 'select', options: ['', 'active', 'mouse'] },
       { path: 'window.screens', label: '窗口范围（current 当前屏幕 / all 全部屏幕）', kind: 'select', options: ['current', 'all'] },
       { path: 'window.include_minimized', label: '包含最小化窗口', kind: 'boolean' },
       { path: 'window.enabled', label: '启用 Window', kind: 'boolean' },

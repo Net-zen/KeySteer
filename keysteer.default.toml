@@ -345,6 +345,8 @@ temporary_mode_passthrough_keys = []
 # "alt+e" = "window_editor"
 # "alt+r" = "window_restore"
 [window]
+# Optional entry target: "active" or "mouse". Omit to preserve session handoffs.
+# target = "active"
 screens = "current"
 include_minimized = false
 enabled = true
@@ -426,6 +428,8 @@ number_min_width = 38.0
 font_size = 28
 
 [window_quick]
+# Optional entry target: "active" or "mouse". Omit to preserve session handoffs.
+# target = "active"
 screens = "current"
 include_minimized = false
 enabled = true
@@ -467,6 +471,8 @@ q = "window"
 font_size = 28
 
 [window_editor]
+# Optional entry target: "active" or "mouse". Omit to preserve session handoffs.
+# target = "active"
 screens = "current"
 include_minimized = false
 enabled = true
@@ -522,6 +528,8 @@ position = ["0%", "50%", "100%", "50%"]
 font_size = 28
 
 [window_restore]
+# Optional entry target: "active" or "mouse". Omit to preserve session handoffs.
+# target = "active"
 screens = "current"
 include_minimized = false
 enabled = true
@@ -548,6 +556,8 @@ font_size = 28
 # Active-member window groups: 12t34t creates two groups; ~ selects a group number.
 # Ordinary digits keep their window identities. Space ends an ambiguous number.
 [window_tab]
+# Optional entry target: "active" or "mouse". Omit to preserve session handoffs.
+# target = "active"
 screens = "current"
 include_minimized = false
 enabled = true

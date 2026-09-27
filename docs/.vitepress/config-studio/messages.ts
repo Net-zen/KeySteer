@@ -236,6 +236,8 @@ export const englishMessages: Record<string, string> = {
   "面板文字（共用 key_help）": "Panel text (shared key_help)",
   "目标描边": "Target outline",
   "窗口范围（current 当前屏幕 / all 全部屏幕）": "Window scope (current screen / all screens)",
+  "入口目标（active 激活窗口 / mouse 鼠标下窗口）": "Entry target (active focused window / mouse window under pointer)",
+  "保留现有行为": "Keep existing behavior",
   "包含最小化窗口": "Include minimized windows",
   "启用 Window": "Enable Window",
   "歧义编号等待（毫秒）": "Ambiguous number timeout (ms)",

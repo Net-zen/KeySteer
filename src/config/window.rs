@@ -22,6 +22,7 @@ pub enum WindowScreens {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowModeConfig {
+    pub target: Option<crate::api::window::WindowTarget>,
     pub screens: WindowScreens,
     pub include_minimized: bool,
     pub enabled: bool,
@@ -39,6 +40,7 @@ pub struct WindowModeConfig {
 impl Default for WindowModeConfig {
     fn default() -> Self {
         Self {
+            target: None,
             screens: WindowScreens::Current,
             include_minimized: false,
             enabled: true,
@@ -73,6 +75,7 @@ macro_rules! window_config {
                 #[derive(Deserialize)]
                 #[serde(default, deny_unknown_fields)]
                 struct Document {
+                    target: Option<crate::api::window::WindowTarget>,
                     screens: WindowScreens, include_minimized: bool,
                     enabled: bool, inherits: Vec<String>, temporary_mode: Option<String>,
                     temporary_mode_keys: Vec<String>, temporary_mode_passthrough_keys: Vec<String>, number_timeout_ms: u64, border_width: f64,
@@ -92,14 +95,14 @@ macro_rules! window_config {
                 impl Default for Document {
                     fn default() -> Self {
                         let mode = $name::default(); let common = mode.common;
-                        Self { screens: common.screens, include_minimized: common.include_minimized, enabled: common.enabled, inherits: common.inherits, temporary_mode: common.temporary_mode,
+                        Self { target: common.target, screens: common.screens, include_minimized: common.include_minimized, enabled: common.enabled, inherits: common.inherits, temporary_mode: common.temporary_mode,
                             temporary_mode_keys: common.temporary_mode_keys, temporary_mode_passthrough_keys: common.temporary_mode_passthrough_keys, number_timeout_ms: common.number_timeout_ms,
                             border_width: common.border_width, ui: common.ui, lifecycle: common.lifecycle,
                             bindings: common.bindings, app_configs: common.app_configs, $($field: mode.$field,)* }
                     }
                 }
                 let doc = Document::deserialize(deserializer)?;
-                Ok(Self { common: WindowModeConfig { screens: doc.screens, include_minimized: doc.include_minimized, enabled: doc.enabled, inherits: doc.inherits,
+                Ok(Self { common: WindowModeConfig { target: doc.target, screens: doc.screens, include_minimized: doc.include_minimized, enabled: doc.enabled, inherits: doc.inherits,
                     temporary_mode: doc.temporary_mode, temporary_mode_keys: doc.temporary_mode_keys, temporary_mode_passthrough_keys: doc.temporary_mode_passthrough_keys,
                     number_timeout_ms: doc.number_timeout_ms, border_width: doc.border_width, ui: doc.ui,
                     lifecycle: doc.lifecycle, bindings: doc.bindings, app_configs: doc.app_configs }, $($field: doc.$field,)* })

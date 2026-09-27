@@ -201,7 +201,60 @@ impl WindowSessionProbe {
     }
 }
 
+// Small inventories scan existing metadata without a scratch table. Keep the
+// 128-entry table out of the small caller's stack frame.
+const WINDOW_CYCLE_SMALL_LIMIT: usize = 8;
+
+#[inline]
+fn refresh_cycle_order(cycle: &mut Vec<WindowId>, windows: &[WindowInfo]) {
+    if windows.len() <= WINDOW_CYCLE_SMALL_LIMIT {
+        cycle.retain(|id| windows.iter().any(|window| window.id == *id));
+        for window in windows {
+            if !cycle.contains(&window.id) {
+                cycle.push(window.id);
+            }
+        }
+    } else {
+        refresh_large_cycle_order(cycle, windows);
+    }
+}
+
+#[inline(never)]
+fn refresh_large_cycle_order(cycle: &mut Vec<WindowId>, windows: &[WindowInfo]) {
+    let mut ids: smallvec::SmallVec<[u64; 128]> = windows.iter().map(|w| w.id.0).collect();
+    cycle.retain(|id| ids.contains(&id.0));
+    // The ring is unique. Count only after retaining surviving IDs: equal
+    // input lengths do not exclude replacement windows. Inventory duplicates
+    // leave remaining nonzero, so they still take the complete deduplicating scan.
+    let mut remaining = windows.len() - cycle.len();
+    if remaining == 0 {
+        return;
+    }
+    // Reuse the inventory buffer for surviving IDs. Integer-slice membership
+    // avoids a second table and supports the standard library's optimized scan.
+    ids.clear();
+    ids.extend(cycle.iter().map(|id| id.0));
+    for window in windows {
+        if !ids.contains(&window.id.0) {
+            cycle.push(window.id);
+            remaining -= 1;
+            if remaining == 0 {
+                break;
+            }
+            ids.push(window.id.0);
+        }
+    }
+}
+
 impl Session {
+    #[inline(always)]
+    fn refresh_cycle(&mut self, windows: &[WindowInfo]) {
+        // Preserve surviving identities and append newcomers in enumeration order,
+        // including requests with no valid anchor. Otherwise a later cycle can
+        // observe a different order after windows disappear and reappear.
+        refresh_cycle_order(&mut self.cycle, windows);
+    }
+
     fn enumerate(
         &self,
         access: &mut impl WindowAccess,
@@ -246,7 +299,10 @@ impl Session {
         }
         access.set_scope(
             request.scope,
-            matches!(request.operation, WindowOperation::Acquire(_)),
+            matches!(
+                request.operation,
+                WindowOperation::Acquire(_) | WindowOperation::AcquireFrom(_)
+            ),
         );
         self.scope = request.scope;
         self.error = None;
@@ -579,6 +635,33 @@ impl Session {
                 outcome?;
             }
             WindowOperation::CancelPending => {}
+            WindowOperation::RestoreTarget(target) => self.target = target,
+            WindowOperation::AcquireFrom(source)
+            | WindowOperation::Retarget(source)
+            | WindowOperation::ResolveTarget(source) => {
+                let activate = matches!(
+                    operation,
+                    WindowOperation::AcquireFrom(_) | WindowOperation::Retarget(_)
+                );
+                if activate {
+                    self.target = None;
+                }
+                let target = access
+                    .resolve_window_target(source, screens, cancelled)?
+                    .ok_or_else(|| "No window at the requested target".to_string())?;
+                let snapshot = access.snapshot(target, screens)?;
+                if snapshot.info.minimized || cancelled() {
+                    return Err("Window target unavailable".into());
+                }
+                if activate {
+                    self.capture_initial(access, target, screens);
+                    access.activate_window(target, screens, cancelled)?;
+                }
+                self.target = Some(target);
+                if !activate {
+                    result.target = Some(snapshot.info);
+                }
+            }
             WindowOperation::Acquire(point) => {
                 self.target = access.acquire(point, screens)?.map(|w| w.id);
                 if let Some(id) = self.target {
@@ -617,26 +700,70 @@ impl Session {
             WindowOperation::Cycle
             | WindowOperation::CyclePrevious
             | WindowOperation::CycleActive { .. }
-            | WindowOperation::CycleOverlapping { .. } => {
+            | WindowOperation::CycleOverlapping { .. }
+            | WindowOperation::CycleFrom { .. } => {
                 let standalone = operation.is_standalone_cycle();
-                let overlapping = matches!(operation, WindowOperation::CycleOverlapping { .. });
+                let overlapping = matches!(
+                    operation,
+                    WindowOperation::CycleOverlapping { .. }
+                        | WindowOperation::CycleFrom {
+                            overlapping: true,
+                            ..
+                        }
+                );
                 let backwards = matches!(
                     operation,
                     WindowOperation::CyclePrevious
                         | WindowOperation::CycleActive { backwards: true }
                         | WindowOperation::CycleOverlapping { backwards: true }
+                        | WindowOperation::CycleFrom {
+                            backwards: true,
+                            ..
+                        }
                 );
                 let mut windows = self.enumerate(access, screens, cancelled)?;
                 if standalone {
                     windows.retain(|window| !window.minimized);
-                    self.target = access
-                        .pointer_window(screens)?
-                        .filter(|id| windows.iter().any(|w| w.id == *id))
-                        .or_else(|| access.focused_window(&windows));
+                    if let WindowOperation::CycleFrom { source, .. } = operation {
+                        self.target = match source {
+                            crate::api::window::WindowTarget::Active => {
+                                access.focused_window(&windows)
+                            }
+                            crate::api::window::WindowTarget::Mouse => {
+                                access.pointer_window(screens)?
+                            }
+                        }
+                        .filter(|id| windows.iter().any(|w| w.id == *id));
+                        if self.target.is_none() {
+                            self.refresh_cycle(&windows);
+                            return Ok(());
+                        }
+                    } else {
+                        let focused = overlapping
+                            .then(|| access.focused_window(&windows))
+                            .flatten()
+                            .filter(|id| windows.iter().any(|w| w.id == *id));
+                        self.target = if focused.is_some() {
+                            focused
+                        } else {
+                            access
+                                .pointer_window(screens)?
+                                .filter(|id| windows.iter().any(|w| w.id == *id))
+                                .or_else(|| {
+                                    (!overlapping)
+                                        .then(|| access.focused_window(&windows))
+                                        .flatten()
+                                })
+                        };
+                    }
                 } else {
                     result.windows = Some(windows.clone());
                 }
                 if cancelled() {
+                    return Ok(());
+                }
+                if overlapping && self.target.is_none() {
+                    self.refresh_cycle(&windows);
                     return Ok(());
                 }
                 if overlapping {
@@ -645,16 +772,28 @@ impl Session {
                         self.target,
                         cancelled,
                     );
+                    if cancelled() {
+                        return Ok(());
+                    }
+                    // An isolated anchor still brings the pointer back to its
+                    // center, without activating another component or window.
+                    if self
+                        .overlap
+                        .as_ref()
+                        .is_some_and(|cache| cache.members.len() == 1)
+                        && let Some(id) = self.target
+                        && let Ok(snapshot) = access.snapshot(id, screens)
+                        && !snapshot.info.minimized
+                    {
+                        result.pointer = Some(snapshot.info.bounds.center());
+                        result.target = Some(snapshot.info);
+                        return Ok(());
+                    }
                 }
                 // Activation changes native Z-order. Preserve the session's
                 // existing ring so successive Tabs visit every window instead
                 // of oscillating between the two most recently activated ones.
-                self.cycle.retain(|id| windows.iter().any(|w| w.id == *id));
-                for window in &windows {
-                    if !self.cycle.contains(&window.id) {
-                        self.cycle.push(window.id);
-                    }
-                }
+                self.refresh_cycle(&windows);
                 if self.cycle.is_empty() {
                     return if overlapping {
                         Ok(())
@@ -666,31 +805,11 @@ impl Session {
                 let grouped = tabs
                     .as_ref()
                     .filter(|_| !standalone || overlapping)
-                    .and_then(|state| {
-                        let group = state.containing(self.target?)?;
-                        Some((group.active, group.members.clone()))
-                    });
-                let application = if grouped.is_none() || overlapping {
-                    super::window_tabs::application_cycle_order(
-                        &self.cycle,
-                        &windows,
-                        tabs.as_ref(),
-                    )
-                } else {
-                    Vec::new()
-                };
-                let cycle = grouped
-                    .as_ref()
-                    .map_or(application.as_slice(), |(_, members)| members.as_slice());
-                let current = grouped.as_ref().map(|(active, _)| *active).or(self.target);
-                // Prefer the current tab group, then scan every other candidate.
-                // Both passes stay in the overlap component; no match is a no-op.
-                for pass in 0..(1 + usize::from(overlapping && grouped.is_some())) {
-                    let cycle = if pass == 1 {
-                        application.as_slice()
-                    } else {
-                        cycle
-                    };
+                    .and_then(|state| state.containing(self.target?));
+                let current = grouped.map(|group| group.active).or(self.target);
+                // Consume the order inside its owning function so the small
+                // path never reserves space for a 128-entry return value.
+                let mut try_cycle = |cycle: &[WindowId], skip_group: bool| {
                     let start = current
                         .and_then(|id| cycle.iter().position(|v| *v == id))
                         .map_or(0, |index| {
@@ -702,7 +821,7 @@ impl Session {
                         });
                     for offset in 0..cycle.len() {
                         if cancelled() {
-                            return Ok(());
+                            return true;
                         }
                         let index = if backwards {
                             (start + cycle.len() - offset) % cycle.len()
@@ -710,11 +829,7 @@ impl Session {
                             (start + offset) % cycle.len()
                         };
                         let id = cycle[index];
-                        if pass == 1
-                            && grouped
-                                .as_ref()
-                                .is_some_and(|(_, members)| members.contains(&id))
-                        {
+                        if skip_group && grouped.is_some_and(|group| group.members.contains(&id)) {
                             continue;
                         }
                         if overlapping
@@ -744,10 +859,27 @@ impl Session {
                             result.message = activation.err();
                             self.error.clone_from(&result.message);
                             result.target = Some(after.info);
-                            return Ok(());
+                            return true;
                         }
                         result.skipped += 1;
                     }
+                    false
+                };
+                if let Some(group) = grouped {
+                    if try_cycle(&group.members, false) {
+                        return Ok(());
+                    }
+                    if !overlapping {
+                        return Err("No available window accepted activation".into());
+                    }
+                }
+                if super::window_tabs::with_application_cycle_order(
+                    &self.cycle,
+                    &windows,
+                    tabs.as_ref(),
+                    |order| try_cycle(order, grouped.is_some()),
+                ) {
+                    return Ok(());
                 }
                 return if overlapping {
                     Ok(())
@@ -1318,6 +1450,10 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    mod cycle_performance;
+    mod cycle_regression;
+    mod target_selection;
+
     struct Fake {
         reset_notification: Option<std::sync::mpsc::Sender<()>>,
         windows: BTreeMap<WindowId, Snapshot>,
@@ -1327,6 +1463,9 @@ mod tests {
         refuse_focus: bool,
         selected: std::cell::Cell<Option<WindowId>>,
         pointer_target: Option<WindowId>,
+        tabs: Option<crate::api::window_tabs::TabState>,
+        tab_reads: std::cell::Cell<usize>,
+        unavailable: Vec<WindowId>,
         close_requests: std::cell::RefCell<Vec<WindowId>>,
         volume_requests: std::cell::RefCell<Vec<(WindowId, crate::api::audio::AudioAction)>>,
         unchanged_ack: bool,
@@ -1393,6 +1532,9 @@ mod tests {
                 refuse_focus: false,
                 selected: std::cell::Cell::new(None),
                 pointer_target: None,
+                tabs: None,
+                tab_reads: std::cell::Cell::new(0),
+                unavailable: Vec::new(),
                 close_requests: Default::default(),
                 volume_requests: Default::default(),
                 unchanged_ack: false,
@@ -1411,6 +1553,19 @@ mod tests {
     }
 
     impl WindowAccess for Fake {
+        fn tab_state(&self) -> Option<crate::api::window_tabs::TabState> {
+            self.tab_reads.set(self.tab_reads.get() + 1);
+            self.tabs.clone().map(|mut state| {
+                if let Some(selected) = self.selected.get() {
+                    for group in &mut state.groups {
+                        if group.members.contains(&selected) {
+                            group.active = selected;
+                        }
+                    }
+                }
+                state
+            })
+        }
         fn focused_bounds(&self, process: u32) -> Result<Option<Rect>, String> {
             Ok(Some(Rect::new(f64::from(process), 0.0, 100.0, 100.0)))
         }
@@ -1437,7 +1592,7 @@ mod tests {
         }
         fn snapshot(&self, id: WindowId, _: &[Screen]) -> Result<Snapshot, String> {
             self.snapshot_reads.set(self.snapshot_reads.get() + 1);
-            if self.snapshot_unavailable {
+            if self.snapshot_unavailable || self.unavailable.contains(&id) {
                 return Err("temporarily unavailable".into());
             }
             self.windows.get(&id).cloned().ok_or("closed".into())
@@ -2906,10 +3061,12 @@ mod tests {
                     &mut access,
                     WindowOperation::CycleOverlapping { backwards },
                 );
-                assert!(
-                    result.pointer.is_none() && result.message.is_none(),
+                assert_eq!(
+                    result.pointer,
+                    Some(Point::new(50.0, 50.0)),
                     "{bridge_change}"
                 );
+                assert!(result.message.is_none());
                 assert_eq!(access.selected.get(), Some(WindowId(1)));
             }
         }
@@ -2928,7 +3085,7 @@ mod tests {
         }
         let mut session = Session::default();
         access.pointer_target = Some(WindowId(1));
-        access.selected.set(Some(WindowId(4))); // Pointer, not foreground, anchors selection.
+        access.selected.set(Some(WindowId(1)));
         for (backwards, expected) in [(false, 3), (false, 1), (true, 3), (true, 1)] {
             let result = run(
                 &mut session,
@@ -2950,7 +3107,8 @@ mod tests {
             &mut access,
             WindowOperation::CycleOverlapping { backwards: false },
         );
-        assert!(result.pointer.is_none() && result.message.is_none());
+        assert_eq!(result.pointer, Some(Point::new(50.0, 50.0)));
+        assert!(result.message.is_none());
         assert_eq!(access.selected.get(), Some(WindowId(1)));
         access.pointer_target = Some(WindowId(1));
         let result = run(
@@ -2958,8 +3116,114 @@ mod tests {
             &mut access,
             WindowOperation::CycleOverlapping { backwards: true },
         );
-        assert!(result.pointer.is_none() && result.message.is_none());
+        assert_eq!(result.pointer, Some(Point::new(50.0, 50.0)));
+        assert!(result.message.is_none());
         assert_eq!(access.selected.get(), Some(WindowId(1)));
+    }
+
+    #[test]
+    fn overlapping_cycle_prefers_focus_and_tracks_external_focus_changes() {
+        let mut access = Fake::new(6);
+        for id in 1..=6 {
+            let x = if id <= 3 { 0.0 } else { 500.0 };
+            access.windows.get_mut(&WindowId(id)).unwrap().info.bounds =
+                Rect::new(x, 0.0, 100.0, 80.0);
+        }
+        let mut session = Session::default();
+        access.pointer_target = Some(WindowId(4));
+        access.selected.set(Some(WindowId(1)));
+        for (backwards, expected) in [
+            (false, 2),
+            (false, 3),
+            (false, 1),
+            (true, 3),
+            (true, 2),
+            (true, 1),
+        ] {
+            let result = run(
+                &mut session,
+                &mut access,
+                WindowOperation::CycleOverlapping { backwards },
+            );
+            assert_eq!(result.target.unwrap().id, WindowId(expected));
+            assert_eq!(access.selected.get(), Some(WindowId(expected)));
+            assert_eq!(result.pointer, Some(Point::new(50.0, 40.0)));
+            assert!(result.windows.is_none() && result.tabs.is_none());
+        }
+        // External focus moves to another island while the pointer stays behind.
+        access.pointer_target = Some(WindowId(1));
+        access.selected.set(Some(WindowId(4)));
+        let result = run(
+            &mut session,
+            &mut access,
+            WindowOperation::CycleOverlapping { backwards: true },
+        );
+        assert_eq!(result.target.unwrap().id, WindowId(6));
+    }
+
+    #[test]
+    fn overlapping_cycle_falls_back_to_pointer_for_unavailable_focus() {
+        for backwards in [false, true] {
+            for focused in [None, Some(WindowId(99)), Some(WindowId(4))] {
+                let mut access = Fake::new(4);
+                access.windows.get_mut(&WindowId(4)).unwrap().info.minimized = true;
+                access.selected.set(focused);
+                access.pointer_target = Some(WindowId(1));
+                let result = run(
+                    &mut Session::default(),
+                    &mut access,
+                    WindowOperation::CycleOverlapping { backwards },
+                );
+                assert_eq!(
+                    result.target.unwrap().id,
+                    WindowId(if backwards { 3 } else { 2 })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_cycle_centers_isolated_focus_without_activation() {
+        for backwards in [false, true] {
+            let mut access = Fake::new(2);
+            access.windows.get_mut(&WindowId(1)).unwrap().info.bounds =
+                Rect::new(0.0, 0.0, 100.0, 80.0);
+            access.windows.get_mut(&WindowId(2)).unwrap().info.bounds =
+                Rect::new(500.0, 0.0, 100.0, 80.0);
+            access.selected.set(Some(WindowId(1)));
+            access.pointer_target = Some(WindowId(2));
+            // Any attempt to activate would fail, including activating the anchor again.
+            access.refuse_focus = true;
+            let mut session = Session::default();
+            let result = run(
+                &mut session,
+                &mut access,
+                WindowOperation::CycleOverlapping { backwards },
+            );
+            assert_eq!(result.target.unwrap().id, WindowId(1));
+            assert_eq!(result.pointer, Some(Point::new(50.0, 40.0)));
+            assert!(result.message.is_none());
+            assert!(result.windows.is_none() && result.tabs.is_none());
+            assert!(session.history.is_empty() && session.initial.is_empty());
+            assert!(access.writes.is_empty());
+        }
+    }
+
+    #[test]
+    fn overlapping_cycle_without_valid_anchor_is_a_noop() {
+        for backwards in [false, true] {
+            let mut access = Fake::new(2);
+            access.selected.set(Some(WindowId(99)));
+            access.pointer_target = Some(WindowId(98));
+            let result = run(
+                &mut Session::default(),
+                &mut access,
+                WindowOperation::CycleOverlapping { backwards },
+            );
+            assert!(
+                result.target.is_none() && result.pointer.is_none() && result.message.is_none()
+            );
+        }
     }
 
     #[test]
@@ -3028,7 +3292,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_worker_no_match_emits_no_pointer_or_error_event() {
+    fn overlapping_worker_centers_isolated_anchor_before_ordinary_cycle() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut worker = WindowWorker::start(
             || {
@@ -3059,6 +3323,10 @@ mod tests {
                 )
                 .unwrap();
         }
+        let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            matches!(event, BackendEvent::WindowCycleCompleted(Ok(point)) if point == Point::new(-920.0, 270.0))
+        );
         let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(
             matches!(event, BackendEvent::WindowCycleCompleted(Ok(point)) if point.x == 2160.0)

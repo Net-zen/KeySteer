@@ -737,8 +737,8 @@ impl Engine {
                             });
                     }
                     !matches!(
-                        gesture.binding.as_ref(),
-                        Binding::Window(
+                        gesture.binding.window_action(),
+                        Some(
                             crate::api::window::WindowAction::VolumeDown
                                 | crate::api::window::WindowAction::VolumeUp
                                 | crate::api::window::WindowAction::SystemVolumeDown
@@ -1846,11 +1846,19 @@ impl Engine {
     }
 
     fn binding_available(&self, mode: &ModeId, binding: &Binding) -> bool {
-        match binding {
-            Binding::Window(action) => self
+        if let Binding::WindowTarget { binding, .. } = binding
+            && let Some(action) = binding.window_action()
+        {
+            return self
                 .registry
                 .get(mode)
-                .is_none_or(|mode| mode.window_action_available(action)),
+                .is_none_or(|m| m.window_action_supported(&action));
+        }
+        match binding.window_action() {
+            Some(action) => self
+                .registry
+                .get(mode)
+                .is_none_or(|mode| mode.window_action_available(&action)),
             _ => true,
         }
     }
@@ -1880,11 +1888,11 @@ impl Engine {
     ) -> Option<ResolvedBinding> {
         let available = |binding: &Binding| {
             if HELP {
-                match binding {
-                    Binding::Window(action) => self
+                match binding.window_action() {
+                    Some(action) => self
                         .registry
                         .get(active)
-                        .is_none_or(|mode| mode.window_action_supported(action)),
+                        .is_none_or(|mode| mode.window_action_supported(&action)),
                     _ => true,
                 }
             } else {

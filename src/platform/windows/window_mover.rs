@@ -129,9 +129,21 @@ pub(super) fn submit_placement(hwnd: HWND, placement: &WINDOWPLACEMENT) -> Resul
 }
 
 pub(super) fn move_to_screen(target: WindowScreenTarget) -> Result<Option<Point>, String> {
+    move_from_to_screen(crate::api::window::WindowTarget::Mouse, target)
+}
+
+pub(super) fn move_from_to_screen(
+    source: crate::api::window::WindowTarget,
+    target: WindowScreenTarget,
+) -> Result<Option<Point>, String> {
     let cursor = super::input::cursor_position()?;
-    let Some((hwnd, _, visible)) = super::accessibility::movable_window_under_pointer(cursor)?
-    else {
+    let selected = match source {
+        crate::api::window::WindowTarget::Mouse => {
+            super::accessibility::movable_window_under_pointer(cursor)?
+        }
+        crate::api::window::WindowTarget::Active => super::accessibility::movable_focused_window(),
+    };
+    let Some((hwnd, _, visible)) = selected else {
         return Ok(None);
     };
 

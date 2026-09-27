@@ -684,6 +684,30 @@ impl WindowAccess for Windows {
                 .hwnd(id)
                 .is_ok_and(|hwnd| hwnd == super::native::foreground_window())
     }
+    fn resolve_window_target(
+        &mut self,
+        source: crate::api::window::WindowTarget,
+        screens: &[Screen],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<WindowId>, String> {
+        if cancelled() {
+            return Ok(None);
+        }
+        match source {
+            crate::api::window::WindowTarget::Mouse => self.pointer_window(screens),
+            crate::api::window::WindowTarget::Active => {
+                let Some((hwnd, _, _)) = super::accessibility::movable_focused_window() else {
+                    return Ok(None);
+                };
+                if !eligible(hwnd) {
+                    return Ok(None);
+                }
+                self.tab_screens.clear();
+                self.tab_screens.extend_from_slice(screens);
+                self.retain(hwnd, screens).map(|window| Some(window.id))
+            }
+        }
+    }
     fn focused_window(&self, windows: &[WindowInfo]) -> Option<WindowId> {
         if let Some((pending, _)) = self.pending_focus.get()
             && windows.iter().any(|window| window.id == pending)

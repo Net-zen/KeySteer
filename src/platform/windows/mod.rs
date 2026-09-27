@@ -728,6 +728,14 @@ impl Backend for WindowsBackend {
         window_mover::move_to_screen(target)
     }
 
+    fn move_window_from_to_screen(
+        &self,
+        source: crate::api::window::WindowTarget,
+        target: crate::api::command::WindowScreenTarget,
+    ) -> Result<Option<Point>, String> {
+        window_mover::move_from_to_screen(source, target)
+    }
+
     fn focused_app(&self) -> Result<Option<FocusedApp>, String> {
         let hwnd = native::foreground_window();
         if hwnd.is_invalid() {

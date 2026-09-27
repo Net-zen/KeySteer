@@ -202,6 +202,7 @@ pub fn compile(config: &ConfigFile) -> Result<RuntimePlan, String> {
     fn uses_overlap(binding: &crate::api::Binding) -> bool {
         match binding {
             crate::api::Binding::ActivateOverlappingWindow { .. } => true,
+            crate::api::Binding::WindowTarget { binding, .. } => uses_overlap(binding),
             crate::api::Binding::Sequence(actions) => actions.iter().any(uses_overlap),
             _ => false,
         }
@@ -212,6 +213,44 @@ pub fn compile(config: &ConfigFile) -> Result<RuntimePlan, String> {
     specs.extend(super::mode_catalog::bundled_specs(config)?);
     if config.normal.targeting.is_some() {
         super::mode_catalog::compile_normal_targeting(config, &mut specs)?;
+    }
+    fn resolve_entry_target(binding: &mut crate::api::Binding, config: &ConfigFile) {
+        use crate::api::Binding;
+        match binding {
+            Binding::Sequence(actions) => {
+                for action in actions {
+                    resolve_entry_target(action, config);
+                }
+            }
+            Binding::Mode(id) => {
+                let source = match id.as_str() {
+                    "window" => config.window.target,
+                    "window_quick" => config.window_quick.target,
+                    "window_editor" => config.window_editor.target,
+                    "window_restore" => config.window_restore.target,
+                    "window_tab" => config.window_tab.target,
+                    _ => None,
+                };
+                if let Some(source) = source {
+                    *binding = Binding::WindowTarget {
+                        binding: Box::new(binding.clone()),
+                        source,
+                    };
+                }
+            }
+            // An explicit source is already final and overrides the mode default.
+            _ => {}
+        }
+    }
+    for spec in &mut specs {
+        for binding in spec.route.bindings.values_mut().chain(
+            spec.route
+                .app_overrides
+                .iter_mut()
+                .flat_map(|route| route.bindings.values_mut()),
+        ) {
+            resolve_entry_target(binding, config);
+        }
     }
     let mut ids: Vec<_> = specs.iter().map(|spec| spec.id()).collect();
     ids.sort();
@@ -340,4 +379,43 @@ mod tests {
             "com.example.Editor"
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn mode_targets_are_independent_optional_and_exported() {
+    use crate::api::window::WindowTarget;
+    let config = crate::config::Config::parse(
+        r#"
+[window]
+target = "active"
+[window_quick]
+target = "mouse"
+[window_editor]
+target = "active"
+[window_restore]
+target = "mouse"
+[window_tab]
+target = "active"
+[normal.bindings]
+x = "window_overlap_next mouse"
+y = "window_overlap_next active"
+"#,
+    )
+    .unwrap();
+    assert_eq!(config.window.target, Some(WindowTarget::Active));
+    assert_eq!(config.window_quick.target, Some(WindowTarget::Mouse));
+    assert_eq!(config.window_editor.target, Some(WindowTarget::Active));
+    assert_eq!(config.window_restore.target, Some(WindowTarget::Mouse));
+    assert_eq!(config.window_tab.target, Some(WindowTarget::Active));
+    let restored = crate::config::Config::parse(&config.to_toml().unwrap()).unwrap();
+    assert_eq!(restored, config);
+    assert!(
+        crate::app::configuration::compile(&config)
+            .unwrap()
+            .settings
+            .window_overlap_enabled
+    );
+    assert!(crate::config::Config::default().window.target.is_none());
+    assert!(crate::config::Config::parse("[window]\ntarget = 'keyboard'").is_err());
 }

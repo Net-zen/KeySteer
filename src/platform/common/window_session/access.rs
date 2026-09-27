@@ -231,6 +231,22 @@ pub(crate) trait WindowAccess {
     /// `native_deadline` clears; grouped visibility is committed after that.
     fn select(&self, id: WindowId) -> Result<(), String>;
     /// Resolve native foreground identity after refreshing the inventory.
+    fn resolve_window_target(
+        &mut self,
+        source: crate::api::window::WindowTarget,
+        screens: &[Screen],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<WindowId>, String> {
+        match source {
+            crate::api::window::WindowTarget::Mouse => self.pointer_window(screens),
+            crate::api::window::WindowTarget::Active => {
+                let windows = self.enumerate(screens, cancelled)?;
+                Ok(self
+                    .focused_window(&windows)
+                    .filter(|id| windows.iter().any(|w| w.id == *id && !w.minimized)))
+            }
+        }
+    }
     fn focused_window(&self, _windows: &[WindowInfo]) -> Option<WindowId> {
         None
     }

@@ -293,10 +293,8 @@ impl Engine {
                                 resolved.owner == *owner
                                     && resolved.binding == entry.binding
                                     && self.registry.get(id).is_none_or(|mode| {
-                                        match resolved.binding.as_ref() {
-                                            Binding::Window(action) => {
-                                                mode.window_action_supported(action)
-                                            }
+                                        match resolved.binding.window_action() {
+                                            Some(action) => mode.window_action_supported(&action),
                                             _ => true,
                                         }
                                     })

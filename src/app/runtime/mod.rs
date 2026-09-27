@@ -1671,6 +1671,11 @@ impl Engine {
                 }
 
                 Command::Quit => self.should_quit = true,
+                Command::MoveWindowFromToScreen { source, target } => {
+                    if let Some(pointer) = backend.move_window_from_to_screen(source, target)? {
+                        self.execute_for(owner, [Command::warp_to(pointer)], backend)?;
+                    }
+                }
                 Command::MoveWindowToScreen(target) => {
                     if let Some(pointer) = backend.move_window_to_screen(target)? {
                         // Reuse the normal warp path so the authoritative
@@ -1817,9 +1822,7 @@ impl Engine {
     fn stateful_binding_owner(&self, resolved: &ResolvedBinding) -> ModeId {
         // Window operations act on the active shared session, even when their
         // chord is inherited from another mode's binding table.
-        if matches!(resolved.binding.as_ref(), Binding::Window(_))
-            && self.registry.active.is_window()
-        {
+        if resolved.binding.window_action().is_some() && self.registry.active.is_window() {
             self.registry.active.clone()
         } else {
             resolved.owner.clone()
@@ -1885,6 +1888,82 @@ impl Engine {
         }
 
         match binding {
+            Binding::MoveWindowFromToScreen { source, target } => {
+                let owner = self.registry.active.clone();
+                self.execute_for(
+                    &owner,
+                    [Command::MoveWindowFromToScreen {
+                        source: *source,
+                        target: *target,
+                    }],
+                    backend,
+                )?;
+                Ok(true)
+            }
+            Binding::WindowTarget {
+                binding: inner,
+                source,
+            } => {
+                if inner.window_action().is_some() {
+                    let recipient = self.stateful_binding_owner(&resolved);
+                    self.dispatch_to(
+                        &recipient,
+                        ModeEvent::Binding {
+                            binding: resolved.binding.clone(),
+                            state: input.state,
+                            key: input.key.clone(),
+                        },
+                        backend,
+                    )?;
+                } else {
+                    match inner.as_ref() {
+                        Binding::ActivateWindow { backwards }
+                        | Binding::ActivateOverlappingWindow { backwards } => {
+                            if matches!(inner.as_ref(), Binding::ActivateOverlappingWindow { .. })
+                                && !self.settings.window_overlap_enabled
+                            {
+                                return Ok(true);
+                            }
+                            backend.request_window(crate::api::window::WindowRequest {
+                                scope: None,
+                                session: 0,
+                                id: 0,
+                                operation: crate::api::window::WindowOperation::CycleFrom {
+                                    backwards: *backwards,
+                                    overlapping: matches!(
+                                        inner.as_ref(),
+                                        Binding::ActivateOverlappingWindow { .. }
+                                    ),
+                                    source: *source,
+                                },
+                            })?;
+                        }
+                        Binding::Mode(id) => {
+                            if *id != self.registry.active && self.registry.contains_key(id) {
+                                self.dispatch_to(
+                                    id,
+                                    ModeEvent::PrepareWindowTarget(Some(*source)),
+                                    backend,
+                                )?;
+                                if let Ok(pointer) = backend.pointer()
+                                    && let Some(pointer) = self.constrain_absolute_pointer(pointer)
+                                {
+                                    self.cursor = pointer;
+                                }
+                                self.activate(
+                                    id.clone(),
+                                    Some(self.registry.active.clone()),
+                                    backend,
+                                )?;
+                            } else if *id == self.registry.active {
+                                self.activate(ModeId::idle(), Some(id.clone()), backend)?;
+                            }
+                        }
+                        _ => return Err("unsupported targeted window binding".into()),
+                    }
+                }
+                Ok(true)
+            }
             Binding::ActivateWindow { backwards }
             | Binding::ActivateOverlappingWindow { backwards } => {
                 let owner = self.registry.active.clone();
@@ -1927,15 +2006,16 @@ impl Engine {
                 }
                 if has_held
                     && actions.iter().any(|action| {
-                        matches!(
-                            action,
-                            Binding::Mode(_)
-                                | Binding::Invoke { .. }
-                                | Binding::FinishMode
-                                | Binding::RestartMode
-                                | Binding::Escape
-                                | Binding::Quit
-                        )
+                        action.mode().is_some()
+                            || matches!(
+                                action,
+                                Binding::Mode(_)
+                                    | Binding::Invoke { .. }
+                                    | Binding::FinishMode
+                                    | Binding::RestartMode
+                                    | Binding::Escape
+                                    | Binding::Quit
+                            )
                     })
                 {
                     return Err("held movement, scroll, or speed actions cannot be combined with mode-changing actions".into());
@@ -1992,6 +2072,9 @@ impl Engine {
                     && let Some(pointer) = self.constrain_absolute_pointer(pointer)
                 {
                     self.cursor = pointer;
+                }
+                if id.is_window() && next == *id {
+                    self.dispatch_to(id, ModeEvent::PrepareWindowTarget(None), backend)?;
                 }
                 self.activate(next, Some(self.registry.active.clone()), backend)?;
                 Ok(true)

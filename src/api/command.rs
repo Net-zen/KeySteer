@@ -62,6 +62,10 @@ pub enum Command {
     WindowPresets(Box<super::window_presets::PresetLibraryRequest>),
     /// Move the window and physical pointer together, preserving relative position.
     MoveWindowToScreen(WindowScreenTarget),
+    MoveWindowFromToScreen {
+        source: super::window::WindowTarget,
+        target: WindowScreenTarget,
+    },
     /// Cycle from the pointer window (foreground fallback) without showing mode UI.
     CycleWindow {
         backwards: bool,
@@ -455,6 +459,7 @@ pub enum ModeEvent {
     TemporaryModeChanged {
         active: bool,
     },
+    PrepareWindowTarget(Option<super::window::WindowTarget>),
     /// This mode just became active. Build the first overlay here.
     Activated {
         /// Mode that was active before, if any.
