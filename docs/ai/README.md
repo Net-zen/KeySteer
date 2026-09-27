@@ -1,3 +1,5 @@
+UI Hint 扫描终态提前释放会话去重索引，输入保持目标与标签；迟到增量按需重建，退出完整释放，见 [性能](07-rendering-and-performance.md) 与 [验证](08-build-docs-and-tests.md)。
+
 UI Hint 每轮退出／重扫释放会话堆缓冲、扫描终态释放融合缓存，见 [性能](07-rendering-and-performance.md) 与 [验证](08-build-docs-and-tests.md)。
 
 输入循环冷状态隔离、配置构造分配与 Hint 重复扫描的防回退改动见 [运行时](02-runtime-and-api.md)、[配置](03-configuration.md)、[性能](07-rendering-and-performance.md) 和 [门禁](08-build-docs-and-tests.md)。

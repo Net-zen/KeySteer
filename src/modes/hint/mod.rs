@@ -294,6 +294,10 @@ impl HintMode {
             return commands;
         }
 
+        // Matching/selection only needs targets and labels after the scan ends.
+        // Late or deferred updates rebuild the index lazily.
+        self.session.release_scan_index();
+
         if status == UiScanStatus::Success
             && !labels_changed
             && !self.session.hints.is_empty()
@@ -383,6 +387,9 @@ impl HintMode {
         self.session.label_plan_count = self.session.hints.len();
         self.session.next_label_index = self.session.hints.len();
         self.session.pending_relabel = false;
+        if !self.session.scanning {
+            self.session.release_scan_index();
+        }
         self.refresh_overlap_plan(ctx);
     }
 
@@ -2356,6 +2363,42 @@ mod tests {
     }
 
     #[test]
+    fn repeated_display_type_and_exit_keeps_index_released() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        for count in [24, 128, 512].into_iter().cycle().take(30) {
+            activate(&mut mode, &env);
+            let targets = (0..count)
+                .map(|i| UiTarget {
+                    rect: Rect::new((i % 20) as f64 * 40.0, (i / 20) as f64 * 30.0, 20.0, 20.0),
+                    name: format!("Control {i}"),
+                    role: SemanticRole::Button,
+                })
+                .collect();
+            deliver(&mut mode, &env, targets);
+            assert_eq!(mode.session.scanned.len(), count);
+            assert_eq!(mode.session.seen_targets.capacity(), 0);
+            let label = mode.session.hints[count / 2].label.clone();
+            let mut out = Vec::new();
+            for ch in label.as_str().chars() {
+                out = press(&mut mode, &env, &ch.to_string());
+                assert_eq!(mode.session.seen_targets.capacity(), 0);
+            }
+            assert!(out.iter().any(|command| matches!(
+                command,
+                Command::FinishMode {
+                    cause: FinishCause::Selection
+                }
+            )));
+            mode.handle(&ModeEvent::Deactivated, &env.ctx());
+            assert_eq!(mode.session.scanned.capacity(), 0);
+            assert_eq!(mode.session.hints.capacity(), 0);
+            assert_eq!(mode.session.scanned_names_lower.capacity(), 0);
+            assert!(mode.wide_placements.is_none());
+        }
+    }
+
+    #[test]
     fn typing_a_label_moves_and_requests_finish_without_clicking() {
         let env = Env::new();
         let mut mode = crate::app::mode_catalog::hint(&env.config);
@@ -2776,8 +2819,7 @@ mod tests {
         );
 
         assert_eq!(mode.session.scanned.len(), 3);
-        assert_eq!(mode.session.seen_targets.len(), 1);
-        assert_eq!(mode.session.seen_targets.values().next().unwrap().len(), 3);
+        assert_eq!(mode.session.seen_targets.capacity(), 0);
         assert!(mode.session.scanned_names_lower.is_empty());
     }
 

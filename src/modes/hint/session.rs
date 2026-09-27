@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use smallvec::SmallVec;
 
@@ -15,7 +15,9 @@ pub(super) struct ScanSession {
     pub(super) scanned: Vec<UiTarget>,
     pub(super) scanned_names_lower: Vec<String>,
     pub(super) search_names_initialized: bool,
-    pub(super) seen_targets: HashMap<(i64, i64, i64, i64), SmallVec<[usize; 2]>>,
+    // One head per geometry; collision links are contiguous and need no bucket drops.
+    next_same_rect: Vec<usize>,
+    pub(super) seen_targets: HashMap<(i64, i64, i64, i64), usize>,
     pub(super) hints: Vec<CompactHint<usize>>,
     pub(super) label_plan_count: usize,
     pub(super) next_label_index: usize,
@@ -34,11 +36,22 @@ pub(super) struct ScanSession {
 }
 
 impl ScanSession {
+    pub(super) fn release_scan_index(&mut self) {
+        self.seen_targets = HashMap::default();
+        self.next_same_rect = Vec::new();
+    }
+
+    fn ensure_scan_index(&mut self) {
+        if self.next_same_rect.len() != self.scanned.len() {
+            self.rebuild_target_lookup();
+        }
+    }
+
     pub(super) fn clear_results(&mut self) {
         self.scanned = Vec::new();
         self.scanned_names_lower = Vec::new();
         self.search_names_initialized = false;
-        self.seen_targets = HashMap::new();
+        self.release_scan_index();
         self.hints = Vec::new();
         self.label_plan_count = 0;
         self.next_label_index = 0;
@@ -68,6 +81,7 @@ impl ScanSession {
         let removed = self.scanned.len() != before;
         if removed {
             self.rebuild_target_lookup();
+            self.invalidate_search_names();
         }
         self.append_targets(targets) || removed
     }
@@ -91,16 +105,19 @@ impl ScanSession {
         let mut removed_hints = Vec::new();
         let before = self.scanned.len();
         if !retired.is_empty() {
+            self.ensure_scan_index();
             // Existing semantic-key buckets identify exact removals without
             // quadratic rectangle comparisons or a second hash table.
             let mut remap = SmallVec::<[usize; MAX_INLINE_TARGETS]>::new();
             remap.resize(before, 0);
             for rect in retired {
-                if let Some(indices) = self.seen_targets.get(&rect_key(*rect)) {
-                    for &index in indices {
+                if let Some(&head) = self.seen_targets.get(&rect_key(*rect)) {
+                    let mut index = head;
+                    while index != usize::MAX {
                         if self.scanned[index].rect == *rect {
                             remap[index] = usize::MAX;
                         }
+                        index = self.next_same_rect[index];
                     }
                 }
             }
@@ -125,6 +142,7 @@ impl ScanSession {
                 }
             }));
             self.rebuild_target_lookup();
+            self.invalidate_search_names();
         }
         let retained = self.scanned.len();
         let changed = self.append_targets(targets) || retained != before;
@@ -238,18 +256,24 @@ impl ScanSession {
 
     fn rebuild_target_lookup(&mut self) {
         self.seen_targets.clear();
+        self.next_same_rect.clear();
         for (index, target) in self.scanned.iter().enumerate() {
-            self.seen_targets
-                .entry(target_key(target))
-                .or_default()
-                .push(index);
+            let previous = self.seen_targets.insert(target_key(target), index);
+            self.next_same_rect.push(previous.unwrap_or(usize::MAX));
         }
+    }
+
+    fn invalidate_search_names(&mut self) {
         self.scanned_names_lower.clear();
         self.search_names_initialized = false;
     }
 
     #[inline]
     pub(super) fn append_targets(&mut self, targets: Vec<UiTarget>) -> bool {
+        if targets.is_empty() {
+            return false;
+        }
+        self.ensure_scan_index();
         let before = self.scanned.len();
 
         // Take the first platform batch by ownership; every scan buffer is
@@ -265,18 +289,13 @@ impl ScanSession {
                     .is_none_or(|bounds| bounds.contains(&target.rect.center()))
             });
             self.seen_targets.reserve(self.scanned.len());
+            self.next_same_rect.reserve(self.scanned.len());
 
             let mut retained = 0;
             for index in 0..self.scanned.len() {
                 let key = target_key(&self.scanned[index]);
-                let indices = self.seen_targets.entry(key).or_default();
-                let duplicate = {
-                    indices.iter().any(|&existing_index| {
-                        let existing = &self.scanned[existing_index];
-                        let candidate = &self.scanned[index];
-                        existing.name == candidate.name && existing.role == candidate.role
-                    })
-                };
+                let head = self.seen_targets.get(&key).copied().unwrap_or(usize::MAX);
+                let duplicate = self.contains_target(head, &self.scanned[index]);
                 if !duplicate {
                     // Compact in source order without shifting the remaining
                     // batch for each duplicate. Indices always refer to the
@@ -284,7 +303,8 @@ impl ScanSession {
                     if retained != index {
                         self.scanned.swap(retained, index);
                     }
-                    indices.push(retained);
+                    self.next_same_rect.push(head);
+                    self.seen_targets.insert(key, retained);
                     retained += 1;
                 }
             }
@@ -295,6 +315,7 @@ impl ScanSession {
         let incoming = targets.len();
         self.scanned.reserve(incoming);
         self.seen_targets.reserve(incoming);
+        self.next_same_rect.reserve(incoming);
         if self.search_names_initialized {
             self.scanned_names_lower.reserve(incoming);
         }
@@ -314,6 +335,17 @@ impl ScanSession {
         self.search_names_initialized = true;
     }
 
+    fn contains_target(&self, mut index: usize, target: &UiTarget) -> bool {
+        while index != usize::MAX {
+            let existing = &self.scanned[index];
+            if existing.name == target.name && existing.role == target.role {
+                return true;
+            }
+            index = self.next_same_rect[index];
+        }
+        false
+    }
+
     fn append_target(&mut self, target: UiTarget) -> bool {
         if !self
             .scan_bounds
@@ -322,14 +354,8 @@ impl ScanSession {
             return false;
         }
         let key = target_key(&target);
-        let indices = self.seen_targets.entry(key).or_default();
-        let duplicate = {
-            indices.iter().any(|&index| {
-                let existing = &self.scanned[index];
-                existing.name == target.name && existing.role == target.role
-            })
-        };
-        if duplicate {
+        let head = self.seen_targets.get(&key).copied().unwrap_or(usize::MAX);
+        if self.contains_target(head, &target) {
             return false;
         }
         let index = self.scanned.len();
@@ -337,7 +363,8 @@ impl ScanSession {
             self.scanned_names_lower.push(target.name.to_lowercase());
         }
         self.scanned.push(target);
-        indices.push(index);
+        self.next_same_rect.push(head);
+        self.seen_targets.insert(key, index);
         true
     }
 }
@@ -402,6 +429,7 @@ mod tests {
             assert_eq!(session.scanned.capacity(), 0);
             assert_eq!(session.scanned_names_lower.capacity(), 0);
             assert_eq!(session.seen_targets.capacity(), 0);
+            assert_eq!(session.next_same_rect.capacity(), 0);
             assert_eq!(session.hints.capacity(), 0);
             assert_eq!(session.deferred_targets.capacity(), 0);
             assert_eq!(session.deferred_retired.capacity(), 0);
@@ -573,6 +601,93 @@ mod tests {
     }
 
     #[test]
+    fn released_index_rebuilds_for_late_updates_without_losing_search_or_dedup() {
+        for _ in 0..30 {
+            let mut session = labeled_session(512, &['a', 's', 'd'], LabelDirection::Normal);
+            session.ensure_search_names();
+            let target = session.scanned[7].clone();
+            session.release_scan_index();
+            assert_eq!(session.seen_targets.capacity(), 0);
+            assert_eq!(session.next_same_rect.capacity(), 0);
+            assert!(!session.append_targets(Vec::new()));
+            assert_eq!(session.seen_targets.capacity(), 0);
+            assert!(!session.append_targets(vec![target.clone()]));
+            assert!(session.search_names_initialized);
+            assert_eq!(session.scanned_names_lower.len(), 512);
+            session.release_scan_index();
+            session.apply_stable_update(
+                Vec::new(),
+                &[target.rect],
+                &['a', 's', 'd'],
+                LabelDirection::Normal,
+                true,
+            );
+            assert_eq!(session.scanned.len(), 511);
+            assert!(!session.search_names_initialized);
+            session.ensure_search_names();
+            assert_eq!(session.scanned_names_lower.len(), 511);
+            session.release_scan_index();
+            assert!(session.append_targets(vec![target]));
+            assert_eq!(session.scanned_names_lower.len(), 512);
+            session.clear_results();
+            assert_eq!(session.seen_targets.capacity(), 0);
+            assert_eq!(session.next_same_rect.capacity(), 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "allocation probe; run alone with --test-threads=1"]
+    fn completed_scan_index_releases_memory_while_labels_remain() {
+        let mut session = labeled_session(10_000, &['a', 's', 'd'], LabelDirection::Normal);
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        session.release_scan_index();
+        let change = region.change();
+        assert_eq!(change.allocations, 0);
+        assert!(change.bytes_deallocated >= 10_000 * std::mem::size_of::<usize>());
+        assert_eq!(session.scanned.len(), 10_000);
+        assert_eq!(session.hints.len(), 10_000);
+        println!(
+            "completed scan index released {} bytes",
+            change.bytes_deallocated
+        );
+    }
+
+    #[test]
+    fn collision_links_survive_exact_retirement_and_later_batches() {
+        let rect = Rect::new(10.0, 20.0, 30.0, 40.0);
+        let neighbors: Vec<_> = (0..5)
+            .map(|i| UiTarget {
+                // All five share a quantized geometry key, but only one is retired.
+                rect: Rect::new(rect.x + i as f64 * 0.01, rect.y, rect.width, rect.height),
+                name: i.to_string(),
+                role: SemanticRole::Button,
+            })
+            .collect();
+        let mut session = ScanSession::default();
+        session.append_targets(neighbors.clone());
+        let retired = neighbors[2].rect;
+        session.apply_stable_update(
+            Vec::new(),
+            &[retired],
+            &['a', 's', 'd'],
+            LabelDirection::Normal,
+            true,
+        );
+        let expected: Vec<_> = neighbors
+            .iter()
+            .filter(|target| target.rect != retired)
+            .cloned()
+            .collect();
+        assert_eq!(session.scanned, expected);
+        assert!(!session.append_targets(expected));
+        assert!(session.append_targets(vec![neighbors[2].clone()]));
+        assert_eq!(session.scanned.len(), 5);
+        assert!(!session.append_targets(neighbors));
+        session.clear_results();
+        assert_eq!(session.next_same_rect.capacity(), 0);
+    }
+
+    #[test]
     fn owned_batches_preserve_first_occurrence_order_and_collision_indices() {
         for count in [24, 128, 129, 500, 2_000] {
             let mut targets = Vec::new();
@@ -593,11 +708,17 @@ mod tests {
             assert!(session.append_targets(targets));
             assert_eq!(session.scanned.as_ptr(), original_storage);
             assert_eq!(session.scanned, expected);
-            for indices in session.seen_targets.values() {
-                for &index in indices {
+            let mut visited = vec![false; count];
+            for &head in session.seen_targets.values() {
+                let mut index = head;
+                while index != usize::MAX {
+                    assert!(!visited[index]);
+                    visited[index] = true;
                     assert_eq!(session.scanned[index], expected[index]);
+                    index = session.next_same_rect[index];
                 }
             }
+            assert!(visited.into_iter().all(|seen| seen));
             session.ensure_search_names();
             // Later partials use the append path and the same canonical index.
             assert!(!session.append_targets(expected.clone()));
