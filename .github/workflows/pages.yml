@@ -46,11 +46,11 @@ jobs:
 
       - name: Restore pnpm tool
         id: pnpm-tool
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           # Cache the package manager only, not project node_modules or output.
           path: ~/.cache/keysteer-pnpm
-          key: pages-pnpm-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.pnpm-version.outputs.version }}
+          key: pages-pnpm-tool-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.pnpm-version.outputs.version }}
 
       - name: Set up pnpm
         if: steps.pnpm-tool.outputs.cache-hit != 'true'
@@ -64,6 +64,15 @@ jobs:
           echo "PNPM_HOME=$pnpm_home" >> "$GITHUB_ENV"
           echo "$pnpm_home" >> "$GITHUB_PATH"
           echo "$pnpm_home/bin" >> "$GITHUB_PATH"
+
+      # pnpm puts its store under PNPM_HOME. Save the tool before setup-node
+      # restores that store, otherwise both caches contain project dependencies.
+      - name: Save pnpm tool
+        if: steps.pnpm-tool.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/keysteer-pnpm
+          key: ${{ steps.pnpm-tool.outputs.cache-primary-key }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
