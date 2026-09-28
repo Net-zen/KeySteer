@@ -36,6 +36,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 工作流另行缓存按包元数据区分的系统安装包、按版本区分的 cargo-xwin、按工具版本和目标分开的 Windows SDK/CRT，以及 Rust 依赖与编译结果；证书和密码仅在临时目录使用后清理，不进入缓存或产物。SDK/CRT 需要强制刷新时提升 `xwin-sdk-v1` 前缀。缓存受 GitHub 分支范围和淘汰规则限制，不保证每次命中。SHA256 仅在 Actions 摘要记录签名后 EXE 和发布 ZIP 的值。
 
+LLVM、cargo-xwin、Rust 和系统包的版本解析分为独立步骤。编译工具的最新稳定版本统一通过带 `GITHUB_TOKEN` 的 GitHub Release API 查询各自官方仓库：`llvm/llvm-project`、`rust-cross/cargo-xwin`、`rust-lang/rust`。`build.yml` 的 Windows/macOS 构建也从 Rust 官方仓库解析版本，由 rustup 安装，并通过 `RUSTUP_TOOLCHAIN` 固定本次任务使用的版本。不直接调用 crates.io HTTP API；首次 `cargo install` 仍通过 Cargo registry 下载包和依赖，系统库仍通过 Ubuntu 软件源解析与安装。
+
 未签名 EXE 还有独立的精确匹配缓存：键包含源码提交、同步后的 lockfile、工作流、Rust/Cargo 版本、LLVM 工具包摘要、cargo-xwin 版本、SDK 缓存代际、目标架构、CPU 指纹、编译参数和构建日期，不使用前缀回退。命中后校验 EXE 摘要，跳过 LLVM/SDK/编译缓存恢复及编译链接，继续重新签名和打包。未命中时，Rust 缓存保留 workspace crate，并在任务失败后保存可用编译结果；EXE 缓存在签名前立即保存，避免签名服务失败导致重编译。该优化不改变 release 的 fat LTO 等性能设置；真正修改源码后仍可能需要重新完成主程序优化与链接。
 
 交叉工作流的 x64 产物按实际 GitHub Actions runner CPU 优化，Rust 设置 `target-cpu=native`，C 桥接设置 `/clang:-march=native`。CPU 型号和指令集指纹写入编译缓存键，避免不同 runner 硬件复用不兼容的机器码；工具和 SDK 下载缓存仍可复用。这不是通用 x86-64 兼容包，缺少构建机器指令集的 CPU 可能无法运行，runner 硬件变化也可能改变产物。ARM64 在 x64 runner 上交叉编译，保持 `generic`。两端继续使用 Cargo release 的 O3、fat LTO 和单代码生成单元，最新工具链与 CPU 定向优化不等于已证明更快，性能仍需同机实测。
