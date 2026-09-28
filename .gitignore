@@ -1,6 +1,5 @@
 .codex/
 .idea/
-.codegraph/
 /target/
 /dist/
 /tmp/
