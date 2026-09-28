@@ -21,6 +21,7 @@ pub(super) struct ScanSession {
     pub(super) search_seen: Vec<bool>,
     pub(super) search_preview: crate::api::presentation::HintInfoPreview,
     pub(super) search_query: String,
+    pub(super) search_terms: super::search::SearchTerms,
     pub(super) search_selection: crate::api::text_edit::Selection,
     pub(super) search_names_initialized: bool,
     // One head per geometry; collision links are contiguous and need no bucket drops.
@@ -65,6 +66,7 @@ impl ScanSession {
         self.search_seen = Vec::new();
         self.search_preview = Default::default();
         self.search_query = String::new();
+        self.search_terms = Default::default();
         self.search_names_initialized = false;
         self.release_scan_index();
         self.hints = Vec::new();

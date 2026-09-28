@@ -424,7 +424,8 @@ impl HintMode {
                 .resize(self.session.scanned.len(), false);
             // Each space-separated item runs the same search against original labels.
             // Union in item order; the first occurrence owns each target's position.
-            for term in query.split_whitespace() {
+            self.session.search_terms.prepare(&query);
+            for term in self.session.search_terms.iter(&query) {
                 if matched == self.session.search_hints.len() {
                     break;
                 }
@@ -434,7 +435,7 @@ impl HintMode {
                             .session
                             .search_text
                             .get(hint.value)
-                            .is_some_and(|text| text.matches(term, hint.label.as_str()))
+                            .is_some_and(|text| text.matches_term(term, hint.label.as_str()))
                     {
                         self.session.search_seen[hint.value] = true;
                         if let Some(previous) = self.session.search_matches.get_mut(matched) {
@@ -452,7 +453,10 @@ impl HintMode {
             matches_changed |= matched != previous_len;
             self.session.search_matches.truncate(matched);
             self.session.hints.clear();
-            if query.is_empty() || multiple && query.ends_with(char::is_whitespace) {
+            if query.is_empty()
+                || multiple && query.ends_with(char::is_whitespace)
+                || query.split_whitespace().next_back() == Some("@")
+            {
                 self.session
                     .hints
                     .extend(self.session.search_hints.iter().cloned());
@@ -1057,8 +1061,11 @@ impl Mode for HintMode {
                 }
                 let pending = self.session.pending_relabel;
                 let old_fields = self.search_info().map(|info| info.field_count());
-                let shows_all =
-                    |query: &str| query.is_empty() || query.ends_with(char::is_whitespace);
+                let shows_all = |query: &str| {
+                    query.is_empty()
+                        || query.ends_with(char::is_whitespace)
+                        || query.split_whitespace().next_back() == Some("@")
+                };
                 let old_all = shows_all(self.input.text());
                 if let Input::Search(query) = &mut self.input {
                     let end = text.char_indices().nth(4096).map_or(text.len(), |(i, _)| i);
@@ -1371,6 +1378,19 @@ mod tests {
         mode.session.hints[1].label =
             crate::api::hint::HintCode(smallvec::SmallVec::from_slice(b"ka"));
         press(&mut mode, &env, "/");
+        for c in ['@', 'l', 'a'] {
+            mode.handle(&ModeEvent::TextInserted(c), &env.ctx());
+            assert_eq!(mode.session.hints.len(), if c == '@' { 2 } else { 1 });
+            assert_eq!(mode.overlap_plan.len(), mode.session.hints.len());
+        }
+        for _ in 0..2 {
+            mode.handle(
+                &ModeEvent::TextEdit(crate::api::text_edit::EditAction::Backspace),
+                &env.ctx(),
+            );
+        }
+        assert_eq!(mode.session.hints.len(), 2);
+        assert!(mode.session.search_matches.is_empty());
         mode.handle(&ModeEvent::TextChanged("la".into()), &env.ctx());
         assert_eq!(mode.session.hints.len(), 2);
         let out = mode.handle(&ModeEvent::TextChanged("@la".into()), &env.ctx());
@@ -1385,6 +1405,18 @@ mod tests {
                 .count(),
             1
         );
+        mode.handle(&ModeEvent::TextChanged("@ka @".into()), &env.ctx());
+        assert_eq!(
+            mode.session.hints.len(),
+            2,
+            "show candidates for the next label"
+        );
+        assert_eq!(
+            mode.session.search_matches.len(),
+            1,
+            "bare @ must not select all"
+        );
+        assert_eq!(mode.session.search_matches[0].label.as_str(), "ka");
         mode.handle(
             &ModeEvent::TextChanged("@ka @la language".into()),
             &env.ctx(),

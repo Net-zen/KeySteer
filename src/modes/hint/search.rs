@@ -2,6 +2,34 @@
 use crate::api::SemanticRole;
 use pinyin::ToPinyin;
 
+/// Reused query spans: no per-term String and no repeated scan for identical
+/// terms. Sort only spans, then restore first-occurrence order for copying.
+#[derive(Default)]
+pub(super) struct SearchTerms(smallvec::SmallVec<[std::ops::Range<usize>; 8]>);
+
+impl SearchTerms {
+    pub(super) fn prepare(&mut self, query: &str) {
+        self.0.clear();
+        for term in query.split_whitespace().filter(|term| *term != "@") {
+            let start = term.as_ptr() as usize - query.as_ptr() as usize;
+            self.0.push(start..start + term.len());
+        }
+        if self.0.len() > 1 {
+            self.0.sort_unstable_by(|a, b| {
+                query[a.clone()]
+                    .cmp(&query[b.clone()])
+                    .then(a.start.cmp(&b.start))
+            });
+            self.0.dedup_by(|a, b| query[a.clone()] == query[b.clone()]);
+            self.0.sort_unstable_by_key(|range| range.start);
+        }
+    }
+
+    pub(super) fn iter<'a>(&'a self, query: &'a str) -> impl Iterator<Item = &'a str> {
+        self.0.iter().map(|range| &query[range.clone()])
+    }
+}
+
 #[derive(Default)]
 pub(super) struct SearchText {
     text: String,
@@ -41,14 +69,22 @@ impl SearchText {
         Self { text, initials }
     }
 
+    pub(super) fn matches_term(&self, word: &str, label: &str) -> bool {
+        if let Some(prefix) = word.strip_prefix('@') {
+            // Hint codes are prefix-free: typing narrows candidates, and
+            // completing a code selects only that label. A bare marker
+            // is unfinished input, not a select-all term.
+            !prefix.is_empty() && label.starts_with(prefix)
+        } else {
+            label.starts_with(word) || self.text.contains(word) || self.initials.contains(word)
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn matches(&self, query: &str, label: &str) -> bool {
-        query.split_whitespace().all(|word| {
-            if let Some(exact_label) = word.strip_prefix('@') {
-                !exact_label.is_empty() && label == exact_label
-            } else {
-                label.starts_with(word) || self.text.contains(word) || self.initials.contains(word)
-            }
-        })
+        query
+            .split_whitespace()
+            .all(|word| self.matches_term(word, label))
     }
 }
 
@@ -84,6 +120,28 @@ pub(super) fn role_chinese(role: SemanticRole) -> &'static str {
 mod tests {
     use super::*;
     #[test]
+    fn repeated_terms_scan_once_in_original_order_and_reuse_capacity() {
+        let query = "@ka 复制 @ka missing 复制 @";
+        let mut terms = SearchTerms::default();
+        terms.prepare(query);
+        assert_eq!(
+            terms.iter(query).collect::<Vec<_>>(),
+            ["@ka", "复制", "missing"]
+        );
+        let repeated = "missing ".repeat(2048);
+        terms.prepare(&repeated);
+        assert_eq!(terms.iter(&repeated).collect::<Vec<_>>(), ["missing"]);
+        let storage = terms.0.as_ptr();
+        let capacity = terms.0.capacity();
+        terms.prepare(&repeated);
+        assert_eq!(terms.0.as_ptr(), storage);
+        assert_eq!(terms.0.capacity(), capacity);
+        terms.prepare("@ @");
+        assert_eq!(terms.iter("@ @").count(), 0);
+        assert_eq!(terms.0.capacity(), capacity);
+    }
+
+    #[test]
     fn label_query_also_matches_other_targets_text() {
         let label = SearchText::new("Save", SemanticRole::Button);
         let semantic = SearchText::new("Language", SemanticRole::Button);
@@ -92,7 +150,8 @@ mod tests {
         assert!(!label.matches("la", "ka"));
         assert!(label.matches("@la", "la"));
         assert!(!semantic.matches("@la", "ka"));
-        assert!(!semantic.matches("@la", "lab"));
+        assert!(semantic.matches("@l", "la"));
+        assert!(!semantic.matches("@l", "ka"));
         assert!(!semantic.matches("@", "ka"));
     }
 

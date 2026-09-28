@@ -14,7 +14,7 @@
 | 模式、搜索语法与退出、插件、完成与返回 | [模式生命周期](04-modes-and-lifecycle.md) |
 | UIA / AX / OCR 来源与融合、范围优先级、自动激活、扫描与取消 | [UI 扫描](05-ui-scanning.md) |
 | 原生能力、线程、资源及 共享搜索输入与原生备注 | [平台后端](06-platform-backends.md) |
-| 绘制、共享图层匹配、文字定位、响应与内存 | [性能](07-rendering-and-performance.md) |
+| 非阻塞绘制、共享图层匹配、文字定位、搜索响应与内存 | [性能](07-rendering-and-performance.md) |
 | 构建、测试隔离、打包、网页 | [验证](08-build-docs-and-tests.md) |
 | 跨层改动 | [改动指南](09-change-guide.md)、[架构边界](10-architecture-boundaries.md) |
 

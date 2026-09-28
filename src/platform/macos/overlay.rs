@@ -12,14 +12,13 @@ use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAttributedStringNSStringDrawing, NSBackingStoreType, NSBaselineOffsetAttributeName, NSColor,
-    NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSKernAttributeName,
-    NSLigatureAttributeName, NSPanel, NSScreen, NSScreenSaverWindowLevel, NSView,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSBackingStoreType, NSBaselineOffsetAttributeName, NSColor, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSKernAttributeName, NSLigatureAttributeName, NSPanel,
+    NSScreen, NSScreenSaverWindowLevel, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_graphics::{CGColor, CGMutablePath};
-use objc2_core_text::{CTFont, CTFontSymbolicTraits, CTFontUIFontType};
+use objc2_core_text::{CTFont, CTFontSymbolicTraits, CTFontUIFontType, CTLine};
 use objc2_foundation::{
     NSAttributedString, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect, NSSize,
     NSString, ns_string,
@@ -743,7 +742,7 @@ impl WindowContent {
             let foreground = self.color(spec.style.text_color);
             let matched_foreground = self.color(spec.style.matched_text_color);
             let font = self.font(spec.style);
-            let (base, matched) = attributed_label_text_pair(
+            attributed_label_text_pair(
                 spec.text,
                 spec.style,
                 spec.analysis,
@@ -751,9 +750,7 @@ impl WindowContent {
                 &foreground.cocoa,
                 &matched_foreground.cocoa,
                 spec.fixed_bounds.then_some(spec.rect.height),
-            );
-            let metrics = label_text_metrics(&base, spec.text);
-            (base, matched, metrics)
+            )
         });
         let edit_colors = spec.edit.map(|_| {
             (
@@ -802,19 +799,17 @@ impl WindowContent {
             // string type. Both setters copy before the autorelease pool
             // releases the temporary builders.
             unsafe {
+                // Clear recycled backing images without synchronously invoking
+                // AppKit drawing on the keyboard/engine thread. None is a valid
+                // CALayer contents value; the transaction redraws the new text.
+                layer.base.setContents(None);
+                layer.matched.setContents(None);
                 layer.base.setString(Some(&base));
                 layer.matched.setString(Some(&matched));
             }
             layer.metrics = metrics;
-            // A recycled CATextLayer may still contain the old label bitmap.
-            // Rasterize changed text inside this disabled-actions transaction
-            // before its new geometry can reach the compositor.
             layer.base.setNeedsDisplay();
-            layer.base.displayIfNeeded();
-            if spec.analysis.matched_utf16_len > 0 {
-                layer.matched.setNeedsDisplay();
-                layer.matched.displayIfNeeded();
-            }
+            layer.matched.setNeedsDisplay();
         }
         layer.update_matched_prefix(
             spec.analysis.matched_utf16_len,
@@ -1231,6 +1226,7 @@ fn attributed_label_text_pair(
 ) -> (
     Retained<NSMutableAttributedString>,
     Retained<NSMutableAttributedString>,
+    LabelTextMetrics,
 ) {
     let string = NSString::from_str(text);
     let attributed = NSMutableAttributedString::from_nsstring(&string);
@@ -1240,7 +1236,7 @@ fn attributed_label_text_pair(
             NSMutableAttributedString::alloc(),
             immutable,
         );
-        return (attributed, matched);
+        return (attributed, matched, LabelTextMetrics::default());
     }
 
     let full_range = NSRange::new(0, analysis.utf16_len);
@@ -1264,8 +1260,10 @@ fn attributed_label_text_pair(
     // SAFETY: every AppKit attribute receives its documented object type and
     // all ranges were derived from this exact string's UTF-16 length. The
     // mutable copy is created after the shared layout attributes are applied,
-    // then only its foreground color is replaced.
-    let matched = unsafe {
+    // then only its foreground color is replaced. CoreText borrows this same
+    // toll-free bridged string; indices are UTF-16 boundaries, and optional
+    // metric output pointers are null. The owned line is dropped after measuring.
+    let (matched, metrics) = unsafe {
         attributed.addAttribute_value_range(NSFontAttributeName, font_object, full_range);
         attributed.addAttribute_value_range(
             NSForegroundColorAttributeName,
@@ -1292,32 +1290,41 @@ fn attributed_label_text_pair(
             matched_foreground_object,
             full_range,
         );
-        matched
+        // Shape once, then read insertion offsets from that line. Measuring
+        // every attributed substring repeated shaping and temporary allocation
+        // quadratically for long OCR previews and pasted queries.
+        let line = CTLine::with_attributed_string(immutable.as_ref());
+        let width = line
+            .typographic_bounds(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+            .max(0.0) as f32;
+        let mut prefix_offsets = SmallVec::new();
+        let mut utf16_len = 0usize;
+        for character in text.chars() {
+            utf16_len += character.len_utf16();
+            let Ok(compact_len) = u32::try_from(utf16_len) else {
+                break;
+            };
+            let x = line
+                .offset_for_string_index(utf16_len as isize, std::ptr::null_mut())
+                .max(0.0) as f32;
+            prefix_offsets.push(PrefixOffset {
+                utf16_len: compact_len,
+                x,
+            });
+        }
+        (
+            matched,
+            LabelTextMetrics {
+                width,
+                prefix_offsets,
+            },
+        )
     };
-    (attributed, matched)
-}
-
-fn label_text_metrics(attributed: &NSMutableAttributedString, text: &str) -> LabelTextMetrics {
-    let immutable: &NSAttributedString = attributed;
-    let width = immutable.size().width.max(0.0) as f32;
-    let mut prefix_offsets = SmallVec::new();
-    let mut utf16_len = 0usize;
-    for character in text.chars() {
-        utf16_len += character.len_utf16();
-        let prefix = immutable.attributedSubstringFromRange(NSRange::new(0, utf16_len));
-        let Ok(compact_len) = u32::try_from(utf16_len) else {
-            break;
-        };
-        let x = prefix.size().width.max(0.0) as f32;
-        prefix_offsets.push(PrefixOffset {
-            utf16_len: compact_len,
-            x,
-        });
-    }
-    LabelTextMetrics {
-        width,
-        prefix_offsets,
-    }
+    (attributed, matched, metrics)
 }
 
 #[inline]
@@ -1410,6 +1417,36 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "native CoreText font metrics; run on macOS"]
+    fn shaped_line_metrics_cover_unicode_insertion_boundaries() {
+        autoreleasepool(|_| {
+            let style = LabelStyle::default();
+            let cocoa_font = NSFont::systemFontOfSize(style.font_size);
+            let font: &CTFont = cocoa_font.as_ref();
+            let color = NSColor::blackColor();
+            for text in ["", "iii", "WWW", "复制🦀 iii WWW"] {
+                let (_, _, metrics) = attributed_label_text_pair(
+                    text,
+                    &style,
+                    LabelTextAnalysis::analyze(text, 0),
+                    font,
+                    &color,
+                    &color,
+                    None,
+                );
+                assert_eq!(metrics.prefix_offsets.len(), text.chars().count());
+                if let Some(end) = metrics.prefix_offsets.last() {
+                    assert_eq!(end.utf16_len as usize, text.encode_utf16().count());
+                    assert!((end.x - metrics.width).abs() < 0.5);
+                    assert!(metrics.width > 0.0);
+                } else {
+                    assert_eq!(metrics.width, 0.0);
+                }
+            }
+        });
+    }
 
     fn displays() -> [Screen; 3] {
         [

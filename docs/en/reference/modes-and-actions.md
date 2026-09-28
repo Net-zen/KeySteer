@@ -412,3 +412,5 @@ Search editing shortcuts are configurable in `[ui_hint.search_edit_keys]`, e.g. 
 Search accept shortcuts default to `accept = "enter / primary+q"`. Separate alternatives with spaces; a custom value replaces all accept defaults. Accept closes search and restores hints while keeping UIHint active; exactly one match also moves the pointer. Esc cancels without moving. Shortcuts are validated and compiled at startup.
 
 Use `@la` to match only the exact label `la`; `la` still searches label prefixes, text and initials. `@la @ka` selects two labels, and `@la button` mixes exact labels with ordinary search terms in input order.
+
+A bare `@` keeps candidate labels visible without selecting them all. Continue with `@l` to filter by label prefix, then complete `@la` to match that label. The same rule applies after a space, e.g. `@ka @`.
