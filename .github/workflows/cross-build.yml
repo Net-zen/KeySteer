@@ -85,30 +85,7 @@ jobs:
       - name: Set up release Rust
         uses: ./.github/actions/setup-rust
         with:
-          targets: ${{ matrix.target }}
-
-      - name: Identify CPU for the build cache
-        id: cpu
-        env:
-          CPU_MODE: ${{ matrix.cpu }}
-        run: |
-          python3 - <<'PY'
-          import hashlib, json, os, pathlib
-          cache_key = "generic"
-          if os.environ["CPU_MODE"] == "native":
-              # Runner hardware can change without a toolchain or flags change.
-              # Separate caches to avoid reusing code for another instruction set.
-              block = pathlib.Path("/proc/cpuinfo").read_text().split("\n\n", 1)[0]
-              fields = dict(line.split(":", 1) for line in block.splitlines() if ":" in line)
-              fields = {key.strip(): value.strip() for key, value in fields.items()}
-              identity = {key: fields[key] for key in ("vendor_id", "cpu family", "model", "model name", "stepping", "flags")}
-              identity["flags"] = " ".join(sorted(identity["flags"].split()))
-              encoded = json.dumps(identity, sort_keys=True)
-              print(encoded)
-              cache_key = hashlib.sha256(encoded.encode()).hexdigest()
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"key={cache_key}\n")
-          PY
+          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
 
       - name: Resolve system package versions
         id: system-packages
@@ -185,16 +162,6 @@ jobs:
           path: ${{ runner.temp }}/keysteer-llvm
           key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
 
-      - name: Restore Rust cache
-        id: rust-cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: v1-cross-windows-experiment
-          key: ${{ matrix.target }}-${{ matrix.cpu }}-${{ steps.cpu.outputs.key }}-llvm${{ steps.tools.outputs.llvm-sha256 }}-xwin${{ env.CARGO_XWIN_VERSION }}-release
-          cache-bin: false
-          cache-workspace-crates: true
-          cache-on-failure: true
-
       - name: Restore cargo-xwin executable
         id: xwin-tool
         uses: actions/cache@v6
@@ -251,11 +218,9 @@ jobs:
       - name: Summarize signed package
         env:
           TARGET: ${{ matrix.target }}
-          COMPILE_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
         run: |
           {
             echo "### Windows $TARGET"
-            echo "Rust compilation cache hit: ${COMPILE_CACHE_HIT:-false}"
             echo 'Signed with the existing Windows certificate and an RFC 3161 timestamp.'
             echo 'Native UI behavior still requires Windows validation.'
             echo 'SHA256 of the signed executable and package:'

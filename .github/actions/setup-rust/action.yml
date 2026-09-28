@@ -11,16 +11,59 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        RUST_TARGETS: ${{ inputs.targets }}
       run: |
         rust_version="$(gh api repos/rust-lang/rust/releases/latest --jq '.tag_name')"
         [[ "$rust_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
         echo "RUSTUP_TOOLCHAIN=$rust_version" >> "$GITHUB_ENV"
+        echo "RUSTUP_CACHE_HOME=$(rustup show home)" >> "$GITHUB_ENV"
+        echo "RUST_TARGETS_KEY=${RUST_TARGETS//,/-}" >> "$GITHUB_ENV"
+
+    - name: Restore Rust toolchain
+      id: toolchain-cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ env.RUSTUP_CACHE_HOME }}/toolchains/${{ env.RUSTUP_TOOLCHAIN }}-*
+        key: rust-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ env.RUST_TARGETS_KEY }}
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
         targets: ${{ inputs.targets }}
+
+    - name: Save Rust toolchain
+      if: steps.toolchain-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ env.RUSTUP_CACHE_HOME }}/toolchains/${{ env.RUSTUP_TOOLCHAIN }}-*
+        key: ${{ steps.toolchain-cache.outputs.cache-primary-key }}
+
+    - name: Identify third-party dependency downloads
+      shell: bash
+      run: |
+        python - <<'PY'
+        import hashlib, json, os, pathlib, tomllib
+        lock = tomllib.loads(pathlib.Path('Cargo.lock').read_text(encoding='utf-8'))
+        # Local package versions, manifests, source files and compiler flags
+        # must not multiply the cache of platform-independent downloads.
+        packages = [p for p in lock['package'] if 'source' in p]
+        packages.sort(key=lambda p: (p['name'], p['version'], p['source']))
+        digest = hashlib.sha256(json.dumps(packages, sort_keys=True).encode()).hexdigest()
+        with open(os.environ['GITHUB_ENV'], 'a') as output:
+            output.write(f'CARGO_DOWNLOAD_KEY={digest}\n')
+        PY
+
+    - name: Restore Cargo downloads
+      uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: v2-cargo-downloads
+        shared-key: ${{ env.CARGO_DOWNLOAD_KEY }}
+        add-rust-environment-hash-key: false
+        cache-targets: false
+        cache-bin: false
+        cache-workspace-crates: false
+        cache-on-failure: true
 
     - name: Prepare build date and lockfile
       shell: bash
