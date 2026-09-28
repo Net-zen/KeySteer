@@ -19,15 +19,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  pages:
+    name: Build and deploy
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     # Keep the Pages toolchain stable across GitHub's ubuntu-latest migrations.
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Identify pnpm version
+        id: pnpm-version
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, re
+          with open('package.json') as source:
+              manager = json.load(source)['packageManager']
+          match = re.fullmatch(r'pnpm@([0-9]+\.[0-9]+\.[0-9]+)(?:\+.*)?', manager)
+          if not match:
+              raise SystemExit('Expected an exact pnpm version in package.json')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={match[1]}\n')
+          PYTHON
+
+      - name: Restore pnpm tool
+        id: pnpm-tool
+        uses: actions/cache@v6
+        with:
+          # Cache the package manager only, not project node_modules or output.
+          path: ~/.cache/keysteer-pnpm
+          key: pages-pnpm-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.pnpm-version.outputs.version }}
+
       - name: Set up pnpm
+        if: steps.pnpm-tool.outputs.cache-hit != 'true'
         uses: pnpm/action-setup@v6
+        with:
+          dest: ~/.cache/keysteer-pnpm
+
+      - name: Activate pnpm tool
+        run: |
+          pnpm_home="$HOME/.cache/keysteer-pnpm/node_modules/.bin"
+          echo "PNPM_HOME=$pnpm_home" >> "$GITHUB_ENV"
+          echo "$pnpm_home" >> "$GITHUB_PATH"
+          echo "$pnpm_home/bin" >> "$GITHUB_PATH"
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -36,7 +72,11 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        env:
+          EXPECTED_PNPM: ${{ steps.pnpm-version.outputs.version }}
+        run: |
+          test "$(pnpm --version)" = "$EXPECTED_PNPM"
+          pnpm install --frozen-lockfile --prefer-offline
 
       - name: Test documentation models
         run: pnpm docs:test
@@ -59,7 +99,7 @@ jobs:
           tar \
             --dereference --hard-dereference \
             --directory docs/.vitepress/dist \
-            -cvf "$RUNNER_TEMP/artifact.tar" \
+            -cf "$RUNNER_TEMP/artifact.tar" \
             --exclude=.git \
             --exclude=.github \
             --exclude=".[^/]*" \
@@ -73,13 +113,6 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-24.04
-    needs: build
-    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5

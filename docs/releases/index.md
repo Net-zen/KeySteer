@@ -5,6 +5,14 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.10.28
+
+- 优化 OCR 文字预览与复制，清理中文间的多余空格，减少分块接缝处的重复文字。
+- Windows 与 macOS 共用文字拼接逻辑，复用扫描缓冲，减少内存分配并及时释放资源。
+
+- Improved OCR previews and copying by removing extra spaces between Chinese characters and reducing duplicate text at tile seams.
+- Windows and macOS share text stitching logic, with reusable scan buffers, fewer allocations, and prompt resource cleanup.
+
 ## 0.10.27
 
 - UIHint 新增搜索与信息复制：按 `/` 搜索标签、OCR 和辅助功能内容，并用快捷键复制结果。

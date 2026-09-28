@@ -253,7 +253,7 @@ impl HintInfoView<'_> {
 /// Stream OCR whitespace cleanup into the existing preview/clipboard buffer.
 /// Keep word boundaries and line breaks, but remove recognition gaps between
 /// Chinese characters and around Chinese punctuation. No temporary String.
-fn write_ocr_text(out: &mut impl std::fmt::Write, text: &str) -> std::fmt::Result {
+pub(crate) fn write_ocr_text(out: &mut impl std::fmt::Write, text: &str) -> std::fmt::Result {
     let chinese = |c: char| {
         matches!(c as u32,
         0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x323af)

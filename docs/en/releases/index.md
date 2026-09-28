@@ -5,6 +5,11 @@ outline: false
 
 # Release notes
 
+## 0.10.28
+
+- Improved OCR previews and copying by removing extra spaces between Chinese characters and reducing duplicate text at tile seams.
+- Windows and macOS share text stitching logic, with reusable scan buffers, fewer allocations, and prompt resource cleanup.
+
 ## 0.10.27
 
 - UIHint now supports searching labels, OCR and accessibility information with `/`, then copying results with shortcuts.

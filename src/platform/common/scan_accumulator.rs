@@ -15,6 +15,7 @@ pub(crate) struct ScanAccumulator {
     visual_text: Vec<UiTarget>,
     images: Vec<UiTarget>,
     search_targets: Vec<Option<UiTarget>>,
+    ocr_scratch: OcrScratch,
     search_spatial: super::spatial_index::SpatialIndex,
 }
 
@@ -33,6 +34,7 @@ impl ScanAccumulator {
             visual_text: Vec::new(),
             images: Vec::new(),
             search_targets: Vec::new(),
+            ocr_scratch: OcrScratch::default(),
             search_spatial: super::spatial_index::SpatialIndex::new(64.0, 8.0, 2.0),
         }
     }
@@ -70,14 +72,23 @@ impl ScanAccumulator {
                     && !t.name.is_empty()
                     && self.visual_text.len() < MAX_UI_SCAN_TARGETS
                 {
-                    self.visual_text.push(t.clone());
+                    // Evidence needs only geometry and normalized text, not a
+                    // second copy of the provider's metadata/boxed strings.
+                    let mut name = String::with_capacity(t.name.len());
+                    let _ = crate::api::presentation::write_ocr_text(&mut name, &t.name);
+                    self.visual_text.push(UiTarget {
+                        rect: t.rect,
+                        role: t.role,
+                        name,
+                        details: None,
+                    });
                 }
             }
         }
         if source == TargetSource::Contour {
             for t in &mut targets {
                 if t.role == SemanticRole::Image {
-                    image_name(t, &self.visual_text);
+                    image_name(t, &self.visual_text, &mut self.ocr_scratch);
                 }
             }
         }
@@ -120,7 +131,7 @@ impl ScanAccumulator {
                     continue;
                 }
                 let previous = image.name.clone();
-                image_name(image, &self.visual_text);
+                image_name(image, &self.visual_text, &mut self.ocr_scratch);
                 if image.name != previous {
                     retired.push(image.rect);
                     targets.push(image.clone());
@@ -176,8 +187,9 @@ impl ScanAccumulator {
             let mut changed = std::collections::BTreeSet::new();
             for text in &self.visual_text[text_start..] {
                 self.search_spatial.any_match(text.rect, |index, _, _| {
-                    if let Some(target) = &mut self.search_targets[index]
-                        && attach_ocr(target, std::slice::from_ref(text))
+                    if !changed.contains(&index)
+                        && let Some(target) = &mut self.search_targets[index]
+                        && attach_ocr(target, &self.visual_text, &mut self.ocr_scratch)
                     {
                         changed.insert(index);
                     }
@@ -196,7 +208,7 @@ impl ScanAccumulator {
         }
         for batch in &mut batches {
             for target in batch {
-                attach_ocr(target, &self.visual_text);
+                attach_ocr(target, &self.visual_text, &mut self.ocr_scratch);
                 let mut existing = None;
                 self.search_spatial
                     .any_match(target.rect, |index, rect, _| {
@@ -231,7 +243,7 @@ impl ScanAccumulator {
         let mut pending = self.batches.finish();
         if let Some(targets) = &mut pending {
             for target in targets {
-                attach_ocr(target, &self.visual_text);
+                attach_ocr(target, &self.visual_text, &mut self.ocr_scratch);
             }
         }
         // Fusion evidence is no longer needed after terminal publication.
@@ -241,59 +253,157 @@ impl ScanAccumulator {
     }
 }
 
-fn attach_ocr(target: &mut UiTarget, text: &[UiTarget]) -> bool {
-    let mut changed = false;
-    for item in text {
-        if item.name.is_empty()
-            || !target
-                .rect
-                .intersect(&item.rect)
-                .is_some_and(|r| r.width * r.height >= item.rect.width * item.rect.height * 0.9)
-        {
-            continue;
-        }
-        let name = target.name.clone();
-        let details = target.details.get_or_insert_with(|| {
-            Box::new(crate::api::geometry::UiTargetDetails {
-                accessibility: name,
-                ..Default::default()
-            })
-        });
-        if !details.ocr.contains(&item.name) {
-            if !details.ocr.is_empty() {
-                details.ocr.push(' ');
-            }
-            details.ocr.push_str(&item.name);
-            changed = true;
-        }
-    }
-    changed
+#[derive(Default)]
+struct OcrScratch {
+    text: String,
+    // Store indices rather than references so overflow capacity can be reused.
+    runs: SmallVec<[usize; 16]>,
 }
 
-fn image_name(image: &mut UiTarget, text: &[UiTarget]) {
-    let mut words: Vec<_> = text
-        .iter()
-        .filter(|t| {
-            t.rect
-                .intersect(&image.rect)
-                .is_some_and(|i| i.width * i.height >= 0.9 * t.rect.width * t.rect.height)
-        })
-        .collect();
-    words.sort_by(|a, b| {
+// Rebuild from bounded, original scan evidence, never from previously joined text.
+// Scratch capacity is retained for this scan and released by finish/drop.
+fn attach_ocr(target: &mut UiTarget, text: &[UiTarget], scratch: &mut OcrScratch) -> bool {
+    let OcrScratch {
+        text: scratch,
+        runs,
+    } = scratch;
+    runs.clear();
+    runs.extend(text.iter().enumerate().filter_map(|(index, item)| {
+        (!item.name.is_empty()
+            && target
+                .rect
+                .intersect(&item.rect)
+                .is_some_and(|r| r.width * r.height >= item.rect.width * item.rect.height * 0.9))
+        .then_some(index)
+    }));
+    if runs.is_empty() {
+        return false;
+    }
+    runs.sort_unstable_by(|&a, &b| {
+        let (a, b) = (&text[a], &text[b]);
         a.rect
             .y
             .total_cmp(&b.rect.y)
             .then(a.rect.x.total_cmp(&b.rect.x))
             .then(a.name.cmp(&b.name))
     });
-    image.name.clear();
-    for word in words {
-        if !image.name.contains(&word.name) {
-            if !image.name.is_empty() {
-                image.name.push(' ');
-            }
-            image.name.push_str(&word.name);
+    // Anchor each row before ordering by x; a fuzzy sort comparator would not
+    // be transitive when three rows have different heights.
+    let mut start = 0;
+    while start < runs.len() {
+        let anchor = text[runs[start]].rect;
+        let mut end = start + 1;
+        while end < runs.len() && same_text_row(anchor, text[runs[end]].rect) {
+            end += 1;
         }
+        runs[start..end].sort_unstable_by(|&a, &b| {
+            let (a, b) = (&text[a], &text[b]);
+            a.rect
+                .x
+                .total_cmp(&b.rect.x)
+                .then(a.rect.right().total_cmp(&b.rect.right()))
+                .then(a.name.cmp(&b.name))
+        });
+        start = end;
+    }
+    scratch.clear();
+    let mut previous: Option<&UiTarget> = None;
+    for &index in runs.iter() {
+        let run = &text[index];
+        let value = run.name.trim();
+        let overlap = previous.is_some_and(|old| {
+            same_text_row(old.rect, run.rect)
+                && old
+                    .rect
+                    .intersect(&run.rect)
+                    .is_some_and(|r| r.width >= old.rect.height.min(run.rect.height) * 0.5)
+        });
+        if overlap
+            && (scratch.ends_with(value)
+                || previous.is_some_and(|old| {
+                    old.rect.x <= run.rect.x
+                        && old.rect.right() >= run.rect.right()
+                        && old.name.contains(value)
+                }))
+        {
+            continue;
+        }
+        let skip = if overlap {
+            text_overlap(scratch, value)
+        } else {
+            0
+        };
+        if !scratch.is_empty() && skip == 0 {
+            scratch.push(' ');
+        }
+        scratch.push_str(&value[skip..]);
+        previous = Some(run);
+    }
+    let details = target.details.get_or_insert_with(|| {
+        Box::new(crate::api::geometry::UiTargetDetails {
+            accessibility: target.name.clone(),
+            ..Default::default()
+        })
+    });
+    let changed = details.ocr != *scratch;
+    if changed {
+        std::mem::swap(&mut details.ocr, scratch);
+    }
+    if target.role == SemanticRole::StaticText && details.accessibility.is_empty() {
+        target.name.clone_from(&details.ocr);
+    }
+    changed
+}
+
+fn same_text_row(a: Rect, b: Rect) -> bool {
+    let small = a.height.min(b.height);
+    small > 0.0
+        && a.height.max(b.height) <= small * 1.6
+        && (a.center().y - b.center().y).abs() <= small * 0.3
+}
+
+// Only inspect a bounded seam, on UTF-8 boundaries. Never discard a single
+// coincident character; uncertain recognition is preserved rather than guessed.
+fn text_overlap(left: &str, right: &str) -> usize {
+    const LIMIT: usize = 512;
+    let n = left.len().min(right.len()).min(LIMIT);
+    if n == 0 {
+        return 0;
+    }
+    // KMP: linear time even for repeated characters. Fixed stack storage,
+    // independent of the length of a page or a long OCR paragraph.
+    let pattern = &right.as_bytes()[..n];
+    let mut failure = [0u16; LIMIT];
+    let mut matched = 0;
+    for i in 1..n {
+        while matched > 0 && pattern[i] != pattern[matched] {
+            matched = usize::from(failure[matched - 1]);
+        }
+        if pattern[i] == pattern[matched] {
+            matched += 1;
+        }
+        failure[i] = matched as u16;
+    }
+    matched = 0;
+    for &byte in &left.as_bytes()[left.len() - n..] {
+        while matched > 0 && (matched == n || pattern[matched] != byte) {
+            matched = usize::from(failure[matched - 1]);
+        }
+        if pattern[matched] == byte {
+            matched += 1;
+        }
+    }
+    if right.is_char_boundary(matched) && right[..matched].chars().take(2).count() == 2 {
+        matched
+    } else {
+        0
+    }
+}
+
+fn image_name(image: &mut UiTarget, text: &[UiTarget], scratch: &mut OcrScratch) {
+    attach_ocr(image, text, scratch);
+    if let Some(details) = &image.details {
+        image.name.clone_from(&details.ocr);
     }
 }
 
@@ -301,6 +411,100 @@ fn image_name(image: &mut UiTarget, text: &[UiTarget]) {
 mod tests {
     use super::*;
     use crate::api::geometry::SemanticRole;
+
+    #[test]
+    #[ignore = "allocation counter requires isolated execution"]
+    fn warmed_seam_assembly_reuses_strings_and_fragment_storage() {
+        let text: Vec<_> = (0..32)
+            .map(|i| {
+                UiTarget::recognized_text(
+                    Rect::new(f64::from(i) * 140.0, 0.0, 120.0, 20.0),
+                    format!("fragment {i}"),
+                )
+            })
+            .collect();
+        let mut target =
+            UiTarget::recognized_text(Rect::new(0.0, 0.0, 5000.0, 30.0), String::new());
+        let mut scratch = OcrScratch::default();
+        attach_ocr(&mut target, &text, &mut scratch);
+        attach_ocr(&mut target, &text, &mut scratch);
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        for _ in 0..1000 {
+            assert!(!attach_ocr(&mut target, &text, &mut scratch));
+        }
+        let stats = region.change();
+        assert_eq!(stats.allocations + stats.reallocations, 0, "{stats:?}");
+    }
+
+    #[test]
+    fn seam_text_converges_across_batches_and_arrival_orders() {
+        for reverse in [false, true] {
+            for separate in [false, true] {
+                let mut scan = ScanAccumulator::new();
+                let mut input = vec![
+                    UiTarget::recognized_text(
+                        Rect::new(0.0, 0.0, 140.0, 20.0),
+                        "支持 搜 索 和 复 制".into(),
+                    ),
+                    UiTarget::recognized_text(
+                        Rect::new(40.0, 0.0, 140.0, 20.0),
+                        "搜索和复制结果".into(),
+                    ),
+                ];
+                if reverse {
+                    input.reverse();
+                }
+                let mut visible = Vec::new();
+                let batches = if separate {
+                    input.into_iter().map(|t| vec![t]).collect()
+                } else {
+                    vec![input]
+                };
+                for batch in batches {
+                    let update = scan.push(TargetSource::SystemOcr, batch, 0.5);
+                    let mut targets: Vec<_> = update.batches.into_iter().flatten().collect();
+                    // The mailbox and hint mode also enrich replacements.
+                    crate::api::command::enrich_replacements(
+                        &mut targets,
+                        &visible,
+                        &update.retired,
+                    );
+                    remove_retired_targets(&mut visible, &update.retired);
+                    visible.extend(targets);
+                }
+                visible.extend(scan.finish().into_iter().flatten());
+                assert_eq!(visible.len(), 1);
+                assert_eq!(visible[0].name, "支持搜索和复制结果");
+                assert_eq!(visible[0].ocr_text(), "支持搜索和复制结果");
+                assert_eq!(scan.ocr_scratch.text.capacity(), 0);
+                assert!(!scan.ocr_scratch.runs.spilled());
+                assert_eq!(scan.visual_text.capacity(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn seam_text_requires_geometry_and_preserves_uncertain_content() {
+        let mut scratch = OcrScratch::default();
+        for (x, y, right, expected) in [
+            (80.0, 0.0, "copy results", "please copy results"),
+            (140.0, 0.0, "copy results", "please copy copy results"),
+            (0.0, 30.0, "copy results", "please copy copy results"),
+            (80.0, 0.0, "different OCR", "please copy different OCR"),
+        ] {
+            let text = vec![
+                UiTarget::recognized_text(Rect::new(0.0, 0.0, 120.0, 20.0), "please copy".into()),
+                UiTarget::recognized_text(Rect::new(x, y, 120.0, 20.0), right.into()),
+            ];
+            let mut owner =
+                UiTarget::recognized_text(Rect::new(0.0, 0.0, 300.0, 60.0), String::new());
+            attach_ocr(&mut owner, &text, &mut scratch);
+            assert_eq!(owner.ocr_text(), expected);
+        }
+        assert_eq!(text_overlap("重复的字符字", "字结束"), 0);
+        assert_eq!(text_overlap("🦀支持搜索", "支持搜索结果"), "支持搜索".len());
+        assert_eq!(text_overlap(&"a".repeat(10_000), &"a".repeat(10_000)), 512);
+    }
 
     #[test]
     fn search_details_keep_ocr_and_accessibility_in_both_arrival_orders() {

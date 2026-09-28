@@ -1568,7 +1568,9 @@ mod tests {
             assert!(!labels[2].text.contains('\n'));
             assert!(
                 mode.handle(&ModeEvent::CopyTextField(0), &env.ctx())
-                    .contains(&Command::CopyText(original))
+                    .contains(&Command::CopyText(
+                        "这是一段很长的 OCR 内容\n不能换行也不能越过面板边界".repeat(60)
+                    ))
             );
             let panel = scene
                 .shapes

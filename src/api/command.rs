@@ -974,6 +974,14 @@ pub(crate) fn enrich_replacements(
                 | crate::api::SemanticRole::StaticText
         )
     }) {
+        // Scan evidence already supplied authoritative OCR seam reconstruction.
+        if target.role == crate::api::SemanticRole::StaticText
+            && target.details.as_ref().is_some_and(|d| {
+                !d.ocr.is_empty() && d.accessibility.is_empty() && d.ocr == target.name
+            })
+        {
+            continue;
+        }
         let inherit_descriptions =
             target.name.is_empty() || target.role == crate::api::SemanticRole::StaticText;
         for old in &descriptions {
