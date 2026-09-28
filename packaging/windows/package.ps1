@@ -61,7 +61,7 @@ try {
     }
     $env:RUSTFLAGS = (($env:RUSTFLAGS, "-C link-arg=/Brepro") -join " ").Trim()
 
-    & cargo build --locked --release --target $Target
+    & cargo build --locked --release --bin keysteer --no-default-features --target $Target
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed with exit code $LASTEXITCODE"
     }

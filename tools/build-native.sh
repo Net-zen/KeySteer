@@ -10,5 +10,5 @@ esac
 export CARGO_TARGET_DIR="$root/target-native/$target"
 export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native"
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$root" log -1 --format=%ct)}"
-cargo build --manifest-path "$root/Cargo.toml" --locked --release --target "$target"
+cargo build --manifest-path "$root/Cargo.toml" --locked --release --bin keysteer --no-default-features --target "$target"
 printf '%s\n' "$CARGO_TARGET_DIR/$target/release/keysteer"

@@ -34,15 +34,18 @@ mkdir -p "$output"
 rm -f "$output"/baseline-*.log "$output"/optimized-*.log "$output/summary.csv"
 
 git -C "$repo" worktree add --detach "$baseline" "$baseline_ref"
-mkdir -p "$baseline/examples"
-cp "$repo/examples/macos_native_probe.rs" "$baseline/examples/macos_native_probe.rs"
+if [[ ! -f "$baseline/tools/perf/Cargo.toml" ]]; then
+  echo "baseline must contain the isolated tools/perf package" >&2
+  exit 2
+fi
+cp "$repo/tools/perf/examples/macos_native_probe.rs" "$baseline/tools/perf/examples/macos_native_probe.rs"
 
 echo "Build and grant Accessibility + Screen Recording to the responsible terminal/app when prompted."
-cargo build --manifest-path "$repo/Cargo.toml" --release --example macos_native_probe
+cargo build --manifest-path "$repo/tools/perf/Cargo.toml" --release --example macos_native_probe
 CARGO_TARGET_DIR="$temporary/baseline-target" \
-  cargo build --manifest-path "$baseline/Cargo.toml" --release --example macos_native_probe
+  cargo build --manifest-path "$baseline/tools/perf/Cargo.toml" --release --example macos_native_probe
 
-optimized_binary="$repo/target/release/examples/macos_native_probe"
+optimized_binary="$repo/tools/perf/target/release/examples/macos_native_probe"
 baseline_binary="$temporary/baseline-target/release/examples/macos_native_probe"
 
 for ((round = 1; round <= rounds; round++)); do

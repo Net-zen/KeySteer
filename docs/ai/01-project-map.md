@@ -16,7 +16,7 @@
 | `src/support/` | 统一日志、错误汇总、worker 生命周期 |
 | `src/app/paths.rs`、`src/app/preset_store/` | 应用数据路径、工作区持久化 |
 | `tests/`、`src/tests/`、模块内测试 | 架构护栏、集成与单元测试 |
-| `benches/`、`tools/` | 性能基准与原生验收工具 |
+| `tools/perf/`、`tools/` | 性能基准与原生验收工具 |
 | `docs/.vitepress/` | 文档站、配置工作室与浏览器模拟器 |
 | `build.rs`、`packaging/`、`.github/workflows/` | 原生构建、打包与发布 |
 

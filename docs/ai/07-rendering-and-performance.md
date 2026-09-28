@@ -7,7 +7,7 @@
 - 场景协议与借用视图：`src/api/overlay.rs`、`src/api/presentation.rs`。
 - 场景生成：`src/presentation/`；提交协调：`src/app/runtime/overlay_coordinator.rs`。
 - 原生绘制与帧时钟：见 [后端](06-platform-backends.md)。
-- 日志：`src/support/logging.rs`；性能工具：`benches/`、`tools/`。
+- 日志：`src/support/logging.rs`；性能工具：`tools/perf/`、`tools/`。
 
 ## 优化原则
 

@@ -16,7 +16,7 @@ cargo test
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test tests::performance::steady_normal_frames_do_not_allocate -- --ignored --exact --test-threads=1
-cargo bench --features benchmark-hooks --bench core_hot_paths
+cargo bench --manifest-path tools/perf/Cargo.toml --bench core_hot_paths
 ```
 
 直接运行开发版本：

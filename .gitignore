@@ -1,3 +1,6 @@
+.codex/
+.idea/
+.codegraph/
 /target/
 /dist/
 /tmp/
@@ -10,3 +13,4 @@
 assets/demos/
 output/
 videos/
+/tools/perf/

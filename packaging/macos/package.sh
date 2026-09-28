@@ -28,7 +28,7 @@ export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$project_root" log -1 --format=%ct)}"
 (
   cd "$project_root"
-  cargo build --locked --release --target "$target"
+  cargo build --locked --release --bin keysteer --no-default-features --target "$target"
 )
 
 binary="$project_root/target/$target/release/keysteer"

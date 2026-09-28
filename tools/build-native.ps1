@@ -11,7 +11,7 @@ $target = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
 $env:CARGO_TARGET_DIR = Join-Path $root "target-native\$target"
 $env:RUSTFLAGS = (($env:RUSTFLAGS, "-C target-cpu=native -C link-arg=/Brepro") -join " ").Trim()
 $env:SOURCE_DATE_EPOCH = (& git -C $root log -1 --format=%ct).Trim()
-& cargo build --manifest-path (Join-Path $root "Cargo.toml") --locked --release --target $target
+& cargo build --manifest-path (Join-Path $root "Cargo.toml") --locked --release --bin keysteer --no-default-features --target $target
 if ($LASTEXITCODE -ne 0) {
     throw "native build failed with exit code $LASTEXITCODE"
 }
