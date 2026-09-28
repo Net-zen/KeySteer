@@ -31,6 +31,7 @@ pub(super) struct ScanSession {
     pub(super) scanning: bool,
     pub(super) status: Option<String>,
     pub(super) scan_id: u64,
+    pub(super) expected_activation: Option<u32>,
     pub(super) retry_attempt: u32,
     pub(super) retry_pending: bool,
     pub(super) scan_bounds: Option<Rect>,
@@ -55,6 +56,7 @@ impl ScanSession {
     }
 
     pub(super) fn clear_results(&mut self) {
+        self.expected_activation = None;
         self.scanned = Vec::new();
         self.search_text = Vec::new();
         self.search_hints = Vec::new();

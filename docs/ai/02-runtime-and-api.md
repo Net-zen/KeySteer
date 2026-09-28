@@ -24,3 +24,5 @@ Mode → HostContext::present(View) → presentation → OverlayScene
 - 输入优先，但后台通知不能无限推迟就绪帧；可靠完成事件保序，只有明确可替换的状态通知允许合并。
 
 模式切换见 [生命周期](04-modes-and-lifecycle.md)，配置替换见 [配置](03-configuration.md)。
+
+UI 扫描的 UiScanActivationExpected 按 scan owner 路由，必须在对应原生焦点通知前送到模式，防止一次主动激活触发重复扫描。范围选择与跨平台激活策略见 [UI 扫描](05-ui-scanning.md)。

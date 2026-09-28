@@ -12,7 +12,7 @@
 | 输入、事件、命令执行 | [运行时与 API](02-runtime-and-api.md) |
 | 配置、按键解析、持久化 | [配置](03-configuration.md) |
 | 模式、插件、完成与返回 | [模式生命周期](04-modes-and-lifecycle.md) |
-| UIA / AX / OCR、扫描与取消 | [UI 扫描](05-ui-scanning.md) |
+| UIA / AX / OCR、范围优先级、自动激活、扫描与取消 | [UI 扫描](05-ui-scanning.md) |
 | 原生能力、线程、资源及 macOS 搜索输入焦点 | [平台后端](06-platform-backends.md) |
 | 绘制、响应与内存 | [性能](07-rendering-and-performance.md) |
 | 构建、测试隔离、打包、网页 | [验证](08-build-docs-and-tests.md) |

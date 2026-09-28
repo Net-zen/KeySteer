@@ -56,7 +56,8 @@ use std::path::{Path, PathBuf};
 // AppKit delegate/action wiring block are added; portable code remains safe.
 // Explicit editor activation/focus is checked in one owning-thread block.
 // One standard AppKit editor-command block, with responder-chain ownership.
-const MAX_UNSAFE_EXPRESSIONS: usize = 395;
+// UIHint adopts one retained, type-checked AX window for shared activation.
+const MAX_UNSAFE_EXPRESSIONS: usize = 396;
 const MAX_UNSAFE_FILES: usize = 40;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
@@ -68,7 +69,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/window_tabs.rs", 2),
     ("src/platform/windows/window_tabs/strip.rs", 11),
     ("src/platform/macos/accessibility.rs", 18),
-    ("src/platform/macos/accessibility/window_manager.rs", 12),
+    ("src/platform/macos/accessibility/window_manager.rs", 13),
     ("src/platform/macos/autostart.rs", 5),
     ("src/platform/macos/display_link.rs", 4),
     ("src/platform/macos/native.rs", 7),

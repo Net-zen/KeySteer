@@ -385,6 +385,7 @@ impl Mode for ProbeMode {
             ModeEvent::ScreensChanged(_) => "screens",
             ModeEvent::ScreenRetargeted { .. } => "retargeted",
             ModeEvent::UiScanned(_) => "scanned",
+            ModeEvent::UiScanActivationExpected { .. } => "scan-activation",
             ModeEvent::PointerMoved(_) => "pointer",
             ModeEvent::Frame { .. } => "frame",
             ModeEvent::FocusChanged(_) => "focus",

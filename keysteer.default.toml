@@ -606,7 +606,9 @@ font_size = 28
 # Stable slots: OCR, accessibility, coordinates, color. Missing values stay empty.
 # primary is Ctrl on Windows and Cmd on macOS.
 search_copy_keys = ["primary+1", "primary+2", "primary+3", "primary+4"]
-# window: pointer window; screen: complete display containing the pointer.
+# window: pointer window -> active window -> pointer display; tries to activate the pointer window.
+# active: active window -> pointer window -> pointer display. screen: pointer display only.
+# Fallback resolves unavailable windows before scanning; one selected scope per scan.
 scan_scope = "window"
 enabled = true
 # Both macOS and Windows support "axtree", "vision", "contour", and "hybrid".

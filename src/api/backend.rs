@@ -60,6 +60,10 @@ pub enum BackendEvent {
     AppearanceChanged(Appearance),
     /// An accessibility scan finished.
     UiScanned(UiScanResult),
+    UiScanActivationExpected {
+        id: u64,
+        process_id: u32,
+    },
     /// The user asked to quit (tray menu, signal, ...).
     Quit,
     /// System logout/shutdown checkpoint. Acknowledge after durable workspace save.

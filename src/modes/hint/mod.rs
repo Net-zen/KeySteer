@@ -328,7 +328,11 @@ impl HintMode {
                 self.session.retry_attempt + 1,
                 self.config.scan_retry_count
             ));
-            let mut commands = self.show_status(ctx);
+            let mut commands = if searching {
+                self.redraw(ctx)
+            } else {
+                self.show_status(ctx)
+            };
             commands.push(Command::SetTimer {
                 id: SCAN_RETRY_TIMER_ID.into(),
                 delay: Duration::from_millis(self.config.scan_retry_delay_ms),
@@ -720,9 +724,13 @@ impl HintMode {
                 _ => CommandBatch::new(),
             };
         }
-        // Before the first batch arrives only allow bailing out. Once partial
-        // labels exist they are immediately usable while scanning continues.
-        if self.session.scanning && self.session.hints.is_empty() {
+        // Search can open before the first batch and filter results as they
+        // arrive. Only label selection needs to wait for targets.
+        if self.session.scanning
+            && self.session.hints.is_empty()
+            && matches!(self.input, Input::Labels(_))
+            && key.as_str() != "/"
+        {
             return if key.as_str() == "esc" {
                 self.cancel()
             } else {
@@ -1080,6 +1088,18 @@ impl Mode for HintMode {
             {
                 CommandBatch::new()
             }
+            ModeEvent::UiScanActivationExpected { id, process_id }
+                if *id == self.session.scan_id =>
+            {
+                self.session.expected_activation = Some(*process_id);
+                CommandBatch::new()
+            }
+            ModeEvent::FocusChanged(Some(app))
+                if self.session.expected_activation == Some(app.process_id) =>
+            {
+                self.session.expected_activation = None;
+                CommandBatch::new()
+            }
             ModeEvent::UiScanned(result) => self.handle_scan_result(result.clone(), ctx),
             ModeEvent::Timer { id, .. }
                 if id == SCAN_RETRY_TIMER_ID
@@ -1156,6 +1176,43 @@ impl Mode for HintMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn expected_scan_activation_does_not_restart_but_external_focus_does() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        let id = mode.session.scan_id;
+        mode.handle(
+            &ModeEvent::UiScanActivationExpected {
+                id: id.wrapping_sub(1),
+                process_id: 7,
+            },
+            &env.ctx(),
+        );
+        assert_eq!(mode.session.expected_activation, None);
+        mode.handle(
+            &ModeEvent::UiScanActivationExpected { id, process_id: 7 },
+            &env.ctx(),
+        );
+        let focus = |process_id| {
+            ModeEvent::FocusChanged(Some(crate::api::FocusedApp {
+                process_id,
+                bundle_id: "example".into(),
+                window_title: String::new(),
+            }))
+        };
+        assert!(mode.handle(&focus(7), &env.ctx()).is_empty());
+        assert_eq!(mode.session.scan_id, id);
+        assert_eq!(mode.session.expected_activation, None);
+        let commands = mode.handle(&focus(9), &env.ctx());
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, Command::ScanUi(_)))
+        );
+        assert_ne!(mode.session.scan_id, id);
+    }
+
     #[test]
     fn search_enter_only_commits_one_result_and_reuses_session_index() {
         let env = Env::new();
@@ -3256,6 +3313,49 @@ mod tests {
         assert!(press(&mut mode, &env, "a").is_empty());
         // Escape still works, so the user is never stuck.
         assert_eq!(press(&mut mode, &env, "esc"), Command::dismiss_to_idle());
+    }
+
+    #[test]
+    fn search_opens_before_first_batch_and_survives_empty_retry() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        mode.config.scan_retry_count = 1;
+        activate(&mut mode, &env);
+        let opened = press(&mut mode, &env, "/");
+        assert!(
+            opened
+                .iter()
+                .any(|cmd| matches!(cmd, Command::OpenTextPrompt(_)))
+        );
+        let has_shell = |commands: &[Command]| {
+            scene_of(commands).shapes.iter().any(|shape| {
+                matches!(
+                    shape,
+                    OverlayShape::Rect {
+                        z_index: 10_000,
+                        ..
+                    }
+                )
+            })
+        };
+        assert!(has_shell(&opened));
+        press(&mut mode, &env, "c");
+        let retry = deliver(&mut mode, &env, Vec::new());
+        assert!(mode.session.retry_pending);
+        assert!(has_shell(&retry));
+        mode.retry_scan(&env.ctx());
+        let results = deliver(
+            &mut mode,
+            &env,
+            vec![target("Save", 0.0), target("Cancel", 200.0)],
+        );
+        assert!(has_shell(&results));
+        assert!(matches!(&mode.input, Input::Search(query) if query.as_str() == "c"));
+        assert_eq!(mode.session.hints.len(), 1);
+        assert_eq!(
+            mode.session.scanned[mode.session.hints[0].value].name,
+            "Cancel"
+        );
     }
 
     #[test]

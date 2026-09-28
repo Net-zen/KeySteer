@@ -346,6 +346,9 @@ impl WindowsBackend {
             self.vision.begin_discovery();
         }
         self.vision.reap_finished();
+        if let Some(event) = self.scan_mailbox.take_activation() {
+            return Ok(Some(event));
+        }
         if let Some(event) = self.pending.pop_front() {
             self.background_budget.record();
             return Ok(Some(event));
@@ -884,6 +887,11 @@ impl Backend for WindowsBackend {
             self.ui_automation = Some(accessibility::UiAutomationWorker::start()?);
         }
         let generation = self.scan_mailbox.begin(request_id);
+        if let Some(process_id) = plan.activation_process() {
+            self.scan_mailbox
+                .expect_activation(generation, request_id, process_id);
+            plan.try_activate();
+        }
         let capture = if wants_vision {
             match self.overlay.begin_capture(generation) {
                 Ok(capture) => Some(capture),

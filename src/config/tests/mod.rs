@@ -1538,6 +1538,16 @@ fn ui_hint_scan_scope_defaults_and_round_trips() {
     assert_eq!(config.ui_hint.scan_scope, crate::api::UiScanScope::Screen);
     let restored: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
     assert_eq!(restored.ui_hint.scan_scope, crate::api::UiScanScope::Screen);
+    let active = Config::parse("[ui_hint]\nscan_scope = 'active'\n").unwrap();
+    assert_eq!(active.ui_hint.scan_scope, crate::api::UiScanScope::Active);
+    active.validate().unwrap();
+    assert_eq!(
+        Config::parse(&active.to_toml().unwrap())
+            .unwrap()
+            .ui_hint
+            .scan_scope,
+        crate::api::UiScanScope::Active
+    );
     assert!(Config::parse("[ui_hint]\nscan_scope = 'all'\n").is_err());
 }
 

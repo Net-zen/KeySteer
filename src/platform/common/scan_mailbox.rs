@@ -21,6 +21,7 @@ struct State {
     targets: Vec<UiTarget>,
     retired: Vec<crate::api::Rect>,
     terminal: Option<UiScanStatus>,
+    activation: Option<(u64, u32)>,
 }
 
 /// A bounded-by-request mailbox. At most the current scan's unconsumed targets
@@ -28,6 +29,7 @@ struct State {
 #[derive(Default)]
 pub(crate) struct ScanMailbox {
     ready: AtomicBool,
+    activation_ready: AtomicBool,
     state: Mutex<State>,
 }
 
@@ -41,6 +43,8 @@ impl ScanMailbox {
         state.targets = Vec::new();
         state.retired = Vec::new();
         state.terminal = None;
+        state.activation = None;
+        self.activation_ready.store(false, Ordering::Release);
         self.ready.store(false, Ordering::Release);
         generation
     }
@@ -55,8 +59,31 @@ impl ScanMailbox {
         state.targets = Vec::new();
         state.retired = Vec::new();
         state.terminal = None;
+        state.activation = None;
+        self.activation_ready.store(false, Ordering::Release);
         self.ready.store(false, Ordering::Release);
         true
+    }
+
+    /// Publish before attempting activation; backends drain this ahead of
+    /// native focus events so the mode can recognize its own focus transition.
+    pub(crate) fn expect_activation(&self, generation: u64, id: u64, process_id: u32) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.generation == generation && state.request_id == Some(id) {
+            state.activation = Some((id, process_id));
+            self.activation_ready.store(true, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn take_activation(&self) -> Option<crate::api::backend::BackendEvent> {
+        if !self.activation_ready.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        self.activation_ready.store(false, Ordering::Release);
+        state.activation.take().map(|(id, process_id)| {
+            crate::api::backend::BackendEvent::UiScanActivationExpected { id, process_id }
+        })
     }
 
     /// Merge one provider publication into the current slot.
@@ -143,6 +170,30 @@ impl ScanMailbox {
 mod tests {
     use super::*;
     use crate::api::geometry::Rect;
+
+    #[test]
+    fn activation_expectations_are_generation_scoped_and_precede_terminal_results() {
+        let mailbox = ScanMailbox::default();
+        let old = mailbox.begin(1);
+        let current = mailbox.begin(2);
+        mailbox.expect_activation(old, 1, 10);
+        assert!(mailbox.take_activation().is_none());
+        mailbox.expect_activation(current, 2, 20);
+        mailbox.publish(current, 2, Vec::new(), UiScanStatus::Success);
+        assert!(matches!(
+            mailbox.take_activation(),
+            Some(crate::api::BackendEvent::UiScanActivationExpected {
+                id: 2,
+                process_id: 20
+            })
+        ));
+        assert_eq!(mailbox.take().unwrap().status, UiScanStatus::Success);
+        assert!(mailbox.take_activation().is_none());
+        let generation = mailbox.begin(3);
+        mailbox.expect_activation(generation, 3, 30);
+        mailbox.cancel(3);
+        assert!(mailbox.take_activation().is_none());
+    }
 
     fn target(name: &str) -> UiTarget {
         UiTarget {

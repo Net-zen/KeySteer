@@ -225,8 +225,9 @@ export const frequentFields: ConfigField[] = [
   { path: 'normal.auto_release_ms', label: '停止拖动后释放', description: '长按点击键并按住物理修饰键拖动；停止多少毫秒后释放；0 为关闭', kind: 'number', min: 0, max: 60000, step: 50 },
   { path: 'grid.max_depth', label: 'Grid 层数', description: '确认目标前需要输入的网格层数', kind: 'number', min: 1, max: 20, step: 1 },
   { path: 'recursive_grid.max_depth', label: '递归上限', description: 'Recursive Grid 最大递归次数', kind: 'number', min: 1, max: 20, step: 1 },
-  { path: 'ui_hint.scan_scope', label: '扫描范围', description: '鼠标下窗口或鼠标所在的整块屏幕；跨屏自动重扫', kind: 'select', options: [
+  { path: 'ui_hint.scan_scope', label: '扫描范围', description: '窗口不可用时按优先级选择范围，只扫描选定范围；鼠标窗口优先时尝试激活', kind: 'select', options: [
     { value: 'window', label: '鼠标下窗口（默认）' },
+    { value: 'active', label: '当前激活窗口优先' },
     { value: 'screen', label: '当前整屏' },
   ] },
   { path: 'ui_hint.strategy', label: 'UI 扫描', description: '辅助功能、OCR、轮廓检测，或全部并行合并', kind: 'select', options: [

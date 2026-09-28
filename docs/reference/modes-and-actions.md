@@ -328,8 +328,10 @@ Windows 最大化窗口直接跨屏，全程保持最大化，还原位置也一
 
 ```toml
 [ui_hint]
-scan_scope = "screen" # window：鼠标下窗口（默认）；screen：鼠标所在整屏
+scan_scope = "window" # window / active / screen
 ```
+
+`window`（默认）按鼠标下窗口 → 当前激活窗口 → 鼠标所在整屏选择；`active` 按当前激活窗口 → 鼠标下窗口 → 鼠标所在整屏选择；`screen` 直接选择鼠标所在整屏。只有窗口无法取得时才使用下一项，选定后只扫描该范围，不会因结果为空或某个识别源失败而换范围再扫。配置 `window` 且选中鼠标窗口时，会先尝试激活该窗口；激活被系统拒绝不改变扫描范围。这些规则在 Windows／macOS 共用。
 
 适用于 Hybrid、Accessibility Tree 和 Vision。整屏模式覆盖当前显示器上的可见内容，
 不会把其他屏幕合并进来。扫描期间或标签显示后，按绑定到 `screen next` 的 `Alt+S` 等组合键切换屏幕、直接移动鼠标到另一屏，

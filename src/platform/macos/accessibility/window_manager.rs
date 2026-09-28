@@ -152,6 +152,60 @@ fn install_window_timeout(window: &OwnedCf) -> Result<(), String> {
     }
 }
 
+/// Submit activation using the same primitive as Window mode, without waiting
+/// for application confirmation on the UI scan worker.
+pub(in crate::platform::macos) fn activate_scan_window(
+    pid: i32,
+    bounds: Rect,
+) -> Result<(), String> {
+    let application = AxApplication::new(pid)?;
+    let attributes = AxAttributes::new();
+    let windows = copy_array_attribute(application.as_ptr(), &CFString::new("AXWindows"))
+        .ok_or("selected application has no AXWindows")?;
+    let raw = windows
+        .iter()
+        .find(|raw| {
+            is_ax_element(**raw)
+                && element_rect(**raw, &attributes).is_some_and(|frame| same_rect(frame, bounds))
+        })
+        .ok_or("selected window is no longer available")?;
+    // SAFETY: the array retains this validated AX element; adopt one additional
+    // retain so the shared activation primitive has an ordinary owned window.
+    let window = unsafe { OwnedCf::from_create_rule(CFRetain(*raw)) }
+        .ok_or("cannot retain selected window")?;
+    let window = MovableWindow {
+        window,
+        attributes,
+        fullscreen: CFString::new("AXFullScreen"),
+        minimized: CFString::new("AXMinimized"),
+    };
+    submit_window_activation(pid, &window).map(|_| ())
+}
+
+fn submit_window_activation(pid: i32, window: &MovableWindow) -> Result<i32, String> {
+    let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+        .ok_or("application was closed")?;
+    #[allow(deprecated)]
+    if !app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps) {
+        return Err("application activation was refused".into());
+    }
+    // SAFETY: the retained AX window and action string remain live for the
+    // bounded AX action; no Rust pointers are retained by the provider.
+    let error = unsafe {
+        AXUIElementPerformAction(
+            window.window.as_ptr(),
+            CFString::new("AXRaise").as_concrete_TypeRef(),
+        )
+    };
+    if error != AX_OK {
+        let value = CFBoolean::true_value();
+        for attribute in ["AXMain", "AXFocused"] {
+            let _ = window.set_attribute(&CFString::new(attribute), value.as_CFTypeRef());
+        }
+    }
+    Ok(error)
+}
+
 fn same_rect(a: Rect, b: Rect) -> bool {
     (a.x - b.x).abs() < 2.0
         && (a.y - b.y).abs() < 2.0
@@ -1083,29 +1137,7 @@ impl WindowAccess for MacWindows {
     }
     fn select(&self, id: WindowId) -> Result<(), String> {
         let entry = self.entry(id)?;
-        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(entry.pid)
-            .ok_or("application was closed")?;
-        #[allow(deprecated)]
-        if !app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps) {
-            return Err("application activation was refused".into());
-        }
-        // SAFETY: the retained AX window and action string remain live for the
-        // bounded AX action; no Rust pointers are retained by the provider.
-        let error = unsafe {
-            AXUIElementPerformAction(
-                entry.window.window.as_ptr(),
-                CFString::new("AXRaise").as_concrete_TypeRef(),
-            )
-        };
-        if error != AX_OK {
-            // Some AX providers do not expose Raise but do expose Main/Focused.
-            let value = CFBoolean::true_value();
-            for attribute in ["AXMain", "AXFocused"] {
-                let _ = entry
-                    .window
-                    .set_attribute(&CFString::new(attribute), value.as_CFTypeRef());
-            }
-        }
+        let error = submit_window_activation(entry.pid, &entry.window)?;
         let deadline = Instant::now() + Duration::from_millis(250);
         loop {
             if self.focused_window_id() == Some(id) {

@@ -534,6 +534,7 @@ pub(super) struct WindowsScanPlan {
     target_hwnd: isize,
     target_process_id: u32,
     target_bounds: Rect,
+    activate: bool,
     scan_bounds: Rect,
     windows: InlineScanWindows,
     occluders: InlineOccluders,
@@ -548,6 +549,15 @@ impl Deref for WindowsScanPlan {
 }
 
 impl WindowsScanPlan {
+    pub(super) fn activation_process(&self) -> Option<u32> {
+        self.activate.then_some(self.target_process_id)
+    }
+
+    pub(super) fn try_activate(&self) {
+        if self.activate {
+            super::native::try_activate_window(self.target_hwnd());
+        }
+    }
     pub(super) fn target_hwnd(&self) -> HWND {
         HWND(self.target_hwnd as *mut core::ffi::c_void)
     }
@@ -614,6 +624,7 @@ pub(super) fn test_scan_plan(request: UiScanRequest) -> Arc<WindowsScanPlan> {
         target_hwnd: 0,
         target_process_id: 0,
         target_bounds: bounds,
+        activate: false,
         scan_bounds: bounds,
         windows: SmallVec::from_slice(&[ScanWindow {
             hwnd: 0,
@@ -1079,9 +1090,15 @@ fn scan_windows_in_z_order(
 }
 
 pub(super) fn build_scan_plan(
-    request: UiScanRequest,
+    mut request: UiScanRequest,
 ) -> Result<Option<Arc<WindowsScanPlan>>, String> {
-    if request.scope == crate::api::UiScanScope::Screen {
+    let target = request.scope.resolve_window(|source| match source {
+        crate::api::UiScanScope::Window => window_under_pointer().ok().flatten(),
+        crate::api::UiScanScope::Active => scannable_target(super::native::foreground_window()),
+        crate::api::UiScanScope::Screen => None,
+    });
+    let Some(target) = target else {
+        request.scope = crate::api::UiScanScope::Screen;
         let bounds = request
             .bounds
             .ok_or("screen scan requires display bounds")?;
@@ -1091,14 +1108,13 @@ pub(super) fn build_scan_plan(
             target_hwnd: 0,
             target_process_id: 0,
             target_bounds: bounds,
+            activate: false,
             scan_bounds: bounds,
             windows,
             occluders,
         })));
-    }
-    let Some((target_hwnd, target_process_id, target_bounds)) = window_under_pointer()? else {
-        return Ok(None);
     };
+    let (target_hwnd, target_process_id, target_bounds) = target.window;
     // The mode bounds identify the pointer's display. Use them to discover
     // owned popups which can extend beyond the root-owner rectangle, but ignore
     // stale bounds after a cross-display pointer move between mode dispatch and
@@ -1129,6 +1145,7 @@ pub(super) fn build_scan_plan(
         target_hwnd: target_hwnd.0 as isize,
         target_process_id,
         target_bounds,
+        activate: target.activate,
         scan_bounds,
         windows,
         occluders,

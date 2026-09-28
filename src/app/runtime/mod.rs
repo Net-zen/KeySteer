@@ -834,6 +834,17 @@ impl Engine {
                 self.palette = self.palettes.for_appearance(appearance);
                 self.refresh_overlay(backend)?;
             }
+            BackendEvent::UiScanActivationExpected { id, process_id } => {
+                if let Some(owner) = self.scan_owners.get(&id).cloned()
+                    && owner == self.registry.active
+                {
+                    self.dispatch_to(
+                        &owner,
+                        ModeEvent::UiScanActivationExpected { id, process_id },
+                        backend,
+                    )?;
+                }
+            }
             BackendEvent::UiScanned(result) => {
                 crate::support::perf_probe::mark_value(
                     if result.status == UiScanStatus::Partial {

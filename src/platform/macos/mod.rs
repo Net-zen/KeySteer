@@ -235,6 +235,9 @@ impl MacOsBackend {
                 return Some(BackendEvent::Frame(elapsed));
             }
         }
+        if let Some(event) = self.scan_mailbox.take_activation() {
+            return Some(event);
+        }
         let event = self
             .scan_mailbox
             .take()

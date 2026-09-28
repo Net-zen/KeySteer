@@ -176,20 +176,22 @@ impl Drop for UiScanWorker {
 struct PartialPublisher<'a> {
     job: &'a ScanJob,
     pid: libc::pid_t,
+    activation_pid: Option<libc::pid_t>,
     state: Mutex<ScanAccumulator>,
 }
 
 impl<'a> PartialPublisher<'a> {
-    fn new(job: &'a ScanJob, pid: libc::pid_t) -> Self {
+    fn new(job: &'a ScanJob, pid: libc::pid_t, activation_pid: Option<libc::pid_t>) -> Self {
         Self {
             job,
             pid,
+            activation_pid,
             state: Mutex::new(ScanAccumulator::new()),
         }
     }
 
     fn push(&self, source: TargetSource, mut targets: Vec<crate::api::UiTarget>) {
-        if !scan_is_current(self.job.generation, self.pid) {
+        if !scan_is_current(self.job.generation, self.pid, self.activation_pid) {
             return;
         }
         if let Some(bounds) = self.job.request.bounds {
@@ -222,7 +224,7 @@ impl<'a> PartialPublisher<'a> {
     }
 
     fn send_update(&self, targets: Vec<crate::api::UiTarget>, retired: Vec<crate::api::Rect>) {
-        if scan_is_current(self.job.generation, self.pid)
+        if scan_is_current(self.job.generation, self.pid, self.activation_pid)
             && self.job.mailbox.publish_update(
                 self.job.generation,
                 self.job.request.id,
@@ -288,7 +290,7 @@ impl ScanQueue {
     }
 }
 
-fn run_scan(job: ScanJob) {
+fn run_scan(mut job: ScanJob) {
     let original_pid = accessibility::frontmost_pid();
     let request_context_changed = job
         .request
@@ -300,21 +302,59 @@ fn run_scan(job: ScanJob) {
         return;
     }
 
-    let Some(pid) = original_pid else {
-        job.publish(
-            Vec::new(),
-            UiScanStatus::Failed("No frontmost application is available".into()),
-        );
+    let pid = original_pid.unwrap_or(0);
+    // Resolve metadata once, before either provider starts. Quartz also works
+    // when an application exposes no AXFocusedWindow (menus, desktop, etc.).
+    let mut windows = None;
+    let target = job.request.scope.resolve_window(|source| {
+        let windows = windows.get_or_insert_with(|| {
+            accessibility::window_manager::visible_windows().unwrap_or_default()
+        });
+        let pointer = (source == crate::api::UiScanScope::Window)
+            .then(super::input::cursor_position)
+            .transpose()
+            .ok()
+            .flatten();
+        windows
+            .iter()
+            .find(|window| match source {
+                crate::api::UiScanScope::Window => {
+                    pointer.is_some_and(|point| window.bounds.contains(&point))
+                }
+                crate::api::UiScanScope::Active => Some(window.pid) == original_pid,
+                crate::api::UiScanScope::Screen => false,
+            })
+            .map(|window| (window.pid, window.bounds))
+    });
+    let activation_pid = target
+        .as_ref()
+        .filter(|target| target.activate)
+        .map(|target| target.window.0);
+    if !scan_id_is_current(job.generation) {
         return;
-    };
+    }
+    if let Some(target) = target.as_ref().filter(|target| target.activate) {
+        job.mailbox
+            .expect_activation(job.generation, job.request.id, target.window.0 as u32);
+        job.wake.wake();
+        // Best effort; refusal never selects another scope or starts another scan.
+        let _ =
+            accessibility::window_manager::activate_scan_window(target.window.0, target.window.1);
+    }
+    let target = target.map(|target| target.window);
+    if let Some((_, bounds)) = target {
+        job.request.bounds = Some(requested_window_bounds(bounds, &job.request).unwrap_or(bounds));
+    } else {
+        job.request.scope = crate::api::UiScanScope::Screen;
+    }
 
-    let publisher = PartialPublisher::new(&job, pid);
+    let publisher = PartialPublisher::new(&job, pid, activation_pid);
     let status = match scan_sources(job.request.strategy) {
-        (true, false) => stream_ax(&job, pid, &publisher),
-        (false, true) => stream_vision(&job, pid, &publisher),
+        (true, false) => stream_ax(&job, target, &publisher),
+        (false, true) => stream_vision(&job, &publisher),
         (true, true) => std::thread::scope(|scope| {
-            let ax = scope.spawn(|| autoreleasepool(|_| stream_ax(&job, pid, &publisher)));
-            let vision_status = stream_vision(&job, pid, &publisher);
+            let ax = scope.spawn(|| autoreleasepool(|_| stream_ax(&job, target, &publisher)));
+            let vision_status = stream_vision(&job, &publisher);
             let ax_status = ax
                 .join()
                 .unwrap_or_else(|_| UiScanStatus::Failed("AX scan worker panicked".into()));
@@ -323,9 +363,9 @@ fn run_scan(job: ScanJob) {
         (false, false) => UiScanStatus::Failed("UI scan strategy has no enabled source".into()),
     };
 
-    let status = if scan_is_current(job.generation, pid) {
+    let status = if scan_is_current(job.generation, pid, activation_pid) {
         publisher.finish();
-        if scan_is_current(job.generation, pid) {
+        if scan_is_current(job.generation, pid, activation_pid) {
             status
         } else {
             UiScanStatus::ContextChanged
@@ -344,8 +384,12 @@ fn scan_sources(strategy: UiScanStrategy) -> (bool, bool) {
     }
 }
 
-fn stream_ax(job: &ScanJob, pid: libc::pid_t, publisher: &PartialPublisher<'_>) -> UiScanStatus {
-    if job.request.scope == crate::api::UiScanScope::Screen {
+fn stream_ax(
+    job: &ScanJob,
+    target: Option<(libc::pid_t, crate::api::Rect)>,
+    publisher: &PartialPublisher<'_>,
+) -> UiScanStatus {
+    let Some((pid, bounds)) = target else {
         return accessibility::scan_screen_stream(
             &job.request,
             || scan_id_is_current(job.generation),
@@ -353,9 +397,10 @@ fn stream_ax(job: &ScanJob, pid: libc::pid_t, publisher: &PartialPublisher<'_>) 
         )
         .map(|_| UiScanStatus::Success)
         .unwrap_or_else(UiScanStatus::Failed);
-    }
+    };
     accessibility::scan_process_stream(
         pid,
+        bounds,
         &job.request,
         || scan_id_is_current(job.generation),
         |batch| publisher.push(TargetSource::Accessibility, batch),
@@ -364,12 +409,8 @@ fn stream_ax(job: &ScanJob, pid: libc::pid_t, publisher: &PartialPublisher<'_>) 
     .unwrap_or_else(UiScanStatus::Failed)
 }
 
-fn stream_vision(
-    job: &ScanJob,
-    pid: libc::pid_t,
-    publisher: &PartialPublisher<'_>,
-) -> UiScanStatus {
-    scan_vision(pid, job.generation, &job.request, publisher)
+fn stream_vision(job: &ScanJob, publisher: &PartialPublisher<'_>) -> UiScanStatus {
+    scan_vision(job.generation, &job.request, publisher)
 }
 
 fn combined_status(ax: UiScanStatus, vision: UiScanStatus) -> UiScanStatus {
@@ -405,8 +446,9 @@ fn report_masked_provider_status(provider: &str, status: &UiScanStatus) {
     }
 }
 
-fn scan_is_current(generation: u64, pid: libc::pid_t) -> bool {
-    scan_id_is_current(generation) && accessibility::frontmost_pid() == Some(pid)
+fn scan_is_current(generation: u64, pid: libc::pid_t, activation_pid: Option<libc::pid_t>) -> bool {
+    let current = accessibility::frontmost_pid().unwrap_or(0);
+    scan_id_is_current(generation) && (current == pid || Some(current) == activation_pid)
 }
 
 fn scan_id_is_current(generation: u64) -> bool {
@@ -424,54 +466,21 @@ fn requested_window_bounds(
 }
 
 fn scan_vision(
-    pid: libc::pid_t,
     generation: u64,
     request: &UiScanRequest,
     publisher: &PartialPublisher<'_>,
 ) -> UiScanStatus {
-    if request.scope == crate::api::UiScanScope::Screen {
-        return match request.bounds {
-            Some(bounds) => vision::detect(
-                generation,
-                bounds,
-                &request.vision,
-                request.strategy,
-                || !scan_id_is_current(generation),
-                |source, targets| publisher.push(source, targets),
-            ),
-            None => UiScanStatus::Failed("screen scan requires display bounds".into()),
-        };
+    match request.bounds {
+        Some(bounds) => vision::detect(
+            generation,
+            bounds,
+            &request.vision,
+            request.strategy,
+            || !scan_id_is_current(generation),
+            |source, targets| publisher.push(source, targets),
+        ),
+        None => UiScanStatus::Failed("screen scan requires display bounds".into()),
     }
-    let window_bounds = if request.strategy == UiScanStrategy::Contour {
-        // Quartz window metadata needs no AX tree traversal or AX permission.
-        accessibility::window_manager::visible_windows().and_then(|windows| {
-            windows
-                .into_iter()
-                .find(|window| window.pid == pid)
-                .map(|window| window.bounds)
-                .ok_or_else(|| "No visible window is available for contour capture".into())
-        })
-    } else {
-        accessibility::focused_window_bounds(pid)
-    };
-    let window_bounds = match window_bounds {
-        Ok(bounds) => bounds,
-        Err(error) => return UiScanStatus::Failed(error),
-    };
-    let Some(bounds) = requested_window_bounds(window_bounds, request) else {
-        return UiScanStatus::Success;
-    };
-    // Vision is deliberately executed on this one persistent worker. A timed
-    // out native capture may finish late, but another full-resolution capture
-    // can never overlap it and multiply memory consumption.
-    vision::detect(
-        generation,
-        bounds,
-        &request.vision,
-        request.strategy,
-        || !scan_id_is_current(generation),
-        |source, targets| publisher.push(source, targets),
-    )
 }
 
 #[cfg(test)]

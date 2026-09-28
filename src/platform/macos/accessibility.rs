@@ -405,6 +405,7 @@ pub(crate) fn focused_window_bounds(pid: libc::pid_t) -> Result<Rect, String> {
 
 pub(crate) fn scan_process_stream(
     pid: libc::pid_t,
+    window_bounds: Rect,
     request: &UiScanRequest,
     is_current: impl Fn() -> bool,
     mut on_batch: impl FnMut(Vec<UiTarget>),
@@ -412,23 +413,23 @@ pub(crate) fn scan_process_stream(
     let application = AxApplication::new(pid)?;
 
     let attributes = AxAttributes::new();
-    let focused_window = copy_attribute(application.as_ptr(), &attributes.focused_window);
-    let focused_window = match focused_window.as_ref() {
-        Some(window) if is_ax_element(window.as_ptr()) => Some(window),
-        // A window transition can briefly expose a stale or unexpected value.
-        // Do not publish unbounded application-root targets in that state.
-        Some(_) => return Ok(()),
-        None => None,
-    };
-    let window_bounds =
-        focused_window.and_then(|window| element_rect(window.as_ptr(), &attributes));
-    if focused_window.is_some() && window_bounds.is_none() {
-        return Ok(());
-    }
-    let Ok(scan_bounds) = visible_scan_bounds(window_bounds, request.bounds) else {
+    let windows = copy_array_attribute(application.as_ptr(), &CFString::new("AXWindows"))
+        .ok_or("selected application does not expose AXWindows")?;
+    let root = windows.iter().find(|raw| {
+        is_ax_element(**raw)
+            && element_rect(**raw, &attributes).is_some_and(|rect| {
+                (rect.x - window_bounds.x).abs() <= 2.0
+                    && (rect.y - window_bounds.y).abs() <= 2.0
+                    && (rect.width - window_bounds.width).abs() <= 2.0
+                    && (rect.height - window_bounds.height).abs() <= 2.0
+            })
+    });
+    let Some(root) = root else {
         return Ok(());
     };
-    let root = focused_window.map_or(application.as_ptr(), |window| window.as_ptr());
+    let Ok(scan_bounds) = visible_scan_bounds(Some(window_bounds), request.bounds) else {
+        return Ok(());
+    };
     let allowed_roles = ax_roles_for(&request.roles).into_iter().collect();
     let mut scan = Scan {
         request,

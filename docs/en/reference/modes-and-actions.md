@@ -327,8 +327,10 @@ Reset restores positions, sizes, and maximized/minimized states of windows modif
 
 ```toml
 [ui_hint]
-scan_scope = "screen" # window: pointer window (default); screen: complete pointer display
+scan_scope = "window" # window / active / screen
 ```
+
+`window` (default) resolves pointer window → active window → pointer display. `active` resolves active window → pointer window → pointer display. `screen` selects the pointer display directly. Only unavailable windows trigger fallback; providers scan the selected scope once, without changing scope after empty results or provider failures. Pointer-first selection attempts to activate that window before scanning; activation refusal does not change the selected scope. Windows and macOS share these rules.
 
 Works with Hybrid, Accessibility Tree, and Vision. Screen scope covers visible content on the display
 containing the pointer. Moving to another display, including a custom `Alt+S` binding to `screen next`,

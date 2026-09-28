@@ -556,6 +556,10 @@ pub enum ModeEvent {
 
     /// A [`Command::ScanUi`] completed.
     UiScanned(UiScanResult),
+    UiScanActivationExpected {
+        id: u64,
+        process_id: u32,
+    },
 
     /// A timer armed with [`Command::SetTimer`] elapsed. `elapsed` is measured
     /// by the runtime so animation and movement stay independent of display
@@ -655,13 +659,72 @@ impl Default for VisionOptions {
     }
 }
 
-/// Whether UI hints inspect the pointer window or its complete display.
+/// Preferred scan source. Resolve a window once before starting any provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UiScanScope {
     #[default]
     Window,
+    Active,
     Screen,
+}
+
+impl UiScanScope {
+    /// Only metadata lookup falls back; provider failure or empty results never
+    /// select another scope. None means the caller should use the pointer display.
+    pub(crate) fn resolve_window<T>(
+        self,
+        mut lookup: impl FnMut(Self) -> Option<T>,
+    ) -> Option<ResolvedScanWindow<T>> {
+        let order = match self {
+            Self::Window => [Self::Window, Self::Active],
+            Self::Active => [Self::Active, Self::Window],
+            Self::Screen => return None,
+        };
+        order.into_iter().find_map(|source| {
+            lookup(source).map(|window| ResolvedScanWindow {
+                window,
+                activate: self == Self::Window && source == Self::Window,
+            })
+        })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct ResolvedScanWindow<T> {
+    pub window: T,
+    /// Shared policy: only an explicitly preferred pointer window is activated.
+    pub activate: bool,
+}
+
+#[cfg(test)]
+mod scan_scope_tests {
+    use super::UiScanScope::*;
+
+    #[test]
+    fn resolution_is_lazy_and_screen_does_not_query_windows() {
+        for (scope, order) in [(Window, [Window, Active]), (Active, [Active, Window])] {
+            for found_at in [0, 1, 2] {
+                let mut calls = Vec::new();
+                let selected = scope.resolve_window(|source| {
+                    calls.push(source);
+                    (calls.len() - 1 == found_at).then_some(source)
+                });
+                assert_eq!(calls, order[..(found_at + 1).min(2)]);
+                assert_eq!(
+                    selected.as_ref().map(|s| s.window),
+                    order.get(found_at).copied()
+                );
+                if let Some(selected) = selected {
+                    assert_eq!(selected.activate, scope == Window && found_at == 0);
+                }
+            }
+        }
+        assert_eq!(
+            Screen.resolve_window::<()>(|_| panic!("screen must not query windows")),
+            None
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

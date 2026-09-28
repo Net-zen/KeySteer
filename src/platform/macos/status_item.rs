@@ -376,10 +376,15 @@ impl StatusItem {
             NSSize::new(bounds.width, bounds.height),
         );
         let allocated = InlineInputPanel::alloc(mtm).set_ivars(());
+        let mask = if live {
+            NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel
+        } else {
+            NSWindowStyleMask::Borderless
+        };
         // SAFETY: initializes this retained NSPanel subclass on the AppKit thread.
         let panel: Retained<InlineInputPanel> = unsafe {
             msg_send![super(allocated),
-            initWithContentRect: rect, styleMask: NSWindowStyleMask::Borderless,
+            initWithContentRect: rect, styleMask: mask,
             backing: NSBackingStoreType::Buffered, defer: false]
         };
         if panel.isReleasedWhenClosed() {
@@ -850,13 +855,20 @@ fn focus_text_prompt(
     field: &NSTextField,
 ) -> Result<(), String> {
     panel.makeKeyAndOrderFront(None);
-    // A global shortcut is an explicit activation request. AppKit can complete
-    // it later; the application delegate restores the first responder then.
+    // Search takes key focus through a nonactivating panel: making KeySteer
+    // frontmost would invalidate the in-flight scan and hide its search shell.
+    // Regular note dialogs still use asynchronous application activation.
     #[allow(deprecated)]
-    let accepted = objc2_app_kit::NSRunningApplication::currentApplication().activateWithOptions(
-        objc2_app_kit::NSApplicationActivationOptions::ActivateIgnoringOtherApps,
-    );
+    let accepted = panel
+        .styleMask()
+        .contains(NSWindowStyleMask::NonactivatingPanel)
+        || objc2_app_kit::NSRunningApplication::currentApplication().activateWithOptions(
+            objc2_app_kit::NSApplicationActivationOptions::ActivateIgnoringOtherApps,
+        );
     if accepted && panel.makeFirstResponder(Some(field)) {
+        // The host pumps AppKit events itself rather than using NSApplication.run.
+        // Flush this panel's initial invalidation, including on cached reopen.
+        panel.displayIfNeeded();
         return Ok(());
     }
     // Do not leave a visible editor that would forward typing to another app.
