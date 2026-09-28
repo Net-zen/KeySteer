@@ -119,12 +119,19 @@ export default async ({ command }: { command: string }) => {
     ['script', {}, languageStateScript],
   ],
   vite: {
+    build: {
+      // Pages serves the built files; gzip size reporting is only a console statistic.
+      reportCompressedSize: false,
+    },
     define: {
       __KEYSTEER_LATEST_RELEASE__: JSON.stringify(latestRelease),
     },
     plugins: [vueJsx()],
     ssr: {
-      noExternal: ['vitepress-plugin-mermaid', 'mermaid'],
+      // Compile the Vue plugin, but let Node load Mermaid during SSR.
+      // Diagrams render onMounted; bundling Mermaid again on the server is wasteful.
+      noExternal: ['vitepress-plugin-mermaid'],
+      external: ['mermaid'],
     },
   },
   themeConfig: {
