@@ -94,6 +94,8 @@ export default async ({ command }: { command: string }) => {
   // Vite passes serve/build explicitly; do not infer it from argv or NODE_ENV.
   const latestRelease = await loadLatestRelease(command, process.env.GITHUB_TOKEN, process.env.KEYSTEER_DOCS_RELEASE_TAG)
   return withMermaid({
+  // Internal maintenance notes are repository documentation, not site pages.
+  srcExclude: ['ai/**'],
   markdown: { config: releaseHistory },
   base,
   lang: 'zh-CN',
