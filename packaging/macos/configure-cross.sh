@@ -14,18 +14,23 @@ for tool in clang ld64.lld llvm-ar; do
   test -x "$LLVM_ROOT/bin/$tool"
 done
 
-# This driver serves both cc-rs Objective-C compilation and Rust's final link.
+# Only the link driver selects LLD; cc-rs also invokes Clang with -c.
 # Keep target flags out of host build scripts and proc macros.
 wrapper="$RUNNER_TEMP/keysteer-$target-clang"
+linker="$RUNNER_TEMP/keysteer-$target-link"
 {
   echo '#!/usr/bin/env bash'
-  printf 'exec %q --target=%q -isysroot %q -mmacosx-version-min=14.0 -fuse-ld=lld "$@"\n' \
+  printf 'exec %q --target=%q -isysroot %q -mmacosx-version-min=14.0 "$@"\n' \
     "$LLVM_ROOT/bin/clang" "$clang_target" "$SDKROOT"
 } > "$wrapper"
-chmod +x "$wrapper"
+{
+  echo '#!/usr/bin/env bash'
+  printf 'exec %q -fuse-ld=lld "$@"\n' "$wrapper"
+} > "$linker"
+chmod +x "$wrapper" "$linker"
 target_env="${target//-/_}"
 {
   echo "CC_${target_env}=$wrapper"
   echo "AR_${target_env}=$LLVM_ROOT/bin/llvm-ar"
-  echo "CARGO_TARGET_${target_env^^}_LINKER=$wrapper"
+  echo "CARGO_TARGET_${target_env^^}_LINKER=$linker"
 } >> "$GITHUB_ENV"

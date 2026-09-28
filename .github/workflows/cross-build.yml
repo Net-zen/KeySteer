@@ -1,4 +1,4 @@
-name: Cross compile and publish on Linux
+name: Cross build and publish
 
 on:
   workflow_dispatch:
@@ -31,7 +31,8 @@ permissions:
 
 jobs:
   validate:
-    name: Resolve macOS SDK
+    name: macOS SDK
+    if: ${{ inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all' }}
     runs-on: ubuntu-24.04
     outputs:
       sdk-url: ${{ steps.sdk.outputs.url }}
@@ -43,7 +44,6 @@ jobs:
 
       - name: Resolve SDK source
         id: sdk
-        if: ${{ inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all' }}
         env:
           GH_TOKEN: ${{ github.token }}
           MACOS_SDK_URL: ${{ vars.MACOS_SDK_URL }}
@@ -51,9 +51,8 @@ jobs:
         run: python3 packaging/macos/resolve-sdk.py
 
   windows:
-    name: Package Windows ${{ matrix.arch }}
+    name: Windows ${{ matrix.arch }}
     if: ${{ inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all' }}
-    needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -160,21 +159,6 @@ jobs:
           KEYSTEER_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
         run: bash packaging/windows/package-cross.sh ${{ matrix.target }}
 
-      - name: Summarize signed package
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          {
-            echo "### Windows $TARGET"
-            echo 'Signed with the existing Windows certificate and an RFC 3161 timestamp.'
-            echo 'Native UI behavior still requires Windows validation.'
-            echo 'SHA256 of the signed executable and package:'
-            echo '```text'
-            cd "dist/$TARGET"
-            sha256sum KeySteer/KeySteer.exe ./*.zip
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Upload Windows package
         uses: actions/upload-artifact@v7
         with:
@@ -185,7 +169,7 @@ jobs:
           compression-level: 0
 
   macos:
-    name: Cross compile macOS ${{ matrix.arch }}
+    name: macOS ${{ matrix.arch }}
     if: ${{ inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all' }}
     needs: validate
     runs-on: ubuntu-24.04
@@ -277,7 +261,7 @@ jobs:
           HAS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY_JSON_BASE64 != '' }}
         run: |
           {
-            echo "### Linux ¡ú macOS $TARGET"
+            echo "### macOS $TARGET"
             echo "Certificate signing: $HAS_CERTIFICATE; notarization: $HAS_NOTARY_KEY"
             echo 'Without a certificate, the bundle uses an ad-hoc signature, as in the native workflow.'
             echo 'Native Gatekeeper, permissions and UI behavior still require macOS validation.'
