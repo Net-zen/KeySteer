@@ -1,5 +1,9 @@
 name: Set up Linux LLVM
 description: Install and cache official LLVM and system tools shared by Windows and macOS builds
+inputs:
+  windows-tools:
+    description: Install Windows signing and ZIP tools
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -32,29 +36,53 @@ runs:
             output.write(f"llvm-sha256={digest[7:]}\n")
         print(f"Selected {asset['name']} ({digest})")
         PY
-    - name: Resolve system package versions
+    - name: Check system tools
       id: system-packages
       shell: bash
+      env:
+        WINDOWS_TOOLS: ${{ inputs.windows-tools }}
       run: |
-        sudo apt-get update
-        package_key="$(apt-cache policy osslsigncode zip zstd libtinfo6 libxml2 libzstd1 libedit2 | sha256sum | cut -d ' ' -f 1)"
+        packages=(zstd libtinfo6 libxml2 libzstd1 libedit2)
+        if [[ "$WINDOWS_TOOLS" == true ]]; then
+          packages+=(osslsigncode zip)
+        fi
+        missing=()
+        for package in "${packages[@]}"; do
+          if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+            missing+=("$package")
+          fi
+        done
+        echo "missing=${missing[*]}" >> "$GITHUB_OUTPUT"
+        # Refresh when GitHub updates the host image, not on every apt mirror change.
+        package_key="$(printf '%s\n' "${ImageOS:-ubuntu24}" "${ImageVersion:-unknown}" "${packages[@]}" | sha256sum | cut -d ' ' -f 1)"
         echo "apt-key=$package_key" >> "$GITHUB_OUTPUT"
 
     - name: Restore system package downloads
+      if: steps.system-packages.outputs.missing != ''
       uses: actions/cache@v6
       with:
-        # Share downloads across targets, excluding apt locks and partial files.
         path: ${{ runner.temp }}/keysteer-apt/*.deb
-        key: cross-apt-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.system-packages.outputs.apt-key }}
-        restore-keys: cross-apt-v2-${{ runner.os }}-${{ runner.arch }}-
+        key: cross-apt-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.system-packages.outputs.apt-key }}
 
-    - name: Install system tools
+    - name: Install missing system tools
+      if: steps.system-packages.outputs.missing != ''
       shell: bash
+      env:
+        MISSING_PACKAGES: ${{ steps.system-packages.outputs.missing }}
       run: |
         mkdir -p "$RUNNER_TEMP/keysteer-apt/partial"
-        sudo apt-get -o Dir::Cache::archives="$RUNNER_TEMP/keysteer-apt" \
-          -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
-          osslsigncode zip zstd libtinfo6 libxml2 libzstd1 libedit2
+        read -ra packages <<< "$MISSING_PACKAGES"
+        install_packages() {
+          sudo apt-get -o Dir::Cache::archives="$RUNNER_TEMP/keysteer-apt" \
+            -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
+            --no-upgrade "${packages[@]}"
+        }
+        # Use the runner's existing package index/cache first. Refresh only if
+        # an outdated index prevents installation (for example an HTTP 404).
+        if ! install_packages; then
+          sudo apt-get update
+          install_packages
+        fi
 
     - name: Restore installed LLVM
       id: llvm-cache
@@ -63,7 +91,7 @@ runs:
         # Cache the installation instead of both an archive and its contents.
         # The Linux host toolchain is shared by all cross-compilation targets.
         path: ${{ runner.temp }}/keysteer-llvm
-        key: llvm-installed-v1-ubuntu24-${{ runner.arch }}-${{ steps.tools.outputs.llvm-sha256 }}
+        key: llvm-installed-v2-slim-ubuntu24-${{ runner.arch }}-${{ steps.tools.outputs.llvm-sha256 }}
 
     - name: Download official LLVM
       if: steps.llvm-cache.outputs.cache-hit != 'true'
@@ -95,12 +123,27 @@ runs:
           *) echo "Unsupported LLVM archive: $LLVM_ASSET" >&2; exit 1 ;;
         esac
 
+    - name: Trim LLVM installation
+      if: steps.llvm-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/trim-llvm.py" "$RUNNER_TEMP/keysteer-llvm"
+
     - name: Activate LLVM
       shell: bash
       run: |
         for tool in clang clang-cl ld64.lld lld-link llvm-ar llvm-lib llvm-rc; do
           test -x "$RUNNER_TEMP/keysteer-llvm/bin/$tool"
         done
+        # Catch missing shared libraries before saving a new installation.
+        for tool in clang lld llvm-ar llvm-rc; do
+          dependencies="$(ldd "$RUNNER_TEMP/keysteer-llvm/bin/$tool" 2>&1 || true)"
+          if [[ "$dependencies" == *"not found"* ]]; then
+            echo "$dependencies" >&2
+            exit 1
+          fi
+        done
+        resource_dir="$("$RUNNER_TEMP/keysteer-llvm/bin/clang" -print-resource-dir)"
+        test -f "$resource_dir/include/stddef.h"
         "$RUNNER_TEMP/keysteer-llvm/bin/clang-cl" --version
         "$RUNNER_TEMP/keysteer-llvm/bin/lld-link" --version
         echo "$RUNNER_TEMP/keysteer-llvm/bin" >> "$GITHUB_PATH"

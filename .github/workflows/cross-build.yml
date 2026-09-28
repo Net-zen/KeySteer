@@ -30,26 +30,6 @@ permissions:
   contents: read
 
 jobs:
-  validate:
-    name: macOS SDK
-    if: ${{ inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all' }}
-    runs-on: ubuntu-24.04
-    outputs:
-      sdk-url: ${{ steps.sdk.outputs.url }}
-      sdk-sha256: ${{ steps.sdk.outputs.sha256 }}
-      sdk-tag: ${{ steps.sdk.outputs.tag }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Resolve SDK source
-        id: sdk
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MACOS_SDK_URL: ${{ vars.MACOS_SDK_URL }}
-          MACOS_SDK_SHA256: ${{ vars.MACOS_SDK_SHA256 }}
-        run: python3 packaging/macos/resolve-sdk.py
-
   windows:
     name: Windows ${{ matrix.arch }}
     if: ${{ inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all' }}
@@ -105,6 +85,8 @@ jobs:
 
       - name: Set up LLVM and system tools
         uses: ./.github/actions/setup-llvm
+        with:
+          windows-tools: 'true'
 
       - name: Restore cargo-xwin executable
         id: xwin-tool
@@ -171,7 +153,6 @@ jobs:
   macos:
     name: macOS ${{ matrix.arch }}
     if: ${{ inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all' }}
-    needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -187,12 +168,17 @@ jobs:
     env:
       KEYSTEER_CROSS_MACOS: '1'
       MACOSX_DEPLOYMENT_TARGET: '14.0'
-      MACOS_SDK_URL: ${{ needs.validate.outputs.sdk-url }}
-      MACOS_SDK_SHA256: ${{ needs.validate.outputs.sdk-sha256 }}
-      MACOS_SDK_TAG: ${{ needs.validate.outputs.sdk-tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Resolve SDK source
+        id: sdk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MACOS_SDK_URL: ${{ vars.MACOS_SDK_URL }}
+          MACOS_SDK_SHA256: ${{ vars.MACOS_SDK_SHA256 }}
+        run: python3 packaging/macos/resolve-sdk.py
 
       - name: Set up release Rust
         uses: ./.github/actions/setup-rust
@@ -210,12 +196,15 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.MACOS_SDK_DIR }}
-          key: macos-sdk-v1-Linux-${{ env.MACOS_SDK_SHA256 }}
+          key: macos-sdk-v1-Linux-${{ steps.sdk.outputs.sha256 }}
 
       - name: Download and extract Apple SDK
         if: steps.apple-sdk.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          MACOS_SDK_URL: ${{ steps.sdk.outputs.url }}
+          MACOS_SDK_SHA256: ${{ steps.sdk.outputs.sha256 }}
+          MACOS_SDK_TAG: ${{ steps.sdk.outputs.tag }}
         run: |
           archive="$RUNNER_TEMP/macos-sdk.tar"
           if [[ -n "$MACOS_SDK_TAG" ]]; then
@@ -253,22 +242,6 @@ jobs:
           MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
           MACOS_NOTARY_KEY_JSON_BASE64: ${{ secrets.MACOS_NOTARY_KEY_JSON_BASE64 }}
         run: python3 packaging/macos/package-cross.py ${{ matrix.target }}
-
-      - name: Summarize macOS package
-        env:
-          TARGET: ${{ matrix.target }}
-          HAS_CERTIFICATE: ${{ secrets.MACOS_SIGNING_P12_BASE64 != '' }}
-          HAS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY_JSON_BASE64 != '' }}
-        run: |
-          {
-            echo "### macOS $TARGET"
-            echo "Certificate signing: $HAS_CERTIFICATE; notarization: $HAS_NOTARY_KEY"
-            echo 'Without a certificate, the bundle uses an ad-hoc signature, as in the native workflow.'
-            echo 'Native Gatekeeper, permissions and UI behavior still require macOS validation.'
-            echo '```text'
-            sha256sum dist/"$TARGET"/*.zip
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload macOS package
         uses: actions/upload-artifact@v7
