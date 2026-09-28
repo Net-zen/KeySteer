@@ -601,3 +601,27 @@ fn overlay_search_reentry_and_mode_exit_retire_capture_without_native_windows() 
     assert!(engine.scheduler.text_prompt.is_none());
     assert!(log.lock().unwrap().text_prompts.is_empty());
 }
+
+#[test]
+fn search_completion_error_and_capture_loss_retire_input_before_owner_is_dropped() {
+    for outcome in [Ok(None), Err("editor failed".to_string())] {
+        let mut engine = text_input_engine(Config::default());
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
+        for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+        engine.handle_backend_event(BackendEvent::TextPromptResult { id, value: outcome }, &mut backend).unwrap();
+        assert!(!log.lock().unwrap().text_capture);
+        assert!(engine.scheduler.text_prompt.is_none());
+        assert!(!engine.scheduler.text_prompt_returning_focus);
+        for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        let current = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+        engine.handle_backend_event(BackendEvent::TextPromptResult { id, value: Ok(None) }, &mut backend).unwrap();
+        assert!(log.lock().unwrap().text_capture, "stale completion must not close the new editor");
+        assert_eq!(engine.scheduler.text_prompt.as_ref().unwrap().1.id, current);
+        engine.handle_backend_event(BackendEvent::InputCaptureLost("test capture lost".into()), &mut backend).unwrap();
+        assert!(!log.lock().unwrap().text_capture);
+        assert!(engine.scheduler.text_prompt.is_none());
+    }
+}

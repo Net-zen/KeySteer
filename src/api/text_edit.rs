@@ -47,7 +47,7 @@ pub fn default_keys() -> std::collections::BTreeMap<EditAction, String> {
     .collect()
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Selection {
     pub cursor: usize,
     pub anchor: usize,
@@ -115,9 +115,50 @@ impl Selection {
     }
 }
 
+/// Shared physical geometry; native text engines supply measured insertion offsets.
+pub fn decoration_rects(
+    area: crate::api::Rect,
+    font_size: f64,
+    cursor_x: f64,
+    anchor_x: f64,
+) -> (crate::api::Rect, Option<crate::api::Rect>) {
+    let width = (font_size / 14.0).max(1.0).min(area.width.max(0.0));
+    let height = (font_size * 1.1).min(area.height).max(0.0);
+    let y = area.y + (area.height - height) / 2.0;
+    let cursor_x = cursor_x.clamp(0.0, (area.width - width).max(0.0));
+    let anchor_x = anchor_x.clamp(0.0, (area.width - width).max(0.0));
+    (
+        crate::api::Rect::new(area.x + cursor_x, y, width, height),
+        (cursor_x != anchor_x).then(|| {
+            crate::api::Rect::new(
+                area.x + cursor_x.min(anchor_x),
+                y,
+                (cursor_x - anchor_x).abs(),
+                height,
+            )
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn caret_and_selection_share_clipped_centered_geometry() {
+        let area = crate::api::Rect::new(10.0, 20.0, 200.0, 36.0);
+        for scale in [1.0, 1.5, 2.0] {
+            let (caret, selection) = decoration_rects(area, 14.0 * scale, 21.0, 7.0);
+            assert_eq!(caret.x, 31.0);
+            assert!((caret.center().y - area.center().y).abs() < 0.001);
+            assert!(caret.height < area.height);
+            let selected = selection.unwrap();
+            assert_eq!(selected.x, 17.0);
+            assert_eq!(selected.width, 14.0);
+            let (clipped, _) = decoration_rects(area, 14.0 * scale, 900.0, -20.0);
+            assert!(clipped.right() <= area.right());
+        }
+    }
+
     #[test]
     #[ignore = "allocation measurement; run alone with --test-threads=1"]
     fn warmed_editor_mutations_do_not_allocate() {

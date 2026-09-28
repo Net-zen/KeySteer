@@ -705,8 +705,11 @@ impl Engine {
                     .as_ref()
                     .is_some_and(|(_, prompt)| prompt.id == id)
                 {
-                    if let Some((owner, _)) = self.scheduler.text_prompt.take() {
-                        self.scheduler.text_prompt_returning_focus = true;
+                    if let Some((owner, prompt)) = self.scheduler.text_prompt.take() {
+                        // Retire capture before dropping ownership: a later
+                        // CloseTextPrompt cannot find this already-taken prompt.
+                        backend.set_text_capture(false);
+                        self.scheduler.text_prompt_returning_focus = prompt.live_style.is_none();
                         let text = match value {
                             Ok(text) => text,
                             Err(error) => {

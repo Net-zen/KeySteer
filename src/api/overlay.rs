@@ -447,6 +447,39 @@ pub struct LabelConnectorStyle {
     pub color: Color,
 }
 
+/// Compact optional caret/anchor offsets, keeping ordinary labels within their
+/// existing memory budget. Search's 4096-character limit fits UTF-8 in u16.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    try_from = "super::text_edit::Selection",
+    into = "super::text_edit::Selection"
+)]
+pub struct LabelEdit(std::num::NonZeroU32);
+impl TryFrom<super::text_edit::Selection> for LabelEdit {
+    type Error = &'static str;
+    fn try_from(value: super::text_edit::Selection) -> Result<Self, Self::Error> {
+        let cursor = u16::try_from(
+            value
+                .cursor
+                .checked_add(1)
+                .ok_or("caret exceeds label capacity")?,
+        )
+        .map_err(|_| "caret exceeds label capacity")?;
+        let anchor = u16::try_from(value.anchor).map_err(|_| "anchor exceeds label capacity")?;
+        std::num::NonZeroU32::new(u32::from(cursor) | (u32::from(anchor) << 16))
+            .map(Self)
+            .ok_or("invalid caret")
+    }
+}
+impl From<LabelEdit> for super::text_edit::Selection {
+    fn from(value: LabelEdit) -> Self {
+        Self {
+            cursor: (value.0.get() & 0xffff) as usize - 1,
+            anchor: (value.0.get() >> 16) as usize,
+        }
+    }
+}
+
 /// A text label to draw — a hint code, a grid cell key, a status badge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayLabel {
@@ -456,7 +489,7 @@ pub struct OverlayLabel {
     pub style: SharedLabelStyle,
     /// Length of the leading substring of `text` already typed by the user;
     /// the backend paints it with `style.matched_text_color`.
-    pub matched_prefix_len: usize,
+    pub matched_prefix_len: u32,
     /// Higher draws later (on top).
     pub z_index: i32,
     /// When false the backend centers text in `rect` without growing it.
@@ -464,6 +497,9 @@ pub struct OverlayLabel {
     /// Panel text uses an already resolved physical layout; DPI scales typography only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fixed_bounds: bool,
+    /// UTF-8 insertion offsets in this label; native renderers measure glyph advances.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<LabelEdit>,
 }
 
 impl OverlayLabel {
@@ -480,6 +516,7 @@ impl OverlayLabel {
             z_index: 0,
             fit_to_text: false,
             fixed_bounds: false,
+            edit: None,
         }
     }
 
@@ -493,13 +530,13 @@ impl OverlayLabel {
     }
 
     pub fn with_matched_prefix(mut self, len: usize) -> Self {
-        self.matched_prefix_len = len.min(self.text.chars().count());
+        self.matched_prefix_len = len.min(self.text.chars().count()).min(u32::MAX as usize) as u32;
         self
     }
 
     #[inline]
     pub(crate) fn text_analysis(&self) -> LabelTextAnalysis {
-        LabelTextAnalysis::analyze(&self.text, self.matched_prefix_len)
+        LabelTextAnalysis::analyze(&self.text, self.matched_prefix_len as usize)
     }
 
     pub fn with_z_index(mut self, z: i32) -> Self {

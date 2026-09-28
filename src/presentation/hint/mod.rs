@@ -448,36 +448,34 @@ impl HintView<'_> {
                 used += width;
                 start = i;
             }
-            let visible = super::single_line_elide_width(&text[start..], budget);
-            let ink = cfg.for_appearance(ctx.palette.appearance).caption.clone();
-            let range = self.content.search_selection.range();
-            let left = range.start.max(start);
-            let right = range.end.min(text.len());
-            if right > left {
-                let x = (super::text_units(&text[start..left]) * font).min(area.width);
-                let width = (super::text_units(&text[left..right]) * font).min(area.width - x);
-                scene.push_shape(OverlayShape::Rect {
-                    rect: Rect::new(area.x + x, area.y, width, area.height),
-                    fill: ctx.palette.accent.with_opacity(0.3),
-                    stroke: Color::TRANSPARENT,
-                    stroke_width: 0.0,
-                    corner_radius: 0.0,
-                    z_index: SEARCH_INPUT_Z_INDEX + 1,
-                });
+            let mut visible = crate::api::overlay::OverlayText::default();
+            let mut edit = crate::api::text_edit::Selection::default();
+            let mut units = 0.0;
+            for (offset, character) in text[start..].char_indices() {
+                let character = if character.is_control() {
+                    ' '
+                } else {
+                    character
+                };
+                let width = if character.is_ascii() { 0.75 } else { 1.0 };
+                if units + width > budget {
+                    break;
+                }
+                units += width;
+                visible.push(character);
+                if start + offset < cursor {
+                    edit.cursor = visible.len();
+                }
+                if start + offset < self.content.search_selection.anchor {
+                    edit.anchor = visible.len();
+                }
             }
-            scene.push_label(
-                OverlayLabel::new(visible, area, ink)
-                    .with_fixed_bounds()
-                    .with_z_index(SEARCH_INPUT_Z_INDEX + 2),
-            );
-            scene.push_shape(OverlayShape::Rect {
-                rect: Rect::new(area.x + used * font, area.y, scale.max(1.0), area.height),
-                fill: style.text_color,
-                stroke: Color::TRANSPARENT,
-                stroke_width: 0.0,
-                corner_radius: 0.0,
-                z_index: SEARCH_INPUT_Z_INDEX + 3,
-            });
+            let ink = cfg.for_appearance(ctx.palette.appearance).caption.clone();
+            let mut input = OverlayLabel::new(visible, area, ink)
+                .with_fixed_bounds()
+                .with_z_index(SEARCH_INPUT_Z_INDEX + 2);
+            input.edit = crate::api::overlay::LabelEdit::try_from(edit).ok();
+            scene.push_label(input);
         }
 
         scene

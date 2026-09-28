@@ -229,6 +229,7 @@ impl Overlay {
                 &indicator.style,
                 0,
                 text_rasterizer,
+                None,
             )?;
             if let Some(held_text) = &indicator.held_text {
                 let (held_width, held_height) = label_size(held_text);
@@ -243,6 +244,7 @@ impl Overlay {
                     &indicator.style,
                     0,
                     text_rasterizer,
+                    None,
                 )?;
             }
         }
@@ -380,6 +382,7 @@ fn scene_matches_local(
                         && label.matched_prefix_len == cached.matched_prefix_len
                         && label.z_index == cached.z_index
                         && label.fit_to_text == cached.fit_to_text
+                        && label.edit == cached.edit
                 }))
         && match (&scene.cursor_marker, &cached.cursor_marker) {
             (Some(marker), Some(cached)) => {
@@ -791,8 +794,9 @@ impl<'a> Surface<'a> {
             &label.text,
             rect,
             &label.style,
-            label.matched_prefix_len,
+            label.matched_prefix_len as usize,
             rasterizer,
+            label.edit.map(Into::into),
         )
     }
 
@@ -803,6 +807,7 @@ impl<'a> Surface<'a> {
         style: &LabelStyle,
         matched_prefix_len: usize,
         rasterizer: &mut TextRasterizer,
+        edit: Option<crate::api::text_edit::Selection>,
     ) -> Result<(), String> {
         self.fill(rect, style.background, style.border_radius);
         self.stroke_rect(
@@ -811,7 +816,7 @@ impl<'a> Surface<'a> {
             style.border_width,
             style.border_radius,
         );
-        self.text(text, rect, style, matched_prefix_len, rasterizer)
+        self.text(text, rect, style, matched_prefix_len, rasterizer, edit)
     }
 
     fn text(
@@ -821,12 +826,22 @@ impl<'a> Surface<'a> {
         style: &LabelStyle,
         matched_prefix_len: usize,
         rasterizer: &mut TextRasterizer,
+        edit: Option<crate::api::text_edit::Selection>,
     ) -> Result<(), String> {
         let rect = self.local_rect(label_rect);
         let width = rect.width.max(1.0).ceil() as usize;
         let height = rect.height.max(1.0).ceil() as usize;
-        let (mask, matched_boundary) =
-            rasterizer.rasterize(text, style, width, height, matched_prefix_len)?;
+        let RasterizedText {
+            mask,
+            matched_boundary,
+            edit_offsets: offsets,
+        } = rasterizer.rasterize(text, style, width, height, matched_prefix_len, edit)?;
+        let decorations = offsets.map(|(cursor, anchor)| {
+            crate::api::text_edit::decoration_rects(label_rect, style.font_size, cursor, anchor)
+        });
+        if let Some((_, Some(selection))) = decorations {
+            self.fill(selection, style.matched_text_color.with_opacity(0.25), 0.0);
+        }
         for y in 0..height {
             for x in 0..width {
                 let coverage = mask[y * width + x];
@@ -846,6 +861,9 @@ impl<'a> Surface<'a> {
                 );
             }
         }
+        if let Some((caret, _)) = decorations {
+            self.fill(caret, style.text_color, 0.0);
+        }
         Ok(())
     }
 }
@@ -862,6 +880,12 @@ struct FontKey {
 struct FontEntry {
     key: FontKey,
     font: OwnedFont,
+}
+
+struct RasterizedText<'a> {
+    mask: &'a [u8],
+    matched_boundary: Option<usize>,
+    edit_offsets: Option<(f64, f64)>,
 }
 
 struct TextRasterizer {
@@ -898,7 +922,20 @@ impl TextRasterizer {
         width: usize,
         height: usize,
         matched_prefix_len: usize,
-    ) -> Result<(&[u8], Option<usize>), String> {
+        edit: Option<crate::api::text_edit::Selection>,
+    ) -> Result<RasterizedText<'_>, String> {
+        // An empty editor still needs its caret, but has no glyphs to submit
+        // to GDI. In particular, do not pass an empty slice's dangling pointer
+        // to DrawTextW on the cold, zero-capacity path.
+        if text.is_empty() {
+            self.mask.resize(width.saturating_mul(height), 0);
+            self.mask.fill(0);
+            return Ok(RasterizedText {
+                mask: &self.mask,
+                matched_boundary: None,
+                edit_offsets: edit.map(|_| (0.0, 0.0)),
+            });
+        }
         self.ensure_scratch(width, height)?;
         self.utf16.clear();
         self.utf16.extend(text.encode_utf16());
@@ -933,6 +970,7 @@ impl TextRasterizer {
         };
         scratch.clear_region(width, height);
         let mut matched_boundary = None;
+        let mut edit_offsets = edit.map(|_| (0.0, 0.0));
         {
             let selected_font = scratch.select_font(&font.font)?;
             // SAFETY: the selected DC and font remain alive for this scope and
@@ -946,7 +984,11 @@ impl TextRasterizer {
                 }
                 SetTextColor(selected_font.dc(), COLORREF(0x00FF_FFFF));
             }
-            let text_offset_y = super::label_text_offset_y(style, analysis).round() as i32;
+            let text_offset_y = if edit.is_some() {
+                0
+            } else {
+                super::label_text_offset_y(style, analysis).round() as i32
+            };
             let mut draw_rect = windows::Win32::Foundation::RECT {
                 left: 0,
                 top: text_offset_y,
@@ -957,7 +999,7 @@ impl TextRasterizer {
             // valid and writable for this synchronous text draw.
             unsafe {
                 let prefix_utf16_len = analysis.matched_utf16_len;
-                if prefix_utf16_len > 0 {
+                if !self.utf16.is_empty() && (prefix_utf16_len > 0 || edit.is_some()) {
                     let utf16_len = i32::try_from(self.utf16.len())
                         .map_err(|_| "overlay text is too long for GDI measurement")?;
                     self.advances.resize(self.utf16.len(), 0);
@@ -975,16 +1017,27 @@ impl TextRasterizer {
                     {
                         return Err("GetTextExtentExPointW failed while measuring hint text".into());
                     }
-                    let prefix_width = self
-                        .advances
-                        .get(prefix_utf16_len - 1)
-                        .copied()
-                        .ok_or("GDI returned no matched-prefix advance")?;
                     let left = style
                         .text_alignment
-                        .offset(width as f64, text_size.cx as f64)
-                        as i32;
-                    matched_boundary = Some((left + prefix_width).clamp(0, width as i32) as usize);
+                        .offset(width as f64, text_size.cx as f64);
+                    let offset = |byte: usize| {
+                        let units = text.get(..byte).unwrap_or(text).encode_utf16().count();
+                        left + units
+                            .checked_sub(1)
+                            .and_then(|i| self.advances.get(i))
+                            .copied()
+                            .unwrap_or(0) as f64
+                    };
+                    edit_offsets = edit.map(|edit| (offset(edit.cursor), offset(edit.anchor)));
+                    if prefix_utf16_len > 0 {
+                        let prefix_width = self
+                            .advances
+                            .get(prefix_utf16_len - 1)
+                            .copied()
+                            .unwrap_or(0);
+                        matched_boundary =
+                            Some((left as i32 + prefix_width).clamp(0, width as i32) as usize);
+                    }
                 }
                 DrawTextW(
                     selected_font.dc(),
@@ -1020,7 +1073,11 @@ impl TextRasterizer {
                 *coverage = pixel[0].max(pixel[1]).max(pixel[2]);
             }
         }
-        Ok((&self.mask, matched_boundary))
+        Ok(RasterizedText {
+            mask: &self.mask,
+            matched_boundary,
+            edit_offsets,
+        })
     }
 
     fn ensure_scratch(&mut self, width: usize, height: usize) -> Result<(), String> {
@@ -1184,6 +1241,49 @@ mod tests {
         }
     }
     use super::*;
+
+    #[test]
+    #[ignore = "native GDI font measurement; requires an interactive Windows desktop"]
+    fn editor_caret_uses_font_advances_and_reuses_raster_storage() {
+        let mut rasterizer = TextRasterizer::new();
+        for scale in [1.0, 1.5, 2.0] {
+            let style = LabelStyle {
+                font_size: 14.0 * scale,
+                bold: false,
+                text_alignment: crate::api::overlay::TextAlignment::Left,
+                ..Default::default()
+            };
+            let mut widths = Vec::new();
+            for text in ["", "iii", "WWW", "ajs", "gj", "复制🦀"] {
+                let edit = crate::api::text_edit::Selection {
+                    cursor: text.len(),
+                    anchor: 0,
+                };
+                let drawn = rasterizer
+                    .rasterize(text, &style, 400, 60, 0, Some(edit))
+                    .unwrap();
+                let (cursor, anchor) = drawn.edit_offsets.unwrap();
+                assert_eq!(anchor, 0.0);
+                assert!((0.0..400.0).contains(&cursor));
+                widths.push(cursor);
+            }
+            assert!(
+                widths[2] > widths[1] * 2.0,
+                "narrow/wide glyphs must use different advances"
+            );
+            let storage = rasterizer.advances.as_ptr();
+            for position in [0, 1, 2, 3] {
+                let edit = crate::api::text_edit::Selection {
+                    cursor: position,
+                    anchor: 0,
+                };
+                rasterizer
+                    .rasterize("ajs", &style, 400, 60, 0, Some(edit))
+                    .unwrap();
+                assert_eq!(rasterizer.advances.as_ptr(), storage);
+            }
+        }
+    }
 
     #[test]
     fn rgba_blending_is_premultiplied_bgra() {

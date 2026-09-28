@@ -37,6 +37,7 @@ impl Scheduler {
     pub(super) fn reset(&mut self) {
         self.panel_geometry.clear();
         self.text_prompt = None;
+        self.text_prompt_returning_focus = false;
         self.scan_activation = None;
         self.window_sessions.clear();
         self.audio_sessions.clear();

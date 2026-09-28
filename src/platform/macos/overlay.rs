@@ -193,6 +193,7 @@ struct LabelLayers {
     matched: Retained<CATextLayer>,
     metrics: LabelTextMetrics,
     configured: bool,
+    edit_layers: Option<(Retained<CALayer>, Retained<CALayer>)>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -234,6 +235,8 @@ struct LabelSpec<'a> {
     rect: Rect,
     style: &'a LabelStyle,
     analysis: LabelTextAnalysis,
+    fixed_bounds: bool,
+    edit: Option<crate::api::text_edit::Selection>,
     z_index: i32,
 }
 
@@ -525,6 +528,8 @@ impl WindowContent {
                 rect: effective_label_rect(label),
                 style: &label.style,
                 analysis: label.text_analysis(),
+                fixed_bounds: label.fixed_bounds,
+                edit: label.edit.map(Into::into),
                 z_index: label.z_index,
             };
             self.configure_label(LabelSlot::Static(index), spec, area, rebuild_text);
@@ -753,9 +758,16 @@ impl WindowContent {
                 &font,
                 &foreground.cocoa,
                 &matched_foreground.cocoa,
+                spec.fixed_bounds.then_some(spec.rect.height),
             );
             let metrics = label_text_metrics(&base, spec.text);
             (base, matched, metrics)
+        });
+        let edit_colors = spec.edit.map(|_| {
+            (
+                self.color(spec.style.text_color),
+                self.color(spec.style.matched_text_color.with_opacity(0.25)),
+            )
         });
         let layer = match slot {
             LabelSlot::Static(index) => &mut self.labels[index],
@@ -808,6 +820,53 @@ impl WindowContent {
             frame.size,
             spec.style.text_alignment,
         );
+        if let (Some(edit), Some((caret_color, selection_color))) = (spec.edit, edit_colors) {
+            let (caret_layer, selection_layer) = layer.edit_layers.get_or_insert_with(|| {
+                let caret = CALayer::new();
+                let selection = CALayer::new();
+                layer.base.addSublayer(&selection);
+                layer.base.addSublayer(&caret);
+                (caret, selection)
+            });
+            let offset = |byte: usize| {
+                let units = spec
+                    .text
+                    .get(..byte)
+                    .unwrap_or(spec.text)
+                    .encode_utf16()
+                    .count();
+                if units == 0 {
+                    return 0.0;
+                }
+                layer
+                    .metrics
+                    .prefix_offsets
+                    .iter()
+                    .find(|offset| offset.utf16_len as usize == units)
+                    .map_or(f64::from(layer.metrics.width), |offset| f64::from(offset.x))
+            };
+            let local = Rect::new(0.0, 0.0, frame.size.width, frame.size.height);
+            let (caret, selection) = crate::api::text_edit::decoration_rects(
+                local,
+                spec.style.font_size,
+                offset(edit.cursor),
+                offset(edit.anchor),
+            );
+            caret_layer.setFrame(to_window_rect(caret, local));
+            caret_layer.setBackgroundColor(Some(&caret_color.core_graphics));
+            caret_layer.setHidden(false);
+            selection_layer.setHidden(selection.is_none());
+            if let Some(selection) = selection {
+                selection_layer.setFrame(to_window_rect(selection, local));
+                selection_layer.setBackgroundColor(Some(&selection_color.core_graphics));
+            }
+        } else if let Some((caret, selection)) = layer.edit_layers.take() {
+            // Reconciled slots can become ordinary labels. Do not accumulate
+            // hidden editor children across repeated search/filter cycles.
+            caret.removeFromSuperlayer();
+            selection.removeFromSuperlayer();
+        }
+
         layer.configured = true;
     }
 
@@ -877,6 +936,8 @@ impl WindowContent {
                     rect: main,
                     style: &indicator.style,
                     analysis: LabelTextAnalysis::analyze(&indicator.text, 0),
+                    fixed_bounds: false,
+                    edit: None,
                     z_index: 0,
                 },
                 local_area,
@@ -890,6 +951,8 @@ impl WindowContent {
                         rect,
                         style: &indicator.style,
                         analysis: LabelTextAnalysis::analyze(text, 0),
+                        fixed_bounds: false,
+                        edit: None,
                         z_index: 1,
                     },
                     local_area,
@@ -1018,6 +1081,7 @@ impl LabelLayers {
             matched,
             metrics: LabelTextMetrics::default(),
             configured: false,
+            edit_layers: None,
         }
     }
 
@@ -1046,6 +1110,10 @@ impl LabelLayers {
     }
 
     fn detach(self) {
+        if let Some((caret, selection)) = self.edit_layers {
+            caret.removeFromSuperlayer();
+            selection.removeFromSuperlayer();
+        }
         self.matched.removeFromSuperlayer();
         self.matched_clip.removeFromSuperlayer();
         self.base.removeFromSuperlayer();
@@ -1142,6 +1210,8 @@ fn scene_changes(previous: Option<&OverlayScene>, current: &OverlayScene) -> Sce
 
 fn label_text_content_eq(previous: &OverlayLabel, current: &OverlayLabel) -> bool {
     previous.text == current.text
+        && previous.fixed_bounds == current.fixed_bounds
+        && (!current.fixed_bounds || previous.rect.height == current.rect.height)
         && previous.style.font_size.to_bits() == current.style.font_size.to_bits()
         && previous.style.font_family == current.style.font_family
         && previous.style.bold == current.style.bold
@@ -1156,6 +1226,7 @@ fn attributed_label_text_pair(
     font: &CTFont,
     foreground: &NSColor,
     matched_foreground: &NSColor,
+    fixed_height: Option<f64>,
 ) -> (
     Retained<NSMutableAttributedString>,
     Retained<NSMutableAttributedString>,
@@ -1173,7 +1244,14 @@ fn attributed_label_text_pair(
 
     let full_range = NSRange::new(0, analysis.utf16_len);
     let cocoa_font: &NSFont = font.as_ref();
-    let baseline = NSNumber::numberWithDouble(macos_text_baseline_offset(style, analysis));
+    let offset = fixed_height.map_or_else(
+        || macos_text_baseline_offset(style, analysis),
+        |height| {
+            let line_height = cocoa_font.ascender() - cocoa_font.descender() + cocoa_font.leading();
+            -((height - line_height) / 2.0).max(0.0)
+        },
+    );
+    let baseline = NSNumber::numberWithDouble(offset);
     let zero = NSNumber::numberWithInteger(0);
     let font_object: &AnyObject = cocoa_font.as_ref();
     let foreground_object: &AnyObject = foreground.as_ref();

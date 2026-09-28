@@ -90,9 +90,9 @@ impl Engine {
                     }
                 }
                 Command::CloseTextPrompt => {
+                    backend.set_text_capture(false);
                     if let Some((_, prompt)) = self.scheduler.text_prompt.take() {
                         self.scheduler.text_prompt_returning_focus = prompt.live_style.is_none();
-                        backend.set_text_capture(false);
                         backend.cancel_text_prompt(prompt.id);
                     }
                 }

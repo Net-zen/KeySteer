@@ -26,9 +26,10 @@ use windows::Win32::Graphics::DirectComposition::{
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_RANGE,
-    DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
+    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_HIT_TEST_METRICS,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
+    IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -103,8 +104,17 @@ pub(super) struct GpuOverlay {
     brushes: HashMap<u32, ID2D1SolidColorBrush>,
     formats: Vec<FontEntry>,
     utf16: Vec<u16>,
+    edit_layout: Option<EditLayout>,
     #[cfg(test)]
     begin_draws: usize,
+}
+
+struct EditLayout {
+    text: crate::api::overlay::OverlayText,
+    format: IDWriteTextFormat,
+    width: f32,
+    height: f32,
+    layout: IDWriteTextLayout,
 }
 
 struct WindowContent {
@@ -264,12 +274,16 @@ impl GpuOverlay {
             brushes: HashMap::with_capacity(16),
             formats: Vec::with_capacity(8),
             utf16: Vec::with_capacity(32),
+            edit_layout: None,
             #[cfg(test)]
             begin_draws: 0,
         })
     }
 
     pub(super) fn present(&mut self, scene: Arc<OverlayScene>, area: Rect) -> Result<(), String> {
+        if !scene.labels.iter().any(|label| label.edit.is_some()) {
+            self.edit_layout = None;
+        }
         let dimensions = NativeDimensions::from_f64(area.width, area.height)?;
         let width = dimensions.width_u32();
         let height = dimensions.height_u32();
@@ -373,6 +387,7 @@ impl GpuOverlay {
     /// needed before reading desktop pixels, while an ordinary mode exit must
     /// not wait for the compositor.
     pub(super) fn dismiss(&mut self) -> Result<(), String> {
+        self.edit_layout = None;
         // Keep the ordinary warm text buffer, but release exceptional title peaks
         // when leaving the overlay, outside the render hot path.
         if self.utf16.capacity() > 4096 {
@@ -701,6 +716,7 @@ impl GpuOverlay {
                         &indicator.style,
                         LabelTextAnalysis::analyze(&indicator.text, 0),
                         origin,
+                        None,
                     )?;
                     if let (Some(text), Some(rect)) = (&indicator.held_text, held) {
                         renderer.draw_label_parts(
@@ -709,6 +725,7 @@ impl GpuOverlay {
                             &indicator.style,
                             LabelTextAnalysis::analyze(text, 0),
                             origin,
+                            None,
                         )?;
                     }
                     Ok(())
@@ -771,6 +788,7 @@ impl GpuOverlay {
             &label.style,
             label.text_analysis(),
             origin,
+            label.edit.map(Into::into),
         )
     }
 
@@ -781,6 +799,7 @@ impl GpuOverlay {
         style: &LabelStyle,
         analysis: LabelTextAnalysis,
         origin: Point,
+        edit: Option<crate::api::text_edit::Selection>,
     ) -> Result<(), String> {
         let mut rect = local_rect(label_rect, origin);
         let rounded = D2D1_ROUNDED_RECT {
@@ -798,7 +817,11 @@ impl GpuOverlay {
             // SAFETY: drawing is active and both objects are live.
             draw_rounded_rectangle(&self.d2d, &rounded, &brush, style.border_width as f32);
         }
-        let text_offset_y = super::label_text_offset_y(style, analysis) as f32;
+        let text_offset_y = if edit.is_some() {
+            0.0
+        } else {
+            super::label_text_offset_y(style, analysis) as f32
+        };
         rect.top += text_offset_y;
         rect.bottom += text_offset_y;
         let format = self.text_format(style)?;
@@ -811,7 +834,7 @@ impl GpuOverlay {
         } else {
             D2D1_DRAW_TEXT_OPTIONS_NONE
         };
-        if prefix_utf16_len > 0 && !style.matched_text_color.is_transparent() {
+        if edit.is_some() || (prefix_utf16_len > 0 && !style.matched_text_color.is_transparent()) {
             let matched_brush = self.brush(style.matched_text_color)?;
             let layout_origin = Vector2 {
                 X: rect.left,
@@ -821,24 +844,77 @@ impl GpuOverlay {
             // remain live through the draw. The text range was derived from
             // the same UTF-16 buffer and cannot exceed it.
             unsafe {
-                let layout = self
-                    .dwrite
-                    .CreateTextLayout(
-                        &self.utf16,
-                        &format,
-                        (rect.right - rect.left).max(1.0),
-                        (rect.bottom - rect.top).max(1.0),
-                    )
-                    .map_err(|error| format!("CreateTextLayout failed: {error}"))?;
-                layout
-                    .SetDrawingEffect(
-                        &matched_brush,
-                        DWRITE_TEXT_RANGE {
-                            startPosition: 0,
-                            length: prefix_utf16_len as u32,
-                        },
-                    )
-                    .map_err(|error| format!("SetDrawingEffect failed: {error}"))?;
+                let width = (rect.right - rect.left).max(1.0);
+                let height = (rect.bottom - rect.top).max(1.0);
+                let cached = self.edit_layout.as_ref().filter(|cache| {
+                    edit.is_some()
+                        && cache.text == text
+                        && cache.format == format
+                        && cache.width == width
+                        && cache.height == height
+                });
+                let layout = if let Some(cached) = cached {
+                    cached.layout.clone()
+                } else {
+                    let layout = self
+                        .dwrite
+                        .CreateTextLayout(&self.utf16, &format, width, height)
+                        .map_err(|error| format!("CreateTextLayout failed: {error}"))?;
+                    if edit.is_some() {
+                        self.edit_layout = Some(EditLayout {
+                            text: text.into(),
+                            format: format.clone(),
+                            width,
+                            height,
+                            layout: layout.clone(),
+                        });
+                    }
+                    layout
+                };
+                if prefix_utf16_len > 0 {
+                    layout
+                        .SetDrawingEffect(
+                            &matched_brush,
+                            DWRITE_TEXT_RANGE {
+                                startPosition: 0,
+                                length: prefix_utf16_len as u32,
+                            },
+                        )
+                        .map_err(|error| format!("SetDrawingEffect failed: {error}"))?;
+                }
+                if let Some(edit) = edit {
+                    let offset = |byte: usize| -> Result<f64, String> {
+                        if text.is_empty() {
+                            return Ok(0.0);
+                        }
+                        let position =
+                            text.get(..byte).unwrap_or(text).encode_utf16().count() as u32;
+                        let (mut x, mut y) = (0.0, 0.0);
+                        let mut metrics = DWRITE_HIT_TEST_METRICS::default();
+                        layout
+                            .HitTestTextPosition(position, false, &mut x, &mut y, &mut metrics)
+                            .map_err(|error| format!("Measure edit position failed: {error}"))?;
+                        Ok(f64::from(x))
+                    };
+                    let (caret, selection) = crate::api::text_edit::decoration_rects(
+                        Rect::new(
+                            rect.left as f64,
+                            rect.top as f64,
+                            width as f64,
+                            height as f64,
+                        ),
+                        style.font_size,
+                        offset(edit.cursor)?,
+                        offset(edit.anchor)?,
+                    );
+                    if let Some(selection) = selection {
+                        let brush = self.brush(style.matched_text_color.with_opacity(0.25))?;
+                        self.d2d
+                            .FillRectangle(&local_rect(selection, Point::new(0.0, 0.0)), &brush);
+                    }
+                    self.d2d
+                        .FillRectangle(&local_rect(caret, Point::new(0.0, 0.0)), &normal);
+                }
                 self.d2d
                     .DrawTextLayout(layout_origin, &layout, &normal, draw_options);
             }
