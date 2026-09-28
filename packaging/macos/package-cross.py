@@ -66,6 +66,33 @@ def make_archive(payload: Path, archive: Path) -> None:
                 output.writestr(info, path.read_bytes())
 
 
+def verify_signature(binary: Path, *, ad_hoc: bool) -> None:
+    result = subprocess.run(['rcodesign', 'verify', str(binary)],
+                            capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout, end='')
+    if result.stderr:
+        print(result.stderr, end='', file=sys.stderr)
+    # Upstream verify.rs parses the empty CMS blob even for ad-hoc signatures.
+    # Keep its code/slot digest checks: tolerate only this exact known error,
+    # never other verification failures or a certificate-backed CMS failure.
+    diagnostics = [line.strip() for line in
+                   (result.stdout + '\n' + result.stderr).splitlines() if line.strip()]
+    empty_cms = 'CMS error: missing further values (at position 0)'
+    allowed = {
+        empty_cms,
+        'Error: problems reported during verification',
+        '(the verify command is known to be buggy and gives misleading results; '
+        "we highly recommend using Apple's tooling until this message is removed)",
+    }
+    if (ad_hoc and result.returncode == 1 and empty_cms in diagnostics
+            and all(line in allowed for line in diagnostics)):
+        print('Ad-hoc signature: tolerated the known empty-CMS verifier error; '
+              'no other verification problems reported.')
+        return
+    result.check_returncode()
+
+
 def main() -> None:
     target = sys.argv[1] if len(sys.argv) == 2 else ''
     if target not in CPUS:
@@ -98,7 +125,7 @@ def main() -> None:
             subprocess.run([*sign, str(app)], check=True)
             # rcodesign verifies Mach-O signatures, not Apple's full bundle or
             # Gatekeeper policy. Native validation is still a release test.
-            subprocess.run(['rcodesign', 'verify', str(app / 'Contents/MacOS/KeySteer')], check=True)
+            verify_signature(app / 'Contents/MacOS/KeySteer', ad_hoc=not certificate)
             if not (app / 'Contents/_CodeSignature/CodeResources').is_file():
                 raise ValueError('Signing did not produce bundle resource seals')
             make_archive(app.parent, archive)

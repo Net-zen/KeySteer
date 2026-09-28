@@ -90,6 +90,33 @@ class CrossPackaging(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'requires'):
                 package.main()
 
+    def test_only_known_ad_hoc_cms_failure_is_tolerated(self):
+        cms = 'CMS error: missing further values (at position 0)\n'
+        stderr = ('(the verify command is known to be buggy and gives misleading results; '
+                  "we highly recommend using Apple's tooling until this message is removed)\n"
+                  'Error: problems reported during verification\n')
+        cases = [
+            (True, 1, cms, stderr, True),
+            (False, 1, cms, stderr, False),
+            (True, 1, cms + 'code digest mismatch for entry 0\n', stderr, False),
+            (True, 1, 'Mach-O signature data not found\n', stderr, False),
+            (True, 1, '', '', False),
+            (True, 2, cms, stderr, False),
+            (True, 0, '', '', True),
+            (False, 0, '', '', True),
+        ]
+        for ad_hoc, code, out, err, accepted in cases:
+            with self.subTest(ad_hoc=ad_hoc, code=code, out=out), \
+                 patch.object(package.subprocess, 'run', return_value=
+                              subprocess.CompletedProcess(['rcodesign'], code, out, err)), \
+                 patch('sys.stdout', new_callable=io.StringIO), \
+                 patch('sys.stderr', new_callable=io.StringIO):
+                if accepted:
+                    package.verify_signature(Path('KeySteer'), ad_hoc=ad_hoc)
+                else:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        package.verify_signature(Path('KeySteer'), ad_hoc=ad_hoc)
+
     def test_sdk_validation_and_old_sdk_rejection(self):
         root = self.root / 'MacOSX.sdk'
         (root / 'usr/lib').mkdir(parents=True)
