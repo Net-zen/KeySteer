@@ -217,7 +217,7 @@ impl HintInfoView<'_> {
             let result = match field {
                 0 => {
                     present |= !target.ocr_text().is_empty();
-                    out.write_str(target.ocr_text())
+                    write_ocr_text(&mut out, target.ocr_text())
                 }
                 1 if target.details.is_none() || !target.accessibility_text().is_empty() => {
                     present = true;
@@ -248,6 +248,43 @@ impl HintInfoView<'_> {
         }
         out.text.truncate(if present { out.position } else { 0 });
     }
+}
+
+/// Stream OCR whitespace cleanup into the existing preview/clipboard buffer.
+/// Keep word boundaries and line breaks, but remove recognition gaps between
+/// Chinese characters and around Chinese punctuation. No temporary String.
+fn write_ocr_text(out: &mut impl std::fmt::Write, text: &str) -> std::fmt::Result {
+    let chinese = |c: char| {
+        matches!(c as u32,
+        0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x323af)
+    };
+    let punctuation = |c: char| "，。！？；：、（）【】《》〈〉「」『』“”‘’".contains(c);
+    let mut previous = None;
+    let mut space = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' || c == '\n' {
+            if c == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            out.write_char('\n')?;
+            previous = None;
+            space = false;
+        } else if c.is_whitespace() {
+            space = true;
+        } else {
+            if space
+                && let Some(left) = previous
+                && !(chinese(left) && chinese(c) || punctuation(left) || punctuation(c))
+            {
+                out.write_char(' ')?;
+            }
+            out.write_char(c)?;
+            previous = Some(c);
+            space = false;
+        }
+    }
+    Ok(())
 }
 
 /// Stops preview formatting at a Unicode boundary, without building full clipboard data.
@@ -301,6 +338,45 @@ pub struct StatusView<'a> {
 #[cfg(test)]
 mod info_preview_tests {
     use super::*;
+
+    #[test]
+    fn ocr_cleanup_preserves_words_lines_and_unicode_in_both_outputs() {
+        for (input, expected) in [
+            ("OCR 和 辅 助 功 能 内 容", "OCR 和辅助功能内容"),
+            (
+                "  复\t制\u{3000}文\u{a0}字 ， 测 试 。  ",
+                "复制文字，测试。",
+            ),
+            (
+                "  macOS   Gatekeeper  拒 绝 打 开  ",
+                "macOS Gatekeeper 拒绝打开",
+            ),
+            (
+                "中 文  \r\n  English   words\n下 一 项",
+                "中文\nEnglish words\n下一项",
+            ),
+            ("𠀀 𠀁 🦀 test", "𠀀𠀁 🦀 test"),
+        ] {
+            for limit in [512, usize::MAX] {
+                let mut text = String::new();
+                let mut out = InfoText {
+                    text: &mut text,
+                    position: 0,
+                    remaining: limit,
+                };
+                write_ocr_text(&mut out, input).unwrap();
+                assert_eq!(text, expected);
+            }
+        }
+        let mut text = String::new();
+        let mut out = InfoText {
+            text: &mut text,
+            position: 0,
+            remaining: 2,
+        };
+        assert!(write_ocr_text(&mut out, "中 文 字 后 续").is_err());
+        assert_eq!(text, "中文…");
+    }
 
     #[test]
     #[ignore = "allocation measurement; run alone with --test-threads=1"]
