@@ -1,0 +1,62 @@
+name: Set up rcodesign
+description: Install verified Linux binaries from the official apple-platform-rs release
+runs:
+  using: composite
+  steps:
+    - name: Resolve latest stable Apple Codesign
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        tag="$(gh api repos/indygreg/apple-platform-rs/releases/latest --jq '.tag_name')"
+        [[ "$tag" =~ ^apple-codesign/([0-9]+\.[0-9]+\.[0-9]+)$ ]]
+        echo "RCODESIGN_TAG=$tag" >> "$GITHUB_ENV"
+        echo "RCODESIGN_VERSION=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
+
+    - name: Restore rcodesign
+      id: cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/keysteer-rcodesign
+        key: rcodesign-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RCODESIGN_VERSION }}
+
+    - name: Install rcodesign
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        asset="apple-codesign-$RCODESIGN_VERSION-x86_64-unknown-linux-musl.tar.gz"
+        download="$RUNNER_TEMP/rcodesign-download"
+        mkdir -p "$download" "$HOME/.cache/keysteer-rcodesign"
+        gh release download "$RCODESIGN_TAG" --repo indygreg/apple-platform-rs \
+          --pattern "$asset" --pattern "$asset.sha256" --dir "$download"
+        digest="$(awk '{ print $1; exit }' "$download/$asset.sha256")"
+        [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+        printf '%s  %s\n' "$digest" "$download/$asset" | sha256sum --check --strict
+        export RCODESIGN_ARCHIVE="$download/$asset"
+        python3 - <<'PY'
+        import os, pathlib, shutil, tarfile, tempfile
+        with tempfile.TemporaryDirectory(dir=os.environ['RUNNER_TEMP']) as tmp:
+            with tarfile.open(os.environ['RCODESIGN_ARCHIVE']) as archive:
+                archive.extractall(tmp, filter='data')
+            binaries = [p for p in pathlib.Path(tmp).rglob('rcodesign') if p.is_file()]
+            if len(binaries) != 1:
+                raise SystemExit('Expected one rcodesign executable in the official archive')
+            target = pathlib.Path.home() / '.cache/keysteer-rcodesign/rcodesign'
+            shutil.copyfile(binaries[0], target)
+            target.chmod(0o755)
+        PY
+
+    - name: Activate rcodesign
+      shell: bash
+      run: |
+        "$HOME/.cache/keysteer-rcodesign/rcodesign" --version
+        echo "$HOME/.cache/keysteer-rcodesign" >> "$GITHUB_PATH"
+
+    - name: Save rcodesign
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.cache/keysteer-rcodesign
+        key: ${{ steps.cache.outputs.cache-primary-key }}

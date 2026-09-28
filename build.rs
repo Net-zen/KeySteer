@@ -8,6 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=src/platform/macos/audio_bridge.m");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
     println!("cargo:rerun-if-env-changed=KEYSTEER_CROSS_WINDOWS");
+    println!("cargo:rerun-if-env-changed=KEYSTEER_CROSS_MACOS");
     println!("cargo:rustc-env=KEYSTEER_BUILD_DATE={}", build_date()?);
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -80,12 +81,12 @@ fn compile_windows_resources() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 fn compile_macos_bridge() {
-    // `cargo check --target ...-apple-darwin` can still type-check the Rust
-    // backend from another host. Only a macOS host has the SDK and Objective-C
-    // compiler needed to build and link this bridge for a release artifact.
-    if !std::env::var("HOST").is_ok_and(|host| host.contains("apple-darwin")) {
+    // Keep SDK-free type checks possible; a full Linux build explicitly opts
+    // in after configuring Apple SDK headers, Clang and the Mach-O linker.
+    if !std::env::var("HOST").is_ok_and(|host| host.contains("apple-darwin"))
+        && !std::env::var("KEYSTEER_CROSS_MACOS").is_ok_and(|value| value == "1")
+    {
         println!(
             "cargo:warning=skipping macOS Objective-C bridge while checking from a non-macOS host"
         );
@@ -116,6 +117,3 @@ fn compile_macos_bridge() {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
 }
-
-#[cfg(not(target_os = "macos"))]
-fn compile_macos_bridge() {}

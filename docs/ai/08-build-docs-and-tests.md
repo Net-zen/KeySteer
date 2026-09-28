@@ -30,18 +30,20 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 正式产物走 `packaging/` 脚本和 `.github/workflows/`，检查应用身份、资源和签名。纯文档修改验证链接、代码路径和 `git diff --check` 即可。
 
-`.github/workflows/cross-build.yml` 是手动触发的 Linux → Windows MSVC x64/ARM64 构建，使用 cargo-xwin/LLVM，不发布 Release。`packaging/windows/package-cross.sh` 对已编译 EXE 使用现有 `WINDOWS_SIGNING_PFX_BASE64`、`WINDOWS_SIGNING_PASSWORD` 和可选 `WINDOWS_TIMESTAMP_URL` 完成 Authenticode 签名、RFC 3161 时间戳和签名校验；缺少证书或签名失败时不上传包。产物名称与 `package.ps1` 一致：`KeySteer-v<version>-<target>.zip` 内含 `KeySteer/KeySteer.exe` 和 `KeySteer/keysteer.default.toml`。签名校验显式信任提供的证书链并验证叶证书指纹，不代表公共信任或 Windows 原生运行验证。正式发布仍使用 `build.yml`。
+`.github/workflows/cross-build.yml` 在 Linux 上交叉构建 Windows MSVC x64/ARM64 和 macOS Intel/Apple Silicon。提供与 `build.yml` 一致的平台选择、发布开关和 release/pre-release 选项，发布默认关闭；开启后必须全部四包成功。`packaging/windows/package-cross.sh` 对已编译 EXE 使用现有 `WINDOWS_SIGNING_PFX_BASE64`、`WINDOWS_SIGNING_PASSWORD` 和可选 `WINDOWS_TIMESTAMP_URL` 完成 Authenticode 签名、RFC 3161 时间戳和签名校验；缺少证书或签名失败时不上传包。产物名称与 `package.ps1` 一致：`KeySteer-v<version>-<target>.zip` 内含 `KeySteer/KeySteer.exe` 和 `KeySteer/keysteer.default.toml`。签名校验显式信任提供的证书链并验证叶证书指纹，不代表公共信任或 Windows 原生运行验证。原生构建保留在 `build.yml`；两种工作流使用相同的版本标签、产物名称和发布说明规则。
 
 两个构建工作流复用 `.github/actions/setup-rust`，统一从 `rust-lang/rust` 官方 Release API 解析最新稳定版本，由 `dtolnay/rust-toolchain` 安装工具链与目标架构并设置构建日期。仅在 Cargo.toml 与 Cargo.lock 的项目版本不同步时调用 `cargo update`，避免每次初始化都更新索引。ZIP 上传关闭二次压缩；原生 Windows 签名证书在打包结束或失败后清理。
 
 交叉工作流通过带 `GITHUB_TOKEN` 的官方 Release API 查询 LLVM 和 cargo-xwin：`llvm/llvm-project`、`rust-cross/cargo-xwin`。LLVM 下载 Linux X64 工具包（优先 zstd），按 Release API 的 SHA256 校验，支持 1 GiB zstd 解压窗口，解压后将 bin 目录置于 PATH 首位；不访问 `apt.llvm.org`。cargo-xwin 由 `taiki-e/install-action` 下载并校验上游预编译程序，禁用 fallback，避免从源码安装。系统库和签名工具使用 Ubuntu 软件源。
 
-缓存按存储成本收敛：`build.yml` 只缓存 Rust 依赖；`cross-build.yml` 保留 Rust 编译结果、Windows SDK/CRT、LLVM 安装目录、cargo-xwin 可执行文件和 apt 安装包。LLVM 与 cargo-xwin 缓存按宿主系统、架构和工具版本或摘要区分，不按产物目标区分，因此两个 Windows 目标共用；未来同一 Linux 宿主工具链也可供 macOS 交叉构建复用，原生 macOS runner 则需要对应宿主工具包。LLVM 仅在安装缓存未命中时下载上游压缩包、校验 SHA256 并解压；命中后直接检查工具并加入 PATH。只缓存安装目录，不再同时保存上游压缩包；缓存恢复自身仍有传输与解压开销，实际总耗时需要运行测量。LLVM 安装缓存键还包含宿主 Ubuntu 版本。
+两个工作流通过共享 Rust 初始化缓存工具链及第三方依赖下载，不缓存工作区源码、`target` 或逐提交 EXE。下载缓存关闭 Swatinem 的自动环境哈希，键只包含宿主与 Cargo.lock 中外部依赖摘要，项目版本和 CPU 变化不产生新下载缓存。交叉工作流在同一 Linux 宿主安装四个 Rust 目标，共用工具链缓存。
 
-LLVM 安装验证成功后立即保存缓存。SDK/CRT 使用 `cargo xwin cache xwin` 独立准备，设 15 分钟超时，并在成功后立即保存，避免后续编译或签名失败丢失已下载工具。
+`.github/actions/setup-llvm` 为两个平台共用官方 LLVM 安装缓存和 apt 下载缓存。LLVM 仅在未命中时下载、验 SHA256、解压；安装验证成功即保存。SDK/CRT 由 `cargo xwin cache xwin` 独立准备并立即保存。macOS SDK 和 rcodesign 同样在安装后保存。缓存恢复有传输/解压开销，apt 仍需安装；旧缓存需在 GitHub 管理中清理或等待淘汰。签名证书不进入缓存，项目与依赖每次重新编译。
 
-仅取消逐提交未签名 EXE 缓存。apt 安装包缓存按宿主和软件源元数据区分，并在目标架构之间共用。交叉构建由 Cargo 判断需要重编译的内容，不再通过 EXE 缓存完全跳过编译步骤；Rust 缓存按目标、CPU 与编译工具版本区分，不受签名工具的 apt 元数据影响。两者的 Rust 缓存允许失败后保存可用编译结果，原生构建仍只在默认分支写入缓存。SDK/CRT 强制刷新时提升 `xwin-sdk-v1` 前缀。旧缓存不会因工作流配置修改自动删除，需要在 GitHub Actions 缓存管理中清理或等待淘汰。证书和密码不进入缓存或产物；签名后 EXE 和发布 ZIP 的 SHA256 只在 Actions 摘要记录。
+macOS 默认从 `joseluisq/macosx-sdks` 社区清单自动选择最新 SDK 并校验摘要（可用仓库变量覆盖），配合官方 LLVM 的 Clang 与 Mach-O LLD，在 Linux 编译 Objective-C 桥接并打包。`packaging/macos/prepare-sdk.py` 校验 SDK 结构；`configure-cross.sh` 为目标配置编译器、归档器及链接器；`package-cross.py` 保持应用身份与 ZIP 布局，生成 PNG-backed ICNS，调用 rcodesign 签名并可选公证/装订。默认 ad-hoc 签名与原生工作流一致。配置变量、证书及工具限制见 [Linux macOS 打包](../../packaging/macos/README-cross.md)。
 
-交叉工作流的 x64 产物按实际 GitHub Actions runner CPU 优化，Rust 设置 `target-cpu=native`，C 桥接设置 `/clang:-march=native`。CPU 型号和指令集指纹写入编译缓存键，避免不同 runner 硬件复用不兼容的机器码；工具和 SDK 下载缓存仍可复用。这不是通用 x86-64 兼容包，缺少构建机器指令集的 CPU 可能无法运行，runner 硬件变化也可能改变产物。ARM64 在 x64 runner 上交叉编译，保持 `generic`。两端继续使用 Cargo release 的 O3、fat LTO 和单代码生成单元，最新工具链与 CPU 定向优化不等于已证明更快，性能仍需同机实测。
+Windows x64 按实际 Linux runner CPU 优化（Rust native、C `/clang:-march=native`），不保证老 CPU 兼容；Windows ARM64 和 macOS 保持各目标默认 CPU。release 的 O3、fat LTO 和单代码生成单元不变。
 
 `KEYSTEER_CROSS_WINDOWS=1` 在非 Windows 宿主上启用 C 桥接和图标/manifest 编译，需要完整交叉工具链；未设置时保留不依赖 SDK 的跨平台类型检查。MSVC 交叉工作流显式设置 `RC_PATH=llvm-rc` 和空 `CROSS_COMPILE`，避免 winresource 0.1.31 初始化 GNU 前缀时误报 ARM64 未知目标。跨宿主的工具链、SDK、路径和签名时间戳可能改变哈希，不能据此断言行为不一致。
+
+`KEYSTEER_CROSS_MACOS=1` 在非 Apple 宿主显式启用完整 Objective-C 桥接编译，需要 SDKROOT、Clang 与目标链接器；未设置时仍允许不安装 SDK 的跨平台类型检查。

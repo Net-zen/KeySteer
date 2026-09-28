@@ -1,0 +1,115 @@
+name: Set up Linux LLVM
+description: Install and cache official LLVM and system tools shared by Windows and macOS builds
+runs:
+  using: composite
+  steps:
+    - name: Resolve latest stable LLVM
+      id: tools
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        gh api repos/llvm/llvm-project/releases/latest > "$RUNNER_TEMP/llvm-release.json"
+        python3 - <<'PY'
+        import json, os, pathlib, re
+        release = json.loads((pathlib.Path(os.environ["RUNNER_TEMP"]) / "llvm-release.json").read_text())
+        match = re.fullmatch(r"llvmorg-([0-9]+\.[0-9]+\.[0-9]+)", release["tag_name"])
+        if not match or release["prerelease"] or release["draft"]:
+            raise SystemExit("Expected an official stable LLVM release")
+        version = match[1]
+        # Both jobs execute on an x64 Linux host, including the ARM64 cross build.
+        names = [f"LLVM-{version}-Linux-X64.tar.{extension}" for extension in ("zst", "xz")]
+        assets = {asset["name"]: asset for asset in release["assets"]}
+        asset = next((assets[name] for name in names if name in assets), None)
+        if asset is None:
+            raise SystemExit("Latest LLVM release has no Linux X64 toolchain archive")
+        digest = asset.get("digest") or ""
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise SystemExit("LLVM release asset has no SHA256 digest")
+        with open(os.environ["GITHUB_ENV"], "a") as output:
+            output.write(f"LLVM_VERSION={version}\nLLVM_TAG={release['tag_name']}\nLLVM_ASSET={asset['name']}\nLLVM_SHA256={digest[7:]}\n")
+        with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+            output.write(f"llvm-sha256={digest[7:]}\n")
+        print(f"Selected {asset['name']} ({digest})")
+        PY
+    - name: Resolve system package versions
+      id: system-packages
+      shell: bash
+      run: |
+        sudo apt-get update
+        package_key="$(apt-cache policy osslsigncode zip zstd libtinfo6 libxml2 libzstd1 libedit2 | sha256sum | cut -d ' ' -f 1)"
+        echo "apt-key=$package_key" >> "$GITHUB_OUTPUT"
+
+    - name: Restore system package downloads
+      uses: actions/cache@v6
+      with:
+        # Share downloads across targets, excluding apt locks and partial files.
+        path: ${{ runner.temp }}/keysteer-apt/*.deb
+        key: cross-apt-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.system-packages.outputs.apt-key }}
+        restore-keys: cross-apt-v2-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Install system tools
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/keysteer-apt/partial"
+        sudo apt-get -o Dir::Cache::archives="$RUNNER_TEMP/keysteer-apt" \
+          -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
+          osslsigncode zip zstd libtinfo6 libxml2 libzstd1 libedit2
+
+    - name: Restore installed LLVM
+      id: llvm-cache
+      uses: actions/cache/restore@v6
+      with:
+        # Cache the installation instead of both an archive and its contents.
+        # The Linux host toolchain is shared by all cross-compilation targets.
+        path: ${{ runner.temp }}/keysteer-llvm
+        key: llvm-installed-v1-ubuntu24-${{ runner.arch }}-${{ steps.tools.outputs.llvm-sha256 }}
+
+    - name: Download official LLVM
+      if: steps.llvm-cache.outputs.cache-hit != 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/keysteer-llvm-downloads"
+        gh release download "$LLVM_TAG" --repo llvm/llvm-project \
+          --pattern "$LLVM_ASSET" --dir "$RUNNER_TEMP/keysteer-llvm-downloads"
+
+    - name: Verify and extract LLVM
+      if: steps.llvm-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        archive="$RUNNER_TEMP/keysteer-llvm-downloads/$LLVM_ASSET"
+        printf '%s  %s\n' "$LLVM_SHA256" "$archive" | sha256sum --check --strict
+        mkdir -p "$RUNNER_TEMP/keysteer-llvm"
+        case "$LLVM_ASSET" in
+          *.tar.zst)
+            # Official LLVM archives can use a 1 GiB zstd window, exceeding
+            # the decoder's default 128 MiB limit. Stream without an extra tar.
+            zstd --decompress --stdout --long=30 "$archive" \
+              | tar -xf - --strip-components=1 -C "$RUNNER_TEMP/keysteer-llvm"
+            ;;
+          *.tar.xz)
+            tar -xJf "$archive" --strip-components=1 -C "$RUNNER_TEMP/keysteer-llvm"
+            ;;
+          *) echo "Unsupported LLVM archive: $LLVM_ASSET" >&2; exit 1 ;;
+        esac
+
+    - name: Activate LLVM
+      shell: bash
+      run: |
+        for tool in clang clang-cl ld64.lld lld-link llvm-ar llvm-lib llvm-rc; do
+          test -x "$RUNNER_TEMP/keysteer-llvm/bin/$tool"
+        done
+        "$RUNNER_TEMP/keysteer-llvm/bin/clang-cl" --version
+        "$RUNNER_TEMP/keysteer-llvm/bin/lld-link" --version
+        echo "$RUNNER_TEMP/keysteer-llvm/bin" >> "$GITHUB_PATH"
+        echo "LLVM_ROOT=$RUNNER_TEMP/keysteer-llvm" >> "$GITHUB_ENV"
+
+    - name: Save installed LLVM
+      if: steps.llvm-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/keysteer-llvm
+        key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
+
