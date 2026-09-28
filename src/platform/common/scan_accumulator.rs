@@ -304,7 +304,14 @@ mod tests {
 
     #[test]
     fn search_details_keep_ocr_and_accessibility_in_both_arrival_orders() {
-        for ocr_first in [false, true] {
+        for (ocr_source, ocr_first) in [
+            TargetSource::SystemOcr,
+            #[cfg(target_os = "macos")]
+            TargetSource::NativeVision,
+        ]
+        .into_iter()
+        .flat_map(|source| [false, true].map(|first| (source, first)))
+        {
             let mut scan = ScanAccumulator::new();
             let control = UiTarget {
                 rect: Rect::new(0.0, 0.0, 100.0, 40.0),
@@ -312,16 +319,8 @@ mod tests {
                 role: SemanticRole::Button,
                 details: None,
             };
-            let ocr = UiTarget {
-                rect: Rect::new(20.0, 10.0, 40.0, 20.0),
-                name: "复制".into(),
-                role: SemanticRole::StaticText,
-                details: None,
-            };
-            let mut sources = [
-                (TargetSource::Accessibility, control),
-                (TargetSource::SystemOcr, ocr),
-            ];
+            let ocr = UiTarget::recognized_text(Rect::new(20.0, 10.0, 40.0, 20.0), "复制".into());
+            let mut sources = [(TargetSource::Accessibility, control), (ocr_source, ocr)];
             if ocr_first {
                 sources.reverse();
             }

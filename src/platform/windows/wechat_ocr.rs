@@ -26,7 +26,9 @@ use windows_future::{
     IAsyncOperation,
 };
 
-use crate::api::geometry::{Rect, SemanticRole, UiTarget};
+#[cfg(test)]
+use crate::api::geometry::SemanticRole;
+use crate::api::geometry::{Rect, UiTarget};
 use crate::support::worker::WorkerJoin;
 
 use super::vision::{CaptureGeometry, image_to_desktop, valid_target_rect};
@@ -1108,12 +1110,7 @@ fn parse_response(
             && item.rate >= minimum_confidence
             && valid_target_rect(rect, image.desktop_bounds)
         {
-            targets.push(UiTarget {
-                details: None,
-                rect,
-                name: item.text,
-                role: SemanticRole::StaticText,
-            });
+            targets.push(UiTarget::recognized_text(rect, item.text));
         }
     }
     Ok(merge_text_lines(targets))

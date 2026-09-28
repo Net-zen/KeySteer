@@ -290,6 +290,17 @@ pub struct UiTargetDetails {
 }
 
 impl UiTarget {
+    /// Recognition providers share the same text provenance. The scanner
+    /// enriches OCR details in one place, before semantic fusion.
+    pub fn recognized_text(rect: Rect, text: String) -> Self {
+        Self {
+            details: None,
+            rect,
+            name: text,
+            role: SemanticRole::StaticText,
+        }
+    }
+
     pub fn ocr_text(&self) -> &str {
         self.details.as_ref().map_or("", |d| d.ocr.as_str())
     }

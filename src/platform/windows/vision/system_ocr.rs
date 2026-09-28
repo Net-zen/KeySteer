@@ -68,12 +68,7 @@ pub(super) fn stream_system_targets_from_result(
         if text.is_empty() {
             continue;
         }
-        batch.push(UiTarget {
-            details: None,
-            rect,
-            name: text,
-            role: SemanticRole::StaticText,
-        });
+        batch.push(UiTarget::recognized_text(rect, text));
         accepted += 1;
         if batch.len() == PROVIDER_BATCH_SIZE {
             mailbox.publish(ProviderEvent::OcrBatch {

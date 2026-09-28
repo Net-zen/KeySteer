@@ -12,7 +12,9 @@ use windows_future::{AsyncOperationCompletedHandler, AsyncStatus, IAsyncOperatio
 use smallvec::SmallVec;
 
 use crate::api::command::UiScanStatus;
-use crate::api::geometry::{Rect, SemanticRole, UiTarget};
+#[cfg(test)]
+use crate::api::geometry::SemanticRole;
+use crate::api::geometry::{Rect, UiTarget};
 use crate::support::worker::WorkerJoin;
 
 use super::accessibility::WindowsScanPlan;

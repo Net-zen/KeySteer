@@ -421,16 +421,9 @@ fn classify(
     }
     let aspect = rect.width / rect.height.max(f64::EPSILON);
     let role = if region.is_text {
-        if aspect >= options.link_min_aspect
-            && rect.height <= options.link_max_height
-            && rect.width >= options.link_min_width
-        {
-            SemanticRole::Link
-        } else if region.confidence >= options.generic_clickable_min_confidence {
-            SemanticRole::Control
-        } else {
-            return Ok(None);
-        }
+        // Match the shared OCR contract used by Windows. Text provenance
+        // drives metadata fusion; guessing a clickable role loses OCR details.
+        SemanticRole::StaticText
     } else if rect.width <= options.checkbox_max_size
         && rect.height <= options.checkbox_max_size
         && (0.75..=1.35).contains(&aspect)
@@ -453,13 +446,19 @@ fn classify(
     } else {
         return Ok(None);
     };
-    Ok(Some(Candidate {
-        target: UiTarget {
+    let name = native_string(region.label, region.label_len, MAX_VISION_LABEL_BYTES)?;
+    let target = if region.is_text {
+        UiTarget::recognized_text(rect, name)
+    } else {
+        UiTarget {
             details: None,
             rect,
-            name: native_string(region.label, region.label_len, MAX_VISION_LABEL_BYTES)?,
+            name,
             role,
-        },
+        }
+    };
+    Ok(Some(Candidate {
+        target,
         confidence: region.confidence,
         is_text: region.is_text,
     }))
@@ -554,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn classifier_uses_link_and_checkbox_thresholds() {
+    fn classifier_preserves_ocr_provenance_and_checkbox_thresholds() {
         let bounds = Rect::new(0.0, 0.0, 1000.0, 800.0);
         let options = VisionOptions::default();
         let empty = std::ffi::CString::new("").unwrap();
@@ -574,7 +573,7 @@ mod tests {
                 .unwrap()
                 .target
                 .role,
-            SemanticRole::Link
+            SemanticRole::StaticText
         );
         let checkbox = NativeRegion {
             x: 0.1,
@@ -594,6 +593,40 @@ mod tests {
                 .role,
             SemanticRole::Checkbox
         );
+    }
+
+    #[test]
+    fn recognized_text_reaches_shared_ocr_metadata() {
+        let text = std::ffi::CString::new("复制 Copy").unwrap();
+        let region = NativeRegion {
+            x: 0.1,
+            y: 0.5,
+            width: 0.3,
+            height: 0.03,
+            confidence: 0.9,
+            is_text: true,
+            label: text.as_ptr().cast_mut(),
+            label_len: text.as_bytes().len() as u64,
+        };
+        let target = classify(
+            &region,
+            Rect::new(0.0, 0.0, 1000.0, 800.0),
+            &VisionOptions::default(),
+        )
+        .unwrap()
+        .unwrap()
+        .target;
+        let mut scan = crate::platform::common::scan_accumulator::ScanAccumulator::new();
+        let update = scan.push(TargetSource::NativeVision, vec![target], 0.5);
+        let targets: Vec<_> = update
+            .batches
+            .into_iter()
+            .flatten()
+            .chain(scan.finish().into_iter().flatten())
+            .collect();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].ocr_text(), "复制 Copy");
+        assert_eq!(targets[0].accessibility_text(), "");
     }
 
     #[test]
