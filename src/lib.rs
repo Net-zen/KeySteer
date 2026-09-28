@@ -22,16 +22,16 @@
 //! Backends implement [`api::Backend`] and are chosen by `cfg(target_os)` in
 //! [`platform`], so cross-compiling needs no feature flags or config edits.
 
-#[allow(dead_code, unused_imports)]
+#[allow(dead_code)]
 pub(crate) mod api;
 pub mod app;
-#[allow(dead_code, unused_imports)]
+#[allow(dead_code)]
 pub(crate) mod config;
-#[allow(dead_code, unused_imports)]
+#[allow(dead_code)]
 pub(crate) mod modes;
-#[allow(dead_code, unused_imports)]
+#[allow(dead_code)]
 pub(crate) mod platform;
-#[allow(dead_code, unused_imports)]
+#[allow(dead_code)]
 pub(crate) mod plugins;
 pub(crate) mod presentation;
 pub(crate) mod support;
@@ -40,6 +40,26 @@ pub(crate) mod support;
 #[cfg(feature = "benchmark-hooks")]
 #[doc(hidden)]
 pub mod benchmark {
+    /// Thin handles to the production queue; no probes or alternate algorithms.
+    pub struct NotificationSender(crate::platform::common::event_queue::Sender);
+    pub struct NotificationReceiver(crate::platform::common::event_queue::Receiver);
+
+    pub fn notification_channel() -> (NotificationSender, NotificationReceiver) {
+        let (sender, receiver) = crate::platform::common::event_queue::channel();
+        (NotificationSender(sender), NotificationReceiver(receiver))
+    }
+
+    impl NotificationSender {
+        pub fn send(&self, event: BackendEvent) -> Option<bool> {
+            self.0.send(event).ok()
+        }
+    }
+    impl NotificationReceiver {
+        pub fn try_recv(&self) -> Option<BackendEvent> {
+            self.0.try_recv().ok()
+        }
+    }
+
     pub use crate::api::{
         Appearance, Backend, BackendEvent, Binding, ButtonAction, Command, CommandBatch, Direction,
         FocusedApp, HostContext, InputEvent, Key, KeyDisposition, KeyState, LabelDirection, Mode,

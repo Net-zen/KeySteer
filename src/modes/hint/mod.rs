@@ -16,7 +16,9 @@ use crate::api::command::{
     Command, CommandBatch, FinishCause, FocusedApp, HostContext, Mode, ModeEvent, UiScanRequest,
     UiScanResult, UiScanStatus, UiScanStrategy, VisionOptions,
 };
-use crate::api::geometry::{Rect, SemanticRole, UiTarget};
+use crate::api::geometry::Rect;
+#[cfg(test)]
+use crate::api::geometry::{SemanticRole, UiTarget};
 use crate::api::hint::LabelDirection;
 use crate::api::input::{Key, KeyChord, KeyState, ModeId};
 use crate::api::lifecycle::TargetingLifecycle;
@@ -1502,7 +1504,7 @@ mod tests {
     use crate::api::overlay::{LabelStyle, OverlayLabel, OverlayScene, OverlayShape};
     use crate::api::style::AUTO;
     use crate::presentation::hint::layers::build_visual_layer_plan;
-    use crate::presentation::hint::{visual_layer_rect, visual_layer_scale, visually_stacked};
+    use crate::presentation::hint::visually_stacked;
     impl HintMode {
         fn scene(&self, ctx: &HostContext<'_>) -> OverlayScene {
             ctx.presenter.compose(self.view(), ctx)

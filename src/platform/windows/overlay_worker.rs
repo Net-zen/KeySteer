@@ -1166,7 +1166,7 @@ mod tests {
     #[test]
     #[ignore = "requires an interactive Windows desktop"]
     fn idle_overlay_worker_remains_responsive_and_click_through() -> Result<(), String> {
-        let (event_tx, _event_rx) = mpsc::channel();
+        let (event_tx, _event_rx) = crate::platform::common::event_queue::channel();
         let events = EventSender::without_wake(event_tx);
         let mut worker = OverlayWorker::start(events)?;
         let area = Rect::new(0.0, 0.0, 64.0, 64.0);

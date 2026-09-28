@@ -10,7 +10,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::api::command::{UiScanResult, UiScanStatus};
-use crate::api::geometry::{SemanticRole, UiTarget};
+#[cfg(test)]
+use crate::api::geometry::SemanticRole;
+use crate::api::geometry::UiTarget;
 
 #[derive(Default)]
 struct State {

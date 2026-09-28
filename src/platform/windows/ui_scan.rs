@@ -225,7 +225,6 @@ fn combined_status(statuses: &[UiScanStatus]) -> UiScanStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
 
     use crate::api::command::{UiScanRequest, UiScanStrategy, VisionOptions};
 
@@ -253,7 +252,7 @@ mod tests {
     fn late_accessible_row_retires_both_published_and_pending_visual_fragments() {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(41);
-        let (events, _) = mpsc::channel();
+        let (events, _) = crate::platform::common::event_queue::channel();
         let mut input = request(41);
         input.scope = crate::api::UiScanScope::Screen;
         let session = ScanSession::new(
@@ -294,7 +293,7 @@ mod tests {
     fn merged_sources_accept_ten_thousand_and_bound_the_tail() {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(42);
-        let (events, _) = mpsc::channel();
+        let (events, _) = crate::platform::common::event_queue::channel();
         let mut input = request(42);
         input.scope = crate::api::UiScanScope::Screen;
         input.bounds = Some(rect(0.0, 0.0, 4096.0, 4096.0));
@@ -398,7 +397,7 @@ mod tests {
     fn providers_share_first_writer_dedup_and_one_terminal() {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(41);
-        let (events, _ignored) = mpsc::channel();
+        let (events, _ignored) = crate::platform::common::event_queue::channel();
         let session = ScanSession::new(
             super::super::accessibility::test_scan_plan(request(41)),
             generation,
@@ -442,7 +441,7 @@ mod tests {
     fn completed_provider_group_releases_the_shared_scan_plan() {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(42);
-        let (events, _ignored) = mpsc::channel();
+        let (events, _ignored) = crate::platform::common::event_queue::channel();
         let plan = super::super::accessibility::test_scan_plan(request(42));
         let observer = Arc::clone(&plan);
         let session = ScanSession::new(
@@ -470,7 +469,7 @@ mod tests {
     fn one_context_change_terminates_hybrid_without_waiting_for_the_other_provider() {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(43);
-        let (events, _ignored) = mpsc::channel();
+        let (events, _ignored) = crate::platform::common::event_queue::channel();
         let session = ScanSession::new(
             super::super::accessibility::test_scan_plan(request(43)),
             generation,

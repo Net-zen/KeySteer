@@ -22,18 +22,6 @@ print_stderr = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
 
-# A single crate: the public API, the engine, the built-in modes and every
-# platform backend live in one package under `src/`. Backends are selected by
-# `cfg(target_os)` below, so `cargo build` / `cargo build --target ...` needs no
-# extra flags, features or edits on any platform.
-[lib]
-name = "keysteer"
-path = "src/lib.rs"
-
-[[bin]]
-name = "keysteer"
-path = "src/main.rs"
-
 [dependencies]
 base64 = "0.23"
 miniz_oxide = "0.9"
@@ -44,26 +32,21 @@ sha2 = { version = "0.11", default-features = false }
 smallvec = { version = "1.15", features = ["union"] }
 toml = "1.1.4"
 toml_edit = "0.25"
-# update.rs explicitly selects NativeTls because ureq defaults to Rustls. The
-# `native-tls-no-default` helper alone does not compile ureq's HTTPS connector.
+# update.rs selects NativeTls; its HTTPS connector requires `native-tls`.
 ureq = { version = "3.3", default-features = false, features = ["json", "native-tls"] }
 smol_str = "0.3.6"
 rustc-hash = "2.1.3"
 pinyin = { version = "0.11", default-features = false, features = ["plain"] }
 arboard = { version = "3.6", default-features = false }
+
 [features]
 default = []
-# Exposes existing production constructors to the standalone benchmark. It
-# must not enable probes, alternate algorithms, or runtime tuning.
+# Benchmark access only; no instrumentation or runtime behavior changes.
 benchmark-hooks = []
-# Instrumented lifecycle diagnostics only. Release performance benchmarks must
-# not enable this feature.
+# Lifecycle diagnostics; keep disabled for performance measurements.
 perf-probe = []
 
-# ---------------------------------------------------------------------------
-# Platform backends. Cargo evaluates these against the *target*, so the right
-# backend is compiled automatically and the others are never even downloaded.
-# ---------------------------------------------------------------------------
+# Native dependencies are selected by the compilation target.
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.25"
 core-foundation = "0.10"
@@ -203,6 +186,12 @@ name = "core_hot_paths"
 harness = false
 required-features = ["benchmark-hooks"]
 
+[[bench]]
+name = "notification_queue"
+harness = false
+required-features = ["benchmark-hooks"]
+
+# Keep release settings explicit for review; prioritize runtime speed.
 [profile.release]
 opt-level = 3
 lto = "fat"

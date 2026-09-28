@@ -35,10 +35,10 @@ mod window_tabs;
 #[cfg(feature = "benchmark-hooks")]
 pub use input::{CharacterCapture, observe_character_unfiltered};
 
+use crate::platform::common::event_queue::{self, Receiver, Sender};
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HWND;
@@ -91,12 +91,12 @@ pub(crate) fn vision_diagnostics() -> Vec<String> {
 /// message wait immediately. The queue remains empty while idle.
 #[derive(Clone)]
 pub(super) struct EventSender {
-    sender: Sender<BackendEvent>,
+    sender: Sender,
     wake_thread: u32,
 }
 
 impl EventSender {
-    fn new(sender: Sender<BackendEvent>, wake_thread: u32) -> Self {
+    fn new(sender: Sender, wake_thread: u32) -> Self {
         Self {
             sender,
             wake_thread,
@@ -104,13 +104,14 @@ impl EventSender {
     }
 
     #[cfg(test)]
-    fn without_wake(sender: Sender<BackendEvent>) -> Self {
+    fn without_wake(sender: Sender) -> Self {
         Self::new(sender, 0)
     }
 
     fn send(&self, event: BackendEvent) -> Result<(), ()> {
-        self.sender.send(event).map_err(|_| ())?;
-        self.wake();
+        if self.sender.send(event)? {
+            self.wake();
+        }
         Ok(())
     }
 
@@ -130,7 +131,8 @@ pub struct WindowsBackend {
     hook: Option<hook::HookThread>,
     overlay: OverlayWorker,
     /// Events produced off-thread (scan results).
-    async_rx: Receiver<BackendEvent>,
+    async_rx: Receiver,
+    background_budget: event_queue::BackgroundBudget,
     event_tx: EventSender,
     scan_mailbox: Arc<ScanMailbox>,
     pending: VecDeque<BackendEvent>,
@@ -183,7 +185,7 @@ impl WindowsBackend {
         }
 
         let owner_thread = native::prepare_thread_message_queue();
-        let (async_tx, async_rx) = mpsc::channel();
+        let (async_tx, async_rx) = event_queue::channel();
         let event_tx = EventSender::new(async_tx, owner_thread);
         let scan_mailbox = Arc::new(ScanMailbox::default());
         let mut pending = VecDeque::new();
@@ -246,6 +248,7 @@ impl WindowsBackend {
             hook: None,
             overlay,
             async_rx,
+            background_budget: event_queue::BackgroundBudget::default(),
             event_tx,
             scan_mailbox,
             pending,
@@ -334,19 +337,28 @@ impl WindowsBackend {
         if let Some(event) = self.next_hook_event()? {
             return Ok(Some(event));
         }
+        if self.background_budget.yield_due()
+            && let Some(elapsed) = self.frame_clock.try_next()
+        {
+            return Ok(Some(BackendEvent::Frame(elapsed)));
+        }
         if self.prewarm_ocr {
             self.vision.begin_discovery();
         }
         self.vision.reap_finished();
         if let Some(event) = self.pending.pop_front() {
+            self.background_budget.record();
             return Ok(Some(event));
         }
         if let Some(result) = self.scan_mailbox.take() {
+            self.background_budget.record();
             return Ok(Some(BackendEvent::UiScanned(result)));
         }
         if let Ok(event) = self.async_rx.try_recv() {
+            self.background_budget.record();
             return Ok(Some(event));
         }
+        self.background_budget.reset();
         if let Some(elapsed) = self.frame_clock.try_next() {
             return Ok(Some(BackendEvent::Frame(elapsed)));
         }

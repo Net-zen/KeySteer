@@ -770,7 +770,7 @@ fn early_ocr_and_contour_are_both_published_without_waiting_for_ocr_terminal() {
     };
     let output = Arc::new(ScanMailbox::default());
     let generation = output.begin(input.id);
-    let (events, _) = mpsc::channel();
+    let (events, _) = crate::platform::common::event_queue::channel();
     let session = ScanSession::new(
         accessibility::test_scan_plan(input),
         generation,
@@ -841,7 +841,7 @@ fn early_and_late_visual_sources_use_identical_ownership() {
                 };
                 let output = Arc::new(ScanMailbox::default());
                 let generation = output.begin(request.id);
-                let (events, _) = mpsc::channel();
+                let (events, _) = crate::platform::common::event_queue::channel();
                 let session = ScanSession::new(
                     accessibility::test_scan_plan(request),
                     generation,

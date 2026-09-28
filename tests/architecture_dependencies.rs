@@ -26,7 +26,7 @@ fn production_source(path: &Path) -> std::io::Result<String> {
         return Ok(String::new());
     }
     Ok(source
-        .split_once("#[cfg(test)]\nmod tests")
+        .split_once("#[cfg(test)]\nmod ")
         .map_or(source.as_str(), |(production, _)| production)
         .to_owned())
 }

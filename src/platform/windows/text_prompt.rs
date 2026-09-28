@@ -479,7 +479,7 @@ mod tests {
     #[test]
     #[ignore = "Creates disposable native note dialogs; run explicitly on an interactive desktop"]
     fn native_note_dialog_preserves_unicode_and_cancels_owned_windows() {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = crate::platform::common::event_queue::channel();
         *super::super::status_item::SENDER
             .get_or_init(|| Mutex::new(None))
             .lock()
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     #[ignore = "native live editor probe; creates a disposable editor"]
     fn native_search_editor_reuses_then_releases_window_and_unicode_state() {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = crate::platform::common::event_queue::channel();
         *super::super::status_item::SENDER
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()

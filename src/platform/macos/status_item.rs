@@ -881,7 +881,7 @@ mod tests {
 
     #[test]
     fn menu_actions_use_the_backend_event_channel() {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = crate::platform::common::event_queue::channel();
         *SENDER.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(EventSender::new(sender));
         emit(BackendEvent::ReloadConfig);
         assert!(matches!(

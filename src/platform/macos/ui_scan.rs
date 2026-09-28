@@ -222,16 +222,16 @@ impl<'a> PartialPublisher<'a> {
     }
 
     fn send_update(&self, targets: Vec<crate::api::UiTarget>, retired: Vec<crate::api::Rect>) {
-        if scan_is_current(self.job.generation, self.pid) {
-            if self.job.mailbox.publish_update(
+        if scan_is_current(self.job.generation, self.pid)
+            && self.job.mailbox.publish_update(
                 self.job.generation,
                 self.job.request.id,
                 targets,
                 retired,
                 UiScanStatus::Partial,
-            ) {
-                self.job.wake.wake();
-            }
+            )
+        {
+            self.job.wake.wake();
         }
     }
 }
@@ -559,7 +559,7 @@ mod tests {
             state: Mutex::new(ScanQueueState::default()),
             ready: Condvar::new(),
         };
-        let (sender, _receiver) = std::sync::mpsc::channel();
+        let (sender, _receiver) = crate::platform::common::event_queue::channel();
         let wake = EventSender::new(sender);
         let mailbox = Arc::new(ScanMailbox::default());
         let first_generation = mailbox.begin(1);
@@ -603,7 +603,7 @@ mod tests {
             state: Mutex::new(ScanQueueState::default()),
             ready: Condvar::new(),
         };
-        let (sender, _receiver) = std::sync::mpsc::channel();
+        let (sender, _receiver) = crate::platform::common::event_queue::channel();
         let mailbox = Arc::new(ScanMailbox::default());
         queue.submit(ScanJob {
             request: request(7),

@@ -108,11 +108,10 @@ fn steady_normal_frames_do_not_allocate() {
         change.bytes_allocated, 0,
         "steady frames allocated bytes: {change:?}"
     );
-    inline_command_batches_do_not_allocate();
-    warmed_compact_hint_assignment_reuses_two_thousand_labels();
-    owned_hint_delivery_stays_within_allocation_budget();
 }
 
+#[test]
+#[ignore = "run alone with --test-threads=1 so other tests cannot pollute allocator counts"]
 fn inline_command_batches_do_not_allocate() {
     let region = Region::new(keysteer::TEST_ALLOCATOR);
     for _ in 0..10_000 {
@@ -132,6 +131,8 @@ fn inline_command_batches_do_not_allocate() {
     );
 }
 
+#[test]
+#[ignore = "run alone with --test-threads=1 so other tests cannot pollute allocator counts"]
 fn warmed_compact_hint_assignment_reuses_two_thousand_labels() {
     const TARGETS: usize = 2_000;
     let alphabet: Vec<char> = "arstneioqwfpjluy".chars().collect();
@@ -175,6 +176,8 @@ fn warmed_compact_hint_assignment_reuses_two_thousand_labels() {
     );
 }
 
+#[test]
+#[ignore = "run alone with --test-threads=1 so other tests cannot pollute allocator counts"]
 fn owned_hint_delivery_stays_within_allocation_budget() {
     const TARGETS: usize = 2_000;
     const MAX_ALLOCATIONS: usize = 15;

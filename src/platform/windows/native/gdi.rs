@@ -298,8 +298,8 @@ impl GdiDibSurface {
         // StretchBlt completes before a validated, temporary byte slice is
         // exposed to the caller. The callback cannot retain the slice beyond
         // this borrow.
-        unsafe {
-            let copied = if copy_without_scaling {
+        let copied = unsafe {
+            if copy_without_scaling {
                 BitBlt(
                     self.memory,
                     0,
@@ -327,22 +327,21 @@ impl GdiDibSurface {
                     SRCCOPY | CAPTUREBLT,
                 )
                 .ok()
-            };
-            if let Err(error) = copied {
-                let operation = if copy_without_scaling {
-                    "BitBlt"
-                } else {
-                    "StretchBlt"
-                };
-                return Err(format!("{operation} failed for visual capture: {error}"));
             }
-            let pixels = std::slice::from_raw_parts(self.bits.as_ptr(), self.dimensions.byte_len());
-            consume(
-                pixels,
-                self.dimensions.width_u32(),
-                self.dimensions.height_u32(),
-            )
+        };
+        if let Err(error) = copied {
+            let operation = if copy_without_scaling {
+                "BitBlt"
+            } else {
+                "StretchBlt"
+            };
+            return Err(format!("{operation} failed for visual capture: {error}"));
         }
+        consume(
+            self.pixels(),
+            self.dimensions.width_u32(),
+            self.dimensions.height_u32(),
+        )
     }
 }
 

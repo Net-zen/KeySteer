@@ -28,29 +28,32 @@ pub mod window_presets;
 pub mod window_tabs;
 
 pub use autostart::Autostart;
-pub use backend::{
-    Appearance, Backend, BackendEvent, KeyDisposition, UpdateCheckResult, UpdateProgress,
-};
-pub use binding::{
-    Action, ActionPhase, ActionSequence, Binding, Button, DEFAULT_WAIT_MS, Direction, InputTarget,
-    ScrollAmount, Speed,
-};
+#[cfg(test)]
+pub use backend::UpdateCheckResult;
+pub use backend::{Appearance, Backend, BackendEvent, UpdateProgress};
+#[cfg(test)]
+pub use binding::Speed;
+pub use binding::{Binding, Direction};
 pub use command::{
     ButtonAction, Command, CommandBatch, FinishCause, FocusedApp, HostContext, Mode, ModeEvent,
-    MouseButton, UiScanRequest, UiScanResult, UiScanScope, UiScanStatus, UiScanStrategy,
-    VisionOptions,
+    MouseButton, UiScanRequest, UiScanScope, UiScanStrategy, VisionOptions,
 };
 pub use geometry::{Point, Rect, Screen, SemanticRole, UiTarget};
 pub use hint::LabelDirection;
-pub use input::{InputEvent, Key, KeyChord, KeyState, ModeId};
+pub use input::{Key, KeyChord, KeyState, ModeId};
 pub use lifecycle::{LifecycleAction, TargetingLifecycle};
-pub use overlay::{
-    Color, Indicator, LabelStyle, OverlayLabel, OverlayScene, OverlayShape, OverlayText, Placement,
-    SharedLabelStyle,
-};
-pub use plugin::{Manifest, Plugin};
-pub use style::{
-    Anchor, BoundaryHighlight, CursorIndicatorOverride, CursorIndicatorUi, HintPlacement,
-    IndicatorUi, IndicatorUiOverride, LabelUi, ModeIndicator, ModeIndicatorEntry, SearchInputUi,
-};
+#[cfg(test)]
+pub use overlay::OverlayLabel;
+pub use overlay::{Color, OverlayScene, OverlayShape};
+pub use plugin::Plugin;
+pub use style::{BoundaryHighlight, HintPlacement, LabelUi, ModeIndicator, SearchInputUi};
 pub use theme::{Palette, ThemedColor};
+
+#[cfg(feature = "benchmark-hooks")]
+pub use backend::KeyDisposition;
+#[cfg(any(test, feature = "benchmark-hooks"))]
+pub use command::UiScanResult;
+#[cfg(any(target_os = "windows", test, feature = "benchmark-hooks"))]
+pub use command::UiScanStatus;
+#[cfg(any(test, feature = "benchmark-hooks"))]
+pub use input::InputEvent;

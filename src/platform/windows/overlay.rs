@@ -6,16 +6,15 @@
 //! the user is aiming at that application.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use smallvec::SmallVec;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION, CLIP_DEFAULT_PRECIS, DT_CENTER, DT_NOPREFIX,
-    DT_SINGLELINE, DT_VCENTER, DrawTextW, GetTextExtentExPointW, HBRUSH, SetBkMode, SetTextColor,
-    TRANSPARENT, UpdateWindow, ValidateRect,
+    AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+    DrawTextW, GetTextExtentExPointW, HBRUSH, SetBkMode, SetTextColor, TRANSPARENT, UpdateWindow,
+    ValidateRect,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, HCURSOR, HICON, ULW_ALPHA, UpdateLayeredWindow, WM_DESTROY, WM_PAINT,
@@ -45,7 +44,7 @@ pub struct Overlay {
     /// Registered once per process.
     class_registered: bool,
     /// Window per screen region, keyed by the region's origin.
-    windows: HashMap<(i32, i32), OwnedWindow>,
+    window: Option<OwnedWindow>,
     /// Last uploaded bitmap expressed relative to its window origin. Cursor
     /// indicators can then follow the pointer by moving the native window,
     /// without rasterising and uploading the same pixels again.
@@ -69,7 +68,7 @@ impl Overlay {
     pub fn new() -> Self {
         Self {
             class_registered: false,
-            windows: HashMap::new(),
+            window: None,
             local_scene: None,
             dib: None,
             text_rasterizer: TextRasterizer::new(),
@@ -107,31 +106,13 @@ impl Overlay {
     /// Create (or reposition) the window covering `area`.
     fn ensure_window(&mut self, area: Rect) -> Result<HWND, String> {
         self.ensure_class()?;
-        let key = (area.x.round() as i32, area.y.round() as i32);
-
-        if let Some(window) = self.windows.get(&key) {
-            let hwnd = window.raw();
+        if let Some(window) = &self.window {
             reposition_owned_window(window, area)?;
-            return Ok(hwnd);
+            return Ok(window.raw());
         }
-
-        // The current backend presents one composed scene. Reuse its window
-        // when a cursor-follow clip moves instead of allocating one layered
-        // window for every pointer coordinate.
-        if let Some(old_key) = self.windows.keys().next().copied() {
-            let window = self
-                .windows
-                .remove(&old_key)
-                .ok_or("overlay window disappeared while repositioning")?;
-            let hwnd = window.raw();
-            reposition_owned_window(&window, area)?;
-            self.windows.insert(key, window);
-            return Ok(hwnd);
-        }
-
         let window = create_owned_window(OwnedWindowSpec::CpuOverlay(area))?;
         let hwnd = window.raw();
-        self.windows.insert(key, window);
+        self.window = Some(window);
         Ok(hwnd)
     }
 
@@ -164,19 +145,16 @@ impl Overlay {
     }
 
     pub fn dismiss(&mut self) -> Result<(), String> {
-        let mut first_error = None;
-        for (_, window) in self.windows.drain() {
-            if let Err(error) = window.destroy()
-                && first_error.is_none()
-            {
-                first_error = Some(format!("DestroyWindow failed: {error}"));
-            }
-        }
+        let result = self.window.take().map_or(Ok(()), |window| {
+            window
+                .destroy()
+                .map_err(|error| format!("DestroyWindow failed: {error}"))
+        });
         self.local_scene = None;
         self.dib = None;
         self.text_rasterizer.clear();
         self.visible = false;
-        first_error.map_or(Ok(()), Err)
+        result
     }
 
     pub fn is_visible(&self) -> bool {
@@ -1173,6 +1151,24 @@ extern "system" fn window_proc(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "creates a small owned native window; requires an interactive Windows desktop"]
+    fn native_cpu_overlay_reuses_one_owner_across_positions() -> Result<(), String> {
+        let mut overlay = Overlay::new();
+        let first = overlay.ensure_window(Rect::new(0.0, 0.0, 32.0, 32.0))?;
+        for position in 1..100 {
+            assert_eq!(
+                overlay.ensure_window(Rect::new(position as f64, 0.0, 32.0, 32.0))?,
+                first
+            );
+        }
+        overlay.dismiss()?;
+        assert!(overlay.window.is_none());
+        assert!(overlay.dib.is_none());
+        assert!(!overlay.is_visible());
+        Ok(())
+    }
+
     #[test]
     fn dpi_scaling_preserves_borderless_text() {
         for scale in [1.0, 1.25, 1.5, 2.0] {

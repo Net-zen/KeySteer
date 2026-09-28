@@ -1,229 +1,24 @@
-# 内置模式、插件与 Finish 生命周期
+# 模式与生命周期
 
-## Normal 可选定位组合
+Mode/Plugin 是平台无关状态机：接收 `ModeEvent` 和 `HostContext`，返回 `CommandBatch`，经 Presenter 提交视图。不能直接调用原生 API、读配置或依赖具体 renderer。
 
-Normal 盲操在有效 `max_depth = 1` 时直接用根布局计算坐标，不入栈、不保存选格路径、不逐次重置，支持连续绝对定位，不依赖 `reset_on`。只生成根层实际选格键，Tab／Backspace／Space 保留 Normal 原绑定；多层及独立 Grid／Recursive Grid 的终点行为不变。网页模拟器和冲突提示共用按键集合。
+## 代码入口
 
-`NormalTargeting` 只在配置存在时替代 catalog 中的 Normal 实例；普通 Normal 类型、Frame 实现和 pointer interest 不变。它持有普通 Normal 与共享 TargetingController，不持有 UI 样式，也不调用网格 Presenter。move 观察 Normal 输出的非零 MovePointer，click 观察成功 Clicked；只标记 pending reset，下次定位输入才重置，不立即 warp。实体鼠标不新增订阅，选格前按 active_bounds 懒检查换屏。插件 ScreenRetargeted 复用 controller 的 preserve 路径重放。
+| 能力 | 位置 |
+| --- | --- |
+| 空闲、连续移动 | `src/modes/idle.rs`、`src/modes/normal.rs` |
+| 网格与共享定位状态 | `src/modes/grid.rs`、`src/modes/recursive_grid.rs`、`src/modes/targeting.rs` |
+| Hint 标签、搜索、扫描会话 | `src/modes/hint/` |
+| 窗口模式、编辑、分组与恢复 | `src/modes/window.rs`、`src/modes/window/` |
+| 临时文本透传 | `src/modes/text_input.rs` |
+| 插件 | `src/plugins/builtin/` |
+| 注册与生命周期词汇 | `src/app/mode_catalog.rs`、`src/api/lifecycle.rs` |
 
-TargetingController 统一 Grid／Recursive Grid 的几何和输入状态转换，返回 Ignored/Changed/Cancel/Follow/Commit。可见模式将结果转换为视图及原生命周期命令；Normal 只发 WarpPointer，根层回退不退出、终点不切换模式，Enter/Esc 仍为普通 Normal 绑定。Tab/Backspace 只回退状态，Space 只清路径。层布局在构造时解析，均匀布局内联存一份，深路径容量预留，跨屏原地重放不 clone 路径。
+## 关键约束
 
-## Mode 契约
-
-Tabs 的 `move_left/right` 消费为活动标签排序，`move_up/down` 消费为前后选择，默认 H/L 与 K/J；没有帧时钟和指针移动。Alt+W 的分组卡片列出所有成员编号、程序和标题并标识活动项，编辑布局仍每组只保留一个代表。
-
-所有内置模式和插件都实现 `api::Mode`：
-
-```rust
-fn id(&self) -> ModeId;
-fn handle(&mut self, event: &ModeEvent, ctx: &HostContext) -> CommandBatch;
-fn handle_owned(&mut self, event: ModeEvent, ctx: &HostContext) -> CommandBatch; // 默认转发
-fn captures_keyboard(&self) -> bool;
-```
-
-Mode 是有状态但平台无关的对象。它可以读取屏幕、光标、前台应用、palette 和只读 host
-settings；不能注入输入、创建窗口或直接扫描 UI。
-内置 Mode/Plugin 用 `ctx.present(View)` 提交状态视图；布局、字体、颜色解析和标签/形状构建均位于
-`src/presentation/`，模式只依赖 API 端口，不依赖具体 composer。参见 [统一场景构建](07-rendering-and-performance.md#统一场景构建)。
-只有需要消费 `UiScanned` 大型载荷的 Mode 才覆盖 `handle_owned`；Frame、指针和按键仍直接走
-`handle`，默认实现保证已有插件源码兼容。
-
-## 内置 Mode
-
-### Idle (`src/modes/idle.rs`)
-
-- 启动/恢复失败后的静默状态。
-- 不捕获键盘，只依靠 Engine 从 `[hotkeys]` 解析 launcher。
-- 激活时隐藏覆盖层，其他事件不产生命令。
-
-### Normal (`src/modes/normal.rs`)
-
-- `normal.passthrough_unbound_keys` 默认开启，因此只捕获完整命中的绑定；关闭后恢复键盘独占。
-- Idle 和默认 Normal 使用严格修饰匹配：额外修饰键必须属于 chord，或其物理 down 已被
-  KeySteer 自身绑定消费。这样外部 `Alt+H` 不会命中裸 `h`，但 `left_shift=slow` 后的
-  `Shift+H` 仍成立。
-- 持有方向、滚动和速度手势状态。
-- `precision`/`slow`/`fast` 是按住型速度手势；对应的 `*_toggle` 绑定在 Normal 内锁存速度，
-  并通过 Engine-owned indicator 第二行反馈当前锁存值。
-- 参数化 `toggle` 捕获速度键时只锁存其物理键目标，不重新执行速度动作，避免速度状态影响 toggle。
-- 连续移动优先由原生 frame clock 驱动；第一下有 `tap_distance`，避免极短按键无移动。
-- 使用真实 elapsed time、可配置的 smootherstep/线性加速度和 sub-pixel remainder；曲线按
-  解析积分计算，对角线归一化。
-- key repeat 只在 display frame 尚不可用时作为 fallback。
-- 离散点击、模式切换、send/exec 等由 Engine 执行，不在 Normal 重复实现。
-- Normal click 键和单独按住的无参数 `toggle` 激活键可按 `long_press_toggle_ms` 建立 Engine
-  deadline；直接 click/double-click 在 KeyDown 立即 MouseDown，未到期的 KeyUp 立即 MouseUp，
-  到期后只把现有按压转交给 latched Toggle，不等待 deadline 才响应，也不先注入完整点击。
-  物理键释放不释放已经 Toggle 的鼠标按钮或激活键自身；组合伙伴出现时会取消激活键的自锁 deadline。
-  无参数 toggle 的伙伴允许先于激活键按下并立即命中；若伙伴的 Down 已经透传，处理其 Up 后会
-  立即重新注入 Down。伙伴按 Normal 最终语义映射为键盘或鼠标目标，并以幂等 Press 累积；已经
-  latch 的修饰键参与后续完整 chord 查找。激活后的伙伴边沿在执行其自身 binding 前消费；pending MouseDown 的所有权在
-  Release、取消和 Reload 清理前先转交给 latched recovery，失败后仍可由恢复或 shutdown 重试。
-  toggle session 可跨 Grid/UI Hint 等临时定位模式保留；返回 Normal、进入 Idle 或 shutdown 时，
-  pending MouseDown 与全部 latch 走同一反序释放路径。这些路径只使用现有 deadline 和 disposition，
-  不增加 timer、线程或普通按键等待。
-- `normal.auto_release_ms` 只给上述直接 click/double-click 长按产生的鼠标 latch 增加一个可选 owner。
-  候选出现后，Engine 以一个 `u8` 跟踪后续透传的左右 Shift/Ctrl/Alt/Win(Command)；存在至少一个
-  透传修饰键时，首次真实位移建立 deadline，后续物理移动、MovePointer 或 WarpPointer 的有效位移
-  只重置同一 deadline。完整显式 chord 始终优先；没有完整匹配时才忽略本次透传修饰键并借用
-  Normal 的 `Move`，`none` 与其他动作不会被回退绕过。默认 0 路径不读取时钟，也不增加系统 timer、
-  worker、锁或堆分配。自动释放成功后完整刷新一次动态装饰，且长按决议时普通 click feedback 的所有权
-  转交给 latch，避免位置快路继续搬运旧的 held badge 或按下色。Reload 只取消自动 owner，保留已经存在的手动 latch；离开 Normal、capture loss、
-  Disable 和 shutdown 则走可恢复的 MouseUp 清理。
-
-### Grid (`src/modes/grid.rs`)
-
-- 以当前屏幕为 root，按 `grid_rows * grid_cols` 和 `keys` 逐层缩小。
-- depth 0 在每个一级格中央绘制醒目的大号第一键，并在其下绘制淡色的小号第二键装饰
-  网格；它不修改 stack/path，第一次选择后的 depth 1 及后续 scene 保持原有单层行为。
-- 与 Recursive Grid／Normal 盲操共用 `targeting::TargetingController` 计算几何和处理导航；
-  内部 TargetingSession 保存路径、return mode、finished、cursor-follow 和生命周期状态，Grid 自己负责视图。
-- 每层 label 自动缩放以适应单元格；最终层建立完成态再触发生命周期。
-- finished 后 Backspace 取消完成态并回退一层；`keep` 不重建 Mode。
-
-### Recursive Grid (`src/modes/recursive_grid.rs`)
-
-- 复用 `targeting::TargetingSession` 保存 Rect stack、选择路径和生命周期状态，每次按键在当前区域继续递归细分。
-- `layers` 可按 depth 覆盖形状；`min_size`/`max_depth` 决定自然终点。
-- 支持 label background、最小字号、自动隐藏和下层 key preview。
-- 当前默认点击后 `keep`，仍可继续输入字母细分；不是冻结完成态。
-- Backspace 弹出 stack，Space/重启语义重置当前 session。
-
-### UI Hint (`src/modes/hint/mod.rs`)
-
-- 激活后发送 `ScanUi`；按 scan id 接收多个 Partial 和一个终态。
-- 累积/去重 `UiTarget`，使用 `modes/hint/labeling.rs` 重新分配短标签。
-- 普通输入筛 label prefix；`/` 进入 label、OCR、名称及语义角色的中文简拼搜索。
-- Partial 始终在 UIA/Vision 合并、去重、重新分配短标签后立即显示，并按累计发布批次用完整
-  当前集合替换视觉计划。扫描期间 Shift 只读取已准备层号；晚到来源会触发完整集合重建，
-  不把新层追加到旧计划。已有 Hint 前缀时，晚到 Partial 保留目标但不重排现有键码，前缀
-  清空后再统一合入并重建计划。
-- 视觉计划按相交连通分量复用冲突 bitset，并以绘制正序、逆序、相交度、行优先和列优先五种
-  固定 first-fit 顺序择优、压低层号；中心被遮挡、交叠达到较小标签 20%，或标签背景已经侵入
-  另一标签扣除 padding 后的文字内容区时才算冲突。仅边框或留白接触不增加层数。
-  不同分量共享全局轮换次数，但按各分量自己的深度映射到非默认层；松开 Shift 显示第 0 层，
-  按下只在每个分量的非默认层 `1→2→…→1` 间循环。因而页面其他位置存在更深重叠时，
-  `ajh/ajj` 这样的两层小组也会在每次按住时稳定显示第 1 层，不会出现空轮次。Hint 前缀、
-  Backspace 和名称搜索每次改变可见集合后都会重建计划。每个分量的所有层都有独立且稳定的
-  z-index，当前层始终最高；Engine 在交给原生后端前执行一次稳定 z 排序。分层绝不移动、裁剪、
-  删除或重新分配标签。Windows 的冲突矩形使用与 DPI renderer 相同的最终放大及取整几何，
-  因而 125%/150% 下肉眼已经重叠的标签不会在计划中仍被误判为互不相交；macOS 保持点坐标。
-- 选中后 warp 到目标并 Finish；默认返回 Normal，不自动点击、不重新扫描。
-- 只有扫描以 `Success`/`TimedOut` 结束且没有标签时，才按配置安排有上限的自动 retry。目标/焦点/显示器变化直接清空旧结果并启动新 generation，不消耗 retry 次数。
-- Windows 每代扫描的是原生提交瞬间鼠标下的窗口组；普通鼠标移动不轮询、不持续重扫。鼠标下没有应用窗口时只显示移动鼠标提示，不假定用户仍使用默认重扫快捷键。
-- 离开或完成本轮 UI Hint 时取消仍在进行的原生扫描；再次进入始终重新获取目标，不能复用
-  上一轮可能已经过期的控件坐标。`Deactivated` 会标记实例 inactive、清空目标/搜索/重叠计划并释放大型 backing；迟到的异步结果不能让 Normal/Idle 后台重新启动扫描。
-
-`hint/session.rs::ScanSession` 是 scan generation、Partial 去重结果、retry、搜索缓存和
-finished/active 标志的唯一 owner；`labeling.rs` 保持纯标签分配，`presentation/hint/` 负责视觉层算法。前缀匹配
-直接作用于 session 的紧凑 Hint 索引，不保留只供测试使用的重复 matching 实现。
-
-### Window 模式组 (`src/modes/window.rs` / `window/mode.rs`)
-
-Tab 在 Windows 和 macOS 注册。数字与 Tab / Shift+Tab 在 Window 模式统一选择普通窗口及分组成员；模式外保持应用正常键盘输入。分组只显示活动成员，拖动时只移动活动窗口，切换时才对齐新成员。Restore/Delete 在两端都支持 Tab 模板。
-
-- `tabs.rs`：T 进入自动整理同应用未分组窗口并清空手动起点。数字沿用窗口身份，组编号前缀切换独立数字索引。第二个编号即时组合；T 刷新有效待完成编号后清空本轮，空 T 不产生历史。原生请求未完成时输入顺序排队，Q/Esc 等交接等待已提交操作完成，进入 T 的激活键不重复作为分组结束键处理。
-- 退出 T 保留后台组。D 只移出活动成员，X 解散不改窗口几何，编号选中既有目标成员只激活。T 的 Undo/Redo 属于后台组管理器，普通窗口 Undo/Redo/ResetInitial 仅恢复整组几何与状态。模板恢复期间仅收集选择，满员后一次原子应用；取消不移动窗口。
-
-- `mode.rs`：Window、Quick、Editor、Restore、Tab 分别注册，独立 Settings 与普通绑定路由，共享 `Arc<Mutex<WindowSession>>`。只在同步处理纯状态事件时短暂持锁，命令交给 Host 前释放锁。prepare_transition 等待最新修订／EndEdit，再交接 owner；不得阻塞原生异步结果。
-- `presets.rs`：Restore 列表独立编号索引，每页 6 项；Ctrl+S 仅就绪的 Tree 编辑可用。恢复先结束已有编辑，再用新 BeginEdit 的前后顺序重新分配窗口到按编号排列的区域；超出的窗口不出现在 placement 中，不足时保留空区域。只有 Tree 的 Started 消费 pending 模板，Quick 的迟到 Started 不能抢走它。恢复沿用约束、实时编辑及撤销事务；仅匹配且成功的 Applied 发 FinishMode，失败保留 Restore。删除是 Restore 内部状态，默认 X=`window_delete` 动作来回切换，保留页码、清除数字及待确认选择；输入编号只选中完整记录，Confirm 发 Delete 请求，删除后保留删除状态。不增加独立模式、配置或生命周期，重新进入 Restore 回到恢复状态。
-
-- 会话保存稳定窗口编号，中心标签包含被遮挡的普通窗口。`numbering.rs` 缓存有效编号的前缀索引，仅歧义前缀启动一次性计时；完整编号才选窗／交换。反引号仅在 Editor 切换区域编号输入。
-- `inventory.rs` 接收拥有所有权的结果，复用未变化库存与可见编号索引；明确关闭通知回收编号与布局引用，取消查询不丢关闭通知。
-- `editing.rs` 持有 QuickPlacement/BSP 模型、上一成功布局、32 步本地撤销/重做历史和单个在途修订；连续输入只保留最新目标。进入树编辑后等待异步约束与完整库存，首次按最小尺寸尝试均衡行列布局；已验证且仍匹配实际几何的缓存树保留。
-- `interaction.rs` 路由快速布局、树导航、分割、祖先比例、交换、撤销、重做与初始状态恢复。Editor 激活自动提交一次布局；模式切换不再编码为 WindowAction。
-- 区域尺寸调整仅响应配置解析后的 `WindowAction::Ratio`，不判断具体物理键；默认绑定来自 Editor 配置。left/right 表示缩小/增大选中区域宽度，up/down 表示缩小/增大高度，使用独立 `resize_step` / `resize_speed`。候选按相关祖先分割检查，优先分担两侧变化并减少中心偏移；最近边界受限时尝试其他祖先。每个候选通过整树最小尺寸拟合，保持平铺；一次长按一个撤销检查点，in-flight 仅保留最新 desired tree。
-- `view.rs` 借用窗口库存和布局树，`presentation/window.rs` 构造编号和稳定区域描边，复用锚定窗口内底部的单个 key_help 面板。方向来自当前模式自己的有效绑定表，临时模式消费激活键，明确配置的完整组合键优先。
-- 500ms 可见态计时合并后台库存请求，原生查询异步且可被布局／选窗抢占；相同结果不重绘，不在按键或 Frame 枚举。关闭窗口保留空区域和其余编号。
-- worker 拥有约束快照与原生事务；修改即时生效，无需 Enter。Q 通过普通 Binding::Mode 选择目标，行为与入口无关。离开编辑前发送最新布局并将整轮记为一步撤销；强制退出／重载只释放检查点，保留已应用几何。临时 Normal 保留编辑、停止新布局提交并隐藏覆盖层。
-- Tab 普通态按稳定环直接激活锁定，树内仅本屏；焦点被拒绝仍锁定目标并说明原因。所有原生对象留在平台层。
-
-## Finish 不是 Mode
-
-Finish 是当前 targeting session 的幂等完成态：
-
-1. 自然选择终点或 `finish` verb 产生 `FinishRequested`。
-2. Mode 设置 `finished = true`，保留最终目标/路径并提交 finished 视图。
-3. 执行 `after_finish`。
-4. 成功的 KeySteer click 产生一次 `Clicked`，执行 `after_click`。
-
-已经 finished 时再次 Finish 不重复执行 `after_finish`。`keep` 返回空 Command，因此实例、
-路径和 return mode 都原样保留；`restart` 才清空本轮状态并收到 `Restarted`。
-
-物理鼠标点击不生成 `Clicked`。合成的 press/release/toggle 也不生成；只有 click 和
-double-click 成功后生成。普通 click 仍在物理键按下沿原子执行；成功后 Engine 只保留
-一个视觉按钮状态，直到同一个物理键释放。该状态跨 Mode 切换保留，不拥有合成鼠标按钮，
-也不改变 `Clicked` 次数。
-
-## return mode 与 modal mode
-
-Window Move 的 Grid/Recursive Grid 入口走 PushMode/Suspended，直接运行注册的网格实例并发送 Pushed；两种网格的 Pushed 与 Activated 使用相同初始化。底层窗口停止连续移动并开启同一撤销 group，保留目标和 session。网格 keep/restart/跨屏/临时 Normal 逻辑不变；切往 Normal、Idle 或 Window 时 Pop/Resumed 返回底层，切往其他模式先恢复底层再正常交接。异步窗口回执仍交给原 owner，但暂停时不发布窗口覆盖层或旧指针位置。输入恢复同时清理暂停的 owner。
-
-- 普通 `SwitchMode` 会让新 Mode 在 `Activated { previous }` 中记录 return mode。
-- `return` 生命周期动作回到该记录值，不等同硬编码 Normal。
-- `PushMode` 将当前 Mode 放入 modal stack，发送 `Suspended`；关闭后 `PopMode` 发送
-  `Resumed`，状态没有被销毁。
-
-## Screen Selector 插件
-
-`src/plugins/builtin/screen_selector.rs` 是架构示例：
-
-- 只使用公共 `Manifest`、`Mode`、`Command`、geometry 和 overlay API。
-- 导出 `screen` verb，可 next/previous/编号切换，也可 push 一个数字选择 overlay。
-- `preserve` 设置决定 Grid/Recursive Grid 跨屏时是否重放逻辑路径。
-- 默认建议 `primary+s -> screen next`，但用户已占用时不覆盖。
-
-新增插件能力应优先扩充公共 API，而不是让插件向下依赖 `Engine` 或平台模块。
-
-## Window Mover 插件
-
-`src/plugins/builtin/window_mover.rs` 导出 `move_window previous/next/<编号>`，返回
-`Command::MoveWindowToScreen(WindowScreenTarget)`。Engine 委托 `Backend::move_window_to_screen`，
-鼠标跟随窗口并保持窗口内的相对位置，不切换 Mode、不发 `Clicked`。默认建议
-`primary+d -> move_window next`，与 `primary+s -> screen next` 独立触发；用户可自定义共享前缀组合，由 Engine 仲裁。
-插件不判断物理按键，也不拥有等待状态。
-默认绑定遵循 key aliases，用户绑定和 `none` 优先，可在任意 Mode 中配置插件 verb。
-
-## 自动布局、编号定位与删除
-
-普通 Window 的 E 直接发 BeginEdit；Started 生成并约束均衡行列树，可行时自动提交 ApplyLayout 并留在树编辑；不可行时保留实际窗口并展示错误以便修改。entry_layout 记录入口布局的撤销基线：Z 先撤销后续编辑，再通过 TreeReset 回滚原生事务并重新导入，恢复真实进入几何及最大化状态；重入的 entry_layout 为 false，避免撤销后再次自动布局。AA 的 Instant、deadline 查询和运行时按键优先级均已删除。
-
-反引号可从普通 Window 或 Quick 转入自动布局及树编辑。异步 Started 前的数字暂存，库存与稳定区域索引建立后再解析；输入显示独立于解析缓冲，完成后仍可显示。无交换源时区域编号激活占用窗口，空区域 WarpPointer 到中心；有源时维持原移动／交换语义。X 删除当前叶、提升兄弟，窗口本身不关闭；保留至少一叶；现有区域 ID 保持，新切分实时查找并复用最小空闲 ID，不保留单调递增计数器。
-
-Quick/Editor 的新编辑清空本地 redo；撤销到编辑入口时通过原生 EndEdit(false) 恢复完整状态，并将 redo 转交给重建的编辑。多按 Z 到历史开头不会丢弃 redo。Shift+C 等待最新 ApplyLayout 和 EndEdit(true) 后请求 ResetInitial；收到结果后重新导入实际几何且 entry_layout=false，不自动重排。此时 Z/Shift+Z 可访问后台历史以撤销/重做重置。普通态历史按移动手势或已结束的一轮编辑分组；窗口编辑内部仍逐步撤销。
-
-保存与恢复通过 `PresetLibraryOperation` / `SavedPreset` 共用异步流程；`WindowTemplate` 只在捕获与具体应用时区分 Layout/Tabs。共享编号、简短默认名称、备注输入、列表及删除校验不分别维护。Tabs 恢复收集足量手动选择的窗口后应用，未完成前可取消。
-
-普通 Window 从组外进入时激活鼠标下目标，组内切换保留目标。默认 X=window_close，可在 window.bindings 改键；Editor 的 X 仍为 window_remove_region。关闭只发送一次离散请求，窗口是否退出由应用决定，后续库存更新编号。
-
-
-Window、Quick、Editor 支持应用音量动作，保持当前目标、区域选择与编辑事务；Restore 和 Tab 不加入音量默认绑定。
-
-
-应用输出和系统音频动作沿用 Window/Quick/Editor 的稳定支持集合，保留编辑事务；SystemAudio 即使没有目标窗口也可发出。
-
-
-## Close feedback without speculative hiding
-
-Window Close submits the backend request and updates the lower key-help panel
-status in the same input turn. The status uses the existing detail line below
-the app/title; border and number cards remain stable until confirmed closure.
-A per-session pending request map suppresses duplicate close requests until a
-new authoritative inventory arrives. A close acknowledgement requests inventory
-immediately, without adding a timer. Old inventory cannot resolve a newer close
-request. Save/cancel dialogs therefore do not cause hide/restore flicker; confirmed
-closure retains the existing number compaction. Windows and macOS share this
-mode logic and continue executing native close only in their backends.
-
-## Text Input
-
-`src/modes/text_input.rs` 是无状态的透传模式，激活时隐藏覆盖层；进入／返回交给 Engine 普通绑定，没有 Enter 特殊处理。进入复用安全清理，停止 Normal 手势并释放 toggle／press，隐藏帮助且不启动 Quick Switch。Primary 临时层消费触发键，松开后停止借用的连续手势及锁定输入，保留物理边沿配对。路由支持标准继承、临时层和穿透键；不调用原生 API，不创建定时器。
-
-
-`window/target_selection.rs` 仅显式选窗时分配队列，串行处理窗口身份查询和动作，提前松键仍执行一次短按并释放；退出、挂起、临时层及重启清理队列。Quick 先提交旧布局再重新选窗；Tree 只改变已有成员的选中区域。每次新手势重新查询窗口身份，按住期间不漂移目标。模式入口配置等待旧编辑结束，保留会话历史。
-
-取消在途选窗时，模式忽略迟到结果，并排队 RestoreTarget 恢复后台会话锚点；该命令不激活窗口、不移动指针，避免后续库存重新带回已取消的目标。
-
-## UIHint 搜索会话
-
-`/` 打开支持原生输入法和复制粘贴的编辑框。搜索匹配 label、名称、OCR、英文角色及中文角色简拼，空白分隔项是独立搜索，按输入顺序取并集；同一目标首次匹配保留，尾部空格恢复候选以开始下一项。输入 label 也只过滤，不提前选择。过滤保留原始标签编号；仅一个结果时保持输入框并显示固定四槽信息；多项搜索只显示汇总的 OCR、辅助功能、坐标三槽。Enter 仅在恰好一个结果时发出与普通 label 选择相同的 WarpPointer / FinishMode；多个或零个结果清空查询、恢复全部标签并保留 UIHint。Esc 返回完整标签。复制成功通过 TextCopied 返回完整标签并留在 UIHint；复制失败保留搜索。搜索索引按扫描结果提前准备，同一 UIHint 会话中反复搜索复用索引和原生编辑资源；退出 UIHint、重扫或重载才统一释放。
+- targeting `keep` 保留同一实例及选择状态；只有 `restart` 发 `Restarted`。
+- Finish 应幂等，点击后的生命周期动作不得递归触发点击。
+- modal Pop 恢复下层状态，不把恢复当成重新激活。
+- Idle 不捕获普通输入；其他模式的输入兴趣通过 API 声明，Engine 不硬编码模式内部键表。
+- 会话结束取消其异步工作并隔离迟到结果；持久窗口分组与当前模式会话的寿命分开。
+- Hint 已输入前缀时，迟到扫描结果不能重新分配正在使用的键码。

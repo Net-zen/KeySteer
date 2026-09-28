@@ -13,9 +13,9 @@ mod winrt;
 pub(crate) use capture::PreparedCapture;
 pub(crate) use com::ComApartment;
 pub(crate) use compositor::{
-    CompositorClockSignal, CompositorWait, DisplayOutput, boost_compositor_clock,
-    display_output_for_monitor, dwm_composition_enabled, interrupt_compositor_clock,
-    monitor_for_point, prefer_dynamic_vblank, wait_for_compositor_frame, wait_for_dwm_frame,
+    CompositorClockSignal, CompositorWait, boost_compositor_clock, display_output_for_monitor,
+    dwm_composition_enabled, interrupt_compositor_clock, monitor_for_point, prefer_dynamic_vblank,
+    wait_for_compositor_frame, wait_for_dwm_frame,
 };
 pub(crate) use dimensions::NativeDimensions;
 pub(crate) use gdi::{GdiDibSurface, OwnedFont, ScreenDc};

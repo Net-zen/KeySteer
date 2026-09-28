@@ -2,7 +2,9 @@ use rustc_hash::FxHashMap as HashMap;
 
 use smallvec::SmallVec;
 
-use crate::api::{Rect, SemanticRole, UiTarget};
+#[cfg(test)]
+use crate::api::SemanticRole;
+use crate::api::{Rect, UiTarget};
 
 use super::MAX_INLINE_TARGETS;
 use super::labeling::CompactHint;

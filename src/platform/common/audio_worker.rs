@@ -28,15 +28,31 @@ pub(crate) trait AudioBackend {
 pub(crate) type AudioFactory = fn() -> Box<dyn AudioBackend>;
 pub(crate) type EventSink = Arc<dyn Fn(BackendEvent) + Send + Sync>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubmitError {
+    Full,
+    Stopped,
+}
+
+impl std::fmt::Display for SubmitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Full => "audio operation queue is full",
+            Self::Stopped => "audio worker stopped",
+        })
+    }
+}
+
+impl std::error::Error for SubmitError {}
+
 /// One completion boundary for native execution and identity/queue failures.
 /// Successful commands do not format or write diagnostics on this path.
 pub(super) fn publish_result(emit: &EventSink, result: AudioResult) {
     if let Err(error) = &result.outcome {
-        crate::report_error!(
+        crate::support::logging::report_error_context(
             "audio",
-            "session={} request={}: {error}",
-            result.session,
-            result.id
+            error,
+            format_args!("session={} request={}", result.session, result.id),
         );
     }
     emit(BackendEvent::AudioResult(Box::new(result)));
@@ -109,18 +125,18 @@ impl AudioWorker {
         request: AudioRequest,
         process: Option<AudioProcess>,
         cancelled: Arc<AtomicBool>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SubmitError> {
         self.sender
             .as_ref()
-            .ok_or("audio worker stopped")?
+            .ok_or(SubmitError::Stopped)?
             .try_send(Job {
                 request,
                 process,
                 cancelled,
             })
             .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => "audio operation queue is full".into(),
-                mpsc::TrySendError::Disconnected(_) => "audio worker stopped".into(),
+                mpsc::TrySendError::Full(_) => SubmitError::Full,
+                mpsc::TrySendError::Disconnected(_) => SubmitError::Stopped,
             })
     }
 }
@@ -226,7 +242,10 @@ mod tests {
         worker
             .submit(request(64), None, Arc::new(AtomicBool::new(false)))
             .unwrap();
-        assert!(worker.submit(request(65), None, cancelled.clone()).is_err());
+        assert_eq!(
+            worker.submit(request(65), None, cancelled.clone()),
+            Err(SubmitError::Full)
+        );
         cancelled.store(true, Ordering::Release);
         release.send(()).unwrap();
         let BackendEvent::AudioResult(result) =

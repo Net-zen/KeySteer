@@ -1,12 +1,12 @@
 //! Multi-display selection and switching implemented only with the public mode,
 //! command, geometry, overlay and plugin APIs.
 
+#[cfg(test)]
 use crate::api::Palette;
 use crate::api::binding::Binding;
 use crate::api::command::{Command, CommandBatch, HostContext, Mode, ModeEvent};
 use crate::api::geometry::Rect;
 use crate::api::input::{KeyChord, KeyState, ModeId};
-use crate::api::overlay::Color;
 use crate::api::plugin::{Manifest, Plugin};
 use crate::api::presentation::{ScreenSelectorView, View};
 use std::collections::BTreeMap;

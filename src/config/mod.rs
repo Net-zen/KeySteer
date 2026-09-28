@@ -15,8 +15,7 @@ mod aliases;
 mod settings;
 mod window;
 pub use window::{
-    SplitRatio, Window, WindowEditor, WindowModeConfig, WindowQuick, WindowRestore, WindowScreens,
-    WindowTab,
+    Window, WindowEditor, WindowModeConfig, WindowQuick, WindowRestore, WindowScreens, WindowTab,
 };
 pub mod store;
 pub mod theme;
@@ -34,23 +33,26 @@ use crate::api::input::{
     Key, KeyChord, ModeId, normalize_alias_name, normalize_builtin_key, with_key_aliases,
 };
 
-pub use crate::api::hint::LabelDirection;
-pub use crate::api::lifecycle::{LifecycleAction, TargetingLifecycle};
-pub use crate::api::style::{
-    Anchor, BoundaryHighlight, CursorIndicatorOverride, CursorIndicatorUi, HintPlacement,
-    IndicatorUi, IndicatorUiOverride, LabelUi, ModeIndicator, ModeIndicatorEntry, SearchInputUi,
-};
+pub use crate::api::lifecycle::LifecycleAction;
+#[cfg(test)]
+pub use crate::api::style::HintPlacement;
+pub use crate::api::style::{LabelUi, ModeIndicator};
+#[cfg(test)]
+pub use crate::api::{LabelDirection, TargetingLifecycle};
 pub use aliases::KeyAliases;
 use aliases::{
     compile_key_aliases, normalize_binding_keys, normalize_key_if_aliased, normalize_key_list,
     platform_warning,
 };
+#[cfg(test)]
+pub use settings::GridLayer;
 pub use settings::{
-    Grid, GridLayer, GridUi, Normal, NormalTargeting, Pointer, RecursiveGrid, RecursiveGridUi,
-    Scroll, TargetingMethod, TargetingReset, TextInput, UiHint,
+    Grid, Normal, Pointer, RecursiveGrid, Scroll, TargetingMethod, TargetingReset, TextInput,
+    UiHint,
 };
 pub use store::{ConfigStore, ReplaceFile};
-pub use theme::{Palette, Theme, ThemeColors, ThemedColor};
+
+pub use theme::{Palette, Theme, ThemedColor};
 
 /// A binding table: chord text -> what it does.
 pub type Bindings = BTreeMap<String, Binding>;

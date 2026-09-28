@@ -26,10 +26,10 @@ mod workspace;
 #[cfg(feature = "benchmark-hooks")]
 pub use input::{CharacterCaptureProbe, observe_character_unfiltered};
 
+use crate::platform::common::event_queue::{self, Receiver, Sender};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -70,20 +70,19 @@ fn app_bundle_for_executable(executable: &Path) -> Option<PathBuf> {
 /// a physical key waiting for disposition.
 #[derive(Clone)]
 struct EventSender {
-    sender: Sender<BackendEvent>,
+    sender: Sender,
 }
 
 impl EventSender {
-    fn new(sender: Sender<BackendEvent>) -> Self {
+    fn new(sender: Sender) -> Self {
         Self { sender }
     }
 
     fn send(&self, event: BackendEvent) -> Result<(), ()> {
-        let result = self.sender.send(event).map_err(|_| ());
-        if result.is_ok() {
+        if self.sender.send(event)? {
             self.wake();
         }
-        result
+        Ok(())
     }
 
     fn wake(&self) {
@@ -93,7 +92,8 @@ impl EventSender {
 
 pub struct MacOsBackend {
     hook: Option<HookThread>,
-    async_rx: Receiver<BackendEvent>,
+    async_rx: Receiver,
+    background_budget: event_queue::BackgroundBudget,
     event_tx: EventSender,
     scan_mailbox: Arc<ScanMailbox>,
     scan_worker: ui_scan::UiScanWorker,
@@ -117,7 +117,7 @@ pub struct MacOsBackend {
 
 impl MacOsBackend {
     pub fn new() -> Result<Self, String> {
-        let (async_tx, async_rx) = mpsc::channel();
+        let (async_tx, async_rx) = event_queue::channel();
         let event_tx = EventSender::new(async_tx);
         let mtm = MainThreadMarker::new()
             .ok_or_else(|| "macOS backend must be created on the main thread".to_string())?;
@@ -169,6 +169,7 @@ impl MacOsBackend {
         Ok(Self {
             hook,
             async_rx,
+            background_budget: event_queue::BackgroundBudget::default(),
             event_tx,
             scan_mailbox,
             scan_worker: ui_scan::UiScanWorker::new(),
@@ -220,16 +221,32 @@ impl MacOsBackend {
         }
         // CGEventTap is synchronously waiting for disposition; never place a
         // scan result or status event ahead of physical input.
-        self.hook
-            .as_mut()
-            .and_then(HookThread::try_next_event)
-            .or_else(|| {
-                self.scan_mailbox
-                    .take()
-                    .map(BackendEvent::UiScanned)
-                    .or_else(|| self.pending.pop_front())
-                    .or_else(|| self.async_rx.try_recv().ok())
-            })
+        if let Some(event) = self.hook.as_mut().and_then(HookThread::try_next_event) {
+            return Some(event);
+        }
+        if self.background_budget.yield_due() {
+            // Service ready native sources even while completions keep arriving.
+            // Recheck synchronous input after AppKit had an opportunity to run.
+            workspace::pump_ready_sources();
+            if let Some(event) = self.hook.as_mut().and_then(HookThread::try_next_event) {
+                return Some(event);
+            }
+            if let Some(elapsed) = self.frame_clock.try_next() {
+                return Some(BackendEvent::Frame(elapsed));
+            }
+        }
+        let event = self
+            .scan_mailbox
+            .take()
+            .map(BackendEvent::UiScanned)
+            .or_else(|| self.pending.pop_front())
+            .or_else(|| self.async_rx.try_recv().ok());
+        if event.is_some() {
+            self.background_budget.record();
+        } else {
+            self.background_budget.reset();
+        }
+        event
     }
 
     fn release_held_buttons(&self) -> Result<(), String> {

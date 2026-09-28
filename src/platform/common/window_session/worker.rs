@@ -355,11 +355,11 @@ impl WindowWorker {
                                                 emit.clone(),
                                             )?);
                                         }
-                                        audio.as_ref().ok_or("audio worker unavailable")?.submit(
-                                            request,
-                                            process,
-                                            cancelled.clone(),
-                                        )
+                                        audio
+                                            .as_ref()
+                                            .ok_or("audio worker unavailable")?
+                                            .submit(request, process, cancelled.clone())
+                                            .map_err(|error| error.to_string())
                                     })();
                                     if let Err(error) = submitted
                                         && !cancelled.load(Ordering::Acquire)

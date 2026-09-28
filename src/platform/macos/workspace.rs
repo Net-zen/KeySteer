@@ -37,6 +37,16 @@ pub fn wait_for_app_event(timeout: Duration) {
     });
 }
 
+/// Service already-ready sources without waiting or querying workspace state.
+pub fn pump_ready_sources() {
+    autoreleasepool(|_| {
+        NSRunLoop::mainRunLoop().runMode_beforeDate(
+            super::native::default_run_loop_modes().foundation,
+            &NSDate::distantPast(),
+        );
+    });
+}
+
 pub struct Workspace {
     focused: Option<FocusedApp>,
     appearance: Appearance,

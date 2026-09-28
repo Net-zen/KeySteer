@@ -12,6 +12,7 @@ pub(crate) mod audio_worker;
 pub(crate) mod character_candidates;
 pub(crate) mod contour;
 pub(crate) mod disposition_mailbox;
+pub(crate) mod event_queue;
 pub(crate) mod image_tiles;
 pub(crate) mod partial_batcher;
 pub(crate) mod scan_accumulator;

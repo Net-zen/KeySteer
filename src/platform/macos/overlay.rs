@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
-use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAttributedStringNSStringDrawing, NSBackingStoreType, NSBaselineOffsetAttributeName, NSColor,
     NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSKernAttributeName,

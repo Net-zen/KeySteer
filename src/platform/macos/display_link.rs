@@ -140,6 +140,11 @@ impl DisplayFrameClock {
         autoreleasepool(|_| self.next_inner(timeout))
     }
 
+    /// Read an already delivered frame without running AppKit or allocating.
+    pub fn try_next(&self) -> Option<Duration> {
+        self.target.take_elapsed()
+    }
+
     fn next_inner(&self, timeout: Duration) -> Option<Duration> {
         if let Some(elapsed) = self.target.take_elapsed() {
             return Some(elapsed);

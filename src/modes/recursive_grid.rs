@@ -7,7 +7,9 @@
 
 use crate::api::binding::Binding;
 use crate::api::command::{Command, CommandBatch, FinishCause, HostContext, Mode, ModeEvent};
-use crate::api::geometry::{Point, Rect};
+#[cfg(test)]
+use crate::api::geometry::Point;
+use crate::api::geometry::Rect;
 use crate::api::input::{Key, KeyState, ModeId};
 use crate::api::lifecycle::TargetingLifecycle;
 use crate::api::overlay::Color;
@@ -281,9 +283,7 @@ impl Mode for RecursiveGridMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::overlay::{LabelStyle, OverlayLabel, OverlayScene, OverlayShape};
-    use crate::api::style::LabelUi;
-    use crate::api::theme::ThemedColor;
+    use crate::api::overlay::{OverlayScene, OverlayShape};
     impl RecursiveGridMode {
         fn scene(&self, palette: &Palette) -> OverlayScene {
             self.view().scene(palette)

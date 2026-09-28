@@ -48,7 +48,9 @@ impl fmt::Display for Level {
 struct RepeatedError {
     target: String,
     message: String,
-    identity: Option<String>,
+    /// Contextual records already start with the stable identity. Borrow its
+    /// UTF-8 prefix instead of retaining a second owned copy of the error.
+    identity_len: Option<usize>,
     console: bool,
     since: Instant,
     suppressed: u64,
@@ -99,8 +101,10 @@ fn suppress(
         && repeated.console == console
         && now.saturating_duration_since(repeated.since) < Duration::from_secs(1)
         && match identity {
-            Some(key) => repeated.identity.as_deref() == Some(key),
-            None => repeated.identity.is_none() && repeated.message == message,
+            Some(key) => repeated
+                .identity_len
+                .is_some_and(|len| repeated.message.get(..len) == Some(key)),
+            None => repeated.identity_len.is_none() && repeated.message == message,
         }
     {
         repeated.suppressed = repeated.suppressed.saturating_add(1);
@@ -187,14 +191,11 @@ impl Logger {
             write_emergency_stderr(format_args!("{message}"));
         }
         self.write_record(&mut state, level, target, message);
-        if level == Level::Error
-            && state.file.is_some()
-            && target.len() + message.len() + identity.map_or(0, str::len) <= 4096
-        {
+        if level == Level::Error && state.file.is_some() && target.len() + message.len() <= 4096 {
             state.repeated = Some(RepeatedError {
                 target: target.into(),
                 message: message.into(),
-                identity: identity.map(str::to_owned),
+                identity_len: identity.map(str::len),
                 console,
                 since: now,
                 suppressed: 0,
@@ -504,8 +505,7 @@ fn write_emergency_stderr(message: fmt::Arguments<'_>) {
 
 pub(crate) fn report_warning_args(target: &str, message: fmt::Arguments<'_>) {
     if level_enabled(Level::Warning) {
-        let message = message.to_string();
-        report(Level::Warning, target, &message);
+        report_args(Level::Warning, target, message);
     }
 }
 
@@ -597,8 +597,7 @@ fn log(level: Level, target: &str, message: &str) {
 
 fn log_args(level: Level, target: &str, message: fmt::Arguments<'_>) {
     if let Some(logger) = LOGGER.get() {
-        let message = message.to_string();
-        logger.write(level, target, &message);
+        logger.emit(level, target, message, None, false, Instant::now());
     }
 }
 
@@ -644,27 +643,36 @@ fn rotated_path(path: &Path, index: usize) -> PathBuf {
 fn format_line(level: Level, target: &str, message: &str) -> String {
     let thread = std::thread::current();
     let name = thread.name().unwrap_or("unnamed");
-    let message = message.replace('\n', "\n    ");
+    let message = if message.contains('\n') {
+        std::borrow::Cow::Owned(message.replace('\n', "\n    "))
+    } else {
+        std::borrow::Cow::Borrowed(message)
+    };
     format!(
         "{} [{level}] [{target}] [thread={name} {:?}] {message}",
-        utc_timestamp(SystemTime::now()),
+        UtcTimestamp(SystemTime::now()),
         thread.id()
     )
 }
 
-fn utc_timestamp(time: SystemTime) -> String {
-    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let seconds = duration.as_secs();
-    let days = (seconds / 86_400) as i64;
-    let second_of_day = seconds % 86_400;
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        second_of_day / 3_600,
-        second_of_day % 3_600 / 60,
-        second_of_day % 60,
-        duration.subsec_millis()
-    )
+struct UtcTimestamp(SystemTime);
+
+impl fmt::Display for UtcTimestamp {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let duration = self.0.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let seconds = duration.as_secs();
+        let days = (seconds / 86_400) as i64;
+        let second_of_day = seconds % 86_400;
+        let (year, month, day) = civil_from_days(days);
+        write!(
+            formatter,
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+            second_of_day / 3_600,
+            second_of_day % 3_600 / 60,
+            second_of_day % 60,
+            duration.subsec_millis()
+        )
+    }
 }
 
 /// Gregorian civil date from days since 1970-01-01 (Howard Hinnant's
@@ -702,7 +710,7 @@ mod tests {
     #[test]
     fn timestamp_is_stable_utc_iso_8601() {
         let time = UNIX_EPOCH + std::time::Duration::from_millis(1_704_067_200_123);
-        assert_eq!(utc_timestamp(time), "2024-01-01T00:00:00.123Z");
+        assert_eq!(UtcTimestamp(time).to_string(), "2024-01-01T00:00:00.123Z");
     }
 
     #[test]
@@ -797,6 +805,39 @@ mod tests {
         assert_eq!(text.lines().count(), 2);
         assert!(text.contains("request=first"));
         assert!(text.contains("repeated 100 additional times"));
+        drop(logger);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn contextual_identity_prefix_is_utf8_exact_and_does_not_merge_shorter_keys() {
+        let path = temporary_log();
+        let logger = Logger::open(path.clone()).unwrap();
+        let now = Instant::now();
+        for request in 0..2 {
+            logger.emit(
+                Level::Error,
+                "audio",
+                format_args!("request={request}"),
+                Some("失败"),
+                false,
+                now,
+            );
+        }
+        logger.emit(
+            Level::Error,
+            "audio",
+            format_args!("request=2"),
+            Some("失"),
+            false,
+            now,
+        );
+        logger.flush();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 3);
+        assert!(text.contains("失败; request=0 (repeated 1 additional times)"));
+        assert!(text.contains("失; request=2"));
+        assert!(!text.contains("request=1"));
         drop(logger);
         fs::remove_file(path).unwrap();
     }

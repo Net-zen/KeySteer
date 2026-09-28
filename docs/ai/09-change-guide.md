@@ -1,94 +1,15 @@
-# 改动导航与不变量检查
+# 改动指南
 
-## 按任务找文件
+1. 从 [索引](README.md) 找专题，再查看相关实现与测试；不要仅凭文档推断行为。
+2. 明确状态归属、生命周期及失败/取消路径，选择满足需求的最小改动。可以重设计，避免为尚未出现的需求增加抽象。
+3. 按 [验证指南](08-build-docs-and-tests.md) 验证，并只同步受影响的稳定文档。
 
-| 需求 | 主修改点 | 通常还要检查 |
-| --- | --- | --- |
-| 新增/修改动作 verb | `src/api/binding.rs` | `src/app/runtime/mod.rs`、default TOML、配置文档、模拟器分类 |
-| 修改按键匹配/别名 | `src/api/input.rs`, `src/config/aliases.rs` | `input_router.rs`、integration tests、网页 `bindings.ts` |
-| 修改模式切换 | `src/app/runtime/registry.rs` | `src/app/runtime/mod.rs`、所有 Mode 的 Activated/Deactivated |
-| 修改 Finish/click 语义 | `src/modes/targeting.rs` + targeting Mode | 生命周期验证、Engine semantic Clicked tests |
-| 修改 Normal 移动 | `src/modes/normal.rs` | 两端 frame clock、pointer config、实机手感 |
-| 修改 Grid 绘制 | `src/modes/grid.rs` | overlay API、两端 overlay、default style |
-| 修改 Recursive Grid | `recursive_grid.rs` | layers/min-size/Backspace/keep tests、网页预览 |
-| 修改 UI Hint 标签逻辑 | `modes/hint/mod.rs`, `modes/hint/session.rs`, `modes/hint/labeling.rs`, `modes/hint/view.rs` | 两端扫描终态/Partial、retry tests |
-| 修改 Windows 扫描 | `platform/windows/accessibility.rs` | COM thread、popup/Z-order、timeout、实机 UIA |
-| 修改 macOS 扫描 | `platform/macos/ui_scan.rs` + AX/Vision | 权限、单 worker、Objective-C bridge、macOS 14 |
-| 修改覆盖层性能 | 两端 `overlay.rs` | `OverlayScene` equality、dismiss 内存、DPI/Retina |
-| 修改托盘/顶部状态图标或开机启动 | 两端 `status_item.rs`/`autostart.rs` | `BackendEvent`、打包应用身份、平台 backend 生命周期 |
-| 修改 Windows 自动更新/签名 | `platform/windows/update_installer/`, `packaging/windows/` | 有序 Quit、同签名者、同卷 ReplaceFile、ready/rollback、CI secrets |
-| 修改配置路径 | `app/paths.rs`, `config::discover` | packaged app 与 portable tests、README |
-| 修改打包 | `packaging/<os>/`、`build.rs` | CI + release matrix、图标/签名、每个平台架构一个 ZIP |
-| 修改网页模拟器 | `docs/.vitepress/components/ConfigStudio.tsx` | style controls、Node tests、typecheck/build |
+| 改动 | 需要连带检查 |
+| --- | --- |
+| 新模式或能力 | API、catalog、Settings、生命周期、平台实现 |
+| 配置或默认行为 | 解析/校验、默认 TOML、用户参考、网页适用部分 |
+| 原生异步工作 | 线程归属、取消、迟到结果、退出清理 |
+| 绘制或缓存 | 失效条件、多屏/DPI、响应尾延迟、峰值与退出内存 |
+| 持久化或打包 | 路径、兼容性、失败不损坏数据、应用身份 |
 
-## 跨层改动顺序
-
-新增能力时推荐：
-
-1. 在 `api` 建立平台无关类型或 verb。
-2. 写 parse/canonical/validation 测试。
-3. 让 Mode 通过 Command 表达需求，或 Engine 执行 host-level 动作。
-4. 扩展 `Backend` 时同时实现 Windows、macOS 和 unsupported。
-5. 更新 default TOML、用户文档、网页模拟器需要显示的子集。
-6. 加集成测试锁定默认体验。
-
-不要先在一个 Backend 做专用入口再让核心知道其 concrete type；AppKit/Win32 的启动和事件泵
-也必须留在对应 Backend，`bootstrap` 与 Engine 运行入口保持平台无关。
-
-## 高风险不变量
-
-### 输入
-
-- 每个吞掉的 key-down 必须吞掉对应 key-up。
-- held binding 的 release 发给 press 时的 owner，不在 release 时重新解析。
-- `press/release/toggle` 必须在退出、暂停、输入失败和 shutdown 时尽力释放。
-- semantic `Clicked` 只在成功的 KeySteer click/double-click 后发一次。
-
-### Mode
-
-- Idle 永不捕获普通键盘。
-- Normal 默认只捕获完整命中的绑定；`passthrough_unbound_keys = false` 才捕获未绑定键。
-- Idle 和默认 Normal 的额外物理修饰键必须属于 chord，或已经被 KeySteer 绑定消费。
-- targeting `keep` 不调用 Activated/Restarted，不丢路径。
-- Finish 幂等；`after_click` 禁止 click action 递归。
-- modal plugin Pop 后下层收到 Resumed 并重画原状态。
-
-### 扫描
-
-- Engine thread 不等待 AX/UIA/Vision。
-- 旧 scan id、旧 pid/window context 的结果必须丢弃。
-- Partial 可直接使用；TimedOut 不等于清空已出现标签。
-- worker queue/target count/native transaction 必须有边界。
-
-### 绘制
-
-- overlay 必须 topmost、click-through、no-activate。
-- 静态 Grid 与 cursor/indicator 尽量分层或缓存。
-- 大 buffer/image/font cache 在 dismiss 时释放。
-- 多屏坐标使用 desktop absolute；原生 window 内再转换 local。
-
-### 配置与发布
-
-- `deny_unknown_fields` 保持 typo 可见。
-- 一个 TOML 可跨平台解析；平台字段不能在另一目标意外生效。
-- macOS `.app` 不写 bundle；portable 不写用户全局目录。
-- 新 Mode 只新增强类型 Settings、可选 TOML section 和 `app::mode_catalog` 项；Engine 不增加 Mode-id match。
-- 正式 artifacts 必须来自 packaging script，保持图标、应用身份和签名链。
-
-## 验证强度
-
-- 纯文档：链接、路径、`git diff --check`。
-- API/config/mode：相关单测 + `cargo test` + clippy/fmt。
-- Windows/macOS 后端：目标 `cargo check/clippy`，并在对应 OS 实机验证 Hook、权限、覆盖层。
-- 打包：运行对应 script，检查 ZIP 内容、图标、无控制台、签名/Info.plist。
-- 网页：`docs:test`、`docs:check`、`docs:build`；视觉布局变化再做浏览器实测。
-
-## 文档同步规则
-
-- 新目录/模块：更新 `01-project-map.md`。
-- API/Engine 数据流：更新 `02-runtime-and-api.md`。
-- 配置语义/默认生命周期：更新 `03` 和 `04`，必要时用户配置参考也更新。
-- 扫描算法/线程：更新 `05`。
-- 原生模块或最低系统：更新 `06`/`08`。
-- 缓存、buffer、frame path：更新 `07`。
-- 本索引只写稳定入口，不堆实现细节。
+关键契约分别保留在 [运行时](02-runtime-and-api.md)、[模式](04-modes-and-lifecycle.md)、[扫描](05-ui-scanning.md) 和 [架构边界](10-architecture-boundaries.md)，本页不重复列举。
