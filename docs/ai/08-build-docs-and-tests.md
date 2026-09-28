@@ -29,3 +29,5 @@ cargo clippy --all-targets --all-features -- -D warnings
 网页代码位于 `docs/.vitepress/`；变更时按范围运行 `pnpm docs:test`、`pnpm docs:check`、`pnpm docs:build`，视觉交互另做浏览器验证。
 
 正式产物走 `packaging/` 脚本和 `.github/workflows/`，检查应用身份、资源和签名。纯文档修改验证链接、代码路径和 `git diff --check` 即可。
+
+`.github/workflows/cross-build.yml` 是手动触发的 Linux → Windows MSVC x64/ARM64 完整编译实验，使用 cargo-xwin/LLVM，上传未签名 EXE、默认配置、SHA256 与工具链诊断，不发布 Release，也不验证原生运行行为。`KEYSTEER_CROSS_WINDOWS=1` 在非 Windows 宿主上启用 C 桥接和图标/manifest 编译，需要完整交叉工具链；未设置时保留不依赖 SDK 的跨平台类型检查。正式发布仍使用 `build.yml`。EXE 的 SHA256 在签名前计算；跨宿主的编译器、链接器、SDK 和路径差异可能改变结果，不能据此断言行为不一致。

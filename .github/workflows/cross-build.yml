@@ -1,0 +1,92 @@
+name: Test Windows cross-build on Linux
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Linux to Windows ${{ matrix.arch }} (unsigned)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+          - arch: ARM64
+            target: aarch64-pc-windows-msvc
+    env:
+      KEYSTEER_CROSS_WINDOWS: "1"
+      RUSTFLAGS: -C link-arg=/Brepro
+      RC_PATH: llvm-rc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm lld
+          rustup toolchain install stable --profile minimal
+          rustup target add ${{ matrix.target }}
+          # Install the tool for the Linux host, without Windows linker flags.
+          env -u RUSTFLAGS cargo install --locked cargo-xwin
+
+      - name: Prepare reproducible build date and lockfile
+        run: |
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+          version="$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test -n "$version"
+          cargo update --package keysteer --precise "$version"
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-cross-windows-experiment
+          key: ${{ matrix.target }}-release
+          cache-bin: false
+          cache-workspace-crates: false
+
+      - name: Build complete Windows executable
+        run: |
+          cargo xwin build --locked --release --bin keysteer --no-default-features --target ${{ matrix.target }}
+
+      - name: Collect unsigned executable and diagnostics
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p dist/cross
+          cp "target/$TARGET/release/keysteer.exe" dist/cross/KeySteer.exe
+          cp keysteer.default.toml dist/cross/
+          test -s dist/cross/KeySteer.exe
+          llvm-readobj --file-headers --coff-resources dist/cross/KeySteer.exe > dist/cross/pe-info.txt
+          {
+            git rev-parse HEAD
+            rustc -Vv
+            cargo xwin --version
+            clang --version
+            lld-link --version
+          } > dist/cross/toolchain.txt
+          cp Cargo.lock dist/cross/Cargo.lock
+          cd dist/cross
+          sha256sum KeySteer.exe > SHA256SUMS
+          {
+            echo "### Linux → Windows $TARGET"
+            echo 'Unsigned compilation/linking experiment. Native runtime behavior is not tested.'
+            echo 'SHA256 covers the executable before signing, not the artifact ZIP.'
+            echo '```text'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload experimental package
+        uses: actions/upload-artifact@v7
+        with:
+          name: KeySteer-cross-Windows-${{ matrix.arch }}-unsigned
+          path: dist/cross/
+          if-no-files-found: error
+          retention-days: 14

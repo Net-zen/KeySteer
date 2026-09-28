@@ -170,10 +170,9 @@ windows-numerics = "0.3.1"
 windows-collections = "0.3.2"
 windows-future = "0.3.2"
 
-[target.'cfg(any(windows, target_os = "macos"))'.build-dependencies]
+[build-dependencies]
+# Build scripts run on the host, including Linux during Windows cross builds.
 cc = "1.2"
-
-[target.'cfg(windows)'.build-dependencies]
 winresource = { version = "0.1.31", default-features = false }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dev-dependencies]

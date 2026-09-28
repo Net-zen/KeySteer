@@ -7,6 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=src/platform/macos/autostart_bridge.m");
     println!("cargo:rerun-if-changed=src/platform/macos/audio_bridge.m");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    println!("cargo:rerun-if-env-changed=KEYSTEER_CROSS_WINDOWS");
     println!("cargo:rustc-env=KEYSTEER_BUILD_DATE={}", build_date()?);
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -47,13 +48,14 @@ fn civil_date(days_since_epoch: u64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
-#[cfg(windows)]
 fn compile_windows_resources() -> Result<(), Box<dyn std::error::Error>> {
-    // Official Windows artifacts are built on Windows. Cross-platform
-    // `cargo check --target ...` runs without a Windows resource compiler.
-    if !std::env::var("HOST").is_ok_and(|host| host.contains("windows")) {
+    // Preserve SDK-free cross checks; opt in only with a complete cross
+    // toolchain (C compiler, Windows SDK, linker, and resource compiler).
+    if !std::env::var("HOST").is_ok_and(|host| host.contains("windows"))
+        && !std::env::var("KEYSTEER_CROSS_WINDOWS").is_ok_and(|value| value == "1")
+    {
         println!(
-            "cargo:warning=skipping Windows icon while cross-checking from a non-Windows host"
+            "cargo:warning=skipping Windows native code and resources; set KEYSTEER_CROSS_WINDOWS=1 for a full cross build"
         );
         return Ok(());
     }
@@ -75,12 +77,6 @@ fn compile_windows_resources() -> Result<(), Box<dyn std::error::Error>> {
         .set("InternalName", "keysteer.exe")
         .set("OriginalFilename", "keysteer.exe");
     resource.compile()?;
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn compile_windows_resources() -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo:warning=skipping Windows resources on a non-Windows host");
     Ok(())
 }
 
