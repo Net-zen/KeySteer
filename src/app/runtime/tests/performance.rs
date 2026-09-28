@@ -422,6 +422,7 @@ fn semantic_role_stays_inline_probe() {
 
     fn make_target(role: crate::api::geometry::SemanticRole) -> crate::api::geometry::UiTarget {
         crate::api::geometry::UiTarget {
+            details: None,
             rect: Rect::new(0.0, 0.0, 40.0, 20.0),
             name: String::new(),
             role,

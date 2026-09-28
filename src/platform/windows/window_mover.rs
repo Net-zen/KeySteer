@@ -137,12 +137,14 @@ pub(super) fn move_from_to_screen(
     target: WindowScreenTarget,
 ) -> Result<Option<Point>, String> {
     let cursor = super::input::cursor_position()?;
-    let selected = match source {
+    let selected = source.with_fallback(|source| match source {
         crate::api::window::WindowTarget::Mouse => {
-            super::accessibility::movable_window_under_pointer(cursor)?
+            super::accessibility::movable_window_under_pointer(cursor)
         }
-        crate::api::window::WindowTarget::Active => super::accessibility::movable_focused_window(),
-    };
+        crate::api::window::WindowTarget::Active => {
+            Ok(super::accessibility::movable_focused_window())
+        }
+    })?;
     let Some((hwnd, _, visible)) = selected else {
         return Ok(None);
     };

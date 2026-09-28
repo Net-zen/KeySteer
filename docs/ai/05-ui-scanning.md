@@ -86,7 +86,7 @@ owner 的 quarantine，本进程后续禁用视觉扫描，不能阻塞 Engine �
 
 1. 启动 scan 时清空上一轮目标、标签、搜索和完成态。
 2. 每个 Partial 先应用 retired 精确矩形撤回，再 append 新目标，按矩形/名称/role 空间 key 去重；标签前缀输入中暂存整个增量。
-3. 使用 `modes::hint::labeling` 分配键码；流式更新优先保留已有键码，只有编码空间不足或显式搜索/清前缀时重建。
+3. 使用 `modes::hint::labeling` 分配键码；流式更新优先保留已有键码，只有编码空间不足或清除待合并前缀时重建；搜索过滤保留原始标签编号。
 4. 搜索模式只过滤已扫描目标，不重新遍历平台树。
 5. 完整标签选中后保存 target、warp pointer、建立 finished 状态。
 6. 只有 `Success`/`TimedOut` 且没有出现标签时才按 `scan_retry_count`/delay 重试；每次预算递增，单次最多 30s。`ContextChanged`、焦点变化和显示器变化清空旧 Hint 并立即创建新 generation，不消耗失败重试次数。
@@ -218,3 +218,7 @@ Vision：`src/platform/macos/vision.rs` + `vision_bridge.m`。
   default is `min(tile_count, available_parallelism, 16)`; completion closes the
   bitmap before returning the credit. WinRT callbacks publish atomic terminal
   state and use a coalesced non-blocking wake.
+
+## 搜索元数据
+
+UiTarget 通过可选的 UiTargetDetails 保存独立 OCR、辅助功能文字及可选颜色，普通 AX 目标继续以 name 作为辅助功能名称。ScanAccumulator 在来源已知时记录 OCR，并通过既有 SpatialIndex 关联晚到的文本与已发布控件；以同几何 replacement 更新信息，不增加重复标签。终态释放融合关联缓存；Mode 保留搜索索引直到该扫描会话结束。相比原 UiTarget，可选详情指针在 64 位目标上增加一个机器字；不为未附加详情的 AX 目标分配详情对象。

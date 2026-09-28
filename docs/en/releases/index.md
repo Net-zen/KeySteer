@@ -5,6 +5,11 @@ outline: false
 
 # Release notes
 
+## 0.10.27
+
+- UIHint now supports searching labels, OCR and accessibility information with `/`, then copying results with shortcuts.
+- Window entry targets fall back when the preferred window is unavailable, and Tab saving now supports `Cmd+S` on macOS.
+
 ## 0.10.26
 
 Window, Quick, Editor, Restore, and Tabs now support configurable entry targets: `active` selects the focused window and `mouse` selects the window under the pointer. Individual bindings can also append a target suffix; omitting it preserves the existing behavior.

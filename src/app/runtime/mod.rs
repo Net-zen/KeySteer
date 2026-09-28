@@ -339,6 +339,7 @@ impl Engine {
         for session in std::mem::take(&mut self.scheduler.window_sessions).into_keys() {
             backend.cancel_window_session(session);
         }
+        backend.release_text_prompt();
         self.scheduler.reset();
         if let Err(cancel_error) = self.cancel_all_scans(backend) {
             recovery_errors.push("cancel scans", cancel_error);
@@ -601,6 +602,8 @@ impl Engine {
     ) -> Result<(), String> {
         let mut errors = crate::support::errors::ErrorBundle::default();
         errors.record("runtime", result);
+        self.scheduler.text_prompt = None;
+        backend.release_text_prompt();
         for session in std::mem::take(&mut self.scheduler.audio_sessions).into_keys() {
             backend.cancel_audio_session(session);
         }
@@ -685,8 +688,34 @@ impl Engine {
         backend: &mut dyn Backend,
     ) -> Result<(), String> {
         match event {
+            BackendEvent::TextPromptChanged { id, text } => {
+                if let Some((owner, prompt)) = &self.scheduler.text_prompt
+                    && prompt.id == id
+                {
+                    self.dispatch_to(&owner.clone(), ModeEvent::TextChanged(text), backend)?;
+                }
+            }
             BackendEvent::TextPromptResult { id, value } => {
-                self.finish_layout_note(id, value, backend)?
+                if self
+                    .scheduler
+                    .text_prompt
+                    .as_ref()
+                    .is_some_and(|(_, prompt)| prompt.id == id)
+                {
+                    if let Some((owner, _)) = self.scheduler.text_prompt.take() {
+                        self.scheduler.text_prompt_returning_focus = true;
+                        let text = match value {
+                            Ok(text) => text,
+                            Err(error) => {
+                                self.report_action_error(error, backend);
+                                None
+                            }
+                        };
+                        self.dispatch_to(&owner, ModeEvent::TextSubmitted(text), backend)?;
+                    }
+                } else {
+                    self.finish_layout_note(id, value, backend)?
+                }
             }
             BackendEvent::AudioResult(result) => {
                 if let Some(owner) = self.scheduler.audio_sessions.get(&result.session).cloned() {
@@ -744,6 +773,26 @@ impl Engine {
                 }
             }
             BackendEvent::FocusChanged(app) => {
+                // The native editor owns focus temporarily; keep the scan/application snapshot.
+                if self.scheduler.text_prompt.is_some() {
+                    if app.is_none()
+                        || app
+                            .as_ref()
+                            .is_some_and(|app| app.process_id == std::process::id())
+                        || same_binding_app_snapshot(self.focused_app.as_ref(), app.as_ref())
+                    {
+                        return Ok(());
+                    }
+                    if let Some((owner, prompt)) = self.scheduler.text_prompt.take() {
+                        backend.cancel_text_prompt(prompt.id);
+                        self.dispatch_to(&owner, ModeEvent::TextSubmitted(None), backend)?;
+                    }
+                }
+                if std::mem::take(&mut self.scheduler.text_prompt_returning_focus)
+                    && same_binding_app_snapshot(self.focused_app.as_ref(), app.as_ref())
+                {
+                    return Ok(());
+                }
                 // Duplicate native notifications are common. If process,
                 // bundle and title are unchanged, the cached profile is still
                 // valid without even walking the override list. A changed
@@ -886,7 +935,18 @@ impl Engine {
                 crate::report_warning!("backend", "{message}")
             }
             BackendEvent::FocusedWindowBounds { id, bounds } => {
-                self.finish_quick_switch_geometry(id, bounds, backend)?;
+                if let Some(owner) = self.scheduler.panel_geometry.remove(&id) {
+                    self.dispatch_to(
+                        &owner,
+                        ModeEvent::PanelWindowBounds {
+                            id,
+                            bounds: bounds.unwrap_or(None),
+                        },
+                        backend,
+                    )?;
+                } else {
+                    self.finish_quick_switch_geometry(id, bounds, backend)?;
+                }
             }
         }
         Ok(())
@@ -957,6 +1017,7 @@ impl Engine {
         for session in std::mem::take(&mut self.scheduler.window_sessions).into_keys() {
             backend.cancel_window_session(session);
         }
+        backend.release_text_prompt();
         self.scheduler.reset();
         self.registry.modal_stack.clear();
         self.input.reset_for_plan_swap();
@@ -1032,6 +1093,9 @@ impl Engine {
         }
 
         if target != self.registry.active {
+            if let Some((_, prompt)) = self.scheduler.text_prompt.take() {
+                backend.cancel_text_prompt(prompt.id);
+            }
             self.retire_workspace_requests(Some(&self.registry.active.clone()));
             // Native text entry belongs to the outgoing interaction, even when
             // its final layout acknowledgement defers the actual mode switch.
@@ -1329,6 +1393,45 @@ impl Engine {
                 )
             });
             match command {
+                Command::RequestPanelWindowBounds(id) => {
+                    if let Some(process) = self.focused_app.as_ref().map(|app| app.process_id) {
+                        self.scheduler.panel_geometry.insert(id, owner.clone());
+                        if backend.request_focused_window_bounds(id, process).is_err() {
+                            self.scheduler.panel_geometry.remove(&id);
+                        }
+                    }
+                }
+                Command::OpenTextPrompt(mut prompt) => {
+                    self.scheduler.text_prompt_serial =
+                        self.scheduler.text_prompt_serial.wrapping_add(1);
+                    prompt.id = self.scheduler.text_prompt_serial | (1 << 63);
+                    if let Some((_, old)) = self.scheduler.text_prompt.take() {
+                        backend.cancel_text_prompt(old.id);
+                    }
+                    self.scheduler.text_prompt = Some((owner.clone(), (*prompt).clone()));
+                    if let Err(error) = backend.request_text_prompt(*prompt) {
+                        self.scheduler.text_prompt = None;
+                        self.report_action_error(error, backend);
+                        self.dispatch_to(owner, ModeEvent::TextSubmitted(None), backend)?;
+                    }
+                }
+                Command::CloseTextPrompt => {
+                    if let Some((_, prompt)) = self.scheduler.text_prompt.take() {
+                        self.scheduler.text_prompt_returning_focus = true;
+                        backend.cancel_text_prompt(prompt.id);
+                    }
+                }
+                Command::ReleaseTextPrompt => {
+                    self.scheduler.text_prompt = None;
+                    backend.release_text_prompt();
+                }
+                Command::CopyText(text) => {
+                    if let Err(error) = backend.copy_text(&text) {
+                        self.report_action_error(error, backend);
+                    } else {
+                        self.dispatch_to(owner, ModeEvent::TextCopied, backend)?;
+                    }
+                }
                 Command::WindowPresets(request) => {
                     self.request_window_presets(owner, *request, backend)?
                 }

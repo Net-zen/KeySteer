@@ -17,6 +17,137 @@ pub(super) fn application_group_key(window: &WindowInfo) -> Option<(usize, &str)
     (!window.app.is_empty()).then_some((window.screen, window.app.as_str()))
 }
 
+/// Tab priority is shared; only the scope decides whether to leave a group.
+#[derive(Clone, Copy)]
+pub(super) enum CycleScope {
+    All,
+    Group,
+    PreferGroup,
+}
+
+/// Visit the existing ring in either direction, without copying or sorting it.
+fn visit_cycle(
+    ring: &[WindowId],
+    current: Option<WindowId>,
+    backwards: bool,
+    mut visit: impl FnMut(WindowId) -> bool,
+) -> bool {
+    if ring.is_empty() {
+        return false;
+    }
+    let start = current
+        .and_then(|id| ring.iter().position(|v| *v == id))
+        .map_or(0, |index| {
+            if backwards {
+                (index + ring.len() - 1) % ring.len()
+            } else {
+                (index + 1) % ring.len()
+            }
+        });
+    if backwards {
+        ring[..=start]
+            .iter()
+            .rev()
+            .chain(ring[start + 1..].iter().rev())
+            .copied()
+            .any(&mut visit)
+    } else {
+        ring[start..]
+            .iter()
+            .chain(ring[..start].iter())
+            .copied()
+            .any(&mut visit)
+    }
+}
+
+/// A neighbour inside a bucket is already ordered. Crossing a bucket boundary
+/// still uses the stable full order, so repeated switching can leave the app.
+fn application_neighbour(
+    ring: &[WindowId],
+    windows: &[WindowInfo],
+    tabs: Option<&TabState>,
+    current: WindowId,
+    backwards: bool,
+) -> Option<WindowId> {
+    let index = ring.iter().position(|id| *id == current)?;
+    if let Some(group) = tabs.and_then(|state| state.containing(current)) {
+        let index = group.members.iter().position(|id| *id == current)?;
+        return if backwards {
+            group.members[..index]
+                .iter()
+                .rev()
+                .find(|id| ring.contains(id))
+        } else {
+            group.members[index + 1..]
+                .iter()
+                .find(|id| ring.contains(id))
+        }
+        .copied();
+    }
+    let key = windows
+        .iter()
+        .find(|w| w.id == current)
+        .and_then(application_group_key)?;
+    let matches = |id: &&WindowId| {
+        windows
+            .iter()
+            .any(|w| w.id == **id && application_group_key(w) == Some(key))
+            && !tabs.is_some_and(|state| state.containing(**id).is_some())
+    };
+    if backwards {
+        ring[..index].iter().rev().find(matches)
+    } else {
+        ring[index + 1..].iter().find(matches)
+    }
+    .copied()
+}
+
+/// Shared candidate selection for ordinary, in-mode and overlap switching.
+/// Geometry and native activation belong to the caller, never to the ordering.
+pub(super) struct WindowCycle<'a> {
+    pub ring: &'a [WindowId],
+    pub windows: &'a [WindowInfo],
+    pub tabs: Option<&'a TabState>,
+    pub target: Option<WindowId>,
+    pub backwards: bool,
+    pub scope: CycleScope,
+}
+
+impl WindowCycle<'_> {
+    pub fn visit(&self, mut visit: impl FnMut(WindowId) -> bool) -> bool {
+        let grouped = self
+            .tabs
+            .filter(|_| !matches!(self.scope, CycleScope::All))
+            .and_then(|state| state.containing(self.target?));
+        let current = grouped.map(|group| group.active).or(self.target);
+        if let Some(group) = grouped {
+            if visit_cycle(&group.members, current, self.backwards, &mut visit) {
+                return true;
+            }
+            if matches!(self.scope, CycleScope::Group) {
+                return false;
+            }
+        }
+        let neighbour = if grouped.is_none() {
+            current.and_then(|id| {
+                application_neighbour(self.ring, self.windows, self.tabs, id, self.backwards)
+            })
+        } else {
+            None
+        };
+        if neighbour.is_some_and(&mut visit) {
+            return true;
+        }
+        with_application_cycle_order(self.ring, self.windows, self.tabs, |order| {
+            visit_cycle(order, current, self.backwards, |id| {
+                Some(id) != neighbour
+                    && !grouped.is_some_and(|group| group.members.contains(&id))
+                    && visit(id)
+            })
+        })
+    }
+}
+
 const APPLICATION_CYCLE_SMALL_LIMIT: usize = 8;
 
 /// Borrow the completed order before dropping its size-specific scratch space.

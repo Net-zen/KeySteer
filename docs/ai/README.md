@@ -229,3 +229,21 @@ macOS Window 全屏幕标记的逐屏 Panel、独立坐标与裁剪、混合 Ret
 临时文本输入 `text_input`、自定义进入／返回键见 [配置](03-configuration.md)、[模式](04-modes-and-lifecycle.md) 和 [验证](08-build-docs-and-tests.md)。
 
 临时模式的插件切屏结果按当前有效模式处理、Text Input 默认隐藏文字指示器见 [运行时](02-runtime-and-api.md)、[配置](03-configuration.md) 和 [验证](08-build-docs-and-tests.md)。
+
+窗口 target 与 active/mouse 后缀的惰性优先级兜底、常见少窗口路径的查询及分配约束见 [配置](03-configuration.md)、[后端](06-platform-backends.md)、[性能](07-rendering-and-performance.md) 和 [验证](08-build-docs-and-tests.md)。
+
+共享窗口候选遍历、Tabs 优先范围和直接相邻查询见 [原生后端](06-platform-backends.md)、[性能](07-rendering-and-performance.md) 与 [验证](08-build-docs-and-tests.md)；几何连通关系仍仅由 overlap 维护。
+
+UIHint 会话搜索：原生输入法与剪贴板、中文简拼、固定信息槽、共享百分比定位及会话缓存，见 [配置](03-configuration.md)、[模式](04-modes-and-lifecycle.md)、[扫描](05-ui-scanning.md)、[渲染](07-rendering-and-performance.md)。
+
+搜索面板的数值定位、浅深主题、固定标题与复制快捷键在启动编译，见 [配置](03-configuration.md) 和 [渲染](07-rendering-and-performance.md)。
+
+UIHint 搜索的高 DPI 边框对齐、2×2 信息区和原生编辑焦点交接，见 [渲染](07-rendering-and-performance.md) 与 [后端](06-platform-backends.md)。
+
+搜索详情只保留编号键帽、复制快捷键跟随平台、默认输入框缩短与增加上下间距，见 [配置](03-configuration.md)。
+
+空格分隔多项搜索、按输入顺序去重汇总及复制成功返回 UIHint，见 [模式生命周期](04-modes-and-lifecycle.md) 和 [渲染](07-rendering-and-performance.md)。
+
+跨平台搜索焦点检查、共享 Unicode 输入限制与有界信息预览，见 [后端](06-platform-backends.md)、[性能](07-rendering-and-performance.md) 和 [验证](08-build-docs-and-tests.md)。
+
+UIHint 搜索预览与查询缓冲按会话复用，相同展示结果跳过场景提交，响应与分配验收见 [性能](07-rendering-and-performance.md) 和 [验证](08-build-docs-and-tests.md)。

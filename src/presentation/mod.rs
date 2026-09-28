@@ -31,6 +31,14 @@ pub(crate) fn label_scale(scale: f64) -> f64 {
 }
 
 impl Presenter for Composer {
+    fn input_panel(
+        &self,
+        ui: &crate::api::style::CompiledSearchPanel,
+        window: Option<crate::api::Rect>,
+        context: &crate::api::HostContext<'_>,
+    ) -> (crate::api::Rect, crate::api::overlay::SharedLabelStyle) {
+        hint::input_panel(ui, window, context)
+    }
     fn compose(&self, view: View<'_>, context: &HostContext<'_>) -> OverlayScene {
         match view {
             View::Empty => OverlayScene::new(),
@@ -87,6 +95,26 @@ pub(crate) fn elide_width(text: &str, units: f64) -> String {
         output.push(c);
     }
     if units >= 1.0 {
+        output.push('…');
+    }
+    output
+}
+
+/// Sanitize and elide directly into scene text, avoiding intermediate strings.
+pub(crate) fn single_line_elide_width(text: &str, units: f64) -> crate::api::overlay::OverlayText {
+    let chars = text.chars().map(|c| if c.is_control() { ' ' } else { c });
+    let width = |c: char| if c.is_ascii() { 0.75 } else { 1.0 };
+    let elide = chars.clone().map(width).sum::<f64>() > units;
+    let mut output = crate::api::overlay::OverlayText::default();
+    let mut used = if elide { 1.0 } else { 0.0 };
+    for c in chars {
+        used += width(c);
+        if used > units {
+            break;
+        }
+        output.push(c);
+    }
+    if elide && units >= 1.0 {
         output.push('…');
     }
     output

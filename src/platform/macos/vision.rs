@@ -455,6 +455,7 @@ fn classify(
     };
     Ok(Some(Candidate {
         target: UiTarget {
+            details: None,
             rect,
             name: native_string(region.label, region.label_len, MAX_VISION_LABEL_BYTES)?,
             role,
@@ -628,6 +629,7 @@ mod tests {
     #[test]
     fn iou_merge_prefers_primary_targets() {
         let target = |x| UiTarget {
+            details: None,
             rect: Rect::new(x, 0.0, 100.0, 100.0),
             name: String::new(),
             role: SemanticRole::Button,

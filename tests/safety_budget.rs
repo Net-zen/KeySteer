@@ -50,7 +50,13 @@ use std::path::{Path, PathBuf};
 // submissions now share one wrapper instead of two raw call sites.
 // Contour adds one checked, bounded luma slice borrow from an owned macOS
 // capture result. The scoped worker joins before that native owner is freed.
-const MAX_UNSAFE_EXPRESSIONS: usize = 383;
+// Live search reuses the owned note editor: scoped IME context acquire/release,
+// bounded EDIT reads/colors, foreground restoration and cached HWND reuse.
+// Ten Windows blocks (three disposable-editor probe blocks) and one retained
+// AppKit delegate/action wiring block are added; portable code remains safe.
+// Explicit editor activation/focus is checked in one owning-thread block.
+// One standard AppKit editor-command block, with responder-chain ownership.
+const MAX_UNSAFE_EXPRESSIONS: usize = 395;
 const MAX_UNSAFE_FILES: usize = 40;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
@@ -70,8 +76,8 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/permissions.rs", 5),
     // Shutdown adds only NSObjectProtocol / NSApplicationDelegate conformance on
     // the retained main-thread status target; no new raw native calls or Send/Sync.
-    ("src/platform/macos/status_item.rs", 7),
-    ("src/platform/windows/text_prompt.rs", 7),
+    ("src/platform/macos/status_item.rs", 9),
+    ("src/platform/windows/text_prompt.rs", 17),
     ("src/platform/macos/vision.rs", 6),
     ("src/platform/windows/accessibility.rs", 30),
     ("src/platform/windows/autostart.rs", 4),

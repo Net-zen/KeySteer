@@ -352,6 +352,11 @@ impl Drop for MacOsBackend {
 }
 
 impl Backend for MacOsBackend {
+    fn copy_text(&mut self, text: &str) -> Result<(), String> {
+        arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.set_text(text))
+            .map_err(|e| e.to_string())
+    }
     fn event_sink(&self) -> Option<Arc<dyn Fn(BackendEvent) + Send + Sync>> {
         let sender = self.event_tx.clone();
         Some(Arc::new(move |event| {
@@ -388,6 +393,11 @@ impl Backend for MacOsBackend {
     fn cancel_text_prompt(&mut self, id: u64) {
         if let Some(item) = &self.status_item {
             item.cancel_text_prompt(id);
+        }
+    }
+    fn release_text_prompt(&mut self) {
+        if let Some(item) = &self.status_item {
+            item.release_text_prompt();
         }
     }
     fn request_audio(&mut self, request: crate::api::audio::AudioRequest) -> Result<(), String> {
@@ -531,10 +541,10 @@ impl Backend for MacOsBackend {
             return Ok(None);
         }
         let cursor = self.pointer()?;
-        let selected = match source {
-            crate::api::window::WindowTarget::Mouse => accessibility::window_under_pointer(cursor)?,
-            crate::api::window::WindowTarget::Active => accessibility::movable_focused_window()?,
-        };
+        let selected = source.with_fallback(|source| match source {
+            crate::api::window::WindowTarget::Mouse => accessibility::window_under_pointer(cursor),
+            crate::api::window::WindowTarget::Active => accessibility::movable_focused_window(),
+        })?;
         let Some(window) = selected else {
             return Ok(None);
         };

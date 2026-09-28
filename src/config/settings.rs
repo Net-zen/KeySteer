@@ -269,6 +269,8 @@ pub struct UiHint {
     pub ui: LabelUi,
     pub boundary_highlight: BoundaryHighlight,
     pub search_input_ui: SearchInputUi,
+    pub search_info_ui: SearchInputUi,
+    pub search_copy_keys: Vec<String>,
     pub inherits: Vec<String>,
     pub temporary_mode: Option<String>,
     pub temporary_mode_keys: Vec<String>,
@@ -320,6 +322,7 @@ impl Default for UiHint {
         let search_input_ui = SearchInputUi {
             label: LabelUi {
                 font_size: 14,
+                padding_y: 6,
                 ..Default::default()
             },
             ..Default::default()
@@ -344,6 +347,21 @@ impl Default for UiHint {
             ui,
             boundary_highlight: BoundaryHighlight::default(),
             search_input_ui,
+            search_info_ui: SearchInputUi {
+                position_mode: crate::api::style::PanelPositionMode::SearchInput,
+                position: crate::api::style::PanelPosition::Percentages(
+                    ["0%", "50%", "100%", "50%"].map(String::from),
+                ),
+                width: 520,
+                y_offset: 12,
+                label: LabelUi {
+                    font_size: 14,
+                    padding_y: 16,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            search_copy_keys: (1..=4).map(|n| format!("primary+{n}")).collect(),
             inherits: vec!["hotkeys".into(), "normal".into()],
             temporary_mode: Some("normal".into()),
             temporary_mode_keys: vec!["primary".into()],

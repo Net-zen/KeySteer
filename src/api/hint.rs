@@ -24,6 +24,7 @@ impl HintCode {
     }
 }
 
+#[derive(Clone)]
 pub struct CompactHint<T> {
     pub(crate) label: HintCode,
     /// Visual placement anchor. Hint may retain this within a refined control

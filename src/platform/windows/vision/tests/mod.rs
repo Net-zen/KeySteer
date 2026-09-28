@@ -189,6 +189,7 @@ fn provider_batches_coalesce_in_the_fixed_mailbox_slot() {
     let mailbox = ProviderMailbox::new();
     let targets = (0..49)
         .map(|index| UiTarget {
+            details: None,
             rect: Rect::new(index as f64, 0.0, 4.0, 4.0),
             name: index.to_string(),
             role: SemanticRole::StaticText,
@@ -217,6 +218,7 @@ fn provider_mailbox_preserves_a_full_generation_without_blocking() {
     let targets = |offset: usize| {
         (0..MAX_OCR_TARGETS)
             .map(|index| UiTarget {
+                details: None,
                 rect: Rect::new((offset + index) as f64, 0.0, 4.0, 4.0),
                 name: index.to_string(),
                 role: SemanticRole::StaticText,
@@ -285,6 +287,7 @@ fn quarantined_provider_mailbox_discards_published_target_owners() {
     let mailbox = ProviderMailbox::new();
     mailbox
         .publish(ProviderEvent::ContourBatch(vec![UiTarget {
+            details: None,
             rect: Rect::new(0.0, 0.0, 4.0, 4.0),
             name: "discard me".into(),
             role: SemanticRole::StaticText,
@@ -778,6 +781,7 @@ fn early_ocr_and_contour_are_both_published_without_waiting_for_ocr_terminal() {
     let source = session.source("visual");
     let mailbox = ProviderMailbox::new();
     let target = |x, name: &str| UiTarget {
+        details: None,
         rect: Rect::new(x, 20.0, 40.0, 20.0),
         name: name.into(),
         role: SemanticRole::Control,
@@ -849,22 +853,26 @@ fn early_and_late_visual_sources_use_identical_ownership() {
                 let mailbox = ProviderMailbox::new();
                 let targets = [
                     UiTarget {
+                        details: None,
                         rect: Rect::new(100., 100., 240., 160.),
                         name: String::new(),
                         role: SemanticRole::Image,
                     },
                     UiTarget {
+                        details: None,
                         rect: Rect::new(130., 130., 80., 20.),
                         name: "caption".into(),
                         role: SemanticRole::StaticText,
                     },
                     UiTarget {
+                        details: None,
                         rect: Rect::new(140., 135., 12., 12.),
                         name: String::new(),
                         role: SemanticRole::Control,
                     },
                 ];
                 let button = UiTarget {
+                    details: None,
                     rect: Rect::new(250., 190., 30., 25.),
                     name: "action".into(),
                     role: SemanticRole::Button,
@@ -965,6 +973,7 @@ fn contour_mailbox_transfers_full_candidate_buffer_without_rebuilding_it() {
     let mailbox = ProviderMailbox::new();
     let targets: Vec<_> = (0..MAX_OCR_TARGETS)
         .map(|i| UiTarget {
+            details: None,
             rect: Rect::new(i as f64 * 10.0, 0.0, 8.0, 8.0),
             name: String::new(),
             role: SemanticRole::Control,
@@ -990,11 +999,13 @@ fn ocr_word_and_phrase_converge_across_engines_and_batch_order() {
     for reverse in [false, true] {
         for swap_engines in [false, true] {
             let phrase = UiTarget {
+                details: None,
                 rect: Rect::new(10., 10., 140., 20.),
                 name: "full phrase".into(),
                 role: SemanticRole::StaticText,
             };
             let word = UiTarget {
+                details: None,
                 rect: Rect::new(55., 11., 18., 18.),
                 name: "word".into(),
                 role: SemanticRole::StaticText,

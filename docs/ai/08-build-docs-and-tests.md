@@ -552,3 +552,37 @@ Windows 可显式运行 `cargo test --lib native_deferred_geometry_submission_an
 `failed_background_reload_releases_work_and_discards_queue_before_retry` 验证后台 Reload 失败后释放 worker／队列容量／配置副本，丢弃已排队修改、保留当前 Normal 模式与配置，并允许下一次重新读取成功。原连续 set_config 测试同时检查队列排空自动回收。
 
 配置任务资源回收验证：全量 1,135 passed／88 ignored；随后新增的 `successful_background_reload_releases_configuration_resources_before_handoff` 检查成功交接前 worker、通道、队列容量及候选配置副本已释放，旧仓库随 Engine 销毁。进程自身资源由退出回收，持久化文件按普通启动读取，不复制旧运行状态。
+
+## 窗口来源优先级兜底（2026-09-28）
+
+active/mouse 从严格指定来源改为惰性优先级：首选缺失才查询另一来源，两者均不可用时不执行目标操作。覆盖普通／相交切换、五种模式的显式入口及手势选窗、两平台跨屏移动；取消、首选为孤立相交窗口、原生查询错误及激活拒绝不触发换窗执行。配置及绑定后缀仍在加载时编译，未配置的模式交接和手势中固定身份保持原样。
+
+验证：Windows all-features 单线程全量 1,215 passed／96 ignored；另行执行优先级零分配测试（40,000 次选择，60,000 次查询，首选命中一次、缺失两次）和两项循环分配边界测试，均通过。Clippy all-targets/all-features、macOS ARM/Intel lib/bins/tests 编译、配置导航测试、TypeScript 类型检查、fmt 和 diff 检查通过。
+
+与修改前源码快照核对，8 项小路径、大路径刷新、应用排序、模式状态字段和配置编译代码均未改动，没有增加窗口表、缓存或容器容量；首选路径不新增备用原生查询或额外库存枚举。本轮验证查询次数、分配及行为约束，没有重新测量原生端到端延迟，不宣称所有场景零时间开销。日志及性能约束核对保存在本地 target/perf-overlap/target-priority/。
+
+共享窗口切换验证（2026-09-28）：扩展独立线性顺序 oracle，覆盖 0–257 窗口、库存/稳定环重排、缺失窗口、范围外组员、三个循环范围、正反向、候选拒绝与短路；直接相邻查询 2–129 窗口零临时堆分配。全量 Rust 1,215 passed／97 ignored，显式分配门禁、Clippy、macOS ARM/Intel 编译、文档及格式检查通过。固定 CPU 四轮 B/O/B2（B2 为相同旧二进制），165 场景校验值一致、分配次数/请求字节无增加。普通独立切换 p50：4 窗口 675→675ns，8 窗口 1525→1475ns，16 窗口 2125→1937.5ns，32 窗口 3475→3125ns，96 窗口 12712.5→9412.5ns；96 窗口 Window 模式分配 444→251 次、请求字节 32338→21115B。完整 p50/p99、同二进制波动和首版回退数据保存在 `target/perf-overlap/shared-cycle/report.md` 及相邻产物；首版 Window 模式 96 的回退未掩盖，随后移除重复库存复制并重新完整测量。部分场景的 p99 仍有增加，不能由汇总下降宣称每个场景绝对零回退。基准包含 Fake 枚举/复制，不包含原生窗口调用、worker 排队及指针注入，也不是进程 RSS。
+
+## UIHint 搜索验证（2026-09-28）
+
+Windows `cargo test --all-targets -- --test-threads=1`：1,206 项库测试通过、99 项忽略，架构 8 项、日志 2 项、安全边界 3 项通过。随后增加的搜索面板主题／数值编译零分配、配置校验及 OCR／辅助功能双向到达顺序测试也通过。实际引擎事件测试覆盖 `/` 优先于继承绑定、粘贴透传、固定槽复制、旧请求回调隔离和 Enter 返回／移动；模式测试覆盖唯一结果仍保留搜索、多结果／零结果恢复原标签及索引复用。
+
+Windows 可独立执行 `native_search_editor_reuses_then_releases_window_and_unicode_state -- --ignored --test-threads=1`：10 次打开／Enter 提交均复用同一 HWND，中文／emoji 完整回传，最终释放后窗口无效。该测试不替代真实中文输入法候选交互验收。macOS ARM／Intel 的 lib、bins、tests 编译通过，未做 macOS 桌面交互测试。
+
+Release SearchText 基准（不含原生输入、扫描和绘制）：100／1,000／10,000 项索引构建 75.8µs／293.4µs／2.9193ms，过滤 p50 2.3µs／23.4µs／250µs，p99 4.5µs／25.1µs／517.2µs。这是本机单轮测量，不是端到端延迟承诺。
+
+Clippy all-targets、文档 TypeScript 检查、148 项网页测试通过。文档生产构建因 GitHub Release API 返回 HTTP 403 未完成，未绕过发布信息校验。
+
+搜索外观／焦点修复：前四个信息槽为 2×2，label 底行保留 Ctrl+5；100%、150%、200% 面板包含性及 100%–200% 后端固定几何测试通过。库回归 1,210 项通过，新增序列化字段曾导致一项 Window 场景快照失败；默认 false 不输出该字段后，该快照专项通过。Clippy 与 3 项安全门禁通过。当前运行中的 debug/keysteer.exe 阻止 Cargo 重建集成测试所需主程序，安全门禁用相同源码独立 rustc --test 执行，未终止运行实例。
+
+原生编辑器连续 10 次复用验证 active dialog、EDIT focus、Unicode 输入和释放通过；本机自动测试桌面返回空 foreground HWND，因此不把这次测试当作与其他真实应用争取前台权限的实机验收。实现对非空外部前台校验失败会关闭搜索，短暂空前台通知不会取消已建立的编辑会话。
+
+空格多选与复制回归：库测试 1,213 passed／99 ignored。新增覆盖尾部空格恢复候选、有序并集与去重、改词重算、单／多搜索信息槽切换、长 OCR 单行省略而复制原文、复制成功关闭搜索保留 UIHint、剪贴板失败保留搜索、缓存复用与最终释放。Clippy all-targets、macOS ARM lib/tests 编译、文档类型检查与 148 项网页测试通过。
+
+跨平台搜索复用验收：Windows 原生编辑器 10 次复用／Unicode／焦点／释放探针通过；macOS ARM、Intel 的 lib/tests 编译通过。状态栏“不创建主菜单”门禁曾指出新增菜单不合适，现改为仅在输入面板转交系统编辑命令，专项通过。macOS 实机焦点、Cmd 编辑和 IME 仍需本机验收，编译不替代桌面测试。
+
+有界预览分配测试使用 10,000 个匹配条目及长 Unicode OCR，预览新增分配 5,460 字节、3 次 allocations、15 次 reallocations；不含既有扫描与索引、原生绘图、进程 RSS，也不是端到端耗时。完整复制只生成指定字段，保持换行顺序和原文。Unicode 截断原地复用 String 的测试通过；安全门禁 3 项通过。
+
+会话预览复用验证：首次建立上述预览仍分配 5,460 字节；预热后在 1／10,000 个匹配项之间交替更新 100 次，allocations／reallocations 均为 0。中文／简拼等价查询变化 200 次，模式处理同样为零分配、零场景提交（不含上游原生事件创建）。另覆盖 Unicode 长短内容、空字段、三／四槽切换、顺序变化和退出释放。全量库测试 1,215 passed／102 ignored，Clippy all-targets、macOS ARM／Intel lib/tests 编译通过。响应探针 `search_response_comparison_probe` 使用 30／300 个不重叠目标并断言实际库存数量，对比每次重建场景与跳过相同结果；该探针只测模式 CPU 路径，不代表输入到像素延迟。
+
+Release 探针按旧处理方式／优化方式／优化方式／旧处理方式交替测量：相同结果查询的 p50，30 目标从 2.40µs 降至 0.85µs，300 目标从 17.70µs 降至 8.00µs。实际切换结果时基本持平：30 目标约 2.30–2.35µs，300 目标约 16.60–16.65µs；300 目标 p95 均约 18µs。对照在同一二进制中恢复每次 clone 查询、relabel 和 redraw 的调用方式，仍使用当前共享匹配／绘制实现，不能解读为完整旧版本或真实桌面延迟对照。

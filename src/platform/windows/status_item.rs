@@ -122,6 +122,11 @@ impl StatusItem {
             crate::report_error!("windows-dialog", "{error}");
         }
     }
+    pub(super) fn release_text_prompt(&self) {
+        if let Err(error) = super::text_prompt::release(self.hwnd) {
+            crate::report_error!("windows-input", "Cannot release editor: {error}");
+        }
+    }
     pub fn new(sender: EventSender) -> Result<Self, String> {
         set_update_menu_state(UpdateMenuState::Idle);
         *SENDER

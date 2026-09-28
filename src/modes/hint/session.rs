@@ -13,7 +13,12 @@ use crate::api::hint::LabelDirection;
 #[derive(Default)]
 pub(super) struct ScanSession {
     pub(super) scanned: Vec<UiTarget>,
-    pub(super) scanned_names_lower: Vec<String>,
+    pub(super) search_text: Vec<super::search::SearchText>,
+    pub(super) search_hints: Vec<CompactHint<usize>>,
+    pub(super) search_matches: Vec<CompactHint<usize>>,
+    pub(super) search_seen: Vec<bool>,
+    pub(super) search_preview: crate::api::presentation::HintInfoPreview,
+    pub(super) search_query: String,
     pub(super) search_names_initialized: bool,
     // One head per geometry; collision links are contiguous and need no bucket drops.
     next_same_rect: Vec<usize>,
@@ -49,7 +54,12 @@ impl ScanSession {
 
     pub(super) fn clear_results(&mut self) {
         self.scanned = Vec::new();
-        self.scanned_names_lower = Vec::new();
+        self.search_text = Vec::new();
+        self.search_hints = Vec::new();
+        self.search_matches = Vec::new();
+        self.search_seen = Vec::new();
+        self.search_preview = Default::default();
+        self.search_query = String::new();
         self.search_names_initialized = false;
         self.release_scan_index();
         self.hints = Vec::new();
@@ -264,7 +274,7 @@ impl ScanSession {
     }
 
     fn invalidate_search_names(&mut self) {
-        self.scanned_names_lower.clear();
+        self.search_text.clear();
         self.search_names_initialized = false;
     }
 
@@ -317,7 +327,7 @@ impl ScanSession {
         self.seen_targets.reserve(incoming);
         self.next_same_rect.reserve(incoming);
         if self.search_names_initialized {
-            self.scanned_names_lower.reserve(incoming);
+            self.search_text.reserve(incoming);
         }
         for target in targets {
             self.append_target(target);
@@ -329,9 +339,9 @@ impl ScanSession {
         if self.search_names_initialized {
             return;
         }
-        self.scanned_names_lower.clear();
-        self.scanned_names_lower
-            .extend(self.scanned.iter().map(|target| target.name.to_lowercase()));
+        self.search_text.clear();
+        self.search_text
+            .extend(self.scanned.iter().map(super::search::SearchText::target));
         self.search_names_initialized = true;
     }
 
@@ -360,7 +370,8 @@ impl ScanSession {
         }
         let index = self.scanned.len();
         if self.search_names_initialized {
-            self.scanned_names_lower.push(target.name.to_lowercase());
+            self.search_text
+                .push(super::search::SearchText::target(&target));
         }
         self.scanned.push(target);
         self.next_same_rect.push(head);
@@ -391,6 +402,7 @@ mod tests {
         session.append_targets(
             (0..count)
                 .map(|i| UiTarget {
+                    details: None,
                     rect: Rect::new(i as f64 * 30.0, 10.0, 20.0, 20.0),
                     name: i.to_string(),
                     role: SemanticRole::Control,
@@ -416,6 +428,7 @@ mod tests {
             session.append_targets(
                 (0..count)
                     .map(|i| UiTarget {
+                        details: None,
                         rect: Rect::new(i as f64 * 30., 0., 20., 20.),
                         name: format!("target {i}"),
                         role: SemanticRole::Button,
@@ -427,7 +440,7 @@ mod tests {
             session.deferred_retired = session.scanned.iter().map(|t| t.rect).collect();
             session.clear_results();
             assert_eq!(session.scanned.capacity(), 0);
-            assert_eq!(session.scanned_names_lower.capacity(), 0);
+            assert_eq!(session.search_text.capacity(), 0);
             assert_eq!(session.seen_targets.capacity(), 0);
             assert_eq!(session.next_same_rect.capacity(), 0);
             assert_eq!(session.hints.capacity(), 0);
@@ -443,6 +456,7 @@ mod tests {
             let mut session = labeled_session(20, &alphabet, direction);
             let old_codes: Vec<_> = session.hints.iter().map(|h| h.label.clone()).collect();
             let new_target = |i: usize| UiTarget {
+                details: None,
                 rect: Rect::new(i as f64 * 30.0, 50.0, 20.0, 20.0),
                 name: i.to_string(),
                 role: SemanticRole::Control,
@@ -486,6 +500,7 @@ mod tests {
         let anchor = session.hints[1].bounds;
         let retired: Vec<_> = session.scanned[..3].iter().map(|t| t.rect).collect();
         let row = UiTarget {
+            details: None,
             rect: Rect::new(0.0, 0.0, 85.0, 40.0),
             name: "row".into(),
             role: SemanticRole::ListItem,
@@ -519,6 +534,7 @@ mod tests {
         let rect = Rect::new(500.0, 300.0, 30.0, 20.0);
         let retired = [session.scanned[0].rect];
         let incoming = UiTarget {
+            details: None,
             rect,
             name: "new".into(),
             role: SemanticRole::Button,
@@ -543,11 +559,13 @@ mod tests {
         let first = session.hints[0].label.clone();
         let retired: Vec<_> = session.scanned.iter().map(|t| t.rect).collect();
         let checkbox = UiTarget {
+            details: None,
             rect: session.scanned[0].rect,
             name: "check".into(),
             role: SemanticRole::Checkbox,
         };
         let row = UiTarget {
+            details: None,
             rect: Rect::new(-50.0, 0.0, 105.0, 40.0),
             name: "row".into(),
             role: SemanticRole::Row,
@@ -574,11 +592,13 @@ mod tests {
     fn deferred_refinements_preserve_existing_selection_until_applied() {
         let mut session = ScanSession::default();
         let old = UiTarget {
+            details: None,
             rect: Rect::new(0.0, 0.0, 20.0, 20.0),
             name: "old".into(),
             role: SemanticRole::Control,
         };
         let middle = UiTarget {
+            details: None,
             rect: Rect::new(2.0, 0.0, 24.0, 20.0),
             name: "text".into(),
             role: SemanticRole::Control,
@@ -596,7 +616,7 @@ mod tests {
         session.apply_deferred();
         assert_eq!(session.scanned, vec![final_target]);
         session.ensure_search_names();
-        assert_eq!(session.scanned_names_lower, vec!["button"]);
+        assert!(session.search_text[0].matches("button", ""));
         assert!(!session.append_targets(session.scanned.clone()));
     }
 
@@ -613,7 +633,7 @@ mod tests {
             assert_eq!(session.seen_targets.capacity(), 0);
             assert!(!session.append_targets(vec![target.clone()]));
             assert!(session.search_names_initialized);
-            assert_eq!(session.scanned_names_lower.len(), 512);
+            assert_eq!(session.search_text.len(), 512);
             session.release_scan_index();
             session.apply_stable_update(
                 Vec::new(),
@@ -625,10 +645,10 @@ mod tests {
             assert_eq!(session.scanned.len(), 511);
             assert!(!session.search_names_initialized);
             session.ensure_search_names();
-            assert_eq!(session.scanned_names_lower.len(), 511);
+            assert_eq!(session.search_text.len(), 511);
             session.release_scan_index();
             assert!(session.append_targets(vec![target]));
-            assert_eq!(session.scanned_names_lower.len(), 512);
+            assert_eq!(session.search_text.len(), 512);
             session.clear_results();
             assert_eq!(session.seen_targets.capacity(), 0);
             assert_eq!(session.next_same_rect.capacity(), 0);
@@ -657,6 +677,7 @@ mod tests {
         let rect = Rect::new(10.0, 20.0, 30.0, 40.0);
         let neighbors: Vec<_> = (0..5)
             .map(|i| UiTarget {
+                details: None,
                 // All five share a quantized geometry key, but only one is retired.
                 rect: Rect::new(rect.x + i as f64 * 0.01, rect.y, rect.width, rect.height),
                 name: i.to_string(),
@@ -694,6 +715,7 @@ mod tests {
             let mut expected = Vec::new();
             for index in 0..count {
                 let target = UiTarget {
+                    details: None,
                     rect: Rect::new((index % 10) as f64, 0.0, 1.0, 1.0),
                     name: format!("Target {index}"),
                     role: SemanticRole::Button,
@@ -723,7 +745,7 @@ mod tests {
             // Later partials use the append path and the same canonical index.
             assert!(!session.append_targets(expected.clone()));
             assert_eq!(session.scanned, expected);
-            assert_eq!(session.scanned_names_lower.len(), count);
+            assert_eq!(session.search_text.len(), count);
             session.clear_results();
             assert!(session.scanned.is_empty());
             assert_eq!(session.scanned.capacity(), 0);

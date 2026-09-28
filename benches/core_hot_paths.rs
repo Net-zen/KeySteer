@@ -98,6 +98,7 @@ fn measure_hint_owned_delivery(config: &Config, context: &HostContext<'_>, count
 fn hint_targets(count: usize) -> Vec<UiTarget> {
     (0..count)
         .map(|index| UiTarget {
+            details: None,
             rect: Rect::new(
                 (index % 50) as f64 * 70.0,
                 (index / 50) as f64 * 30.0,

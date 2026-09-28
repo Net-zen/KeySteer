@@ -272,6 +272,9 @@ pub enum WorkspaceValue {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextPrompt {
+    /// Live input shares the same native IME/editor as preset notes.
+    pub live_style: Option<crate::api::overlay::SharedLabelStyle>,
+    pub copy_keys: Vec<crate::api::KeyChord>,
     /// Inline input bar in desktop coordinates, supplied by the host.
     pub bounds: crate::api::Rect,
     pub id: u64,
@@ -281,10 +284,27 @@ pub struct TextPrompt {
     pub max_chars: usize,
 }
 
+/// Shared Unicode limit for native input and mode delivery. Reuses the owned buffer.
+pub fn bounded_text(mut text: String, max_chars: usize) -> String {
+    if let Some((boundary, _)) = text.char_indices().nth(max_chars) {
+        text.truncate(boundary);
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api::Rect;
+    #[test]
+    fn native_text_limit_is_unicode_safe_and_reuses_the_string_buffer() {
+        let text = String::from("复制🦀abcd");
+        let pointer = text.as_ptr();
+        let limited = bounded_text(text, 3);
+        assert_eq!(limited, "复制🦀");
+        assert_eq!(limited.as_ptr(), pointer);
+        assert_eq!(bounded_text(limited, 0), "");
+    }
     fn regions(count: u32) -> RegionTemplate {
         fn build(start: u32, end: u32) -> RegionTemplate {
             if start == end {

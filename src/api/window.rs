@@ -285,7 +285,7 @@ pub enum WindowChange {
     ToggleMinimize,
 }
 
-/// Explicit window selection is strict: absence never falls back to another source.
+/// Preferred source for window selection; an absent target falls back to the other source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowTarget {
@@ -294,6 +294,22 @@ pub enum WindowTarget {
 }
 
 impl WindowTarget {
+    /// Query the preferred source lazily. Native errors are not absence and must
+    /// not redirect an action to a different window after an operation fails.
+    #[inline]
+    pub(crate) fn with_fallback<T, E>(
+        self,
+        mut lookup: impl FnMut(Self) -> Result<Option<T>, E>,
+    ) -> Result<Option<T>, E> {
+        if let Some(target) = lookup(self)? {
+            return Ok(Some(target));
+        }
+        lookup(match self {
+            Self::Active => Self::Mouse,
+            Self::Mouse => Self::Active,
+        })
+    }
+
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
             "active" => Ok(Self::Active),
@@ -497,5 +513,68 @@ mod state_cycle_tests {
         );
         assert_eq!(WindowAction::parse("window_cycle_state"), None);
         assert_eq!(WindowAction::CycleState.name(), "size_cycle");
+    }
+}
+
+#[cfg(test)]
+mod target_priority_tests {
+    use super::{WindowId, WindowTarget};
+
+    #[test]
+    fn target_priority_is_lazy_and_does_not_hide_errors() {
+        for source in [WindowTarget::Active, WindowTarget::Mouse] {
+            let mut queries = Vec::new();
+            let preferred = source.with_fallback(|current| {
+                queries.push(current);
+                Ok::<_, &str>(Some(WindowId(1)))
+            });
+            assert_eq!(preferred, Ok(Some(WindowId(1))));
+            assert_eq!(queries, [source]);
+            queries.clear();
+            let fallback = source.with_fallback(|current| {
+                queries.push(current);
+                Ok::<_, &str>((current != source).then_some(WindowId(2)))
+            });
+            assert_eq!(fallback, Ok(Some(WindowId(2))));
+            assert_eq!(queries.len(), 2);
+            assert_eq!(queries[0], source);
+            assert_ne!(queries[1], source);
+            queries.clear();
+            let missing = source.with_fallback(|current| {
+                queries.push(current);
+                Ok::<Option<WindowId>, &str>(None)
+            });
+            assert_eq!(missing, Ok(None));
+            assert_eq!(queries.len(), 2);
+            queries.clear();
+            let error = source.with_fallback(|current| {
+                queries.push(current);
+                Err::<Option<WindowId>, _>("native query failed")
+            });
+            assert_eq!(error, Err("native query failed"));
+            assert_eq!(queries, [source]);
+        }
+    }
+
+    #[test]
+    #[ignore = "process-wide allocator; run alone with --ignored --test-threads=1"]
+    fn target_priority_selection_allocates_nothing() {
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        let mut queries = 0;
+        for _ in 0..10_000 {
+            for source in [WindowTarget::Active, WindowTarget::Mouse] {
+                for missing in [false, true] {
+                    let result = std::hint::black_box(source).with_fallback(|current| {
+                        queries += 1;
+                        Ok::<_, ()>((!missing || current != source).then_some(WindowId(1)))
+                    });
+                    assert_eq!(result, Ok(Some(WindowId(1))));
+                }
+            }
+        }
+        let stats = region.change();
+        assert_eq!(queries, 60_000);
+        assert_eq!(stats.allocations, 0);
+        assert_eq!(stats.reallocations, 0);
     }
 }

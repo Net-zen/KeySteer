@@ -339,3 +339,15 @@ Normal 默认 `\` 绑定 `text_input`。`[text_input.bindings]` 默认 `'enter \
 Window 家族的可选 `target` 为 active/mouse，只影响模式入口；Binding::WindowTarget 使用紧凑后缀（如 `window_close mouse`），仅有来源配置的绑定分配 Box。入口绑定覆盖模式设置；未配置保留原有会话交接。全局历史、预设、系统音频等不接受来源。配置编辑器每个 Window 模式提供独立入口选项，空值删除覆盖。
 
 配置编译遍历普通路由、应用覆盖和动作序列，把模式入口默认来源与快捷键覆盖合成为最终类型化动作；执行按键时不再解析来源字符串或合并配置优先级。显式 move_window 的方向与来源同样提前编译。运行时只查询动态窗口身份，不能在配置加载时固定焦点或鼠标下窗口。
+
+Window 的 `target` 与快捷键 active/mouse 后缀均表示来源优先级：active 先焦点后鼠标，mouse 先鼠标后焦点。首选有效则不查询另一来源；均无有效窗口时不执行目标操作。配置优先级仍在加载时编译，运行时只查询动态窗口。模式间未配置交接及连续手势固定目标不变。
+
+## UIHint 搜索面板
+
+配置编译阶段把两个面板转换成 CompiledSearchPanel：百分比转换为数值，浅色／深色的面板与正文样式提前解析，复制快捷键转换成 KeyChord，固定信息标题同时生成。运行时不持有 SearchInputUi 配置字符串，不解析颜色、百分比或快捷键；只选择主题、计算当前屏幕／窗口几何并克隆共享样式引用。
+
+`ui_hint.search_input_ui` 和 `ui_hint.search_info_ui` 共用 SearchInputUi / LabelUi，支持字体、字号、颜色、边框、圆角、内边距、宽度和偏移。position 接受上右下左四个百分比，与 WindowCardUi 共用校验与区域计算；旧 Anchor 字符串仍可读。position_mode 为 screen / window，信息面板另支持 search_input（默认在搜索框上方）。`search_copy_keys` 固定四项，默认 primary+1..4（Windows Ctrl，macOS Cmd），依次是 OCR、辅助功能、中心坐标、颜色；空项不改剪贴板，不重排快捷键。颜色来源未提供时保持空槽，不额外截图。
+
+搜索详情只显示编号键帽与类别标题，复用启动编译的 QuickSwitchStyles，不重复显示复制快捷键。默认 search_copy_keys 为 primary+1..4（Windows Ctrl，macOS Cmd），显式 ctrl 配置仍按 Ctrl 执行。默认输入框宽度 280、padding_y 6。
+
+旧版五项 search_copy_keys 仍可读取，第五项被忽略；新默认只有四项。多项搜索不执行第四项颜色复制，前三项字段身份不变。

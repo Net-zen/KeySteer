@@ -557,6 +557,11 @@ impl Drop for WindowsBackend {
 }
 
 impl Backend for WindowsBackend {
+    fn copy_text(&mut self, text: &str) -> Result<(), String> {
+        arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.set_text(text))
+            .map_err(|e| e.to_string())
+    }
     fn event_sink(&self) -> Option<Arc<dyn Fn(BackendEvent) + Send + Sync>> {
         let sender = self.event_tx.clone();
         Some(Arc::new(move |event| {
@@ -593,6 +598,11 @@ impl Backend for WindowsBackend {
     fn cancel_text_prompt(&mut self, id: u64) {
         if let Some(item) = &self.status_item {
             item.cancel_text_prompt(id);
+        }
+    }
+    fn release_text_prompt(&mut self) {
+        if let Some(item) = &self.status_item {
+            item.release_text_prompt();
         }
     }
     fn request_audio(&mut self, request: crate::api::audio::AudioRequest) -> Result<(), String> {

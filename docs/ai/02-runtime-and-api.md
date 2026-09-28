@@ -415,3 +415,7 @@ UI 扫描增量增加 `UiScanResult.retired: Vec<Rect>`：先从当前扫描移�
 
 
 WindowTarget 绑定经公共 API 分发。独立切换使用 CycleFrom，模式入口的一次性来源存于目标 WindowMode（跨异步布局交接保留）；普通入口清除此覆盖。模式内 ResolveTarget 在 worker 查一次身份，再按原 WindowAction 提交，连续帧只携带 ID。跨屏移动经独立 Backend capability 同时支持两个平台。
+
+## 实时文本输入
+
+`OpenTextPrompt` / `CloseTextPrompt` / `ReleaseTextPrompt` 通过 Backend 的既有文本输入端口运行。Engine 为每次打开生成唯一 id，仅向当前 owner 派发 TextChanged / TextSubmitted / CopyTextField，忽略旧 id 的迟到事件。编辑期间普通按键交给原生输入法和文本编辑器，五个配置复制组合键仍按成对 disposition 消费。CopyText 由 Backend 写系统剪贴板。RequestPanelWindowBounds 复用异步窗口几何请求，缺失时退回当前屏幕。

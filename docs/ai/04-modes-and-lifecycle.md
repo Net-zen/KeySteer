@@ -93,7 +93,7 @@ settings；不能注入输入、创建窗口或直接扫描 UI。
 
 - 激活后发送 `ScanUi`；按 scan id 接收多个 Partial 和一个终态。
 - 累积/去重 `UiTarget`，使用 `modes/hint/labeling.rs` 重新分配短标签。
-- 普通输入筛 label prefix；`/` 进入 accessible-name 搜索。
+- 普通输入筛 label prefix；`/` 进入 label、OCR、名称及语义角色的中文简拼搜索。
 - Partial 始终在 UIA/Vision 合并、去重、重新分配短标签后立即显示，并按累计发布批次用完整
   当前集合替换视觉计划。扫描期间 Shift 只读取已准备层号；晚到来源会触发完整集合重建，
   不把新层追加到旧计划。已有 Hint 前缀时，晚到 Partial 保留目标但不重排现有键码，前缀
@@ -223,3 +223,7 @@ mode logic and continue executing native close only in their backends.
 `window/target_selection.rs` 仅显式选窗时分配队列，串行处理窗口身份查询和动作，提前松键仍执行一次短按并释放；退出、挂起、临时层及重启清理队列。Quick 先提交旧布局再重新选窗；Tree 只改变已有成员的选中区域。每次新手势重新查询窗口身份，按住期间不漂移目标。模式入口配置等待旧编辑结束，保留会话历史。
 
 取消在途选窗时，模式忽略迟到结果，并排队 RestoreTarget 恢复后台会话锚点；该命令不激活窗口、不移动指针，避免后续库存重新带回已取消的目标。
+
+## UIHint 搜索会话
+
+`/` 打开支持原生输入法和复制粘贴的编辑框。搜索匹配 label、名称、OCR、英文角色及中文角色简拼，空白分隔项是独立搜索，按输入顺序取并集；同一目标首次匹配保留，尾部空格恢复候选以开始下一项。输入 label 也只过滤，不提前选择。过滤保留原始标签编号；仅一个结果时保持输入框并显示固定四槽信息；多项搜索只显示汇总的 OCR、辅助功能、坐标三槽。Enter 仅在恰好一个结果时发出与普通 label 选择相同的 WarpPointer / FinishMode；多个或零个结果清空查询、恢复全部标签并保留 UIHint。Esc 返回完整标签。复制成功通过 TextCopied 返回完整标签并留在 UIHint；复制失败保留搜索。搜索索引按扫描结果提前准备，同一 UIHint 会话中反复搜索复用索引和原生编辑资源；退出 UIHint、重扫或重载才统一释放。

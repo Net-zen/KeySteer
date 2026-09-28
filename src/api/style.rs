@@ -248,25 +248,30 @@ pub enum WindowCardPositionMode {
 
 impl WindowCardUi {
     pub fn position_ratios(&self) -> Result<[f64; 4], &'static str> {
-        let mut ratios = [0.0; 4];
-        for (result, source) in ratios.iter_mut().zip(&self.position) {
-            let value = source
-                .trim()
-                .strip_suffix('%')
-                .ok_or("position requires four percentages")?;
-            *result = value
-                .parse::<f64>()
-                .map_err(|_| "invalid position percentage")?
-                / 100.0;
-            if !result.is_finite() || !(0.0..=1.0).contains(result) {
-                return Err("position percentages must be 0%..=100%");
-            }
-        }
-        if ratios[0] + ratios[2] > 1.0 + 1e-12 || ratios[1] + ratios[3] > 1.0 + 1e-12 {
-            return Err("opposite position percentages must sum to at most 100%");
-        }
-        Ok(ratios)
+        percentage_position(&self.position)
     }
+}
+
+/// Shared by window cards and configurable input/detail panels.
+pub fn percentage_position(position: &[String; 4]) -> Result<[f64; 4], &'static str> {
+    let mut ratios = [0.0; 4];
+    for (result, source) in ratios.iter_mut().zip(position) {
+        let value = source
+            .trim()
+            .strip_suffix('%')
+            .ok_or("position requires four percentages")?;
+        *result = value
+            .parse::<f64>()
+            .map_err(|_| "invalid position percentage")?
+            / 100.0;
+        if !result.is_finite() || !(0.0..=1.0).contains(result) {
+            return Err("position percentages must be 0%..=100%");
+        }
+    }
+    if ratios[0] + ratios[2] > 1.0 + 1e-12 || ratios[1] + ratios[3] > 1.0 + 1e-12 {
+        return Err("opposite position percentages must sum to at most 100%");
+    }
+    Ok(ratios)
 }
 
 /// Visual style shared by hint labels, grid cells and badges.
@@ -494,7 +499,8 @@ impl Anchor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearchInputUi {
-    pub position: Anchor,
+    pub position: PanelPosition,
+    pub position_mode: PanelPositionMode,
     pub x_offset: i32,
     pub y_offset: i32,
     pub width: i32,
@@ -505,13 +511,201 @@ pub struct SearchInputUi {
 impl Default for SearchInputUi {
     fn default() -> Self {
         Self {
-            position: Anchor::BottomCenter,
+            position: PanelPosition::Percentages(["100%", "50%", "0%", "50%"].map(String::from)),
+            position_mode: PanelPositionMode::Screen,
             x_offset: 0,
             y_offset: 24,
-            width: 320,
+            width: 280,
             label: LabelUi::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PanelPosition {
+    Percentages([String; 4]),
+    Anchor(Anchor),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelPositionMode {
+    Screen,
+    Window,
+    SearchInput,
+}
+
+impl PanelPosition {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Percentages(value) => percentage_position(value).map(|_| ()),
+            Self::Anchor(_) => Ok(()),
+        }
+    }
+}
+
+/// Numeric layout and both theme variants, compiled with the runtime plan.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledSearchPanel {
+    pub position: CompiledPanelPosition,
+    pub position_mode: PanelPositionMode,
+    pub width: f64,
+    pub x_offset: f64,
+    pub y_offset: f64,
+    light: QuickSwitchStyles,
+    dark: QuickSwitchStyles,
+}
+
+impl CompiledSearchPanel {
+    pub fn new(ui: &SearchInputUi, light: &Palette, dark: &Palette) -> Self {
+        let compile = |palette: &Palette| {
+            QuickSwitchStyles::new(ui.label.resolve(
+                palette,
+                palette.surface_label(),
+                palette.text,
+                palette.accent,
+            ))
+        };
+        Self {
+            position: match &ui.position {
+                PanelPosition::Anchor(anchor) => CompiledPanelPosition::Anchor(*anchor),
+                PanelPosition::Percentages(value) => {
+                    CompiledPanelPosition::Percentages(percentage_position(value).unwrap_or_else(
+                        |error| panic!("search style requires validated position: {error}"),
+                    ))
+                }
+            },
+            position_mode: ui.position_mode,
+            width: ui.width.max(1) as f64,
+            x_offset: ui.x_offset as f64,
+            y_offset: ui.y_offset as f64,
+            light: compile(light),
+            dark: compile(dark),
+        }
+    }
+    pub fn for_appearance(&self, appearance: Appearance) -> &QuickSwitchStyles {
+        match appearance {
+            Appearance::Light => &self.light,
+            Appearance::Dark => &self.dark,
+        }
+    }
+}
+
+#[cfg(test)]
+mod search_panel_tests {
+    use super::*;
+
+    #[test]
+    fn search_panels_compile_positions_themes_and_reuse_styles_without_allocation() {
+        let config = crate::config::Config::parse(
+            r##"
+[ui_hint.search_input_ui]
+position_mode = "window"
+position = ["50%", "50%", "50%", "50%"]
+font_size = 23
+background_color = { light = "#FFFFFFFF", dark = "#000000FF" }
+"##,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        let panel = CompiledSearchPanel::new(
+            &config.ui_hint.search_input_ui,
+            &config.palette(Appearance::Light),
+            &config.palette(Appearance::Dark),
+        );
+        assert_eq!(panel.position, CompiledPanelPosition::Percentages([0.5; 4]));
+        assert_eq!(
+            panel.for_appearance(Appearance::Light).panel.background,
+            Color::rgb(255, 255, 255)
+        );
+        assert_eq!(panel.for_appearance(Appearance::Dark).panel.font_size, 23.0);
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        for _ in 0..1000 {
+            std::hint::black_box(panel.for_appearance(Appearance::Dark).panel.clone());
+            std::hint::black_box(panel.position.place(
+                crate::api::Rect::new(100.0, 100.0, 800.0, 600.0),
+                320.0,
+                40.0,
+                0.0,
+                0.0,
+            ));
+        }
+        assert_eq!(region.change().allocations, 0);
+        assert_eq!(region.change().reallocations, 0);
+    }
+
+    #[test]
+    fn search_panel_config_rejects_invalid_geometry_and_copy_slots() {
+        for value in [
+            "[ui_hint.search_input_ui]\nposition = ['101%', '0%', '0%', '0%']",
+            "[ui_hint.search_input_ui]\nposition_mode = 'search_input'",
+            "[ui_hint.search_info_ui]\nwidth = 0",
+            "[ui_hint]\nsearch_copy_keys = ['ctrl+1']",
+            "[ui_hint]\nsearch_copy_keys = ['ctrl+1','ctrl+1','ctrl+3','ctrl+4','ctrl+5']",
+        ] {
+            assert!(
+                crate::config::Config::parse(value)
+                    .unwrap()
+                    .validate()
+                    .is_err(),
+                "{value}"
+            );
+        }
+        let legacy =
+            crate::config::Config::parse("[ui_hint.search_input_ui]\nposition = 'bottom_center'")
+                .unwrap();
+        legacy.validate().unwrap();
+        let restored = crate::config::Config::parse(&legacy.to_toml().unwrap()).unwrap();
+        assert_eq!(
+            legacy.ui_hint.search_input_ui,
+            restored.ui_hint.search_input_ui
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CompiledPanelPosition {
+    Percentages([f64; 4]),
+    Anchor(Anchor),
+}
+
+impl CompiledPanelPosition {
+    pub fn place(
+        &self,
+        area: crate::api::Rect,
+        width: f64,
+        height: f64,
+        x: f64,
+        y: f64,
+    ) -> crate::api::Rect {
+        match self {
+            Self::Anchor(anchor) => anchor.place(area, width, height, x, y),
+            Self::Percentages(value) => {
+                let region = percentage_region(area, *value);
+                crate::api::Rect::new(
+                    (region.center().x - width / 2.0 + x)
+                        .clamp(area.x, (area.right() - width).max(area.x)),
+                    (region.center().y - height / 2.0 - y)
+                        .clamp(area.y, (area.bottom() - height).max(area.y)),
+                    width.min(area.width),
+                    height.min(area.height),
+                )
+            }
+        }
+    }
+}
+
+pub fn percentage_region(
+    area: crate::api::Rect,
+    [top, right, bottom, left]: [f64; 4],
+) -> crate::api::Rect {
+    crate::api::Rect::new(
+        area.x + area.width * left,
+        area.y + area.height * top,
+        area.width * (1.0 - left - right).max(0.0),
+        area.height * (1.0 - top - bottom).max(0.0),
+    )
 }
 
 /// `[mode_indicator.ui]`

@@ -1109,6 +1109,7 @@ fn parse_response(
             && valid_target_rect(rect, image.desktop_bounds)
         {
             targets.push(UiTarget {
+                details: None,
                 rect,
                 name: item.text,
                 role: SemanticRole::StaticText,
@@ -1500,6 +1501,7 @@ mod tests {
     #[test]
     fn merges_adjacent_words_but_not_cross_line_text() {
         let target = |x, y, name: &str| UiTarget {
+            details: None,
             rect: Rect::new(x, y, 20.0, 10.0),
             name: name.into(),
             role: SemanticRole::StaticText,

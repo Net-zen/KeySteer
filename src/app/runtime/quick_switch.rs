@@ -62,7 +62,10 @@ impl Engine {
         if input.injected {
             return Ok(false);
         }
-        if !self.enabled || self.is_excluded_app() || self.window_presets.pending.is_some() {
+        if !self.enabled
+            || self.is_excluded_app()
+            || (self.window_presets.pending.is_some() || self.scheduler.text_prompt.is_some())
+        {
             self.quick_switch.pending = None;
         }
         // The trigger belongs to normal input routing on both edges, even if
@@ -113,7 +116,7 @@ impl Engine {
             && !self.is_excluded_app()
             && self.registry.active != ModeId::idle()
             && self.registry.active != ModeId::text_input()
-            && self.window_presets.pending.is_none()
+            && (self.window_presets.pending.is_none() && self.scheduler.text_prompt.is_none())
             && self.quick_switch.pending.is_none()
             && !input.repeat
             && input.key == self.settings.quick_switch.key
@@ -124,7 +127,7 @@ impl Engine {
                     "trigger={} arm={starts} mode={} enabled={} configured={} excluded={} prompt={} pending={} held={:?}",
                     input.key, self.registry.active, self.enabled,
                     self.settings.quick_switch.enabled, self.is_excluded_app(),
-                    self.window_presets.pending.is_some(), self.quick_switch.pending.is_some(),
+                    (self.window_presets.pending.is_some() || self.scheduler.text_prompt.is_some()), self.quick_switch.pending.is_some(),
                     self.input.pressed.iter().map(Key::as_str).collect::<Vec<_>>()
                 )
             });
@@ -332,7 +335,7 @@ impl Engine {
         let cancel = self.quick_switch.pending.as_ref().is_some_and(|p| p.used)
             || !self.enabled
             || self.is_excluded_app()
-            || self.window_presets.pending.is_some();
+            || (self.window_presets.pending.is_some() || self.scheduler.text_prompt.is_some());
         if cancel
             && self
                 .quick_switch

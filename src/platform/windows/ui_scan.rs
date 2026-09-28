@@ -266,6 +266,7 @@ mod tests {
         let visual = session.source("visual");
         let ax = session.source("accessibility");
         let fragment = |x| UiTarget {
+            details: None,
             rect: rect(x, 100.0, 30.0, 20.0),
             name: String::new(),
             role: SemanticRole::Control,
@@ -275,6 +276,7 @@ mod tests {
         visual.push_from(TargetSource::Contour, vec![fragment(200.0)]);
         assert!(mailbox.take().is_none(), "second fragment is still batched");
         let row = UiTarget {
+            details: None,
             rect: rect(10.0, 95.0, 400.0, 32.0),
             name: "file".into(),
             role: SemanticRole::ListItem,
@@ -308,6 +310,7 @@ mod tests {
         let targets = |range: std::ops::Range<usize>| {
             range
                 .map(|i| UiTarget {
+                    details: None,
                     rect: rect((i % 101 * 32) as f64, (i / 101 * 32) as f64, 12.0, 12.0),
                     name: String::new(),
                     role: SemanticRole::Control,
@@ -329,6 +332,7 @@ mod tests {
         input.scope = crate::api::UiScanScope::Screen;
         let plan = super::super::accessibility::test_scan_plan(input);
         let target = UiTarget {
+            details: None,
             rect: rect(100.0, 100.0, 20.0, 20.0),
             name: String::new(),
             role: SemanticRole::Control,
@@ -405,6 +409,7 @@ mod tests {
         let first = session.source("first");
         let second = session.source("second");
         let target = |rect, name: &str| UiTarget {
+            details: None,
             rect,
             name: name.into(),
             role: SemanticRole::Control,

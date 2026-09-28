@@ -34,6 +34,7 @@ const STATUS_ICON_SIZE: f64 = 18.0;
 struct StatusTargetIvars {
     terminating: Cell<bool>,
     note: RefCell<Option<NotePanel>>,
+    cached_note: RefCell<Option<NotePanel>>,
     update_alert: RefCell<Option<Retained<NSPanel>>>,
     downloaded_update: RefCell<Option<PathBuf>>,
 }
@@ -42,6 +43,9 @@ struct NotePanel {
     id: u64,
     panel: Retained<NSPanel>,
     field: Retained<NSTextField>,
+    live: bool,
+    request: crate::api::window_presets::TextPrompt,
+    previous: Option<Retained<objc2_app_kit::NSRunningApplication>>,
 }
 
 define_class!(
@@ -52,6 +56,32 @@ define_class!(
     impl InlineInputPanel {
         #[unsafe(method(canBecomeKeyWindow))]
         fn can_become_key_window(&self) -> bool { true }
+
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &objc2_app_kit::NSEvent) -> bool {
+            use objc2_app_kit::NSEventModifierFlags as Flags;
+            let modifiers = event.modifierFlags() & (Flags::Command | Flags::Control | Flags::Option | Flags::Shift);
+            let action = if modifiers == Flags::Command || modifiers == (Flags::Command | Flags::Shift) {
+                event.charactersIgnoringModifiers().and_then(|text| {
+                    let key = text.to_string().to_lowercase();
+                    match (key.as_str(), modifiers.contains(Flags::Shift)) {
+                        ("a", false) => Some(sel!(selectAll:)), ("c", false) => Some(sel!(copy:)),
+                        ("v", false) => Some(sel!(paste:)), ("x", false) => Some(sel!(cut:)),
+                        ("z", false) => Some(sel!(undo:)), ("z", true) => Some(sel!(redo:)), _ => None,
+                    }
+                })
+            } else { None };
+            // SAFETY: standard AppKit action signatures route through the live
+            // first responder. Unhandled events delegate to the NSPanel superclass.
+            unsafe {
+                if let Some(action) = action
+                    && NSApplication::sharedApplication(self.mtm()).sendAction_to_from(action, None, Some(self)) {
+                    true
+                } else {
+                    msg_send![super(self), performKeyEquivalent: event]
+                }
+            }
+        }
     }
 );
 
@@ -76,6 +106,20 @@ define_class!(
     }
 
     impl StatusTarget {
+        #[unsafe(method(controlTextDidChange:))]
+        fn search_text_changed(&self, _notification: &AnyObject) {
+            let note = self.ivars().note.borrow();
+            if let Some(note) = note.as_ref().filter(|note| note.live) {
+                emit(BackendEvent::TextPromptChanged { id: note.id, text: crate::api::window_presets::bounded_text(note.field.stringValue().to_string(), note.request.max_chars) });
+            }
+        }
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn search_edit_command(&self, _control: &AnyObject, _view: &AnyObject, command: objc2::runtime::Sel) -> bool {
+            if command == sel!(cancelOperation:) {
+                self.finish_note(false);
+                true
+            } else { false }
+        }
         #[unsafe(method(saveLayoutNote:))]
         fn save_layout_note(&self, _sender: Option<&AnyObject>) { self.finish_note(true); }
         #[unsafe(method(cancelLayoutNote:))]
@@ -164,10 +208,29 @@ impl StatusTarget {
     fn finish_note(&self, save: bool) {
         let note = self.ivars().note.borrow_mut().take();
         if let Some(note) = note {
-            let value = save.then(|| note.field.stringValue().to_string());
-            note.panel.close();
+            let id = note.id;
+            let value = save.then(|| {
+                crate::api::window_presets::bounded_text(
+                    note.field.stringValue().to_string(),
+                    note.request.max_chars,
+                )
+            });
+            if note.live {
+                note.panel.orderOut(None);
+                if NSApplication::sharedApplication(self.mtm()).isActive()
+                    && let Some(previous) = &note.previous
+                {
+                    #[allow(deprecated)]
+                    previous.activateWithOptions(
+                        objc2_app_kit::NSApplicationActivationOptions::ActivateIgnoringOtherApps,
+                    );
+                }
+                *self.ivars().cached_note.borrow_mut() = Some(note);
+            } else {
+                note.panel.close();
+            }
             emit(BackendEvent::TextPromptResult {
-                id: note.id,
+                id,
                 value: Ok(value),
             });
         }
@@ -177,6 +240,7 @@ impl StatusTarget {
         let this = this.set_ivars(StatusTargetIvars {
             terminating: Cell::new(false),
             note: RefCell::new(None),
+            cached_note: RefCell::new(None),
             update_alert: RefCell::new(None),
             downloaded_update: RefCell::new(None),
         });
@@ -236,6 +300,12 @@ pub(super) fn prepare_application(mtm: MainThreadMarker) -> Result<(), String> {
 }
 
 impl StatusItem {
+    pub(super) fn release_text_prompt(&self) {
+        self._target.finish_note(false);
+        if let Some(note) = self._target.ivars().cached_note.borrow_mut().take() {
+            note.panel.close();
+        }
+    }
     pub(super) fn cancel_text_prompt(&self, id: u64) {
         if self
             ._target
@@ -255,9 +325,32 @@ impl StatusItem {
         let target = &self._target;
         target.finish_note(false);
         let mtm = target.mtm();
+        let previous = NSWorkspace::sharedWorkspace().frontmostApplication();
+        if let Some(mut note) = target.ivars().cached_note.borrow_mut().take() {
+            if request.live_style.is_some()
+                && note.request.live_style == request.live_style
+                && note.request.bounds == request.bounds
+            {
+                note.id = request.id;
+                note.request = request;
+                note.previous = previous;
+                note.field.setStringValue(&NSString::from_str(""));
+                let panel = note.panel.clone();
+                let field = note.field.clone();
+                *target.ivars().note.borrow_mut() = Some(note);
+                return focus_text_prompt(target, &panel, &field);
+            }
+            note.panel.close();
+        }
         let screens = super::screens::list_screens()?;
         let primary = crate::api::Screen::primary(&screens).ok_or("No display for layout input")?;
-        let bounds = request.bounds;
+        let live = request.live_style.is_some();
+        let bounds = request.live_style.as_ref().map_or(request.bounds, |style| {
+            request.bounds.inset(
+                style.padding_x + style.border_width,
+                style.padding_y + style.border_width,
+            )
+        });
         let rect = NSRect::new(
             NSPoint::new(bounds.x, primary.bounds.bottom() - bounds.bottom()),
             NSSize::new(bounds.width, bounds.height),
@@ -287,13 +380,45 @@ impl StatusItem {
             NSPoint::new(12.0, 62.0),
             NSSize::new(bounds.width - 24.0, 28.0),
         ));
-        content.addSubview(&label);
+        if !live {
+            content.addSubview(&label);
+        }
         let field = NSTextField::textFieldWithString(&NSString::from_str(""), mtm);
         field.setPlaceholderString(Some(&NSString::from_str(&request.placeholder)));
         field.setFrame(NSRect::new(
             NSPoint::new(12.0, 20.0),
             NSSize::new((bounds.width - 204.0).max(40.0), 30.0),
         ));
+        if let Some(style) = &request.live_style {
+            field.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), rect.size));
+            field.setBezeled(false);
+            field.setBordered(false);
+            let color = |c: crate::api::Color| {
+                objc2_app_kit::NSColor::colorWithSRGBRed_green_blue_alpha(
+                    f64::from(c.r) / 255.0,
+                    f64::from(c.g) / 255.0,
+                    f64::from(c.b) / 255.0,
+                    f64::from(c.a) / 255.0,
+                )
+            };
+            field.setBackgroundColor(Some(&color(style.background)));
+            field.setTextColor(Some(&color(style.text_color)));
+            panel.setBackgroundColor(Some(&color(style.background)));
+            let font = if style.font_family.is_empty() {
+                None
+            } else {
+                NSFont::fontWithName_size(&NSString::from_str(&style.font_family), style.font_size)
+            }
+            .unwrap_or_else(|| NSFont::systemFontOfSize(style.font_size));
+            field.setFont(Some(&font));
+            // SAFETY: the retained status target implements these action/delegate selectors
+            // and outlives the field; no Rust borrows cross a callback.
+            unsafe {
+                field.setTarget(Some(&**target));
+                field.setAction(Some(sel!(saveLayoutNote:)));
+                let _: () = msg_send![&*field, setDelegate: &**target];
+            }
+        }
         content.addSubview(&field);
         for (title, selector, x, key) in [
             ("Save", sel!(saveLayoutNote:), bounds.width - 180.0, "\r"),
@@ -304,6 +429,9 @@ impl StatusItem {
                 "\u{1b}",
             ),
         ] {
+            if live {
+                continue;
+            }
             // SAFETY: selectors are implemented above and the retained status target
             // outlives all buttons. AppKit retains no temporary Rust references.
             let button = unsafe {
@@ -320,14 +448,14 @@ impl StatusItem {
         }
         panel.setContentView(Some(&content));
         *target.ivars().note.borrow_mut() = Some(NotePanel {
+            live,
+            request: request.clone(),
+            previous,
             id: request.id,
             panel: Retained::into_super(panel.clone()),
             field: field.clone(),
         });
-        NSApplication::sharedApplication(mtm).activate();
-        panel.makeKeyAndOrderFront(None);
-        panel.makeFirstResponder(Some(&field));
-        Ok(())
+        focus_text_prompt(target, &panel, &field)
     }
     pub(super) fn new(mtm: MainThreadMarker, sender: EventSender) -> Self {
         *SENDER
@@ -672,7 +800,7 @@ fn status_icon(size: f64) -> Option<Retained<NSImage>> {
 
 impl Drop for StatusItem {
     fn drop(&mut self) {
-        self._target.finish_note(false);
+        self.release_text_prompt();
         self._target.dismiss_update_alert();
         if let Some(mutex) = SENDER.get() {
             *mutex.lock().unwrap_or_else(|error| error.into_inner()) = None;
@@ -687,6 +815,27 @@ impl Drop for StatusItem {
             application.replyToApplicationShouldTerminate(true);
         }
     }
+}
+
+fn focus_text_prompt(
+    target: &StatusTarget,
+    panel: &NSPanel,
+    field: &NSTextField,
+) -> Result<(), String> {
+    NSApplication::sharedApplication(target.mtm()).activate();
+    panel.makeKeyAndOrderFront(None);
+    if panel.makeFirstResponder(Some(field))
+        && panel.isKeyWindow()
+        && field.currentEditor().is_some()
+    {
+        return Ok(());
+    }
+    // Do not leave a visible editor that would forward typing to another app.
+    let note = target.ivars().note.borrow_mut().take();
+    if let Some(note) = note {
+        note.panel.close();
+    }
+    Err("Cannot focus text input".into())
 }
 
 fn menu_item(

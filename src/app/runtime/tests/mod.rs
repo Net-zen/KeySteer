@@ -42,6 +42,9 @@ fn active_config(engine: &Engine) -> Config {
 /// Records what the engine asked of the platform.
 #[derive(Default)]
 struct Recorder {
+    copied_text: Vec<String>,
+    fail_copy: bool,
+    released_text_prompts: usize,
     text_prompts: Vec<crate::api::window_presets::TextPrompt>,
     cancelled_text_prompts: Vec<u64>,
     audio_requests: Vec<crate::api::audio::AudioRequest>,
@@ -132,6 +135,17 @@ impl Backend for FakeBackend {
     }
     fn cancel_text_prompt(&mut self, id: u64) {
         self.log.lock().unwrap().cancelled_text_prompts.push(id);
+    }
+    fn release_text_prompt(&mut self) {
+        self.log.lock().unwrap().released_text_prompts += 1;
+    }
+    fn copy_text(&mut self, text: &str) -> Result<(), String> {
+        let mut log = self.log.lock().unwrap();
+        if log.fail_copy {
+            return Err("clipboard busy".into());
+        }
+        log.copied_text.push(text.into());
+        Ok(())
     }
     fn request_audio(&mut self, request: crate::api::audio::AudioRequest) -> Result<(), String> {
         self.log.lock().unwrap().audio_requests.push(request);
@@ -351,6 +365,11 @@ impl Mode for ProbeMode {
     }
     fn handle(&mut self, event: &ModeEvent, _ctx: &HostContext<'_>) -> CommandBatch {
         let label = match event {
+            ModeEvent::PanelWindowBounds { .. } => "panel_bounds",
+            ModeEvent::TextChanged(_) => "text_changed",
+            ModeEvent::TextSubmitted(_) => "text_submitted",
+            ModeEvent::CopyTextField(_) => "copy_field",
+            ModeEvent::TextCopied => "text_copied",
             ModeEvent::Activated { .. } => "activated",
             ModeEvent::Pushed { .. } => "pushed",
             ModeEvent::Deactivated => "deactivated",

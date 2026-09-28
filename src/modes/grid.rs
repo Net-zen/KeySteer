@@ -365,6 +365,14 @@ mod tests {
             keys: usize,
         }
         impl Presenter for Recorder {
+            fn input_panel(
+                &self,
+                _: &crate::api::style::CompiledSearchPanel,
+                _: Option<Rect>,
+                _: &HostContext<'_>,
+            ) -> (Rect, crate::api::overlay::SharedLabelStyle) {
+                panic!("Grid never requests text input")
+            }
             fn compose(&self, view: View<'_>, _: &HostContext<'_>) -> OverlayScene {
                 let View::Grid(view) = view else {
                     panic!("expected Grid view")

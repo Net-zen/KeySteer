@@ -185,3 +185,7 @@ macOS：
 
 
 `src/modes/window/target_selection.rs`：按键级窗口来源、异步选窗队列与固定身份手势；测试分别覆盖共享 worker、mode 与配置解析。
+
+## UIHint 搜索
+
+`modes/hint/search.rs` 编译名称、OCR、语义角色的大小写与中文简拼搜索数据；`session.rs` 持有扫描会话索引和原始标签快照。`presentation/hint` 复用 LabelUi、百分比位置及 QuickSwitchStyles 构建搜索与信息面板。原生编辑复用两端 text prompt，模式不调用原生 API。

@@ -591,6 +591,7 @@ impl Scan<'_> {
             let key = normalized_rect(rect);
             if self.seen.insert(key) {
                 self.batch.push(UiTarget {
+                    details: None,
                     rect,
                     name: accessible_name(element, &self.attributes),
                     role: semantic_role,

@@ -105,12 +105,7 @@ pub(super) fn logical(rect: Rect, scale: f64) -> Rect {
 
 /// Insets describe a preferred region, including a collapsed line or point.
 pub(super) fn card_region(area: Rect, [top, right, bottom, left]: [f64; 4]) -> Rect {
-    Rect::new(
-        area.x + area.width * left,
-        area.y + area.height * top,
-        area.width * (1.0 - left - right).max(0.0),
-        area.height * (1.0 - top - bottom).max(0.0),
-    )
+    crate::api::style::percentage_region(area, [top, right, bottom, left])
 }
 
 #[cfg(test)]

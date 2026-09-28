@@ -11,6 +11,9 @@ pub(crate) struct OwnedFont {
 }
 
 impl OwnedFont {
+    pub(crate) fn raw(&self) -> HFONT {
+        self.raw
+    }
     pub(crate) fn new(family: &str, pixel_height: i32, bold: bool) -> Result<Self, String> {
         let family: Vec<u16> = family.encode_utf16().chain(Some(0)).collect();
         // SAFETY: `family` is NUL-terminated and remains live for the complete

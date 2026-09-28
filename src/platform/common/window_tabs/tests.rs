@@ -53,6 +53,84 @@ fn indexed_application_order_matches_linear_with_reordered_and_missing_members()
                 with_application_cycle_order(&ring, &windows, state, |order| {
                     assert_eq!(order, expected.as_slice());
                 });
+                // Compare the complete sequence, including rejected/stale
+                // candidates, against the original materialized ordering.
+                for target in [
+                    None,
+                    Some(WindowId(9999)),
+                    ring.first().copied(),
+                    ring.last().copied(),
+                ] {
+                    for backwards in [false, true] {
+                        for scope in [CycleScope::All, CycleScope::Group, CycleScope::PreferGroup] {
+                            let group = state
+                                .filter(|_| !matches!(scope, CycleScope::All))
+                                .and_then(|state| state.containing(target?));
+                            let current = group.map(|g| g.active).or(target);
+                            let mut reference = Vec::new();
+                            let mut append = |order: &[WindowId], skip_group: bool| {
+                                if order.is_empty() {
+                                    return;
+                                }
+                                let start = current
+                                    .and_then(|id| order.iter().position(|v| *v == id))
+                                    .map_or(0, |i| {
+                                        if backwards {
+                                            (i + order.len() - 1) % order.len()
+                                        } else {
+                                            (i + 1) % order.len()
+                                        }
+                                    });
+                                for offset in 0..order.len() {
+                                    let id = order[if backwards {
+                                        (start + order.len() - offset) % order.len()
+                                    } else {
+                                        (start + offset) % order.len()
+                                    }];
+                                    if !skip_group
+                                        || !group.is_some_and(|g| g.members.contains(&id))
+                                    {
+                                        reference.push(id);
+                                    }
+                                }
+                            };
+                            if let Some(group) = group {
+                                append(&group.members, false);
+                            }
+                            if group.is_none() || !matches!(scope, CycleScope::Group) {
+                                append(&expected, group.is_some());
+                            }
+                            let cycle = WindowCycle {
+                                ring: &ring,
+                                windows: &windows,
+                                tabs: state,
+                                target,
+                                backwards,
+                                scope,
+                            };
+                            let mut actual = Vec::new();
+                            assert!(!cycle.visit(|id| {
+                                actual.push(id);
+                                false
+                            }));
+                            assert_eq!(
+                                actual, reference,
+                                "n={count}, round={iteration}, target={target:?}, backwards={backwards}"
+                            );
+                            // A rejected first candidate must not be visited
+                            // twice when the direct lookup falls back to sorting.
+                            for accepted in reference.iter().take(3) {
+                                let mut prefix = Vec::new();
+                                assert!(cycle.visit(|id| {
+                                    prefix.push(id);
+                                    id == *accepted
+                                }));
+                                let end = reference.iter().position(|id| id == accepted).unwrap();
+                                assert_eq!(prefix, reference[..=end]);
+                            }
+                        }
+                    }
+                }
             }
             if iteration % 3 == 0 {
                 windows.pop(); // Stale ring entry and missing group members.
@@ -2213,5 +2291,62 @@ fn cycle_scratch_storage_application_order_stays_inline_through_128_windows() {
             "count={count}"
         );
         assert_eq!(stats.reallocations, 0, "count={count}");
+    }
+}
+
+#[test]
+#[ignore = "allocation counter is process-global; run alone with --ignored --test-threads=1"]
+fn cycle_direct_neighbour_uses_no_scratch_allocation() {
+    for count in [2, 4, 8, 16, 24, 32, 48, 96, 128, 129] {
+        let mut access = setup();
+        let template = access
+            .native
+            .windows
+            .values_mut()
+            .next()
+            .unwrap()
+            .info
+            .clone();
+        let windows: Vec<_> = (1..=count)
+            .map(|id| WindowInfo {
+                id: WindowId(id),
+                ..template.clone()
+            })
+            .collect();
+        let ring: Vec<_> = windows.iter().map(|w| w.id).collect();
+        let tabs = TabState {
+            groups: vec![crate::api::window_tabs::TabGroup {
+                id: TabGroupId(1),
+                members: ring.clone(),
+                active: ring[0],
+            }],
+            ..TabState::default()
+        };
+        for state in [None, Some(&tabs)] {
+            for backwards in [false, true] {
+                let cycle = WindowCycle {
+                    ring: &ring,
+                    windows: &windows,
+                    tabs: state,
+                    target: Some(if backwards { ring[1] } else { ring[0] }),
+                    backwards,
+                    scope: CycleScope::All,
+                };
+                let allocations = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+                let mut calls = 0;
+                assert!(cycle.visit(|id| {
+                    calls += 1;
+                    assert_eq!(id, if backwards { ring[0] } else { ring[1] });
+                    true
+                }));
+                let stats = allocations.change();
+                assert_eq!(calls, 1);
+                assert_eq!(
+                    (stats.allocations, stats.reallocations),
+                    (0, 0),
+                    "n={count}"
+                );
+            }
+        }
     }
 }

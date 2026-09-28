@@ -368,7 +368,7 @@ In Window, Quick and Editor, `V+M` toggles application mute and `Shift+V+M` togg
 
 ## Window target source
 
-Each of `[window]`, `[window_quick]`, `[window_editor]`, `[window_restore]` and `[window_tab]` accepts optional `target = "active"` or `target = "mouse"`. These select the focused window or the window under the pointer on entry. Omission preserves existing behavior: pointer selection for a new session and the selected window across Window mode handoffs. Explicit entry selection waits for any required layout commit.
+Each of `[window]`, `[window_quick]`, `[window_editor]`, `[window_restore]` and `[window_tab]` accepts optional `target = "active"` or `target = "mouse"`. These set lookup priority on entry: `active` tries the focused window first, then the window under the pointer; `mouse` reverses that order. The second source is queried only when the first has no usable window. Omission preserves existing behavior: pointer selection for a new session and the selected window across Window mode handoffs. Explicit entry selection waits for any required layout commit.
 
 Bindings can independently append a source:
 
@@ -385,6 +385,22 @@ Bindings can independently append a source:
 "h" = "window_left mouse"
 ```
 
-An entry binding overrides the mode's `target`. In-mode actions without a suffix retain the selected window. Explicit actions resolve asynchronously once at gesture start and hold that identity throughout continuous movement or resizing. A missing source never falls back to another window. Native changes or permission rejection can still fail an operation.
+An entry binding overrides the mode's `target`. In-mode actions without a suffix retain the selected window. Explicit actions resolve asynchronously once at gesture start and hold that identity throughout continuous movement or resizing. If neither source has a usable window, no target operation runs. A valid isolated overlap anchor still only centers the pointer and does not switch sources. Query errors, native changes and operation or permission failures do not redirect the action to another window.
 
 Supported operations include cycling, mode entry, moving across displays, movement/resize/state/close/application audio, layout navigation/split/ratio/region removal, and tab member operations. Layout actions require membership in the existing layout; tab actions affect the selected window's group without merging groups. History, initial-state restoration, preset save/delete/confirm, numeric input, and system audio have independent scopes and reject a source suffix.
+
+## UIHint search and information copying
+
+Press `/` after hints appear. The native editor supports IME text, selection, copy and paste. Search matches original hint labels, OCR text, accessibility names and semantic roles, including simplified-Chinese pinyin initials (`复制` / `fz`, `按钮` / `an` / `button`). Labels retain their original codes. Even a complete label only filters while searching.
+
+Enter closes search. Exactly one match follows ordinary hint selection and moves the pointer; zero or multiple matches clear the query and restore all original hints without leaving UIHint. Esc restores all hints. A unique match keeps the editor open and displays a details panel.
+
+The four stable shortcuts default to primary+1 (OCR), primary+2 (accessibility name and role), primary+3 (center coordinates), and primary+4 (color when supplied). Primary means Ctrl on Windows and Cmd on macOS; the panel shows numbered keycaps and category titles without repeating shortcut hints. Missing information leaves an empty slot and does not change the clipboard. Configure the four chords with `ui_hint.search_copy_keys`.
+
+`ui_hint.search_input_ui` and `ui_hint.search_info_ui` share font, size, color, border, radius, padding, width and offset settings. `position` accepts four percentage strings in top/right/bottom/left order, reusing Window card parsing. The input defaults to `position_mode = "screen"` and `["100%", "50%", "0%", "50%"]`; use `window` for window-relative placement. Details default to `position_mode = "search_input"` and `["0%", "50%", "100%", "50%"]`, above the input, and also support `screen` / `window`. Old anchor strings remain readable.
+
+Search data is prepared as scan batches arrive. Repeated searches reuse session indexes and the native editor; leaving UIHint or rescanning releases them.
+
+Panel percentages, light/dark styles, information headings and copy shortcuts are compiled at startup. Search reuses those results; target text and Chinese initial-letter indexes are prepared as scan results arrive.
+
+Spaces separate independent searches: `fz button ab` unions their matches in input order, retaining each target at its first match. Trailing spaces restore candidates for the next search. Multi-selection shows only OCR, accessibility and coordinates, copied in order with newline separators. Successful copying closes search and restores all hints while keeping UIHint active; failures and empty fields preserve the search. Display text is elided to one line; copying preserves the full content.

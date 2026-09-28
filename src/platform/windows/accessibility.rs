@@ -1587,6 +1587,7 @@ pub fn semantic_role_for(control_type: i32) -> SemanticRole {
 
 pub fn to_target(rect: Rect, name: String, control_type: i32) -> UiTarget {
     UiTarget {
+        details: None,
         rect,
         name,
         role: semantic_role_for(control_type),
@@ -1853,6 +1854,7 @@ mod tests {
 
     fn target(x: f64, y: f64, name: &str, role: SemanticRole) -> UiTarget {
         UiTarget {
+            details: None,
             rect: Rect::new(x, y, 40.0, 20.0),
             name: name.into(),
             role,

@@ -5,6 +5,14 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.10.27
+
+- UIHint 新增搜索与信息复制：按 `/` 搜索标签、OCR 和辅助功能内容，并用快捷键复制结果。
+- 窗口入口目标在激活窗口或鼠标下窗口不可用时自动回退，macOS 的 Tab 保存支持 `Cmd+S`。
+
+- UIHint now supports searching labels, OCR and accessibility information with `/`, then copying results with shortcuts.
+- Window entry targets fall back when the preferred window is unavailable, and Tab saving now supports `Cmd+S` on macOS.
+
 ## 0.10.26
 
 Window、Quick、Editor、Restore 和 Tabs 现在支持配置入口目标：`active` 选择激活窗口，`mouse` 选择鼠标下窗口；单条快捷键也可追加目标后缀。未配置时保持原有行为。

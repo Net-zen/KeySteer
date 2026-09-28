@@ -55,6 +55,11 @@ pub enum FinishCause {
 /// including drawing its own grid or full-screen overlay.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    RequestPanelWindowBounds(u64),
+    OpenTextPrompt(Box<super::window_presets::TextPrompt>),
+    CloseTextPrompt,
+    ReleaseTextPrompt,
+    CopyText(String),
     AudioRequest(Box<super::audio::AudioRequest>),
     CancelAudioSession(u64),
     WindowRequest(Box<super::window::WindowRequest>),
@@ -452,6 +457,14 @@ impl<'a> IntoIterator for &'a CommandBatch {
 /// Everything the host tells a mode.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModeEvent {
+    PanelWindowBounds {
+        id: u64,
+        bounds: Option<Rect>,
+    },
+    TextChanged(String),
+    TextSubmitted(Option<String>),
+    CopyTextField(usize),
+    TextCopied,
     AudioResult(Box<super::audio::AudioResult>),
     WindowResult(Box<super::window::WindowResult>),
     WindowPresets(Box<super::window_presets::PresetLibraryResult>),
@@ -930,6 +943,7 @@ mod tests {
     #[test]
     fn region_replacements_inherit_only_retired_descriptions_and_keep_native_names() {
         let text = UiTarget {
+            details: None,
             rect: Rect::new(20.0, 10.0, 40.0, 20.0),
             name: "member".into(),
             role: crate::api::SemanticRole::StaticText,
@@ -939,6 +953,7 @@ mod tests {
         independent.name = "independent action".into();
         let previous = [text.clone(), independent];
         let mut row = [UiTarget {
+            details: None,
             rect: Rect::new(0.0, 0.0, 150.0, 40.0),
             name: String::new(),
             role: crate::api::SemanticRole::ListItem,

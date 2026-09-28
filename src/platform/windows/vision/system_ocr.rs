@@ -69,6 +69,7 @@ pub(super) fn stream_system_targets_from_result(
             continue;
         }
         batch.push(UiTarget {
+            details: None,
             rect,
             name: text,
             role: SemanticRole::StaticText,

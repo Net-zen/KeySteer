@@ -507,4 +507,14 @@ Windows `OwnedFont` 拥有 HFONT；选入 DC 的 guard 同时借用字体和独�
 这是渐进迁移：原生全屏、整组最小化，以及包含最小化／全屏入口的布局恢复和不支持提交能力的适配器保留有界同步兼容路径；不把它们误报为完全异步。原生成员加入、切换及解散也仍使用原有事务。Windows / macOS 的原生句柄继续只由原窗口 worker 拥有，没有新增线程间共享 unsafe。
 
 
-显式 WindowTarget 严格选择 active/mouse，不回退。ResolveTarget 不激活窗口；AcquireFrom/Retarget 执行入口激活。Grouped 的单目标查询委托 native，避免构造额外组库存及受当前屏幕编号范围限制。Tabs::At 在原有组内选择作用目标，禁止借用 Choose 合并组。
+WindowTarget 指定 active/mouse 的查找优先级，首选没有可用窗口时惰性查询另一来源；查询错误及动作执行失败不换目标重试。普通／相交独立循环复用已枚举库存验证身份，不为兜底重新枚举。单目标入口及手势查询复用既有 snapshot 作验证，原生适配器保留单来源直查，不额外构造库存。跨屏移动在两平台使用同一优先级规则。ResolveTarget 不激活窗口；AcquireFrom/Retarget 执行入口激活。Grouped 的单目标查询委托 native，避免构造额外组库存及受当前屏幕编号范围限制。Tabs::At 在原有组内选择作用目标，禁止借用 Choose 合并组。
+
+窗口切换统一由 `window_tabs::WindowCycle` 遍历候选：普通独立操作使用完整稳定环，Window 模式保留组内环，overlap 采用组内优先再遍历剩余候选。同一遍历器负责 Tabs 成员顺序、同屏同应用相邻及正反向遍历；原生快照校验、激活和错误处理留在 Session 的同一回调。只有 overlap 准备与核对几何连通缓存，普通切换不建立连通关系。组内下一项或同应用下一项可直接借用现有成员/稳定环查找；跨组、回绕或该候选不可用时才构造完整应用顺序，回退不会重复访问已经尝试的候选。仍按每次枚举的身份/应用/屏幕和当前 Tabs 状态查询，不新增应用索引缓存或事件失效协议。
+
+## 共享实时文本编辑
+
+搜索复用既有 preset note 输入设施：Windows 托盘线程拥有 modeless EDIT 与 OwnedFont；macOS AppKit 线程拥有 NSTextField / NSPanel。文字变化发布 TextPromptChanged；IME 组合中的 Enter 不提交搜索。搜索关闭先隐藏编辑器，同样式和几何重开复用；ReleaseTextPrompt、重载和 shutdown 释放所有缓存。背景、边框和圆角仍由统一 overlay 绘制，原生编辑区域负责文字、光标、选择、输入法和剪贴板。
+
+Windows 搜索新建／复用窗口后显式激活并 SetFocus 到 EDIT，核对前台与控件焦点；激活被系统拒绝时只做一次同步输入队列交接，并在返回前解除。交接失败返回错误并关闭搜索，不继续把搜索按键透传给外部窗口；没有持续抢焦点的定时器。
+
+跨平台搜索继续共用 ModeEvent／Command 状态机、排序匹配、字段汇总、面板和 TextPrompt。API bounded_text 统一按 Unicode 字符截断且复用 String，Windows／macOS 的变更与提交均调用它。macOS 新建与缓存重开共用 focus_text_prompt：激活、设置 first responder、核对 key window 与 currentEditor，失败关闭窗口并交给核心错误路径。原生 InlineInputPanel 将 Cmd+A/C/V/X/Z 与 Shift+Cmd+Z 转交系统 responder chain，搜索与备注共用；不建立主菜单，不自行实现剪贴板或撤销逻辑。

@@ -230,7 +230,8 @@ pub(crate) trait WindowAccess {
     /// Submit selection. Asynchronous adapters retain confirmation state until
     /// `native_deadline` clears; grouped visibility is committed after that.
     fn select(&self, id: WindowId) -> Result<(), String>;
-    /// Resolve native foreground identity after refreshing the inventory.
+    /// Query one source only. The caller applies priority and validates the
+    /// snapshot before choosing a fallback; native implementations avoid enumeration.
     fn resolve_window_target(
         &mut self,
         source: crate::api::window::WindowTarget,

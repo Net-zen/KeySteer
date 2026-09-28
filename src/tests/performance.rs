@@ -200,6 +200,7 @@ fn owned_hint_delivery_stays_within_allocation_budget() {
     };
     let targets = (0..TARGETS)
         .map(|index| UiTarget {
+            details: None,
             rect: Rect::new(
                 (index % 50) as f64 * 70.0,
                 (index / 50) as f64 * 30.0,

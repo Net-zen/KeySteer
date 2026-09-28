@@ -192,7 +192,7 @@ impl Engine {
     pub(super) fn decorate_key_help(&mut self, scene: &mut OverlayScene) {
         if !self.help_visible()
             || self.registry.active == ModeId::idle()
-            || self.window_presets.pending.is_some()
+            || (self.window_presets.pending.is_some() || self.scheduler.text_prompt.is_some())
         {
             self.overlay.key_help_cache = None;
             return;

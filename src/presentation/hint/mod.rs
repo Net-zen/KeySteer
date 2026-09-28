@@ -16,6 +16,29 @@ const MIN_VISUAL_STACK_AREA_RATIO: f64 = 0.20;
 const MIN_TEXT_OCCLUSION_EXTENT: f64 = 0.5;
 const HINT_LAYER_Z_BASE: i32 = 1;
 const SEARCH_INPUT_Z_INDEX: i32 = 10_000;
+
+pub(super) fn input_panel(
+    cfg: &crate::api::style::CompiledSearchPanel,
+    window: Option<Rect>,
+    ctx: &HostContext<'_>,
+) -> (Rect, crate::api::overlay::SharedLabelStyle) {
+    let style = cfg.for_appearance(ctx.palette.appearance).panel.clone();
+    let scale = super::label_scale(ctx.scale());
+    let area = if cfg.position_mode == crate::api::style::PanelPositionMode::Window {
+        window.unwrap_or_else(|| ctx.active_bounds())
+    } else {
+        ctx.active_bounds()
+    };
+    let height = (style.font_size * 1.8 + style.padding_y * 2.0) * scale;
+    let rect = cfg.position.place(
+        area,
+        (cfg.width * scale).min(area.width),
+        height,
+        cfg.x_offset * scale,
+        cfg.y_offset * scale,
+    );
+    (rect, style)
+}
 const AUTO_HINT_PADDING_X_RATIO: f64 = 2.0 / 17.0;
 const AUTO_HINT_PADDING_Y_RATIO: f64 = 0.06;
 pub(crate) fn resolved_hint_label_style(config: &HintStyle<'_>, palette: &Palette) -> LabelStyle {
@@ -276,26 +299,138 @@ impl HintView<'_> {
         }
 
         // Search box, shown only while searching.
-        if let Some(query) = self.content.search {
+        if self.content.search.is_some() {
+            scene.clip = Some(ctx.active_bounds());
             let cfg = &self.content.style.search_input_ui;
-            let style = cfg.label.resolve(
-                palette,
-                palette.surface_label(),
-                palette.text,
-                palette.accent,
-            );
-            let height = style.font_size * 1.8 + style.padding_y * 2.0;
-            let rect = cfg.position.place(
-                ctx.active_bounds(),
-                cfg.width.max(1) as f64,
-                height,
-                cfg.x_offset as f64,
-                cfg.y_offset as f64,
-            );
-            scene.push_label(
-                OverlayLabel::new(format!("/{query}"), rect, style)
-                    .with_z_index(SEARCH_INPUT_Z_INDEX),
-            );
+            let (rect, style) = input_panel(cfg, self.window_bounds, ctx);
+            if let Some(info) = &self.info {
+                let scale = super::label_scale(ctx.scale());
+                let (mut panel, base) = input_panel(info.ui, self.window_bounds, ctx);
+                let line = base.font_size * 1.8 * scale;
+                let gap = base.font_size * 0.8 * scale;
+                let padding = (base.padding_x.max(10.0) * scale, base.padding_y * scale);
+                let text_gap = base.font_size * 0.5 * scale;
+                let height = line * 4.0 + text_gap * 2.0 + gap + padding.1 * 2.0;
+                panel.height = height;
+                if info.ui.position_mode == crate::api::style::PanelPositionMode::SearchInput {
+                    let anchor = match &info.ui.position {
+                        crate::api::style::CompiledPanelPosition::Percentages(value) => {
+                            crate::api::style::percentage_region(rect, *value).center()
+                        }
+                        crate::api::style::CompiledPanelPosition::Anchor(anchor) => {
+                            anchor.place(rect, 0.0, 0.0, 0.0, 0.0).center()
+                        }
+                    };
+                    panel.x = anchor.x - panel.width / 2.0 + info.ui.x_offset * scale;
+                    panel.y = if anchor.y <= rect.center().y {
+                        anchor.y - height - info.ui.y_offset * scale
+                    } else {
+                        anchor.y + info.ui.y_offset * scale
+                    };
+                } else {
+                    let area =
+                        if info.ui.position_mode == crate::api::style::PanelPositionMode::Window {
+                            self.window_bounds.unwrap_or(ctx.active_bounds())
+                        } else {
+                            ctx.active_bounds()
+                        };
+                    panel = info.ui.position.place(
+                        area,
+                        panel.width,
+                        height,
+                        info.ui.x_offset * scale,
+                        info.ui.y_offset * scale,
+                    );
+                }
+                let area = ctx.active_bounds();
+                panel.x = panel
+                    .x
+                    .clamp(area.x, (area.right() - panel.width).max(area.x));
+                panel.y = panel.y.clamp(area.y, (area.bottom() - height).max(area.y));
+                let styles = info.ui.for_appearance(ctx.palette.appearance);
+                scene.push_shape(OverlayShape::Rect {
+                    rect: panel,
+                    fill: base.background,
+                    stroke: base.border_color,
+                    stroke_width: base.border_width * scale,
+                    corner_radius: base.border_radius * scale,
+                    z_index: SEARCH_INPUT_Z_INDEX,
+                });
+                for (index, (title, value)) in info
+                    .titles
+                    .iter()
+                    .zip(info.preview_values().iter())
+                    .take(info.field_count())
+                    .enumerate()
+                {
+                    let column_width = ((panel.width - padding.0 * 2.0 - gap) / 2.0).max(1.0);
+                    let x = panel.x
+                        + padding.0
+                        + if !(info.multiple && index == 2) {
+                            (index % 2) as f64 * (column_width + gap)
+                        } else {
+                            0.0
+                        };
+                    let y =
+                        panel.y + padding.1 + (index / 2) as f64 * (line * 2.0 + text_gap + gap);
+                    let width = if !(info.multiple && index == 2) {
+                        column_width
+                    } else {
+                        (panel.width - padding.0 * 2.0).max(1.0)
+                    };
+                    let number_width = base.font_size * 1.3 * scale;
+                    let header_gap = 6.0 * scale;
+                    for (text, bounds, style) in [
+                        (
+                            ["1", "2", "3", "4"][index],
+                            Rect::new(x, y, number_width, line),
+                            styles.key.clone(),
+                        ),
+                        (
+                            title.as_str(),
+                            Rect::new(
+                                x + number_width + header_gap,
+                                y,
+                                (width - number_width - header_gap).max(1.0),
+                                line,
+                            ),
+                            styles.caption.clone(),
+                        ),
+                    ] {
+                        scene.push_label(
+                            OverlayLabel::new(text, bounds, style)
+                                .with_fixed_bounds()
+                                .with_z_index(SEARCH_INPUT_Z_INDEX + 1),
+                        );
+                    }
+                    {
+                        let text = super::single_line_elide_width(
+                            if value.is_empty() { "—" } else { value },
+                            (width - 4.0 * scale).max(0.0) / (base.font_size * scale),
+                        );
+                        scene.push_label(
+                            OverlayLabel::new(
+                                text,
+                                Rect::new(x, y + line + text_gap, width, line),
+                                styles.caption.clone(),
+                            )
+                            .with_fixed_bounds()
+                            .with_z_index(SEARCH_INPUT_Z_INDEX + 1),
+                        );
+                    }
+                }
+            }
+            // The native edit owns text/caret. Draw only its label-like shell;
+            // physical shapes bypass the compact-label DPI heuristic.
+            let scale = super::label_scale(ctx.scale());
+            scene.push_shape(OverlayShape::Rect {
+                rect,
+                fill: style.background,
+                stroke: style.border_color,
+                stroke_width: style.border_width * scale,
+                corner_radius: style.border_radius * scale,
+                z_index: SEARCH_INPUT_Z_INDEX,
+            });
         }
 
         scene

@@ -127,6 +127,14 @@ mod tests {
 
     struct NoGridPresenter;
     impl crate::api::presentation::Presenter for NoGridPresenter {
+        fn input_panel(
+            &self,
+            _: &crate::api::style::CompiledSearchPanel,
+            _: Option<Rect>,
+            _: &HostContext<'_>,
+        ) -> (Rect, crate::api::overlay::SharedLabelStyle) {
+            panic!("Normal never requests text input")
+        }
         fn prepare_hints(
             &self,
             _: crate::api::presentation::HintContent<'_>,

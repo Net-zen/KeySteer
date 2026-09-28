@@ -21,6 +21,10 @@ pub(super) struct PendingSequence {
 
 #[derive(Debug, Default)]
 pub(super) struct Scheduler {
+    pub(super) text_prompt: Option<(ModeId, crate::api::window_presets::TextPrompt)>,
+    pub(super) text_prompt_serial: u64,
+    pub(super) text_prompt_returning_focus: bool,
+    pub(super) panel_geometry: BTreeMap<u64, ModeId>,
     pub(super) audio_sessions: BTreeMap<u64, ModeId>,
     pub(super) window_sessions: BTreeMap<u64, ModeId>,
     pub(super) sequences: Vec<PendingSequence>,
@@ -30,6 +34,8 @@ pub(super) struct Scheduler {
 
 impl Scheduler {
     pub(super) fn reset(&mut self) {
+        self.panel_geometry.clear();
+        self.text_prompt = None;
         self.window_sessions.clear();
         self.audio_sessions.clear();
         self.sequences.clear();
@@ -38,6 +44,8 @@ impl Scheduler {
     }
 
     pub(super) fn cancel_owner(&mut self, owner: &ModeId) {
+        self.panel_geometry
+            .retain(|_, candidate| candidate != owner);
         self.sequences.retain(|sequence| &sequence.owner != owner);
         self.timers.retain(|_, timer| &timer.owner != owner);
     }

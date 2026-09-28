@@ -125,6 +125,7 @@ pub(crate) fn detect(
     let mut output = Vec::with_capacity(owners.len() + fragments.len());
     for rect in &owners {
         output.push(UiTarget {
+            details: None,
             rect: *rect,
             name: String::new(),
             role: SemanticRole::Image,
@@ -572,6 +573,7 @@ fn filter(
         .filter(|(i, _)| !filtered[*i])
         .take(limit)
         .map(|(_, rect)| UiTarget {
+            details: None,
             rect,
             name: String::new(),
             role: SemanticRole::Control,

@@ -461,6 +461,9 @@ pub struct OverlayLabel {
     pub z_index: i32,
     /// When false the backend centers text in `rect` without growing it.
     pub fit_to_text: bool,
+    /// Panel text uses an already resolved physical layout; DPI scales typography only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fixed_bounds: bool,
 }
 
 impl OverlayLabel {
@@ -476,11 +479,17 @@ impl OverlayLabel {
             matched_prefix_len: 0,
             z_index: 0,
             fit_to_text: false,
+            fixed_bounds: false,
         }
     }
 
     pub fn style_mut(&mut self) -> &mut LabelStyle {
         self.style.make_mut()
+    }
+
+    pub fn with_fixed_bounds(mut self) -> Self {
+        self.fixed_bounds = true;
+        self
     }
 
     pub fn with_matched_prefix(mut self, len: usize) -> Self {

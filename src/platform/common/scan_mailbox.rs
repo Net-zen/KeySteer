@@ -144,6 +144,7 @@ mod tests {
 
     fn target(name: &str) -> UiTarget {
         UiTarget {
+            details: None,
             rect: Rect::new(0.0, 0.0, 10.0, 10.0),
             name: name.into(),
             role: SemanticRole::Button,

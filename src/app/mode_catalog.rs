@@ -109,7 +109,27 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
         label_y_offset: config.ui_hint.label_y_offset,
         ui: config.ui_hint.ui.clone(),
         boundary_highlight: config.ui_hint.boundary_highlight.clone(),
-        search_input_ui: config.ui_hint.search_input_ui.clone(),
+        search_input_ui: crate::api::style::CompiledSearchPanel::new(
+            &config.ui_hint.search_input_ui,
+            &config.palette(crate::api::Appearance::Light),
+            &config.palette(crate::api::Appearance::Dark),
+        ),
+        search_info_ui: crate::api::style::CompiledSearchPanel::new(
+            &config.ui_hint.search_info_ui,
+            &config.palette(crate::api::Appearance::Light),
+            &config.palette(crate::api::Appearance::Dark),
+        ),
+        search_copy_keys: config
+            .ui_hint
+            .search_copy_keys
+            .iter()
+            .take(4)
+            .map(|key| {
+                crate::api::KeyChord::parse(key)
+                    .unwrap_or_else(|error| panic!("search requires validated copy key: {error}"))
+            })
+            .collect(),
+        search_titles: ["OCR", "Accessibility", "Coordinates", "Color"].map(String::from),
         lifecycle: config.ui_hint.lifecycle.clone(),
         overlap_cycle_key: config.ui_hint.overlap_cycle_key.clone(),
         app_overrides: config

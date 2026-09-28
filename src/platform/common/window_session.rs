@@ -646,13 +646,24 @@ impl Session {
                 if activate {
                     self.target = None;
                 }
-                let target = access
-                    .resolve_window_target(source, screens, cancelled)?
-                    .ok_or_else(|| "No window at the requested target".to_string())?;
-                let snapshot = access.snapshot(target, screens)?;
-                if snapshot.info.minimized || cancelled() {
+                let snapshot = source
+                    .with_fallback(|candidate| {
+                        if candidate != source && cancelled() {
+                            return Ok(None);
+                        }
+                        let Some(target) =
+                            access.resolve_window_target(candidate, screens, cancelled)?
+                        else {
+                            return Ok(None);
+                        };
+                        let snapshot = access.snapshot(target, screens)?;
+                        Ok::<_, String>((!snapshot.info.minimized).then_some(snapshot))
+                    })?
+                    .ok_or_else(|| "No available window from either target source".to_string())?;
+                if cancelled() {
                     return Err("Window target unavailable".into());
                 }
+                let target = snapshot.info.id;
                 if activate {
                     self.capture_initial(access, target, screens);
                     access.activate_window(target, screens, cancelled)?;
@@ -722,25 +733,37 @@ impl Session {
                         }
                 );
                 let mut windows = self.enumerate(access, screens, cancelled)?;
+                // In-mode responses own this inventory already. Borrow it
+                // while selecting instead of cloning every window and string.
+                let windows = if standalone {
+                    &mut windows
+                } else {
+                    result.windows.insert(windows)
+                };
                 if standalone {
                     windows.retain(|window| !window.minimized);
                     if let WindowOperation::CycleFrom { source, .. } = operation {
-                        self.target = match source {
-                            crate::api::window::WindowTarget::Active => {
-                                access.focused_window(&windows)
+                        self.target = source.with_fallback(|candidate| {
+                            if candidate != source && cancelled() {
+                                return Ok(None);
                             }
-                            crate::api::window::WindowTarget::Mouse => {
-                                access.pointer_window(screens)?
-                            }
-                        }
-                        .filter(|id| windows.iter().any(|w| w.id == *id));
+                            let target = match candidate {
+                                crate::api::window::WindowTarget::Active => {
+                                    access.focused_window(windows)
+                                }
+                                crate::api::window::WindowTarget::Mouse => {
+                                    access.pointer_window(screens)?
+                                }
+                            };
+                            Ok::<_, String>(target.filter(|id| windows.iter().any(|w| w.id == *id)))
+                        })?;
                         if self.target.is_none() {
-                            self.refresh_cycle(&windows);
+                            self.refresh_cycle(windows);
                             return Ok(());
                         }
                     } else {
                         let focused = overlapping
-                            .then(|| access.focused_window(&windows))
+                            .then(|| access.focused_window(windows))
                             .flatten()
                             .filter(|id| windows.iter().any(|w| w.id == *id));
                         self.target = if focused.is_some() {
@@ -751,24 +774,22 @@ impl Session {
                                 .filter(|id| windows.iter().any(|w| w.id == *id))
                                 .or_else(|| {
                                     (!overlapping)
-                                        .then(|| access.focused_window(&windows))
+                                        .then(|| access.focused_window(windows))
                                         .flatten()
                                 })
                         };
                     }
-                } else {
-                    result.windows = Some(windows.clone());
                 }
                 if cancelled() {
                     return Ok(());
                 }
                 if overlapping && self.target.is_none() {
-                    self.refresh_cycle(&windows);
+                    self.refresh_cycle(windows);
                     return Ok(());
                 }
                 if overlapping {
                     self.overlap.get_or_insert_with(Box::default).prepare(
-                        &windows,
+                        windows,
                         self.target,
                         cancelled,
                     );
@@ -793,7 +814,7 @@ impl Session {
                 // Activation changes native Z-order. Preserve the session's
                 // existing ring so successive Tabs visit every window instead
                 // of oscillating between the two most recently activated ones.
-                self.refresh_cycle(&windows);
+                self.refresh_cycle(windows);
                 if self.cycle.is_empty() {
                     return if overlapping {
                         Ok(())
@@ -802,83 +823,56 @@ impl Session {
                     };
                 }
                 let tabs = access.tab_state();
-                let grouped = tabs
-                    .as_ref()
-                    .filter(|_| !standalone || overlapping)
-                    .and_then(|state| state.containing(self.target?));
-                let current = grouped.map(|group| group.active).or(self.target);
-                // Consume the order inside its owning function so the small
-                // path never reserves space for a 128-entry return value.
-                let mut try_cycle = |cycle: &[WindowId], skip_group: bool| {
-                    let start = current
-                        .and_then(|id| cycle.iter().position(|v| *v == id))
-                        .map_or(0, |index| {
-                            if backwards {
-                                (index + cycle.len() - 1) % cycle.len()
-                            } else {
-                                (index + 1) % cycle.len()
-                            }
-                        });
-                    for offset in 0..cycle.len() {
-                        if cancelled() {
-                            return true;
-                        }
-                        let index = if backwards {
-                            (start + cycle.len() - offset) % cycle.len()
-                        } else {
-                            (start + offset) % cycle.len()
-                        };
-                        let id = cycle[index];
-                        if skip_group && grouped.is_some_and(|group| group.members.contains(&id)) {
-                            continue;
-                        }
-                        if overlapping
-                            && (Some(id) == self.target
-                                || self
-                                    .overlap
-                                    .as_ref()
-                                    .is_none_or(|cache| !cache.contains(id)))
-                        {
-                            continue;
-                        }
-                        match access.snapshot(id, screens) {
-                            Ok(snapshot) if !overlapping || !snapshot.info.minimized => {}
-                            Ok(_) => continue,
-                            Err(_) => {
-                                result.skipped += 1;
-                                continue;
-                            }
-                        }
-                        // Focus permission is independent of the selected target.
-                        // Do not silently cycle all the way back to the old window
-                        // when the OS denies foreground activation.
-                        let activation = access.activate_window(id, screens, cancelled);
-                        if let Ok(after) = access.snapshot(id, screens) {
-                            self.target = Some(id);
-                            result.pointer = Some(after.info.bounds.center());
-                            result.message = activation.err();
-                            self.error.clone_from(&result.message);
-                            result.target = Some(after.info);
-                            return true;
-                        }
-                        result.skipped += 1;
-                    }
-                    false
+                use super::window_tabs::{CycleScope, WindowCycle};
+                let cycle = WindowCycle {
+                    ring: &self.cycle,
+                    windows,
+                    tabs: tabs.as_ref(),
+                    target: self.target,
+                    backwards,
+                    scope: if overlapping {
+                        CycleScope::PreferGroup
+                    } else if standalone {
+                        CycleScope::All
+                    } else {
+                        CycleScope::Group
+                    },
                 };
-                if let Some(group) = grouped {
-                    if try_cycle(&group.members, false) {
-                        return Ok(());
+                if cycle.visit(|id| {
+                    if cancelled() {
+                        return true;
                     }
-                    if !overlapping {
-                        return Err("No available window accepted activation".into());
+                    if overlapping
+                        && (Some(id) == self.target
+                            || self
+                                .overlap
+                                .as_ref()
+                                .is_none_or(|cache| !cache.contains(id)))
+                    {
+                        return false;
                     }
-                }
-                if super::window_tabs::with_application_cycle_order(
-                    &self.cycle,
-                    &windows,
-                    tabs.as_ref(),
-                    |order| try_cycle(order, grouped.is_some()),
-                ) {
+                    match access.snapshot(id, screens) {
+                        Ok(snapshot) if !overlapping || !snapshot.info.minimized => {}
+                        Ok(_) => return false,
+                        Err(_) => {
+                            result.skipped += 1;
+                            return false;
+                        }
+                    }
+                    // Focus permission is independent of the selected target.
+                    // Do not redirect when the OS denies foreground activation.
+                    let activation = access.activate_window(id, screens, cancelled);
+                    if let Ok(after) = access.snapshot(id, screens) {
+                        self.target = Some(id);
+                        result.pointer = Some(after.info.bounds.center());
+                        result.message = activation.err();
+                        self.error.clone_from(&result.message);
+                        result.target = Some(after.info);
+                        return true;
+                    }
+                    result.skipped += 1;
+                    false
+                }) {
                     return Ok(());
                 }
                 return if overlapping {

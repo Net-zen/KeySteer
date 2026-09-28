@@ -273,11 +273,31 @@ impl std::fmt::Display for SemanticRole {
 /// providers that built it from a literal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiTarget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Box<UiTargetDetails>>,
     pub rect: Rect,
     /// Accessible name / label, may be empty.
     pub name: String,
     /// Semantic role in this crate's vocabulary.
     pub role: SemanticRole,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UiTargetDetails {
+    pub ocr: String,
+    pub accessibility: String,
+    pub color: Option<super::overlay::Color>,
+}
+
+impl UiTarget {
+    pub fn ocr_text(&self) -> &str {
+        self.details.as_ref().map_or("", |d| d.ocr.as_str())
+    }
+    pub fn accessibility_text(&self) -> &str {
+        self.details
+            .as_ref()
+            .map_or(self.name.as_str(), |d| d.accessibility.as_str())
+    }
 }
 
 #[cfg(test)]

@@ -345,7 +345,8 @@ temporary_mode_passthrough_keys = []
 # "alt+e" = "window_editor"
 # "alt+r" = "window_restore"
 [window]
-# Optional entry target: "active" or "mouse". Omit to preserve session handoffs.
+# Optional entry priority: "active" or "mouse"; fall back to the other if absent.
+# Omit to preserve session handoffs.
 # target = "active"
 screens = "current"
 include_minimized = false
@@ -428,7 +429,8 @@ number_min_width = 38.0
 font_size = 28
 
 [window_quick]
-# Optional entry target: "active" or "mouse". Omit to preserve session handoffs.
+# Optional entry priority: "active" or "mouse"; fall back to the other if absent.
+# Omit to preserve session handoffs.
 # target = "active"
 screens = "current"
 include_minimized = false
@@ -471,7 +473,8 @@ q = "window"
 font_size = 28
 
 [window_editor]
-# Optional entry target: "active" or "mouse". Omit to preserve session handoffs.
+# Optional entry priority: "active" or "mouse"; fall back to the other if absent.
+# Omit to preserve session handoffs.
 # target = "active"
 screens = "current"
 include_minimized = false
@@ -528,7 +531,8 @@ position = ["0%", "50%", "100%", "50%"]
 font_size = 28
 
 [window_restore]
-# Optional entry target: "active" or "mouse". Omit to preserve session handoffs.
+# Optional entry priority: "active" or "mouse"; fall back to the other if absent.
+# Omit to preserve session handoffs.
 # target = "active"
 screens = "current"
 include_minimized = false
@@ -556,7 +560,8 @@ font_size = 28
 # Active-member window groups: 12t34t creates two groups; ~ selects a group number.
 # Ordinary digits keep their window identities. Space ends an ambiguous number.
 [window_tab]
-# Optional entry target: "active" or "mouse". Omit to preserve session handoffs.
+# Optional entry priority: "active" or "mouse"; fall back to the other if absent.
+# Omit to preserve session handoffs.
 # target = "active"
 screens = "current"
 include_minimized = false
@@ -598,6 +603,9 @@ font_size = 28
 # Type a label to click it. `/` filters elements by name instead.
 # ---------------------------------------------------------------------------
 [ui_hint]
+# Stable slots: OCR, accessibility, coordinates, color. Missing values stay empty.
+# primary is Ctrl on Windows and Cmd on macOS.
+search_copy_keys = ["primary+1", "primary+2", "primary+3", "primary+4"]
 # window: pointer window; screen: complete display containing the pointer.
 scan_scope = "window"
 enabled = true
@@ -720,13 +728,34 @@ border_radius = -1
 # background_color = "#8FA2F033"
 # border_color     = "#8FA2F0FF"
 
-# The `/` search box, which filters elements by accessible name.
+# Search matches labels, accessibility semantics, OCR and Chinese initials.
+# Enter selects only a unique result; otherwise it restores all original labels.
 [ui_hint.search_input_ui]
-position = "bottom_center"
+position_mode = "screen" # screen or window
+position = ["100%", "50%", "0%", "50%"] # top, right, bottom, left
 x_offset = 0
 y_offset = 24
-width = 320
+width = 280
 font_size = 14
+padding_y = 6
+# font_family = ""
+# border_radius = 8
+# border_width = 1
+# padding_x = 12
+# background_color = "#0A1338F2"
+# text_color = "#E8EEFFFF"
+# border_color = "#6E82D6FF"
+
+# A single result shows four slots; space-separated searches aggregate the first three.
+[ui_hint.search_info_ui]
+position_mode = "search_input" # search_input, screen or window
+position = ["0%", "50%", "100%", "50%"]
+x_offset = 0
+y_offset = 12
+width = 520
+font_size = 14
+padding_y = 16
+# Supports the same font/color/border/padding options as search_input_ui.
 
 # ---------------------------------------------------------------------------
 # grid — a full-screen labelled coordinate grid

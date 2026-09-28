@@ -64,7 +64,7 @@ impl SpatialIndex {
         self.store(rect)
     }
 
-    fn any_match(
+    pub(super) fn any_match(
         &mut self,
         rect: Rect,
         mut matches: impl FnMut(usize, Rect, Rect) -> bool,
@@ -108,7 +108,7 @@ impl SpatialIndex {
         columns.saturating_mul(rows) > MAX_CELLS_PER_RECT
     }
 
-    fn store(&mut self, rect: Rect) -> bool {
+    pub(super) fn store(&mut self, rect: Rect) -> bool {
         let Ok(index) = u32::try_from(self.rects.len()) else {
             return false;
         };
@@ -537,6 +537,7 @@ mod tests {
 
     fn target(rect: Rect, role: SemanticRole) -> UiTarget {
         UiTarget {
+            details: None,
             rect,
             role,
             name: String::new(),

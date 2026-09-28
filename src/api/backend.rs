@@ -16,6 +16,10 @@ use std::time::Duration;
 /// Something that happened natively and must reach the engine.
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
+    TextPromptChanged {
+        id: u64,
+        text: String,
+    },
     /// Wake only; the application retains the compiled candidate and ownership.
     ConfigurationReady,
     /// Completed application-owned persistence work. Native backends only route it.
@@ -119,6 +123,9 @@ pub enum KeyDisposition {
 /// A native backend. Implementations live in `src/platform/<os>.rs` and are
 /// selected by `cfg(target_os)` in `src/platform/mod.rs`.
 pub trait Backend {
+    fn copy_text(&mut self, _text: &str) -> Result<(), String> {
+        Err("Clipboard is unavailable on this backend".into())
+    }
     /// Thread-safe event delivery including the platform event-loop wakeup.
     /// Headless backends may omit it and use synchronous in-memory repositories.
     fn event_sink(&self) -> Option<Arc<dyn Fn(BackendEvent) + Send + Sync>> {
@@ -317,6 +324,8 @@ pub trait Backend {
         Err("Native text entry is unavailable".into())
     }
     fn cancel_text_prompt(&mut self, _id: u64) {}
+    /// End the owning mode session and release any reusable native editor.
+    fn release_text_prompt(&mut self) {}
 
     /// Keep native controls in sync with the engine's paused state.
     fn set_enabled(&mut self, _enabled: bool) -> Result<(), String> {

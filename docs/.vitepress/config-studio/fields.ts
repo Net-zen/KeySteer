@@ -27,7 +27,7 @@ export const fields = {
       { path: 'window.ui.border_color', label: '目标描边', kind: 'color' },
     ],
     layout: [
-      { path: 'window.target', label: '入口目标（active 激活窗口 / mouse 鼠标下窗口）', kind: 'select', options: ['', 'active', 'mouse'] },
+      { path: 'window.target', label: '入口优先目标（active 激活窗口 / mouse 鼠标下窗口；无目标时互相兜底）', kind: 'select', options: ['', 'active', 'mouse'] },
       { path: 'window.screens', label: '窗口范围（current 当前屏幕 / all 全部屏幕）', kind: 'select', options: ['current', 'all'] },
       { path: 'window.include_minimized', label: '包含最小化窗口', kind: 'boolean' },
       { path: 'window.enabled', label: '启用 Window', kind: 'boolean' },
@@ -135,6 +135,23 @@ export const fields = {
 } as Record<TargetingMode, ModeFields>
 
 fields.window.layout.push({ path: 'window.card.position_mode', label: '卡片定位（window 窗口 / screen 当前屏幕）', kind: 'select', options: ['window', 'screen'] })
+for (const [block, title] of [['search_input_ui', '搜索框'], ['search_info_ui', '搜索信息']] as const) {
+  const prefix = `ui_hint.${block}`
+  fields.ui_hint.advanced.push(
+    { path: `${prefix}.position_mode`, label: `${title}定位`, kind: 'select', options: block === 'search_input_ui' ? ['screen', 'window'] : ['search_input', 'screen', 'window'] },
+    { path: `${prefix}.position`, label: `${title}四边百分比`, kind: 'percentages' },
+    { path: `${prefix}.font_family`, label: `${title}字体`, kind: 'text' },
+  )
+  for (const [key, label, min, max] of [
+    ['width', '宽度', 80, 2000], ['font_size', '字号', 6, 72],
+    ['border_radius', '圆角', -1, 80], ['border_width', '边框', 0, 12],
+    ['padding_x', '水平内边距', -1, 100], ['padding_y', '垂直内边距', -1, 100],
+    ['x_offset', '水平偏移', -2000, 2000], ['y_offset', '垂直偏移', -2000, 2000],
+  ] as const) fields.ui_hint.advanced.push({ path: `${prefix}.${key}`, label: `${title}${label}`, kind: 'number', min, max, step: 1 })
+  for (const [key, label] of [['background_color', '底色'], ['text_color', '文字色'], ['border_color', '边框色']] as const) {
+    fields.ui_hint.colors.push({ path: `${prefix}.${key}`, label: `${title}${label}`, kind: 'color' })
+  }
+}
 fields.window.layout.push({ path: 'window.card.position', label: '上、右、下、左（四个百分比，逗号分隔）', kind: 'percentages' })
 fields.window.colors.push({ path: 'window.card.border_color', label: '卡片边框颜色', kind: 'color' })
 fields.window.colors.push({ path: 'window.card.guide_line_color', label: '引导线颜色（含透明度）', kind: 'color' })

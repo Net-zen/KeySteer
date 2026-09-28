@@ -14,6 +14,8 @@ pub(crate) struct ScanAccumulator {
     published_any: bool,
     visual_text: Vec<UiTarget>,
     images: Vec<UiTarget>,
+    search_targets: Vec<Option<UiTarget>>,
+    search_spatial: super::spatial_index::SpatialIndex,
 }
 
 pub(crate) struct ScanUpdate {
@@ -30,6 +32,8 @@ impl ScanAccumulator {
             published_any: false,
             visual_text: Vec::new(),
             images: Vec::new(),
+            search_targets: Vec::new(),
+            search_spatial: super::spatial_index::SpatialIndex::new(64.0, 8.0, 2.0),
         }
     }
 
@@ -42,6 +46,20 @@ impl ScanAccumulator {
         mut targets: Vec<UiTarget>,
         threshold: f64,
     ) -> ScanUpdate {
+        for target in &mut targets {
+            if source != TargetSource::Accessibility && target.details.is_none() {
+                target.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                    ocr: if source != TargetSource::Contour
+                        && target.role == SemanticRole::StaticText
+                    {
+                        target.name.clone()
+                    } else {
+                        String::new()
+                    },
+                    ..Default::default()
+                }));
+            }
+        }
         let text_start = self.visual_text.len();
         let has_text = source != TargetSource::Accessibility
             && source != TargetSource::Contour
@@ -116,7 +134,7 @@ impl ScanAccumulator {
         );
         let accepted = targets.len();
         remove_retired_targets(self.batches.pending_mut(), &retired);
-        let mut batches = SmallVec::new();
+        let mut batches: SmallVec<[Vec<UiTarget>; 2]> = SmallVec::new();
         for target in targets {
             if let Some(batch) = self.batches.push_one(target) {
                 batches.push(batch);
@@ -144,6 +162,64 @@ impl ScanAccumulator {
             }
             batches.push(transaction);
         }
+        for &rect in &retired {
+            self.search_spatial.any_match(rect, |index, old, _| {
+                if old == rect {
+                    self.search_targets[index] = None;
+                }
+                false
+            });
+        }
+        // Metadata is a same-geometry delta, so OCR arriving after AX enriches
+        // the original semantic target rather than creating an extra label.
+        if has_text {
+            let mut changed = std::collections::BTreeSet::new();
+            for text in &self.visual_text[text_start..] {
+                self.search_spatial.any_match(text.rect, |index, _, _| {
+                    if let Some(target) = &mut self.search_targets[index]
+                        && attach_ocr(target, std::slice::from_ref(text))
+                    {
+                        changed.insert(index);
+                    }
+                    false
+                });
+            }
+            for index in changed {
+                if let Some(target) = &self.search_targets[index] {
+                    retired.push(target.rect);
+                    if batches.is_empty() {
+                        batches.push(Vec::new());
+                    }
+                    batches[0].push(target.clone());
+                }
+            }
+        }
+        for batch in &mut batches {
+            for target in batch {
+                attach_ocr(target, &self.visual_text);
+                let mut existing = None;
+                self.search_spatial
+                    .any_match(target.rect, |index, rect, _| {
+                        if rect == target.rect
+                            && self.search_targets[index]
+                                .as_ref()
+                                .is_some_and(|old| old.role == target.role)
+                        {
+                            existing = Some(index);
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                if let Some(index) = existing {
+                    self.search_targets[index] = Some(target.clone());
+                } else if self.search_targets.len() < MAX_UI_SCAN_TARGETS * 2
+                    && self.search_spatial.store(target.rect)
+                {
+                    self.search_targets.push(Some(target.clone()));
+                }
+            }
+        }
         ScanUpdate {
             accepted,
             batches,
@@ -152,12 +228,46 @@ impl ScanAccumulator {
     }
 
     pub(crate) fn finish(&mut self) -> Option<Vec<UiTarget>> {
-        let pending = self.batches.finish();
+        let mut pending = self.batches.finish();
+        if let Some(targets) = &mut pending {
+            for target in targets {
+                attach_ocr(target, &self.visual_text);
+            }
+        }
         // Fusion evidence is no longer needed after terminal publication.
         // Release it even if a native completion token still owns the session.
         *self = Self::new();
         pending
     }
+}
+
+fn attach_ocr(target: &mut UiTarget, text: &[UiTarget]) -> bool {
+    let mut changed = false;
+    for item in text {
+        if item.name.is_empty()
+            || !target
+                .rect
+                .intersect(&item.rect)
+                .is_some_and(|r| r.width * r.height >= item.rect.width * item.rect.height * 0.9)
+        {
+            continue;
+        }
+        let name = target.name.clone();
+        let details = target.details.get_or_insert_with(|| {
+            Box::new(crate::api::geometry::UiTargetDetails {
+                accessibility: name,
+                ..Default::default()
+            })
+        });
+        if !details.ocr.contains(&item.name) {
+            if !details.ocr.is_empty() {
+                details.ocr.push(' ');
+            }
+            details.ocr.push_str(&item.name);
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn image_name(image: &mut UiTarget, text: &[UiTarget]) {
@@ -193,11 +303,59 @@ mod tests {
     use crate::api::geometry::SemanticRole;
 
     #[test]
+    fn search_details_keep_ocr_and_accessibility_in_both_arrival_orders() {
+        for ocr_first in [false, true] {
+            let mut scan = ScanAccumulator::new();
+            let control = UiTarget {
+                rect: Rect::new(0.0, 0.0, 100.0, 40.0),
+                name: "Copy button".into(),
+                role: SemanticRole::Button,
+                details: None,
+            };
+            let ocr = UiTarget {
+                rect: Rect::new(20.0, 10.0, 40.0, 20.0),
+                name: "复制".into(),
+                role: SemanticRole::StaticText,
+                details: None,
+            };
+            let mut sources = [
+                (TargetSource::Accessibility, control),
+                (TargetSource::SystemOcr, ocr),
+            ];
+            if ocr_first {
+                sources.reverse();
+            }
+            let mut visible = Vec::new();
+            for (source, target) in sources {
+                let update = scan.push(source, vec![target], 0.5);
+                remove_retired_targets(&mut visible, &update.retired);
+                visible.extend(update.batches.into_iter().flatten());
+            }
+            visible.extend(scan.finish().into_iter().flatten());
+            let control = visible
+                .iter()
+                .find(|t| t.role == SemanticRole::Button)
+                .unwrap();
+            assert_eq!(control.ocr_text(), "复制");
+            assert_eq!(control.accessibility_text(), "Copy button");
+            assert_eq!(
+                visible
+                    .iter()
+                    .filter(|t| t.role == SemanticRole::Button)
+                    .count(),
+                1
+            );
+            assert_eq!(scan.search_targets.capacity(), 0);
+        }
+    }
+
+    #[test]
     fn finish_releases_fusion_evidence_and_description_caches() {
         let mut scan = ScanAccumulator::new();
         scan.push(
             TargetSource::SystemOcr,
             vec![UiTarget {
+                details: None,
                 rect: Rect::new(0., 0., 20., 20.),
                 name: "text".into(),
                 role: SemanticRole::StaticText,
@@ -215,16 +373,19 @@ mod tests {
     #[test]
     fn image_ocr_and_native_action_converge_in_every_source_order() {
         let image = UiTarget {
+            details: None,
             rect: Rect::new(0., 0., 240., 160.),
             name: String::new(),
             role: SemanticRole::Image,
         };
         let text = UiTarget {
+            details: None,
             rect: Rect::new(30., 30., 80., 20.),
             name: "caption".into(),
             role: SemanticRole::StaticText,
         };
         let button = UiTarget {
+            details: None,
             rect: Rect::new(150., 90., 30., 25.),
             name: "action".into(),
             role: SemanticRole::Button,
@@ -268,6 +429,7 @@ mod tests {
         let mut scan = ScanAccumulator::new();
         let boxes: Vec<_> = (0..100)
             .map(|i| UiTarget {
+                details: None,
                 rect: Rect::new(f64::from(i) * 100., 0., 40., 20.),
                 name: String::new(),
                 role: SemanticRole::Control,
@@ -289,6 +451,7 @@ mod tests {
 
     fn target(x: f64, width: f64, role: SemanticRole) -> UiTarget {
         UiTarget {
+            details: None,
             rect: Rect::new(x, 0.0, width, 20.0),
             name: String::new(),
             role,
@@ -331,7 +494,8 @@ mod tests {
         let a = target(0.0, 20.0, SemanticRole::Control);
         let b = target(50.0, 20.0, SemanticRole::Control);
         let first = scan.push(TargetSource::Contour, vec![a.clone()], 0.5);
-        assert_eq!(first.batches.as_slice(), &[vec![a.clone()]]);
+        assert_eq!(first.batches[0][0].rect, a.rect);
+        assert_eq!(first.batches[0][0].accessibility_text(), "");
         assert!(
             scan.push(TargetSource::Contour, vec![b.clone()], 0.5)
                 .batches

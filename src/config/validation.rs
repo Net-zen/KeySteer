@@ -275,6 +275,41 @@ impl ConfigFile {
             &self.ui_hint.search_input_ui.label,
         )?;
         validate_label_colors("mode_indicator.ui", &self.mode_indicator.ui.label)?;
+        validate_label_colors("ui_hint.search_info_ui", &self.ui_hint.search_info_ui.label)?;
+        for (name, panel) in [
+            ("search_input_ui", &self.ui_hint.search_input_ui),
+            ("search_info_ui", &self.ui_hint.search_info_ui),
+        ] {
+            panel
+                .position
+                .validate()
+                .map_err(|e| bad(format!("ui_hint.{name}.position: {e}")))?;
+            if panel.width <= 0 {
+                return Err(bad(format!("ui_hint.{name}.width must be positive")));
+            }
+        }
+        if self.ui_hint.search_input_ui.position_mode
+            == crate::api::style::PanelPositionMode::SearchInput
+        {
+            return Err(bad(
+                "search_input_ui cannot be positioned relative to itself".into(),
+            ));
+        }
+        // Accept legacy five-slot configurations; the removed label slot is ignored.
+        if !matches!(self.ui_hint.search_copy_keys.len(), 4 | 5) {
+            return Err(bad(
+                "search_copy_keys requires four stable field shortcuts".into()
+            ));
+        }
+        let mut copy_keys = std::collections::BTreeSet::new();
+        for key in &self.ui_hint.search_copy_keys {
+            let chord = crate::api::KeyChord::parse(key).map_err(bad)?;
+            if chord.keys().len() < 2 || !copy_keys.insert(chord.canonical()) {
+                return Err(bad(
+                    "search_copy_keys must be distinct modified chords".into()
+                ));
+            }
+        }
         for (name, value) in [
             ("fill_color", self.mode_indicator.cursor.fill_color.as_ref()),
             (

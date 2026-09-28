@@ -21,9 +21,10 @@ use crate::api::hint::LabelDirection;
 use crate::api::input::{Key, KeyChord, KeyState, ModeId};
 use crate::api::lifecycle::TargetingLifecycle;
 use crate::api::overlay::{Color, OverlayText};
-use crate::api::style::{BoundaryHighlight, HintPlacement, LabelUi, SearchInputUi};
+use crate::api::style::{BoundaryHighlight, CompiledSearchPanel, HintPlacement, LabelUi};
 use crate::api::theme::Palette;
 pub(crate) mod labeling;
+mod search;
 mod session;
 
 use crate::api::presentation::{
@@ -71,7 +72,10 @@ pub struct Settings {
     pub label_y_offset: i32,
     pub ui: LabelUi,
     pub boundary_highlight: BoundaryHighlight,
-    pub search_input_ui: SearchInputUi,
+    pub search_input_ui: CompiledSearchPanel,
+    pub search_info_ui: CompiledSearchPanel,
+    pub search_copy_keys: Vec<KeyChord>,
+    pub search_titles: [String; 4],
     pub lifecycle: TargetingLifecycle,
     pub overlap_cycle_key: String,
     pub app_overrides: Vec<AppStrategyOverride>,
@@ -121,6 +125,7 @@ pub struct HintMode {
     /// Rebuilt at each exponentially batched Partial so overlap input stays hot.
     overlap_plan: VisualLayerPlan,
     wide_placements: Option<Vec<(usize, Rect)>>,
+    window_bounds: Option<Rect>,
 }
 
 impl HintMode {
@@ -140,6 +145,7 @@ impl HintMode {
             overlap_cycle: 0,
             overlap_plan: VisualLayerPlan::default(),
             wide_placements: None,
+            window_bounds: None,
         }
     }
 
@@ -165,7 +171,17 @@ impl HintMode {
             },
             Command::HideOverlay,
         );
+        commands.push(Command::ReleaseTextPrompt);
         commands.push(request);
+        self.window_bounds = None;
+        if self.config.search_input_ui.position_mode == crate::api::style::PanelPositionMode::Window
+            || self.config.search_info_ui.position_mode
+                == crate::api::style::PanelPositionMode::Window
+        {
+            commands.push(Command::RequestPanelWindowBounds(
+                self.session.scan_id | (1 << 63),
+            ));
+        }
         commands
     }
 
@@ -212,6 +228,10 @@ impl HintMode {
             ..
         } = result;
         if status == UiScanStatus::ContextChanged {
+            if matches!(self.input, Input::Search(_)) {
+                self.session.scanning = false;
+                return CommandBatch::new();
+            }
             // Context replacement is a normal retarget, not a failed scan.
             // Start a fresh generation immediately without consuming the
             // timeout/empty-result retry budget.
@@ -219,11 +239,14 @@ impl HintMode {
         }
 
         let can_relabel = self.input.text().is_empty() || matches!(self.input, Input::Search(_));
+        let searching = matches!(self.input, Input::Search(_));
+        if searching {
+            std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
+        }
         let (added, stable_labels) = if can_relabel {
             let deferred = self.session.pending_relabel;
             self.session.apply_deferred();
             if !deferred
-                && matches!(self.input, Input::Labels(_))
                 && !self.session.hints.is_empty()
                 && self.session.hints.len() == self.session.scanned.len()
             {
@@ -246,13 +269,31 @@ impl HintMode {
             }
             (false, false)
         };
+        if added {
+            self.session.ensure_search_names();
+        }
+        if searching {
+            if !stable_labels {
+                let _ = hints::assign_compact_into(
+                    &mut self.session.hints,
+                    self.session
+                        .scanned
+                        .iter()
+                        .enumerate()
+                        .map(|(index, target)| (target.rect, index)),
+                    &self.alphabet,
+                    self.config.label_direction,
+                );
+            }
+            std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
+        }
         // Once the user starts typing, preserve the labels they can already
         // see and select. With no input, every partial remains visible. A
         // source-agnostic plan is rebuilt from the merged UIA/Vision labels at
         // each published batch, so overlap input never pays graph-build latency.
         let labels_changed =
             if added && (self.input.text().is_empty() || matches!(self.input, Input::Search(_))) {
-                if stable_labels {
+                if stable_labels && !searching {
                     self.refresh_overlap_plan(ctx);
                 } else {
                     self.relabel(ctx);
@@ -274,7 +315,7 @@ impl HintMode {
             };
         }
 
-        let retryable_empty = self.session.hints.is_empty()
+        let retryable_empty = self.session.scanned.is_empty()
             && matches!(status, UiScanStatus::Success | UiScanStatus::TimedOut)
             && self.session.retry_attempt < self.config.scan_retry_count;
         if retryable_empty {
@@ -335,7 +376,7 @@ impl HintMode {
             UiScanStatus::Partial => self.session.status.clone(),
             UiScanStatus::ContextChanged => None,
         };
-        if self.session.hints.is_empty() {
+        if self.session.hints.is_empty() && !searching {
             return self.show_status(ctx);
         }
         self.redraw(ctx)
@@ -343,6 +384,11 @@ impl HintMode {
 
     /// Assign labels to the targets matching the current search query.
     fn relabel(&mut self, ctx: &HostContext<'_>) {
+        self.relabel_with_refresh(ctx, true);
+    }
+
+    fn relabel_with_refresh(&mut self, ctx: &HostContext<'_>, refresh: bool) -> bool {
+        let mut matches_changed = false;
         self.session.apply_deferred();
         let query = match &self.input {
             // Key names are normalized to lowercase before Mode delivery, so
@@ -355,18 +401,56 @@ impl HintMode {
         }
 
         let result = if let Some(query) = query {
-            let scanned = &self.session.scanned;
-            let names = &self.session.scanned_names_lower;
-            hints::assign_compact_into(
-                &mut self.session.hints,
-                scanned
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| names[*index].contains(query))
-                    .map(|(index, target)| (target.rect, index)),
-                &self.alphabet,
-                self.config.label_direction,
-            )
+            let query = if !query.chars().any(char::is_uppercase) {
+                std::borrow::Cow::Borrowed(query)
+            } else {
+                std::borrow::Cow::Owned(query.to_lowercase())
+            };
+            let multiple = query.chars().any(char::is_whitespace);
+            let previous_len = self.session.search_matches.len();
+            let mut matched = 0;
+            self.session.search_seen.clear();
+            self.session
+                .search_seen
+                .resize(self.session.scanned.len(), false);
+            // Each space-separated item runs the same search against original labels.
+            // Union in item order; the first occurrence owns each target's position.
+            for term in query.split_whitespace() {
+                if matched == self.session.search_hints.len() {
+                    break;
+                }
+                for hint in &self.session.search_hints {
+                    if !self.session.search_seen[hint.value]
+                        && self
+                            .session
+                            .search_text
+                            .get(hint.value)
+                            .is_some_and(|text| text.matches(term, hint.label.as_str()))
+                    {
+                        self.session.search_seen[hint.value] = true;
+                        if let Some(previous) = self.session.search_matches.get_mut(matched) {
+                            matches_changed |= previous.value != hint.value;
+                            previous.clone_from(hint);
+                        } else {
+                            self.session.search_matches.push(hint.clone());
+                        }
+                        matched += 1;
+                    }
+                }
+            }
+            matches_changed |= matched != previous_len;
+            self.session.search_matches.truncate(matched);
+            self.session.hints.clear();
+            if query.is_empty() || multiple && query.ends_with(char::is_whitespace) {
+                self.session
+                    .hints
+                    .extend(self.session.search_hints.iter().cloned());
+            } else {
+                self.session
+                    .hints
+                    .extend(self.session.search_matches.iter().cloned());
+            }
+            Ok(())
         } else {
             hints::assign_compact_into(
                 &mut self.session.hints,
@@ -390,7 +474,10 @@ impl HintMode {
         if !self.session.scanning {
             self.session.release_scan_index();
         }
-        self.refresh_overlap_plan(ctx);
+        if refresh {
+            self.refresh_overlap_plan(ctx);
+        }
+        matches_changed
     }
 
     fn rebuild_overlap_plan(&mut self, ctx: &HostContext<'_>) -> bool {
@@ -503,6 +590,8 @@ impl HintMode {
             })
         } else {
             View::Hints(HintView {
+                info: self.search_info(),
+                window_bounds: self.window_bounds,
                 content: hint_content(
                     &self.config,
                     &self.session.hints,
@@ -517,6 +606,58 @@ impl HintMode {
 
     fn redraw(&self, ctx: &HostContext<'_>) -> CommandBatch {
         CommandBatch::one(ctx.present(self.view()))
+    }
+
+    fn search_info(&self) -> Option<crate::api::presentation::HintInfoView<'_>> {
+        let Input::Search(query) = &self.input else {
+            return None;
+        };
+        let multiple = query.chars().any(char::is_whitespace);
+        let hints = if multiple {
+            &self.session.search_matches
+        } else {
+            &self.session.hints
+        };
+        if hints.is_empty() || query.trim().is_empty() && multiple || !multiple && hints.len() != 1
+        {
+            return None;
+        }
+        Some(crate::api::presentation::HintInfoView {
+            preview: &self.session.search_preview,
+            targets: &self.session.scanned,
+            hints,
+            multiple,
+            ui: &self.config.search_info_ui,
+            titles: &self.config.search_titles,
+        })
+    }
+
+    fn open_search(&self, ctx: &HostContext<'_>) -> Command {
+        let (bounds, style) =
+            ctx.presenter
+                .input_panel(&self.config.search_input_ui, self.window_bounds, ctx);
+        Command::OpenTextPrompt(Box::new(crate::api::window_presets::TextPrompt {
+            bounds,
+            id: self.session.scan_id | (1 << 63),
+            title: "Search hints".into(),
+            message: String::new(),
+            placeholder: "标签 / 中文简拼 / OCR / button".into(),
+            max_chars: 4096,
+            live_style: Some(style),
+            copy_keys: self.config.search_copy_keys.clone(),
+        }))
+    }
+
+    fn release_search(&mut self) {
+        self.session.search_hints.clear();
+        self.session.search_matches.clear();
+        self.session.search_seen.clear();
+        if let Input::Search(mut text) =
+            std::mem::replace(&mut self.input, Input::Labels(OverlayText::default()))
+        {
+            text.clear();
+            self.session.search_query = text;
+        }
     }
 
     fn show_status(&self, ctx: &HostContext<'_>) -> CommandBatch {
@@ -555,6 +696,14 @@ impl HintMode {
     }
 
     fn key_down(&mut self, key: &Key, ctx: &HostContext<'_>) -> CommandBatch {
+        if let Input::Search(query) = &self.input {
+            if key.as_str() == "enter" {
+                return self.handle(&ModeEvent::TextSubmitted(Some(query.clone())), ctx);
+            }
+            if key.as_str() == "esc" {
+                return self.handle(&ModeEvent::TextSubmitted(None), ctx);
+            }
+        }
         if self.session.finished {
             return match key.as_str() {
                 "esc" => self.cancel(),
@@ -592,9 +741,16 @@ impl HintMode {
                 };
             }
             "/" if matches!(self.input, Input::Labels(_)) => {
-                self.input = Input::Search(String::new());
+                if self.session.pending_relabel {
+                    self.input = Input::Labels(OverlayText::default());
+                    self.relabel(ctx);
+                }
+                self.session.search_hints.clone_from(&self.session.hints);
+                self.input = Input::Search(std::mem::take(&mut self.session.search_query));
                 self.relabel(ctx);
-                return self.redraw(ctx);
+                let mut commands = self.redraw(ctx);
+                commands.push(self.open_search(ctx));
+                return commands;
             }
             "backspace" => {
                 let text = self.input.text();
@@ -648,7 +804,7 @@ impl HintMode {
 
         match &mut self.input {
             Input::Search(query) => {
-                if ch.is_alphanumeric() || ch == ' ' {
+                if !ch.is_control() {
                     query.push(ch);
                     self.relabel(ctx);
                     return self.redraw(ctx);
@@ -748,7 +904,9 @@ impl Mode for HintMode {
             .as_ref()
             .is_some_and(|chord| chord.activation_matches(key))
             || key.as_char().is_some_and(|character| {
-                character.is_ascii_alphanumeric() || self.alphabet.contains(&character)
+                character == '/'
+                    || character.is_ascii_alphanumeric()
+                    || self.alphabet.contains(&character)
             })
     }
 
@@ -800,6 +958,80 @@ impl Mode for HintMode {
 
     fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
         match event {
+            ModeEvent::PanelWindowBounds { id, bounds }
+                if *id == self.session.scan_id | (1 << 63) =>
+            {
+                self.window_bounds = *bounds;
+                CommandBatch::new()
+            }
+            ModeEvent::TextChanged(text) if matches!(self.input, Input::Search(_)) => {
+                if self.input.text() == text {
+                    return CommandBatch::new();
+                }
+                let pending = self.session.pending_relabel;
+                let old_fields = self.search_info().map(|info| info.field_count());
+                let shows_all =
+                    |query: &str| query.is_empty() || query.ends_with(char::is_whitespace);
+                let old_all = shows_all(self.input.text());
+                if let Input::Search(query) = &mut self.input {
+                    let end = text.char_indices().nth(4096).map_or(text.len(), |(i, _)| i);
+                    query.clear();
+                    query.push_str(&text[..end]);
+                }
+                let changed = self.relabel_with_refresh(ctx, false);
+                let unchanged = !pending
+                    && !changed
+                    && old_all == shows_all(self.input.text())
+                    && old_fields == self.search_info().map(|info| info.field_count());
+                if unchanged {
+                    CommandBatch::new()
+                } else {
+                    self.refresh_overlap_plan(ctx);
+                    self.redraw(ctx)
+                }
+            }
+            ModeEvent::TextSubmitted(text) if matches!(self.input, Input::Search(_)) => {
+                if let Some(text) = text {
+                    self.input = Input::Search(text.clone());
+                    self.relabel(ctx);
+                    let candidates = if text.chars().any(char::is_whitespace) {
+                        &self.session.search_matches
+                    } else {
+                        &self.session.hints
+                    };
+                    let selected = (candidates.len() == 1).then(|| candidates[0].value);
+                    std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
+                    self.release_search();
+                    self.refresh_overlap_plan(ctx);
+                    let mut commands = CommandBatch::one(Command::CloseTextPrompt);
+                    commands.extend(match selected {
+                        Some(index) => self.select(index),
+                        None => self.redraw(ctx),
+                    });
+                    commands
+                } else {
+                    std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
+                    self.release_search();
+                    self.refresh_overlap_plan(ctx);
+                    let mut commands = self.redraw(ctx);
+                    commands.push(Command::CloseTextPrompt);
+                    commands
+                }
+            }
+            ModeEvent::TextCopied if matches!(self.input, Input::Search(_)) => {
+                self.handle(&ModeEvent::TextSubmitted(None), ctx)
+            }
+            ModeEvent::CopyTextField(index) => {
+                let value = self
+                    .search_info()
+                    .filter(|info| *index < info.field_count())
+                    .map(|info| info.copy_value(*index));
+                value
+                    .filter(|text| !text.is_empty())
+                    .map_or_else(CommandBatch::new, |text| {
+                        CommandBatch::one(Command::CopyText(text))
+                    })
+            }
             ModeEvent::Activated { previous } => {
                 self.session.active = true;
                 self.return_mode = previous.clone().unwrap_or_else(ModeId::idle);
@@ -835,9 +1067,11 @@ impl Mode for HintMode {
                 self.session.retry_pending = false;
                 self.session.selected = None;
                 self.session.finished = false;
-                CommandBatch::one(Command::CancelTimer {
+                let mut commands = CommandBatch::one(Command::ReleaseTextPrompt);
+                commands.push(Command::CancelTimer {
                     id: SCAN_RETRY_TIMER_ID.into(),
-                })
+                });
+                commands
             }
             ModeEvent::UiScanned(result)
                 if self.session.finished || result.id != self.session.scan_id =>
@@ -920,6 +1154,351 @@ impl Mode for HintMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn search_enter_only_commits_one_result_and_reuses_session_index() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(
+            &mut mode,
+            &env,
+            vec![target("复制文件", 0.0), target("粘贴文件", 200.0)],
+        );
+        let original: Vec<_> = mode
+            .session
+            .hints
+            .iter()
+            .map(|h| (h.label.clone(), h.value))
+            .collect();
+        let index = mode.session.search_text.as_ptr();
+        for query in ["文件", "no such target", ""] {
+            press(&mut mode, &env, "/");
+            mode.handle(&ModeEvent::TextChanged(query.into()), &env.ctx());
+            let out = press(&mut mode, &env, "enter");
+            assert!(!out.iter().any(|c| matches!(
+                c,
+                Command::FinishMode { .. } | Command::WarpPointer { .. } | Command::ScanUi(_)
+            )));
+            assert_eq!(
+                mode.session
+                    .hints
+                    .iter()
+                    .map(|h| (h.label.clone(), h.value))
+                    .collect::<Vec<_>>(),
+                original
+            );
+            assert_eq!(mode.session.search_text.as_ptr(), index);
+            assert!(matches!(mode.input, Input::Labels(_)));
+        }
+        press(&mut mode, &env, "/");
+        let filtered = mode.handle(&ModeEvent::TextChanged("fzwj".into()), &env.ctx());
+        assert_eq!(mode.session.hints.len(), 1);
+        assert!(
+            !filtered
+                .iter()
+                .any(|c| matches!(c, Command::FinishMode { .. }))
+        );
+        assert!(matches!(mode.input, Input::Search(_)));
+        let selected = press(&mut mode, &env, "enter");
+        assert!(selected.iter().any(|c| matches!(
+            c,
+            Command::FinishMode {
+                cause: FinishCause::Selection
+            }
+        )));
+        assert_eq!(mode.session.selected, Some(0));
+        mode.handle(&ModeEvent::Deactivated, &env.ctx());
+        assert_eq!(mode.session.search_text.capacity(), 0);
+        assert_eq!(mode.session.search_hints.capacity(), 0);
+    }
+
+    #[test]
+    fn search_preserves_label_codes_and_information_slot_identity() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        let mut targets: Vec<_> = (0..30)
+            .map(|i| target(&format!("项目 {i}"), i as f64 * 25.0))
+            .collect();
+        targets[7].details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+            ocr: "复制文本".into(),
+            accessibility: "Copy".into(),
+            color: None,
+        }));
+        deliver(&mut mode, &env, targets);
+        let label = mode
+            .session
+            .hints
+            .iter()
+            .find(|h| h.value == 7)
+            .unwrap()
+            .label
+            .clone();
+        press(&mut mode, &env, "/");
+        mode.handle(
+            &ModeEvent::TextChanged(label.as_str().to_string()),
+            &env.ctx(),
+        );
+        assert_eq!(mode.session.hints.len(), 1);
+        assert_eq!(mode.session.hints[0].label, label);
+        assert!(mode.session.selected.is_none());
+        assert!(
+            mode.handle(&ModeEvent::CopyTextField(0), &env.ctx())
+                .contains(&Command::CopyText("复制文本".into()))
+        );
+        assert!(
+            mode.handle(&ModeEvent::CopyTextField(3), &env.ctx())
+                .is_empty()
+        );
+        assert!(
+            mode.handle(&ModeEvent::CopyTextField(4), &env.ctx())
+                .is_empty()
+        );
+        mode.handle(&ModeEvent::TextChanged("fzwb".into()), &env.ctx());
+        assert_eq!(mode.session.hints[0].value, 7);
+        press(&mut mode, &env, "esc");
+        assert_eq!(mode.session.hints.len(), 30);
+    }
+
+    #[test]
+    fn search_details_form_two_columns_inside_the_panel_at_high_dpi() {
+        for scale in [1.0, 1.5, 2.0] {
+            let mut env = Env::new();
+            env.screens[0].scale = scale;
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            let original = "这是一段很长的 OCR 内容\n不能换行也不能越过面板边界 ".repeat(60);
+            let mut item = target("复制", 200.0);
+            item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                ocr: original.clone(),
+                accessibility: "复制".into(),
+                color: None,
+            }));
+            deliver(&mut mode, &env, vec![item]);
+            press(&mut mode, &env, "/");
+            let scene = mode.scene(&env.ctx());
+            let labels: Vec<_> = scene
+                .labels
+                .iter()
+                .filter(|label| label.fixed_bounds)
+                .collect();
+            assert_eq!(labels.len(), 12);
+            assert_eq!(labels[0].rect.y, labels[3].rect.y);
+            assert!(labels[1].rect.right() < labels[3].rect.x);
+            assert_eq!(labels[6].rect.y, labels[9].rect.y);
+            assert_eq!(labels[0].text, "1");
+            assert_eq!(labels[1].text, "OCR");
+            assert!(labels[0].style.border_width > 0.0);
+            assert!(labels[3].style.border_width > 0.0);
+            assert!(labels[2].text.ends_with('…'));
+            assert!(!labels[2].text.contains('\n'));
+            assert!(
+                mode.handle(&ModeEvent::CopyTextField(0), &env.ctx())
+                    .contains(&Command::CopyText(original))
+            );
+            let panel = scene
+                .shapes
+                .iter()
+                .find_map(|shape| match shape {
+                    OverlayShape::Rect {
+                        rect,
+                        z_index: 10_000,
+                        ..
+                    } => Some(*rect),
+                    _ => None,
+                })
+                .unwrap();
+            for label in labels {
+                assert!(label.rect.x >= panel.x && label.rect.right() <= panel.right());
+                assert!(label.rect.y >= panel.y && label.rect.bottom() <= panel.bottom());
+            }
+        }
+    }
+    #[test]
+    fn search_shortcuts_follow_platform_and_preserve_custom_bindings() {
+        let mut config = Config::default();
+        let compiled = crate::app::mode_catalog::hint_settings(&config);
+        assert_eq!(
+            crate::api::input::display_key_chord(&compiled.search_copy_keys[0].to_string()),
+            if cfg!(target_os = "macos") {
+                "CMD+1"
+            } else {
+                "CTRL+1"
+            }
+        );
+        assert_eq!(
+            compiled.search_copy_keys[0],
+            KeyChord::parse("primary+1").unwrap()
+        );
+        config.ui_hint.search_copy_keys[0] = "ctrl+shift+9".into();
+        let compiled = crate::app::mode_catalog::hint_settings(&config);
+        assert_eq!(
+            compiled.search_copy_keys[0],
+            KeyChord::parse("ctrl+shift+9").unwrap()
+        );
+    }
+
+    #[test]
+    #[ignore = "allocation measurement; run alone with --test-threads=1"]
+    fn search_equivalent_queries_reuse_warmed_input_and_result_storage() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(&mut mode, &env, vec![target("复制文字", 0.0)]);
+        press(&mut mode, &env, "/");
+        let events = [
+            ModeEvent::TextChanged("复制".into()),
+            ModeEvent::TextChanged("fzw".into()),
+        ];
+        for event in &events {
+            mode.handle(event, &env.ctx());
+        }
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        for _ in 0..100 {
+            for event in &events {
+                assert!(mode.handle(event, &env.ctx()).is_empty());
+            }
+        }
+        let stats = region.change();
+        assert_eq!(stats.allocations + stats.reallocations, 0, "{stats:?}");
+        println!("200 equivalent query changes: {stats:?}");
+    }
+
+    #[test]
+    #[ignore = "response comparison; run in release with --test-threads=1"]
+    fn search_response_comparison_probe() {
+        let env = Env::new();
+        for count in [30, 300] {
+            for queries in [["复制", "fz"], ["fz", "zt"]] {
+                let mut mode = crate::app::mode_catalog::hint(&env.config);
+                activate(&mut mode, &env);
+                deliver(
+                    &mut mode,
+                    &env,
+                    (0..count)
+                        .map(|i| {
+                            let mut item = target(if i % 2 == 0 { "复制" } else { "粘贴" }, 0.0);
+                            item.rect = Rect::new(
+                                (i % 20) as f64 * 45.0,
+                                (i / 20) as f64 * 35.0,
+                                20.0,
+                                15.0,
+                            );
+                            item
+                        })
+                        .collect(),
+                );
+                press(&mut mode, &env, "/");
+                assert_eq!(mode.session.scanned.len(), count);
+                let events = queries.map(|q| ModeEvent::TextChanged(q.into()));
+                for optimized in [false, true, true, false] {
+                    let mut samples = Vec::new();
+                    for round in 0..110 {
+                        let start = std::time::Instant::now();
+                        for event in &events {
+                            if optimized {
+                                std::hint::black_box(mode.handle(event, &env.ctx()));
+                            } else if let ModeEvent::TextChanged(text) = event {
+                                mode.input = Input::Search(text.clone());
+                                mode.relabel(&env.ctx());
+                                std::hint::black_box(mode.redraw(&env.ctx()));
+                            }
+                        }
+                        if round >= 10 {
+                            samples.push(start.elapsed().as_nanos() / 2);
+                        }
+                    }
+                    samples.sort_unstable();
+                    println!(
+                        "targets={count} queries={queries:?} optimized={optimized} p50={}ns p95={}ns",
+                        samples[50], samples[95]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn space_searches_union_in_input_order_and_copy_returns_to_hints() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        let targets = ["红苹果", "蓝香蕉", "灰葡萄"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let mut target = target(name, index as f64 * 200.0);
+                target.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                    ocr: name.into(),
+                    accessibility: name.into(),
+                    color: Some(Color::rgb(1, 2, 3)),
+                }));
+                target
+            })
+            .collect();
+        deliver(&mut mode, &env, targets);
+        press(&mut mode, &env, "/");
+        mode.handle(&ModeEvent::TextChanged("lxj ".into()), &env.ctx());
+        assert!(
+            mode.handle(&ModeEvent::TextChanged("lxj ".into()), &env.ctx())
+                .is_empty()
+        );
+        assert_eq!(
+            mode.session.hints.len(),
+            3,
+            "empty next search restores candidates"
+        );
+        assert_eq!(mode.search_info().unwrap().values()[0], "蓝香蕉");
+        mode.handle(&ModeEvent::TextChanged("lxj  hpg lxj".into()), &env.ctx());
+        assert_eq!(
+            mode.session
+                .search_matches
+                .iter()
+                .map(|h| h.value)
+                .collect::<Vec<_>>(),
+            [1, 0]
+        );
+        let info = mode.search_info().unwrap();
+        assert_eq!(info.field_count(), 3);
+        assert_eq!(info.values()[0], "蓝香蕉\n红苹果");
+        assert_eq!(info.values()[2], "240, 112\n40, 112");
+        assert!(
+            mode.handle(&ModeEvent::CopyTextField(3), &env.ctx())
+                .is_empty()
+        );
+        assert!(
+            mode.handle(&ModeEvent::CopyTextField(0), &env.ctx())
+                .contains(&Command::CopyText("蓝香蕉\n红苹果".into()))
+        );
+        let scene = mode.scene(&env.ctx());
+        assert_eq!(
+            scene
+                .labels
+                .iter()
+                .filter(|label| label.fixed_bounds)
+                .count(),
+            9
+        );
+        let capacity = mode.session.search_matches.capacity();
+        let out = mode.handle(&ModeEvent::TextCopied, &env.ctx());
+        assert!(out.contains(&Command::CloseTextPrompt));
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, Command::SwitchMode(_) | Command::WarpPointer { .. }))
+        );
+        assert_eq!(mode.session.hints.len(), 3);
+        assert!(matches!(mode.input, Input::Labels(_)));
+        assert_eq!(mode.session.search_matches.capacity(), capacity);
+        press(&mut mode, &env, "/");
+        mode.handle(&ModeEvent::TextChanged("hpg lxj".into()), &env.ctx());
+        assert_eq!(mode.search_info().unwrap().values()[0], "红苹果\n蓝香蕉");
+        mode.handle(&ModeEvent::TextChanged("hpg".into()), &env.ctx());
+        assert_eq!(mode.search_info().unwrap().field_count(), 4);
+        mode.handle(&ModeEvent::Deactivated, &env.ctx());
+        assert_eq!(mode.session.search_matches.capacity(), 0);
+        assert_eq!(mode.session.search_seen.capacity(), 0);
+        assert_eq!(mode.session.search_query.capacity(), 0);
+    }
     use crate::api::overlay::{LabelStyle, OverlayLabel, OverlayScene, OverlayShape};
     use crate::api::style::AUTO;
     use crate::presentation::hint::layers::build_visual_layer_plan;
@@ -1003,6 +1582,7 @@ mod tests {
 
     fn target(name: &str, x: f64) -> UiTarget {
         UiTarget {
+            details: None,
             rect: Rect::new(x, 100.0, 80.0, 24.0),
             name: name.into(),
             role: SemanticRole::Button,
@@ -1113,6 +1693,7 @@ mod tests {
             let anchor = mode.session.hints[1].bounds;
             let unaffected = mode.session.hints[3].label.clone();
             let row = UiTarget {
+                details: None,
                 rect: Rect::new(0.0, 90.0, 300.0, 44.0),
                 name: "file row".into(),
                 role: SemanticRole::ListItem,
@@ -1157,12 +1738,12 @@ mod tests {
         let env = Env::new();
         let mut mode = crate::app::mode_catalog::hint(&env.config);
         mode.session.scanned.reserve(1_024);
-        mode.session.scanned_names_lower.reserve(1_024);
+        mode.session.search_text.reserve(1_024);
         mode.session.seen_targets.reserve(1_024);
         mode.session.hints.reserve(1_024);
         mode.overlap_plan.reserve_for_test(1_024);
         assert!(mode.session.scanned.capacity() >= 1_024);
-        assert!(mode.session.scanned_names_lower.capacity() >= 1_024);
+        assert!(mode.session.search_text.capacity() >= 1_024);
         assert!(mode.session.seen_targets.capacity() >= 1_024);
         assert!(mode.session.hints.capacity() >= 1_024);
         assert!(mode.overlap_plan.retained_capacity() >= 1_024);
@@ -1170,7 +1751,7 @@ mod tests {
         mode.handle(&ModeEvent::Deactivated, &env.ctx());
 
         assert_eq!(mode.session.scanned.capacity(), 0);
-        assert_eq!(mode.session.scanned_names_lower.capacity(), 0);
+        assert_eq!(mode.session.search_text.capacity(), 0);
         assert_eq!(mode.session.seen_targets.capacity(), 0);
         assert_eq!(mode.session.hints.capacity(), 0);
         assert_eq!(mode.overlap_plan.retained_capacity(), INLINE_LABELS);
@@ -1194,7 +1775,7 @@ mod tests {
 
         assert!(mode.session.scanned.is_empty());
         assert_eq!(mode.session.scanned.capacity(), 0);
-        assert_eq!(mode.session.scanned_names_lower.capacity(), 0);
+        assert_eq!(mode.session.search_text.capacity(), 0);
         assert!(mode.session.seen_targets.is_empty());
         assert_eq!(mode.session.seen_targets.capacity(), 0);
         assert!(mode.session.hints.is_empty());
@@ -2370,6 +2951,7 @@ mod tests {
             activate(&mut mode, &env);
             let targets = (0..count)
                 .map(|i| UiTarget {
+                    details: None,
                     rect: Rect::new((i % 20) as f64 * 40.0, (i / 20) as f64 * 30.0, 20.0, 20.0),
                     name: format!("Control {i}"),
                     role: SemanticRole::Button,
@@ -2393,7 +2975,7 @@ mod tests {
             mode.handle(&ModeEvent::Deactivated, &env.ctx());
             assert_eq!(mode.session.scanned.capacity(), 0);
             assert_eq!(mode.session.hints.capacity(), 0);
-            assert_eq!(mode.session.scanned_names_lower.capacity(), 0);
+            assert_eq!(mode.session.search_text.capacity(), 0);
             assert!(mode.wide_placements.is_none());
         }
     }
@@ -2684,12 +3266,14 @@ mod tests {
             &env,
             vec![target("Save", 0.0), target("Cancel", 200.0)],
         );
-        assert!(!mode.session.search_names_initialized);
-        assert!(mode.session.scanned_names_lower.is_empty());
+        assert!(mode.session.search_names_initialized);
+        let search_storage = mode.session.search_text.as_ptr();
 
         press(&mut mode, &env, "/");
+        assert_eq!(mode.session.search_text.as_ptr(), search_storage);
         assert!(mode.session.search_names_initialized);
-        assert_eq!(mode.session.scanned_names_lower, ["save", "cancel"]);
+        assert!(mode.session.search_text[0].matches("save", ""));
+        assert!(mode.session.search_text[1].matches("cancel", ""));
         let out = press(&mut mode, &env, "c");
         assert_eq!(mode.session.hints.len(), 1, "only Cancel should survive");
         assert_eq!(
@@ -2697,9 +3281,15 @@ mod tests {
             "Cancel"
         );
 
-        // The search box is drawn with the query.
+        // Native editor draws the query; the overlay owns its physical shell.
         assert!(
-            scene_of(&out).labels.iter().any(|l| l.text == "/c"),
+            scene_of(&out).shapes.iter().any(|shape| matches!(
+                shape,
+                OverlayShape::Rect {
+                    z_index: 10_000,
+                    ..
+                }
+            )),
             "search box missing"
         );
     }
@@ -2719,8 +3309,8 @@ mod tests {
         let filtered = press(&mut mode, &env, "a");
         assert_eq!(mode.session.hints.len(), 2);
         assert_eq!(mode.overlap_plan.len(), 2);
-        // Two hint labels plus the search input label.
-        assert_eq!(scene_of(&filtered).labels.len(), 3);
+        // Two hint labels; native input text is not drawn twice.
+        assert_eq!(scene_of(&filtered).labels.len(), 2);
 
         let cycled = press(&mut mode, &env, "left_shift");
         assert_eq!(
@@ -2820,7 +3410,7 @@ mod tests {
 
         assert_eq!(mode.session.scanned.len(), 3);
         assert_eq!(mode.session.seen_targets.capacity(), 0);
-        assert!(mode.session.scanned_names_lower.is_empty());
+        assert_eq!(mode.session.search_text.len(), 3);
     }
 
     #[test]

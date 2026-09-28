@@ -632,7 +632,29 @@ impl Engine {
             return Ok(());
         }
 
-        if !self.enabled || self.is_excluded_app() || self.window_presets.pending.is_some() {
+        if let Some((owner, prompt)) = &self.scheduler.text_prompt {
+            let copy = prompt.copy_keys.iter().position(|chord| {
+                chord.activation_matches(&input.key)
+                    && chord.keys().len() == self.input.pressed.len()
+                    && chord.matches_pressed(&self.input.pressed)
+            });
+            if let Some(index) = copy
+                && input.state == KeyState::Down
+            {
+                let owner = owner.clone();
+                if !input.repeat {
+                    self.dispatch_to(&owner, ModeEvent::CopyTextField(index), backend)?;
+                }
+                let outcome = self.complete_key_disposition(&input, KeyOutcome::Consumed);
+                self.dispose_input(&input, outcome, trace_key, backend)?;
+                return Ok(());
+            }
+        }
+        if !self.enabled
+            || self.is_excluded_app()
+            || self.window_presets.pending.is_some()
+            || self.scheduler.text_prompt.is_some()
+        {
             self.input.pending_chords.clear();
             if let Some(pending) = completed_long_press
                 && let Err(error) = self.cancel_pending_long_press(pending, backend)

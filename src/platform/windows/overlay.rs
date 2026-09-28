@@ -340,7 +340,11 @@ fn scene_for_dpi(scene: &OverlayScene, scale: f64) -> Cow<'_, OverlayScene> {
 fn scale_labels(labels: &mut OverlayItems<OverlayLabel>, scale: f64) {
     let mut styles: SmallVec<[(usize, u64, SharedLabelStyle); 8]> = SmallVec::new();
     for label in labels {
-        let (rect, effective) = scaled_label_geometry(&label.text, label.rect, &label.style, scale);
+        let (rect, effective) = if label.fixed_bounds {
+            (label.rect, scale)
+        } else {
+            scaled_label_geometry(&label.text, label.rect, &label.style, scale)
+        };
         label.rect = rect;
         let key = (label.style.identity(), effective.to_bits());
         if let Some((_, _, style)) = styles
@@ -1336,6 +1340,31 @@ mod tests {
             scene.labels[0].rect.center()
         );
         assert!(scaled.labels[0].rect.width > scene.labels[0].rect.width);
+    }
+
+    #[test]
+    fn fixed_panel_text_keeps_geometry_at_every_monitor_scale() {
+        let mut scene = OverlayScene::new();
+        for text in ["—", "1  OCR  ·  ctrl+1", "很长的辅助功能文本"] {
+            scene.push_label(
+                OverlayLabel::new(
+                    text,
+                    Rect::new(100.0, 100.0, 230.0, 32.0),
+                    LabelStyle::default(),
+                )
+                .with_fixed_bounds(),
+            );
+        }
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let scaled = scene_for_dpi(&scene, scale);
+            for (before, after) in scene.labels.iter().zip(scaled.labels.iter()) {
+                assert_eq!(before.rect, after.rect);
+                assert_eq!(
+                    after.style.font_size,
+                    (before.style.font_size * scale).round()
+                );
+            }
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 use super::hint::CompactHint;
 use super::style::LabelUi;
-use super::style::{BoundaryHighlight, HintPlacement, SearchInputUi};
+use super::style::{BoundaryHighlight, CompiledSearchPanel, HintPlacement};
 use super::theme::ThemedColor;
 use super::window::{WindowId, WindowInfo};
 use super::window_layout::LayoutTree;
@@ -16,6 +16,12 @@ pub use hint_cache::VisualLayerPlan;
 /// Stateless scene-composition port supplied by the host. Implementations must
 /// consume borrowed views within the call and keep native resources in Backend.
 pub trait Presenter: Send + Sync {
+    fn input_panel(
+        &self,
+        ui: &CompiledSearchPanel,
+        window: Option<Rect>,
+        context: &HostContext<'_>,
+    ) -> (Rect, crate::api::overlay::SharedLabelStyle);
     fn compose(&self, view: View<'_>, context: &HostContext<'_>) -> OverlayScene;
     fn prepare_hints(
         &self,
@@ -127,7 +133,7 @@ pub struct HintStyle<'a> {
     pub label_x_offset: i32,
     pub label_y_offset: i32,
     pub boundary_highlight: &'a BoundaryHighlight,
-    pub search_input_ui: &'a SearchInputUi,
+    pub search_input_ui: &'a CompiledSearchPanel,
 }
 
 #[derive(Clone, Copy)]
@@ -140,9 +146,143 @@ pub struct HintContent<'a> {
 }
 
 pub struct HintView<'a> {
+    pub info: Option<HintInfoView<'a>>,
+    pub window_bounds: Option<Rect>,
     pub content: HintContent<'a>,
     pub layers: &'a VisualLayerPlan,
     pub active_layer: Option<usize>,
+}
+
+pub struct HintInfoView<'a> {
+    pub preview: &'a HintInfoPreview,
+    pub targets: &'a [crate::api::UiTarget],
+    pub hints: &'a [CompactHint<usize>],
+    pub multiple: bool,
+    pub ui: &'a CompiledSearchPanel,
+    pub titles: &'a [String; 4],
+}
+
+/// Session-owned preview storage; closing the editor does not discard capacity.
+#[derive(Default)]
+pub struct HintInfoPreview(std::cell::RefCell<[String; 4]>);
+
+impl HintInfoView<'_> {
+    pub fn field_count(&self) -> usize {
+        if self.multiple { 3 } else { 4 }
+    }
+
+    #[cfg(test)]
+    pub fn values(&self) -> [String; 4] {
+        std::array::from_fn(|field| self.field_text(field, usize::MAX))
+    }
+
+    pub fn preview_values(&self) -> std::cell::Ref<'_, [String; 4]> {
+        {
+            let mut values = self.preview.0.borrow_mut();
+            for (field, value) in values.iter_mut().enumerate() {
+                self.write_field(field, 512, value);
+            }
+        }
+        self.preview.0.borrow()
+    }
+
+    pub fn copy_value(&self, field: usize) -> String {
+        self.field_text(field, usize::MAX)
+    }
+
+    fn field_text(&self, field: usize, limit: usize) -> String {
+        let mut text = String::new();
+        self.write_field(field, limit, &mut text);
+        text
+    }
+
+    fn write_field(&self, field: usize, limit: usize, text: &mut String) {
+        use std::fmt::Write;
+        if field >= self.field_count() {
+            text.clear();
+            return;
+        }
+        let mut out = InfoText {
+            text,
+            position: 0,
+            remaining: limit,
+        };
+        let mut present = false;
+        for (index, hint) in self.hints.iter().enumerate() {
+            if index > 0 && out.write_str("\n").is_err() {
+                break;
+            }
+            let target = &self.targets[hint.value];
+            let result = match field {
+                0 => {
+                    present |= !target.ocr_text().is_empty();
+                    out.write_str(target.ocr_text())
+                }
+                1 if target.details.is_none() || !target.accessibility_text().is_empty() => {
+                    present = true;
+                    write!(out, "{} · {}", target.accessibility_text(), target.role)
+                }
+                2 => {
+                    present = true;
+                    let center = target.rect.center();
+                    write!(out, "{:.0}, {:.0}", center.x, center.y)
+                }
+                3 => {
+                    if let Some(color) = target.details.as_ref().and_then(|d| d.color) {
+                        present = true;
+                        write!(
+                            out,
+                            "#{:02X}{:02X}{:02X}{:02X}",
+                            color.r, color.g, color.b, color.a
+                        )
+                    } else {
+                        Ok(())
+                    }
+                }
+                _ => Ok(()),
+            };
+            if result.is_err() {
+                break;
+            }
+        }
+        out.text.truncate(if present { out.position } else { 0 });
+    }
+}
+
+/// Stops preview formatting at a Unicode boundary, without building full clipboard data.
+struct InfoText<'a> {
+    text: &'a mut String,
+    position: usize,
+    remaining: usize,
+}
+
+impl InfoText<'_> {
+    fn append(&mut self, value: &str) {
+        let end = self.position + value.len();
+        if self.text.get(self.position..end) != Some(value) {
+            self.text.truncate(self.position);
+            self.text.push_str(value);
+        }
+        self.position = end;
+    }
+}
+
+impl std::fmt::Write for InfoText<'_> {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        if self.remaining == usize::MAX {
+            self.append(value);
+            return Ok(());
+        }
+        if let Some((end, _)) = value.char_indices().nth(self.remaining) {
+            self.append(&value[..end]);
+            self.append("…");
+            self.remaining = 0;
+            return Err(std::fmt::Error);
+        }
+        self.remaining -= value.chars().count();
+        self.append(value);
+        Ok(())
+    }
 }
 
 pub struct HintSelectionView<'a> {
@@ -155,4 +295,115 @@ pub struct StatusView<'a> {
     pub text: &'a str,
     pub ui: &'a LabelUi,
     pub clip: Option<Rect>,
+}
+
+#[cfg(test)]
+mod info_preview_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "allocation measurement; run alone with --test-threads=1"]
+    fn search_preview_memory_is_bounded_for_large_multiselections() {
+        let config = crate::config::Config::default();
+        let settings = crate::app::mode_catalog::hint_settings(&config);
+        let target = crate::api::UiTarget {
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            name: "按钮".into(),
+            role: crate::api::SemanticRole::Button,
+            details: Some(Box::new(crate::api::geometry::UiTargetDetails {
+                ocr: "中文🦀".repeat(20_000),
+                accessibility: "按钮".into(),
+                color: None,
+            })),
+        };
+        let targets = [target];
+        let hints: Vec<_> = (0..10_000)
+            .map(|_| CompactHint {
+                label: Default::default(),
+                bounds: targets[0].rect,
+                value: 0,
+            })
+            .collect();
+        let preview = HintInfoPreview::default();
+        let mut view = HintInfoView {
+            preview: &preview,
+            targets: &targets,
+            hints: &hints,
+            multiple: true,
+            ui: &settings.search_info_ui,
+            titles: &settings.search_titles,
+        };
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        let values = view.preview_values();
+        let stats = region.change();
+        assert!(values.iter().all(|value| value.chars().count() <= 513));
+        assert!(stats.bytes_allocated < 32_768, "{stats:?}");
+        assert!(values[0].ends_with('…'));
+        assert!(values[3].is_empty());
+        println!(
+            "10000-target preview: {} allocated bytes, {} allocations, {} reallocations",
+            stats.bytes_allocated, stats.allocations, stats.reallocations
+        );
+        drop(values);
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        for index in 0..100 {
+            view.hints = if index % 2 == 0 { &hints[..1] } else { &hints };
+            let values = view.preview_values();
+            assert!(values[0].ends_with('…'));
+        }
+        let stats = region.change();
+        assert_eq!(stats.allocations + stats.reallocations, 0, "{stats:?}");
+        println!("100 warmed previews: {stats:?}");
+    }
+
+    #[test]
+    fn preview_reuses_storage_across_changed_unicode_empty_and_multiple_fields() {
+        let config = crate::config::Config::default();
+        let settings = crate::app::mode_catalog::hint_settings(&config);
+        let preview = HintInfoPreview::default();
+        let hints = [CompactHint {
+            label: Default::default(),
+            bounds: Rect::new(0.0, 0.0, 10.0, 10.0),
+            value: 0,
+        }];
+        let mut targets = [crate::api::UiTarget {
+            rect: hints[0].bounds,
+            name: String::new(),
+            role: crate::api::SemanticRole::Button,
+            details: Some(Box::new(crate::api::geometry::UiTargetDetails {
+                ocr: "长文字🦀".repeat(200),
+                accessibility: String::new(),
+                color: Some(crate::api::Color::rgb(1, 2, 3)),
+            })),
+        }];
+        let mut capacity = 0;
+        for (index, text) in [
+            "长文字🦀".repeat(200),
+            "🙂短".into(),
+            String::new(),
+            "新内容".into(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            targets[0].details.as_mut().unwrap().ocr = text;
+            let view = HintInfoView {
+                preview: &preview,
+                targets: &targets,
+                hints: &hints,
+                multiple: index % 2 != 0,
+                ui: &settings.search_info_ui,
+                titles: &settings.search_titles,
+            };
+            let values = view.preview_values();
+            assert_eq!(
+                *values,
+                std::array::from_fn(|field| view.field_text(field, 512))
+            );
+            if index == 0 {
+                capacity = values[0].capacity();
+            }
+            assert_eq!(values[0].capacity(), capacity);
+        }
+    }
 }
