@@ -1,0 +1,34 @@
+name: Set up release Rust
+description: Resolve official stable Rust, install targets, and synchronize the package lockfile
+inputs:
+  targets:
+    description: Comma-separated Rust targets; omit when only host tools are needed
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Resolve latest stable Rust
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        rust_version="$(gh api repos/rust-lang/rust/releases/latest --jq '.tag_name')"
+        [[ "$rust_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+        echo "RUSTUP_TOOLCHAIN=$rust_version" >> "$GITHUB_ENV"
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+        targets: ${{ inputs.targets }}
+
+    - name: Prepare build date and lockfile
+      shell: bash
+      run: |
+        echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+        version="$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n 1)"
+        test -n "$version"
+        locked_version="$(awk '/^name = "keysteer"\r?$/ { found=1; next } found && /^version = / { gsub(/["\r]/, "", $3); print $3; exit }' Cargo.lock)"
+        if [[ "$locked_version" != "$version" ]]; then
+          cargo update --package keysteer --precise "$version"
+        fi

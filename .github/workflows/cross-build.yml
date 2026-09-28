@@ -82,37 +82,10 @@ jobs:
           echo "CARGO_XWIN_VERSION=$xwin_version" >> "$GITHUB_ENV"
           echo "Selected cargo-xwin $xwin_version from rust-cross/cargo-xwin"
 
-      - name: Resolve latest stable Rust
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          rust_version="$(gh api repos/rust-lang/rust/releases/latest --jq '.tag_name')"
-          [[ "$rust_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          echo "RUSTUP_TOOLCHAIN=$rust_version" >> "$GITHUB_ENV"
-          echo "Selected Rust $rust_version from rust-lang/rust"
-
-      - name: Resolve system package versions
-        id: system-packages
-        run: |
-          sudo apt-get update
-          package_key="$(apt-cache policy osslsigncode zip zstd libtinfo6 libxml2 libzstd1 libedit2 | sha256sum | cut -d ' ' -f 1)"
-          echo "apt-key=$package_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore system package downloads
-        uses: actions/cache@v6
+      - name: Set up release Rust
+        uses: ./.github/actions/setup-rust
         with:
-          # Exclude apt's root-owned locks and partial download directory.
-          path: ${{ runner.temp }}/keysteer-apt/*.deb
-          key: cross-apt-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.system-packages.outputs.apt-key }}
-          restore-keys: cross-apt-v2-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Install system tools and Rust
-        run: |
-          mkdir -p "$RUNNER_TEMP/keysteer-apt/partial"
-          sudo apt-get -o Dir::Cache::archives="$RUNNER_TEMP/keysteer-apt" \
-            -o APT::Keep-Downloaded-Packages=true install -y \
-            osslsigncode zip zstd libtinfo6 libxml2 libzstd1 libedit2
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          targets: ${{ matrix.target }}
 
       - name: Identify CPU for the build cache
         id: cpu
@@ -137,53 +110,38 @@ jobs:
               output.write(f"key={cache_key}\n")
           PY
 
-      - name: Prepare reproducible build date and lockfile
+      - name: Resolve system package versions
+        id: system-packages
         run: |
-          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
-          version="$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n 1)"
-          test -n "$version"
-          cargo update --package keysteer --precise "$version"
+          sudo apt-get update
+          package_key="$(apt-cache policy osslsigncode zip zstd libtinfo6 libxml2 libzstd1 libedit2 | sha256sum | cut -d ' ' -f 1)"
+          echo "apt-key=$package_key" >> "$GITHUB_OUTPUT"
 
-      - name: Identify exact compilation inputs
-        id: compilation
-        env:
-          SOURCE_REVISION: ${{ github.sha }}
-          BUILD_FILES: ${{ hashFiles('Cargo.lock', '.github/workflows/cross-build.yml') }}
-          CPU_KEY: ${{ steps.cpu.outputs.key }}
-          TARGET: ${{ matrix.target }}
-          CL_FLAGS: ${{ matrix.cl_flags }}
-        run: |
-          # No prefix fallback: an executable must match every input exactly.
-          # The source revision covers Rust/C sources, assets and build scripts;
-          # hashFiles also includes the lockfile after version synchronization.
-          key="$(
-            {
-              printf '%s\n' "$SOURCE_REVISION" "$BUILD_FILES" "$CPU_KEY" "$TARGET" \
-                "$RUSTFLAGS" "$CL_FLAGS" "$LLVM_SHA256" "$CARGO_XWIN_VERSION" \
-                "$SOURCE_DATE_EPOCH" 'xwin-sdk-v1'
-              rustc -Vv
-              cargo -V
-            } | sha256sum | cut -d ' ' -f 1
-          )"
-          echo "key=keysteer-unsigned-v1-$TARGET-$key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore exact unsigned executable
-        id: unsigned-cache
-        uses: actions/cache/restore@v6
+      - name: Restore system package downloads
+        uses: actions/cache@v6
         with:
-          path: ${{ runner.temp }}/keysteer-unsigned
-          key: ${{ steps.compilation.outputs.key }}
+          # Share downloads across targets, excluding apt locks and partial files.
+          path: ${{ runner.temp }}/keysteer-apt/*.deb
+          key: cross-apt-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.system-packages.outputs.apt-key }}
+          restore-keys: cross-apt-v2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install system tools
+        run: |
+          mkdir -p "$RUNNER_TEMP/keysteer-apt/partial"
+          sudo apt-get -o Dir::Cache::archives="$RUNNER_TEMP/keysteer-apt" \
+            -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
+            osslsigncode zip zstd libtinfo6 libxml2 libzstd1 libedit2
 
       - name: Restore official LLVM download
-        if: steps.unsigned-cache.outputs.cache-hit != 'true'
         id: llvm-cache
         uses: actions/cache@v6
         with:
+          # Shared by target architectures: this is a Linux host toolchain.
           path: ~/.cache/keysteer-llvm-downloads
           key: llvm-release-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.llvm-sha256 }}
 
-      - name: Download LLVM on cache miss
-        if: steps.unsigned-cache.outputs.cache-hit != 'true' && steps.llvm-cache.outputs.cache-hit != 'true'
+      - name: Download official LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -192,7 +150,6 @@ jobs:
             --pattern "$LLVM_ASSET" --dir "$HOME/.cache/keysteer-llvm-downloads"
 
       - name: Verify and extract LLVM
-        if: steps.unsigned-cache.outputs.cache-hit != 'true'
         run: |
           archive="$HOME/.cache/keysteer-llvm-downloads/$LLVM_ASSET"
           printf '%s  %s\n' "$LLVM_SHA256" "$archive" | sha256sum --check --strict
@@ -217,79 +174,48 @@ jobs:
           echo "$RUNNER_TEMP/keysteer-llvm/bin" >> "$GITHUB_PATH"
 
       - name: Restore Rust cache
-        if: steps.unsigned-cache.outputs.cache-hit != 'true'
+        id: rust-cache
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v1-cross-windows-experiment
-          key: ${{ matrix.target }}-${{ matrix.cpu }}-${{ steps.cpu.outputs.key }}-${{ steps.system-packages.outputs.apt-key }}-llvm${{ steps.tools.outputs.llvm-sha256 }}-xwin${{ env.CARGO_XWIN_VERSION }}-release
+          key: ${{ matrix.target }}-${{ matrix.cpu }}-${{ steps.cpu.outputs.key }}-llvm${{ steps.tools.outputs.llvm-sha256 }}-xwin${{ env.CARGO_XWIN_VERSION }}-release
           cache-bin: false
           cache-workspace-crates: true
           cache-on-failure: true
 
       - name: Restore cargo-xwin executable
-        if: steps.unsigned-cache.outputs.cache-hit != 'true'
         id: xwin-tool
         uses: actions/cache@v6
         with:
-          path: ~/.cache/keysteer-tools
-          key: cargo-xwin-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_XWIN_VERSION }}
+          # One host executable serves both Windows target architectures.
+          path: ~/.cargo/bin/cargo-xwin
+          key: cargo-xwin-prebuilt-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_XWIN_VERSION }}
 
-      - name: Install cargo-xwin on cache miss
-        if: steps.unsigned-cache.outputs.cache-hit != 'true' && steps.xwin-tool.outputs.cache-hit != 'true'
-        run: |
-          env -u RUSTFLAGS cargo install --locked --version "$CARGO_XWIN_VERSION" \
-            --root "$HOME/.cache/keysteer-tools" cargo-xwin
-
-      - name: Add cargo-xwin to PATH
-        if: steps.unsigned-cache.outputs.cache-hit != 'true'
-        run: echo "$HOME/.cache/keysteer-tools/bin" >> "$GITHUB_PATH"
+      - name: Install cargo-xwin
+        if: steps.xwin-tool.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-xwin@${{ env.CARGO_XWIN_VERSION }}
+          # Use checked upstream binaries; never fall back to a third-party
+          # binary provider or an unexpected source build.
+          fallback: none
 
       - name: Restore Windows SDK and CRT
-        if: steps.unsigned-cache.outputs.cache-hit != 'true'
         uses: actions/cache@v6
         with:
           path: ${{ env.XWIN_CACHE_DIR }}
           key: xwin-sdk-v1-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-${{ matrix.target }}
 
       - name: Build complete Windows executable
-        if: steps.unsigned-cache.outputs.cache-hit != 'true'
         env:
           # cargo-xwin merges CL_FLAGS into its generated target CFLAGS.
           CL_FLAGS: ${{ matrix.cl_flags }}
         run: |
-          rustup target add ${{ matrix.target }}
           rustc -Vv
           clang-cl --version
           lld-link --version
           cargo xwin --version
           cargo xwin build --locked --release --bin keysteer --no-default-features --target ${{ matrix.target }}
-
-      - name: Stage unsigned executable for caching
-        if: steps.unsigned-cache.outputs.cache-hit != 'true'
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/keysteer-unsigned"
-          cp "target/$TARGET/release/keysteer.exe" "$RUNNER_TEMP/keysteer-unsigned/keysteer.exe"
-          cd "$RUNNER_TEMP/keysteer-unsigned"
-          sha256sum keysteer.exe > SHA256SUMS
-
-      # Save before signing: a timestamp-server failure should not require
-      # compiling and linking the same executable again on the next run.
-      - name: Save unsigned executable
-        if: steps.unsigned-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ runner.temp }}/keysteer-unsigned
-          key: ${{ steps.compilation.outputs.key }}
-
-      - name: Verify and reuse unsigned executable
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          (cd "$RUNNER_TEMP/keysteer-unsigned" && sha256sum --check --strict SHA256SUMS)
-          mkdir -p "target/$TARGET/release"
-          cp "$RUNNER_TEMP/keysteer-unsigned/keysteer.exe" "target/$TARGET/release/keysteer.exe"
 
       - name: Sign and package Windows executable
         env:
@@ -301,11 +227,11 @@ jobs:
       - name: Summarize signed package
         env:
           TARGET: ${{ matrix.target }}
-          COMPILE_CACHE_HIT: ${{ steps.unsigned-cache.outputs.cache-hit }}
+          COMPILE_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
         run: |
           {
             echo "### Windows $TARGET"
-            echo "Exact unsigned build cache hit: ${COMPILE_CACHE_HIT:-false}"
+            echo "Rust compilation cache hit: ${COMPILE_CACHE_HIT:-false}"
             echo 'Signed with the existing Windows certificate and an RFC 3161 timestamp.'
             echo 'Native UI behavior still requires Windows validation.'
             echo 'SHA256 of the signed executable and package:'
@@ -322,3 +248,4 @@ jobs:
           path: dist/${{ matrix.target }}/*.zip
           if-no-files-found: error
           retention-days: 30
+          compression-level: 0

@@ -50,25 +50,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install stable Rust toolchain
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          rust_version="$(gh api repos/rust-lang/rust/releases/latest --jq '.tag_name')"
-          [[ "$rust_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          rustup toolchain install "$rust_version" --profile minimal
-          echo "RUSTUP_TOOLCHAIN=$rust_version" >> "$GITHUB_ENV"
-
-      - name: Sync package version in Cargo.lock
-        shell: bash
-        run: |
-          version="$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n 1)"
-          test -n "$version"
-          cargo update --package keysteer --precise "$version"
-
-      - name: Install Rust target
-        run: rustup target add ${{ matrix.target }}
+      - name: Set up release Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Restore Rust release cache
         uses: Swatinem/rust-cache@v2
@@ -80,6 +65,7 @@ jobs:
           workspaces: . -> target
           cache-bin: false
           cache-workspace-crates: false
+          cache-on-failure: true
           save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Prepare Windows code-signing certificate
@@ -105,6 +91,15 @@ jobs:
           KEYSTEER_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
         run: ./packaging/windows/package.ps1 -Target ${{ matrix.target }} -RequireSigning ${{ matrix.package_args }}
 
+      - name: Remove temporary signing certificate
+        if: always()
+        shell: pwsh
+        run: |
+          $certificate = Join-Path $env:RUNNER_TEMP "keysteer-signing.pfx"
+          if (Test-Path -LiteralPath $certificate) {
+            Remove-Item -LiteralPath $certificate -Force
+          }
+
       - name: Upload Windows ${{ matrix.arch }} package
         uses: actions/upload-artifact@v7
         with:
@@ -112,6 +107,7 @@ jobs:
           path: dist/${{ matrix.target }}/*.zip
           if-no-files-found: error
           retention-days: 30
+          compression-level: 0
 
   macos:
     name: Package macOS ${{ matrix.arch }}
@@ -131,25 +127,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install stable Rust toolchain
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          rust_version="$(gh api repos/rust-lang/rust/releases/latest --jq '.tag_name')"
-          [[ "$rust_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          rustup toolchain install "$rust_version" --profile minimal
-          echo "RUSTUP_TOOLCHAIN=$rust_version" >> "$GITHUB_ENV"
-
-      - name: Sync package version in Cargo.lock
-        shell: bash
-        run: |
-          version="$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n 1)"
-          test -n "$version"
-          cargo update --package keysteer --precise "$version"
-
-      - name: Install Rust target
-        run: rustup target add ${{ matrix.target }}
+      - name: Set up release Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Restore Rust release cache
         uses: Swatinem/rust-cache@v2
@@ -159,6 +140,7 @@ jobs:
           workspaces: . -> target
           cache-bin: false
           cache-workspace-crates: false
+          cache-on-failure: true
           save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Package macOS ${{ matrix.arch }}
@@ -173,6 +155,7 @@ jobs:
           path: dist/${{ matrix.target }}/*.zip
           if-no-files-found: error
           retention-days: 30
+          compression-level: 0
 
   release:
     # A public release must contain every supported platform. Partial manual
@@ -242,5 +225,5 @@ jobs:
             --title "$title" \
             "${prerelease_flag[@]}" \
             --generate-notes \
-            --notes "$(cat release-body.md)" \
+            --notes-file release-body.md \
             release-assets/*.zip
