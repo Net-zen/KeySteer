@@ -132,26 +132,28 @@ jobs:
             -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends \
             osslsigncode zip zstd libtinfo6 libxml2 libzstd1 libedit2
 
-      - name: Restore official LLVM download
+      - name: Restore installed LLVM
         id: llvm-cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
-          # Shared by target architectures: this is a Linux host toolchain.
-          path: ~/.cache/keysteer-llvm-downloads
-          key: llvm-release-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.llvm-sha256 }}
+          # Cache the installation instead of both an archive and its contents.
+          # The Linux host toolchain is shared by all cross-compilation targets.
+          path: ${{ runner.temp }}/keysteer-llvm
+          key: llvm-installed-v1-ubuntu24-${{ runner.arch }}-${{ steps.tools.outputs.llvm-sha256 }}
 
       - name: Download official LLVM
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p "$HOME/.cache/keysteer-llvm-downloads"
+          mkdir -p "$RUNNER_TEMP/keysteer-llvm-downloads"
           gh release download "$LLVM_TAG" --repo llvm/llvm-project \
-            --pattern "$LLVM_ASSET" --dir "$HOME/.cache/keysteer-llvm-downloads"
+            --pattern "$LLVM_ASSET" --dir "$RUNNER_TEMP/keysteer-llvm-downloads"
 
       - name: Verify and extract LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: |
-          archive="$HOME/.cache/keysteer-llvm-downloads/$LLVM_ASSET"
+          archive="$RUNNER_TEMP/keysteer-llvm-downloads/$LLVM_ASSET"
           printf '%s  %s\n' "$LLVM_SHA256" "$archive" | sha256sum --check --strict
           mkdir -p "$RUNNER_TEMP/keysteer-llvm"
           case "$LLVM_ASSET" in
@@ -166,12 +168,22 @@ jobs:
               ;;
             *) echo "Unsupported LLVM archive: $LLVM_ASSET" >&2; exit 1 ;;
           esac
+
+      - name: Activate LLVM
+        run: |
           for tool in clang-cl lld-link llvm-lib llvm-rc; do
             test -x "$RUNNER_TEMP/keysteer-llvm/bin/$tool"
           done
           "$RUNNER_TEMP/keysteer-llvm/bin/clang-cl" --version
           "$RUNNER_TEMP/keysteer-llvm/bin/lld-link" --version
           echo "$RUNNER_TEMP/keysteer-llvm/bin" >> "$GITHUB_PATH"
+
+      - name: Save installed LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/keysteer-llvm
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
 
       - name: Restore Rust cache
         id: rust-cache
@@ -201,10 +213,22 @@ jobs:
           fallback: none
 
       - name: Restore Windows SDK and CRT
-        uses: actions/cache@v6
+        id: sdk-cache
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.XWIN_CACHE_DIR }}
           key: xwin-sdk-v1-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-${{ matrix.target }}
+
+      - name: Prepare Windows SDK and CRT
+        timeout-minutes: 15
+        run: cargo xwin cache xwin
+
+      - name: Save Windows SDK and CRT
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.XWIN_CACHE_DIR }}
+          key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
 
       - name: Build complete Windows executable
         env:

@@ -36,7 +36,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 交叉工作流通过带 `GITHUB_TOKEN` 的官方 Release API 查询 LLVM 和 cargo-xwin：`llvm/llvm-project`、`rust-cross/cargo-xwin`。LLVM 下载 Linux X64 工具包（优先 zstd），按 Release API 的 SHA256 校验，支持 1 GiB zstd 解压窗口，解压后将 bin 目录置于 PATH 首位；不访问 `apt.llvm.org`。cargo-xwin 由 `taiki-e/install-action` 下载并校验上游预编译程序，禁用 fallback，避免从源码安装。系统库和签名工具使用 Ubuntu 软件源。
 
-缓存按存储成本收敛：`build.yml` 只缓存 Rust 依赖；`cross-build.yml` 保留 Rust 编译结果、Windows SDK/CRT、LLVM 压缩包、cargo-xwin 可执行文件和 apt 安装包。LLVM 与 cargo-xwin 缓存按宿主系统、架构和工具版本或摘要区分，不按产物目标区分，因此两个 Windows 目标共用；未来同一 Linux 宿主工具链也可供 macOS 交叉构建复用，原生 macOS runner 则需要对应宿主工具包。LLVM 缓存恢复后仍校验 SHA256 并解压。
+缓存按存储成本收敛：`build.yml` 只缓存 Rust 依赖；`cross-build.yml` 保留 Rust 编译结果、Windows SDK/CRT、LLVM 安装目录、cargo-xwin 可执行文件和 apt 安装包。LLVM 与 cargo-xwin 缓存按宿主系统、架构和工具版本或摘要区分，不按产物目标区分，因此两个 Windows 目标共用；未来同一 Linux 宿主工具链也可供 macOS 交叉构建复用，原生 macOS runner 则需要对应宿主工具包。LLVM 仅在安装缓存未命中时下载上游压缩包、校验 SHA256 并解压；命中后直接检查工具并加入 PATH。只缓存安装目录，不再同时保存上游压缩包；缓存恢复自身仍有传输与解压开销，实际总耗时需要运行测量。LLVM 安装缓存键还包含宿主 Ubuntu 版本。
+
+LLVM 安装验证成功后立即保存缓存。SDK/CRT 使用 `cargo xwin cache xwin` 独立准备，设 15 分钟超时，并在成功后立即保存，避免后续编译或签名失败丢失已下载工具。
 
 仅取消逐提交未签名 EXE 缓存。apt 安装包缓存按宿主和软件源元数据区分，并在目标架构之间共用。交叉构建由 Cargo 判断需要重编译的内容，不再通过 EXE 缓存完全跳过编译步骤；Rust 缓存按目标、CPU 与编译工具版本区分，不受签名工具的 apt 元数据影响。两者的 Rust 缓存允许失败后保存可用编译结果，原生构建仍只在默认分支写入缓存。SDK/CRT 强制刷新时提升 `xwin-sdk-v1` 前缀。旧缓存不会因工作流配置修改自动删除，需要在 GitHub Actions 缓存管理中清理或等待淘汰。证书和密码不进入缓存或产物；签名后 EXE 和发布 ZIP 的 SHA256 只在 Actions 摘要记录。
 
