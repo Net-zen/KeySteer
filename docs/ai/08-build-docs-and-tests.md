@@ -32,7 +32,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 `.github/workflows/cross-build.yml` 是手动触发的 Linux → Windows MSVC x64/ARM64 构建，使用 cargo-xwin/LLVM，不发布 Release。`packaging/windows/package-cross.sh` 对已编译 EXE 使用现有 `WINDOWS_SIGNING_PFX_BASE64`、`WINDOWS_SIGNING_PASSWORD` 和可选 `WINDOWS_TIMESTAMP_URL` 完成 Authenticode 签名、RFC 3161 时间戳和签名校验；缺少证书或签名失败时不上传包。产物名称与 `package.ps1` 一致：`KeySteer-v<version>-<target>.zip` 内含 `KeySteer/KeySteer.exe` 和 `KeySteer/keysteer.default.toml`。签名校验显式信任提供的证书链并验证叶证书指纹，不代表公共信任或 Windows 原生运行验证。正式发布仍使用 `build.yml`。
 
-交叉工作流每次解析 cargo-xwin 最新稳定版本和 LLVM 官方源的稳定分支，Rust 使用 stable，LLVM 的 bin 目录优先于 runner 自带工具。分别缓存按包元数据区分的系统安装包、按版本区分的 cargo-xwin、按工具版本和目标分开的 Windows SDK/CRT，以及 Rust 依赖与编译结果；证书和密码仅在临时目录使用后清理，不进入缓存或产物。SDK/CRT 需要强制刷新时提升 `xwin-sdk-v1` 前缀。缓存受 GitHub 分支范围和淘汰规则限制，不保证每次命中。SHA256 仅在 Actions 摘要记录签名后 EXE 和发布 ZIP 的值。
+交叉工作流每次解析 cargo-xwin 和 LLVM 官方 GitHub Release 的最新稳定版本，Rust 使用 stable。LLVM 从 `llvm/llvm-project` 下载 Linux X64 工具包（优先 zstd），按 Release API 提供的 SHA256 校验，解压后将 bin 目录置于 PATH 首位；不访问 `apt.llvm.org`。首次下载较大，后续按工具包摘要缓存压缩包，恢复后重新校验并解压。系统库和签名工具仍通过 Ubuntu 软件源安装。
+
+工作流另行缓存按包元数据区分的系统安装包、按版本区分的 cargo-xwin、按工具版本和目标分开的 Windows SDK/CRT，以及 Rust 依赖与编译结果；证书和密码仅在临时目录使用后清理，不进入缓存或产物。SDK/CRT 需要强制刷新时提升 `xwin-sdk-v1` 前缀。缓存受 GitHub 分支范围和淘汰规则限制，不保证每次命中。SHA256 仅在 Actions 摘要记录签名后 EXE 和发布 ZIP 的值。
+
+未签名 EXE 还有独立的精确匹配缓存：键包含源码提交、同步后的 lockfile、工作流、Rust/Cargo 版本、LLVM 工具包摘要、cargo-xwin 版本、SDK 缓存代际、目标架构、CPU 指纹、编译参数和构建日期，不使用前缀回退。命中后校验 EXE 摘要，跳过 LLVM/SDK/编译缓存恢复及编译链接，继续重新签名和打包。未命中时，Rust 缓存保留 workspace crate，并在任务失败后保存可用编译结果；EXE 缓存在签名前立即保存，避免签名服务失败导致重编译。该优化不改变 release 的 fat LTO 等性能设置；真正修改源码后仍可能需要重新完成主程序优化与链接。
 
 交叉工作流的 x64 产物按实际 GitHub Actions runner CPU 优化，Rust 设置 `target-cpu=native`，C 桥接设置 `/clang:-march=native`。CPU 型号和指令集指纹写入编译缓存键，避免不同 runner 硬件复用不兼容的机器码；工具和 SDK 下载缓存仍可复用。这不是通用 x86-64 兼容包，缺少构建机器指令集的 CPU 可能无法运行，runner 硬件变化也可能改变产物。ARM64 在 x64 runner 上交叉编译，保持 `generic`。两端继续使用 Cargo release 的 O3、fat LTO 和单代码生成单元，最新工具链与 CPU 定向优化不等于已证明更快，性能仍需同机实测。
 
