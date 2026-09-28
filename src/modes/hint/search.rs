@@ -70,7 +70,7 @@ impl SearchText {
     }
 
     pub(super) fn matches_term(&self, word: &str, label: &str) -> bool {
-        if let Some(prefix) = word.strip_prefix('@') {
+        if let Some(prefix) = word.strip_prefix('@').or_else(|| word.strip_suffix('@')) {
             // Hint codes are prefix-free: typing narrows candidates, and
             // completing a code selects only that label. A bare marker
             // is unfinished input, not a select-all term.
@@ -153,6 +153,10 @@ mod tests {
         assert!(semantic.matches("@l", "la"));
         assert!(!semantic.matches("@l", "ka"));
         assert!(!semantic.matches("@", "ka"));
+        assert!(label.matches("la@", "la"));
+        assert!(!semantic.matches("la@", "ka"));
+        assert!(label.matches("l@", "la"));
+        assert!(!semantic.matches("l@", "ka"));
     }
 
     #[test]

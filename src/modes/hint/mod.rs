@@ -1393,6 +1393,14 @@ mod tests {
         assert!(mode.session.search_matches.is_empty());
         mode.handle(&ModeEvent::TextChanged("la".into()), &env.ctx());
         assert_eq!(mode.session.hints.len(), 2);
+        mode.handle(&ModeEvent::TextInserted('@'), &env.ctx());
+        assert_eq!(mode.session.hints.len(), 1);
+        assert_eq!(mode.session.hints[0].label.as_str(), "la");
+        mode.handle(
+            &ModeEvent::TextEdit(crate::api::text_edit::EditAction::Backspace),
+            &env.ctx(),
+        );
+        assert_eq!(mode.session.hints.len(), 2);
         let out = mode.handle(&ModeEvent::TextChanged("@la".into()), &env.ctx());
         assert_eq!(mode.session.hints.len(), 1);
         assert_eq!(mode.session.hints[0].label.as_str(), "la");
@@ -1418,7 +1426,7 @@ mod tests {
         );
         assert_eq!(mode.session.search_matches[0].label.as_str(), "ka");
         mode.handle(
-            &ModeEvent::TextChanged("@ka @la language".into()),
+            &ModeEvent::TextChanged("ka@ @la la@ language".into()),
             &env.ctx(),
         );
         assert_eq!(

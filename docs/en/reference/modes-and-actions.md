@@ -414,3 +414,5 @@ Search accept shortcuts default to `accept = "enter / primary+q"`. Separate alte
 Use `@la` to match only the exact label `la`; `la` still searches label prefixes, text and initials. `@la @ka` selects two labels, and `@la button` mixes exact labels with ordinary search terms in input order.
 
 A bare `@` keeps candidate labels visible without selecting them all. Continue with `@l` to filter by label prefix, then complete `@la` to match that label. The same rule applies after a space, e.g. `@ka @`.
+
+The marker also works as a suffix: `ld@` is equivalent to `@ld`. Append `@` to a mixed query to restrict it to labels; removing it restores mixed matching. Prefix and suffix forms can be mixed in multi-selection, e.g. `ld@ @ka`.
