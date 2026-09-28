@@ -597,6 +597,47 @@ mod search_panel_tests {
     use super::*;
 
     #[test]
+    fn missing_and_partial_search_styles_use_the_specific_panel_defaults() {
+        let defaults = crate::config::Config::default();
+        for text in [
+            "",
+            "[ui_hint]\nmax_depth = 20",
+            "[ui_hint.search_input_ui]\n[ui_hint.search_info_ui]",
+        ] {
+            let parsed = crate::config::Config::parse(text).unwrap();
+            assert_eq!(
+                parsed.ui_hint.search_input_ui,
+                defaults.ui_hint.search_input_ui
+            );
+            assert_eq!(
+                parsed.ui_hint.search_info_ui,
+                defaults.ui_hint.search_info_ui
+            );
+            parsed.validate().unwrap();
+        }
+        let parsed = crate::config::Config::parse(
+            "[ui_hint.search_input_ui]\nwidth = 320\n[ui_hint.search_info_ui]\nfont_size = 18",
+        )
+        .unwrap();
+        let mut input = defaults.ui_hint.search_input_ui.clone();
+        input.width = 320;
+        let mut info = defaults.ui_hint.search_info_ui.clone();
+        info.label.font_size = 18;
+        assert_eq!(parsed.ui_hint.search_input_ui, input);
+        assert_eq!(parsed.ui_hint.search_info_ui, info);
+        assert_eq!(
+            parsed.ui_hint.search_info_ui.position_mode,
+            PanelPositionMode::SearchInput
+        );
+        let compiled = crate::app::mode_catalog::hint_settings(&parsed);
+        assert_eq!(compiled.search_input_ui.width, 320.0);
+        assert_eq!(compiled.search_info_ui.width, 520.0);
+        let restored = crate::config::Config::parse(&parsed.to_toml().unwrap()).unwrap();
+        assert_eq!(restored.ui_hint.search_input_ui, input);
+        assert_eq!(restored.ui_hint.search_info_ui, info);
+    }
+
+    #[test]
     fn search_panels_compile_positions_themes_and_reuse_styles_without_allocation() {
         let config = crate::config::Config::parse(
             r##"

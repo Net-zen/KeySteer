@@ -21,3 +21,9 @@
 - 权限、签名、焦点、系统全屏等行为需要目标 OS 实机验证，交叉编译不能替代。
 
 原生错误统一进入 `src/support/logging.rs`；不得另建平台日志出口。
+
+## macOS 搜索编辑器
+
+`status_item.rs` 在 AppKit 主线程复用搜索／备注输入面板。搜索编辑器位于共享覆盖层之上，并随当前 Space／全屏空间显示；背景和边框仍由共享 presentation 提供。应用激活可能异步完成，不能在请求返回时以 `isKeyWindow` 或尚未创建的 `currentEditor` 判定失败并关闭面板；在 `applicationDidBecomeActive` 再次指定 first responder。明确的激活／first responder 拒绝仍返回统一错误。
+
+调用 AppKit 的显示、关闭、文字设置或焦点方法前，必须先释放 `note`／`cached_note` 的 RefCell 借用；这些调用可能同步重入文本动作和结束回调。隐藏保留会话缓存，最终退出释放原生面板。

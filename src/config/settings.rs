@@ -268,7 +268,9 @@ pub struct UiHint {
     pub label_y_offset: i32,
     pub ui: LabelUi,
     pub boundary_highlight: BoundaryHighlight,
+    #[serde(deserialize_with = "deserialize_search_input_ui")]
     pub search_input_ui: SearchInputUi,
+    #[serde(deserialize_with = "deserialize_search_info_ui")]
     pub search_info_ui: SearchInputUi,
     pub search_copy_keys: Vec<String>,
     pub inherits: Vec<String>,
@@ -280,6 +282,30 @@ pub struct UiHint {
     pub overlap_cycle_key: String,
     pub bindings: Bindings,
     pub app_configs: Vec<UiHintAppOverride>,
+}
+
+// A present but partial panel table must inherit that panel's defaults, rather
+// than SearchInputUi's generic defaults (especially the info panel anchor).
+fn deserialize_search_panel<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    defaults: SearchInputUi,
+) -> Result<SearchInputUi, D::Error> {
+    let overrides = toml::Table::deserialize(deserializer)?;
+    let mut table = toml::Table::try_from(defaults).map_err(serde::de::Error::custom)?;
+    table.extend(overrides);
+    table.try_into().map_err(serde::de::Error::custom)
+}
+
+fn deserialize_search_input_ui<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<SearchInputUi, D::Error> {
+    deserialize_search_panel(deserializer, UiHint::default().search_input_ui)
+}
+
+fn deserialize_search_info_ui<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<SearchInputUi, D::Error> {
+    deserialize_search_panel(deserializer, UiHint::default().search_info_ui)
 }
 
 impl UiHint {

@@ -14,8 +14,8 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSBackingStoreType, NSButton, NSCellImagePosition,
     NSControlStateValueOff, NSControlStateValueOn, NSFont, NSImage, NSImageView, NSMenu,
-    NSMenuItem, NSPanel, NSSquareStatusItemLength, NSStatusBar, NSStatusItem, NSTextField, NSView,
-    NSWindowStyleMask, NSWorkspace,
+    NSMenuItem, NSPanel, NSScreenSaverWindowLevel, NSSquareStatusItemLength, NSStatusBar,
+    NSStatusItem, NSTextField, NSView, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{NSData, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL};
 
@@ -97,6 +97,21 @@ define_class!(
 
     // SAFETY: The delegate is main-thread-only and retained for the application's lifetime.
     unsafe impl NSApplicationDelegate for StatusTarget {
+        #[unsafe(method(applicationDidBecomeActive:))]
+        fn application_did_become_active(&self, _notification: &objc2_foundation::NSNotification) {
+            // Activation is asynchronous. Re-establish the editor after AppKit
+            // delivers activation, without holding a borrow through callbacks.
+            let editor = self.ivars().note.borrow().as_ref()
+                .map(|note| (note.id, note.panel.clone(), note.field.clone()));
+            if let Some((id, panel, field)) = editor {
+                panel.makeKeyAndOrderFront(None);
+                if !panel.makeFirstResponder(Some(&field)) {
+                    let note = self.ivars().note.borrow_mut().take();
+                    if let Some(note) = note { note.panel.close(); }
+                    emit(BackendEvent::TextPromptResult { id, value: Err("Text input rejected first responder after activation".into()) });
+                }
+            }
+        }
         #[unsafe(method(applicationShouldTerminate:))]
         fn application_should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
             self.ivars().terminating.set(true);
@@ -108,9 +123,10 @@ define_class!(
     impl StatusTarget {
         #[unsafe(method(controlTextDidChange:))]
         fn search_text_changed(&self, _notification: &AnyObject) {
-            let note = self.ivars().note.borrow();
-            if let Some(note) = note.as_ref().filter(|note| note.live) {
-                emit(BackendEvent::TextPromptChanged { id: note.id, text: crate::api::window_presets::bounded_text(note.field.stringValue().to_string(), note.request.max_chars) });
+            let editor = self.ivars().note.borrow().as_ref().filter(|note| note.live)
+                .map(|note| (note.id, note.field.clone(), note.request.max_chars));
+            if let Some((id, field, max_chars)) = editor {
+                emit(BackendEvent::TextPromptChanged { id, text: crate::api::window_presets::bounded_text(field.stringValue().to_string(), max_chars) });
             }
         }
         #[unsafe(method(control:textView:doCommandBySelector:))]
@@ -302,7 +318,8 @@ pub(super) fn prepare_application(mtm: MainThreadMarker) -> Result<(), String> {
 impl StatusItem {
     pub(super) fn release_text_prompt(&self) {
         self._target.finish_note(false);
-        if let Some(note) = self._target.ivars().cached_note.borrow_mut().take() {
+        let cached = self._target.ivars().cached_note.borrow_mut().take();
+        if let Some(note) = cached {
             note.panel.close();
         }
     }
@@ -326,7 +343,10 @@ impl StatusItem {
         target.finish_note(false);
         let mtm = target.mtm();
         let previous = NSWorkspace::sharedWorkspace().frontmostApplication();
-        if let Some(mut note) = target.ivars().cached_note.borrow_mut().take() {
+        // AppKit calls below can synchronously re-enter finish_note. A temporary
+        // borrow in an if-let scrutinee would remain live across those calls.
+        let cached = target.ivars().cached_note.borrow_mut().take();
+        if let Some(mut note) = cached {
             if request.live_style.is_some()
                 && note.request.live_style == request.live_style
                 && note.request.bounds == request.bounds
@@ -368,7 +388,14 @@ impl StatusItem {
         panel.setHidesOnDeactivate(false);
         panel.setBecomesKeyOnlyIfNeeded(false);
         panel.setTitle(&NSString::from_str(&request.title));
-        panel.setLevel(26);
+        // The shared search shell lives in the screen-saver-level overlay.
+        // Its native text/caret must be above that surface, including fullscreen.
+        panel.setLevel(NSScreenSaverWindowLevel + 1);
+        panel.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
         panel.setHasShadow(false);
         let content = NSView::initWithFrame(
             NSView::alloc(mtm),
@@ -822,12 +849,14 @@ fn focus_text_prompt(
     panel: &NSPanel,
     field: &NSTextField,
 ) -> Result<(), String> {
-    NSApplication::sharedApplication(target.mtm()).activate();
     panel.makeKeyAndOrderFront(None);
-    if panel.makeFirstResponder(Some(field))
-        && panel.isKeyWindow()
-        && field.currentEditor().is_some()
-    {
+    // A global shortcut is an explicit activation request. AppKit can complete
+    // it later; the application delegate restores the first responder then.
+    #[allow(deprecated)]
+    let accepted = objc2_app_kit::NSRunningApplication::currentApplication().activateWithOptions(
+        objc2_app_kit::NSApplicationActivationOptions::ActivateIgnoringOtherApps,
+    );
+    if accepted && panel.makeFirstResponder(Some(field)) {
         return Ok(());
     }
     // Do not leave a visible editor that would forward typing to another app.
@@ -835,7 +864,7 @@ fn focus_text_prompt(
     if let Some(note) = note {
         note.panel.close();
     }
-    Err("Cannot focus text input".into())
+    Err("Text input activation or first responder request was rejected".into())
 }
 
 fn menu_item(

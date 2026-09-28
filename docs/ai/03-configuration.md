@@ -17,3 +17,5 @@
 - macOS 打包应用的数据在 `~/Library/Application Support/KeySteer/`；portable 使用可执行文件目录。数据目录不能取进程工作目录；显式相对配置路径另按 CLI 规则解析。
 
 字段、默认键位和格式细节直接查 `keysteer.default.toml`、解析代码及测试。修改用户配置语义时同步用户参考和网页编辑器适用部分。
+
+UIHint 搜索样式缺省时使用 `UiHint::default()` 的对应面板默认值。部分 `search_input_ui`／`search_info_ui` 表也在配置反序列化阶段补齐各自默认字段；信息面板不能退回输入框的通用宽度和屏幕锚点。补齐后沿用共享校验和启动样式编译，运行时不解析配置。
