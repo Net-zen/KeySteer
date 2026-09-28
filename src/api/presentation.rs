@@ -141,6 +141,7 @@ pub struct HintContent<'a> {
     pub hints: &'a [CompactHint<usize>],
     pub prefix: &'a str,
     pub search: Option<&'a str>,
+    pub search_selection: crate::api::text_edit::Selection,
     pub scan_bounds: Option<Rect>,
     pub style: HintStyle<'a>,
 }

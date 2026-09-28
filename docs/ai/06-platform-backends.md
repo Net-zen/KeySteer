@@ -22,8 +22,8 @@
 
 原生错误统一进入 `src/support/logging.rs`；不得另建平台日志出口。
 
-## macOS 搜索编辑器
+## 文本输入
 
-`status_item.rs` 在 AppKit 主线程复用搜索／备注输入面板。搜索采用 NonactivatingPanel，只取得键盘焦点，不把 KeySteer 变成前台应用，避免中断正在扫描的外部应用上下文；面板位于共享覆盖层之上，并随当前 Space／全屏空间显示。背景和边框仍由共享 presentation 提供，打开或复用时对原生面板 displayIfNeeded。普通备注仍允许异步应用激活，在 applicationDidBecomeActive 指定 first responder；不以尚未建立的 currentEditor 判定失败。
+UIHint 搜索由共享 Mode 编辑状态、presentation 绘制文字／选区／光标、runtime 拦截按键。两端只提供键盘布局字符与剪贴板，不创建搜索原生控件、不切换窗口焦点。字符捕获仅在搜索会话开启，退出／失败恢复时关闭。当前不提供 IME 组词接口，中文可通过简拼或粘贴输入。
 
-调用 AppKit 的显示、关闭、文字设置或焦点方法前，必须先释放 `note`／`cached_note` 的 RefCell 借用；这些调用可能同步重入文本动作和结束回调。隐藏保留会话缓存，最终退出释放原生面板。
+窗口备注仍复用原生文本编辑器；调用 AppKit 的显示、关闭、文字设置或焦点方法前必须释放 RefCell 借用，避免同步回调重入。

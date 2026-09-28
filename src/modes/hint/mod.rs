@@ -76,7 +76,8 @@ pub struct Settings {
     pub boundary_highlight: BoundaryHighlight,
     pub search_input_ui: CompiledSearchPanel,
     pub search_info_ui: CompiledSearchPanel,
-    pub search_copy_keys: Vec<KeyChord>,
+    pub search_copy_keys: std::sync::Arc<[KeyChord]>,
+    pub search_edit_keys: std::sync::Arc<[(KeyChord, crate::api::text_edit::EditAction)]>,
     pub search_titles: [String; 4],
     pub lifecycle: TargetingLifecycle,
     pub overlap_cycle_key: String,
@@ -492,6 +493,7 @@ impl HintMode {
             &self.session.hints,
             &self.input,
             self.session.scan_bounds,
+            self.session.search_selection,
         );
         ctx.presenter.prepare_hints(
             content,
@@ -603,6 +605,7 @@ impl HintMode {
                     &self.session.hints,
                     &self.input,
                     self.session.scan_bounds,
+                    self.session.search_selection,
                 ),
                 layers: &self.overlap_plan,
                 active_layer: self.active_overlap_layer(),
@@ -645,11 +648,12 @@ impl HintMode {
         Command::OpenTextPrompt(Box::new(crate::api::window_presets::TextPrompt {
             bounds,
             id: self.session.scan_id | (1 << 63),
-            title: "Search hints".into(),
+            title: String::new(),
             message: String::new(),
-            placeholder: "标签 / 中文简拼 / OCR / button".into(),
+            placeholder: String::new(),
             max_chars: 4096,
             live_style: Some(style),
+            edit_keys: self.config.search_edit_keys.clone(),
             copy_keys: self.config.search_copy_keys.clone(),
         }))
     }
@@ -757,6 +761,7 @@ impl HintMode {
                 }
                 self.session.search_hints.clone_from(&self.session.hints);
                 self.input = Input::Search(std::mem::take(&mut self.session.search_query));
+                self.session.search_selection = Default::default();
                 self.relabel(ctx);
                 let mut commands = self.redraw(ctx);
                 commands.push(self.open_search(ctx));
@@ -886,6 +891,7 @@ fn hint_content<'a>(
     hints: &'a [CompactHint<usize>],
     input: &'a Input,
     scan_bounds: Option<Rect>,
+    search_selection: crate::api::text_edit::Selection,
 ) -> HintContent<'a> {
     let (prefix, search) = match input {
         Input::Labels(prefix) => (prefix.as_str(), None),
@@ -895,6 +901,7 @@ fn hint_content<'a>(
         hints,
         prefix,
         search,
+        search_selection,
         scan_bounds,
         style: hint_style(config),
     }
@@ -967,6 +974,70 @@ impl Mode for HintMode {
     }
 
     fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
+        if matches!(self.input, Input::Search(_)) {
+            use crate::api::text_edit::EditAction;
+            let mut encoded = [0; 4];
+            match event {
+                ModeEvent::TextEdit(EditAction::Accept) => {
+                    let Input::Search(query) = &self.input else {
+                        unreachable!()
+                    };
+                    return self.handle(&ModeEvent::TextSubmitted(Some(query.clone())), ctx);
+                }
+                ModeEvent::TextEdit(EditAction::Cancel) => {
+                    return self.handle(&ModeEvent::TextSubmitted(None), ctx);
+                }
+                ModeEvent::TextEdit(EditAction::Paste) => {
+                    return CommandBatch::one(Command::ReadClipboard);
+                }
+                ModeEvent::TextEdit(EditAction::Copy | EditAction::Cut) => {
+                    let Input::Search(text) = &mut self.input else {
+                        unreachable!()
+                    };
+                    let range = self.session.search_selection.range();
+                    if range.is_empty() {
+                        return CommandBatch::new();
+                    }
+                    return CommandBatch::one(Command::CopyInputText {
+                        text: text[range].into(),
+                        cut: matches!(event, ModeEvent::TextEdit(EditAction::Cut)),
+                    });
+                }
+                ModeEvent::TextInserted(_) | ModeEvent::TextPasted(_) | ModeEvent::TextEdit(_) => {
+                    let previous_count = self.session.hints.len();
+                    let pending = self.session.pending_relabel;
+                    let previous_selection = self.session.search_selection;
+                    let Input::Search(text) = &mut self.input else {
+                        unreachable!()
+                    };
+                    let text_changed = match event {
+                        ModeEvent::TextInserted(c) => self
+                            .session
+                            .search_selection
+                            .insert(text, c.encode_utf8(&mut encoded)),
+                        ModeEvent::TextPasted(value) => {
+                            self.session.search_selection.insert(text, value)
+                        }
+                        ModeEvent::TextEdit(action) => {
+                            self.session.search_selection.edit(text, *action)
+                        }
+                        _ => unreachable!(),
+                    };
+                    if !text_changed && previous_selection == self.session.search_selection {
+                        return CommandBatch::new();
+                    }
+                    // Cursor-only changes repaint without rebuilding the search index.
+                    if text_changed {
+                        let changed = self.relabel_with_refresh(ctx, false);
+                        if changed || pending || previous_count != self.session.hints.len() {
+                            self.refresh_overlap_plan(ctx);
+                        }
+                    }
+                    return self.redraw(ctx);
+                }
+                _ => {}
+            }
+        }
         match event {
             ModeEvent::PanelWindowBounds { id, bounds }
                 if *id == self.session.scan_id | (1 << 63) =>
@@ -987,6 +1058,8 @@ impl Mode for HintMode {
                     let end = text.char_indices().nth(4096).map_or(text.len(), |(i, _)| i);
                     query.clear();
                     query.push_str(&text[..end]);
+                    self.session.search_selection.cursor = query.len();
+                    self.session.search_selection.anchor = query.len();
                 }
                 let changed = self.relabel_with_refresh(ctx, false);
                 let unchanged = !pending
@@ -994,7 +1067,7 @@ impl Mode for HintMode {
                     && old_all == shows_all(self.input.text())
                     && old_fields == self.search_info().map(|info| info.field_count());
                 if unchanged {
-                    CommandBatch::new()
+                    self.redraw(ctx)
                 } else {
                     self.refresh_overlap_plan(ctx);
                     self.redraw(ctx)
@@ -1339,7 +1412,7 @@ mod tests {
             let labels: Vec<_> = scene
                 .labels
                 .iter()
-                .filter(|label| label.fixed_bounds)
+                .filter(|label| label.fixed_bounds && label.z_index == 10_001)
                 .collect();
             assert_eq!(labels.len(), 12);
             assert_eq!(labels[0].rect.y, labels[3].rect.y);
@@ -1415,12 +1488,26 @@ mod tests {
         let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
         for _ in 0..100 {
             for event in &events {
-                assert!(mode.handle(event, &env.ctx()).is_empty());
+                let ModeEvent::TextChanged(text) = event else {
+                    unreachable!()
+                };
+                let Input::Search(query) = &mut mode.input else {
+                    unreachable!()
+                };
+                query.clear();
+                query.push_str(text);
+                // Measure reusable query/filter storage independently of scene
+                // ownership: overlay text now requires an actual repaint.
+                assert!(!mode.relabel_with_refresh(&env.ctx(), false));
             }
         }
         let stats = region.change();
-        assert_eq!(stats.allocations + stats.reallocations, 0, "{stats:?}");
-        println!("200 equivalent query changes: {stats:?}");
+        assert_eq!(
+            stats.allocations + stats.reallocations,
+            0,
+            "warmed query/index buffers must not allocate: {stats:?}"
+        );
+        println!("200 equivalent query/index updates excluding overlay redraw: {stats:?}");
     }
 
     #[test]
@@ -1534,7 +1621,7 @@ mod tests {
             scene
                 .labels
                 .iter()
-                .filter(|label| label.fixed_bounds)
+                .filter(|label| label.fixed_bounds && label.z_index == 10_001)
                 .count(),
             9
         );
@@ -3411,8 +3498,8 @@ mod tests {
         let filtered = press(&mut mode, &env, "a");
         assert_eq!(mode.session.hints.len(), 2);
         assert_eq!(mode.overlap_plan.len(), 2);
-        // Two hint labels; native input text is not drawn twice.
-        assert_eq!(scene_of(&filtered).labels.len(), 2);
+        // Two target labels and the shared input text.
+        assert_eq!(scene_of(&filtered).labels.len(), 3);
 
         let cycled = press(&mut mode, &env, "left_shift");
         assert_eq!(

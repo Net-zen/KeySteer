@@ -497,8 +497,9 @@ mod tests {
         }
         let _cleanup = Cleanup;
         let prompt = TextPrompt {
+            edit_keys: Default::default(),
             live_style: None,
-            copy_keys: Vec::new(),
+            copy_keys: Default::default(),
             bounds: crate::api::Rect::new(80.0, 600.0, 720.0, 100.0),
             id: 1,
             title: "KeySteer disposable note probe".into(),
@@ -555,10 +556,11 @@ mod tests {
         let mut window = None;
         for id in 10..20 {
             show(TextPrompt {
+                edit_keys: Default::default(),
                 id,
                 bounds: crate::api::Rect::new(80.0, 600.0, 420.0, 48.0),
                 live_style: Some(crate::api::overlay::LabelStyle::default().into()),
-                copy_keys: Vec::new(),
+                copy_keys: Default::default(),
                 title: "Search test".into(),
                 message: String::new(),
                 placeholder: String::new(),

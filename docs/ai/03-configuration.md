@@ -19,3 +19,5 @@
 字段、默认键位和格式细节直接查 `keysteer.default.toml`、解析代码及测试。修改用户配置语义时同步用户参考和网页编辑器适用部分。
 
 UIHint 搜索样式缺省时使用 `UiHint::default()` 的对应面板默认值。部分 `search_input_ui`／`search_info_ui` 表也在配置反序列化阶段补齐各自默认字段；信息面板不能退回输入框的通用宽度和屏幕锚点。补齐后沿用共享校验和启动样式编译，运行时不解析配置。
+
+`ui_hint.search_edit_keys` 按动作配置搜索编辑快捷键，稀疏表覆盖默认值；与信息复制键一起校验冲突，并在启动阶段解析为 KeyChord。`primary` 自动适配 Cmd／Ctrl，也允许显式 cmd、ctrl 等修饰键。

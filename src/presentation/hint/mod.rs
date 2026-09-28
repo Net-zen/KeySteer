@@ -420,8 +420,7 @@ impl HintView<'_> {
                     }
                 }
             }
-            // The native edit owns text/caret. Draw only its label-like shell;
-            // physical shapes bypass the compact-label DPI heuristic.
+            // Text, selection and caret are shared across native renderers.
             let scale = super::label_scale(ctx.scale());
             scene.push_shape(OverlayShape::Rect {
                 rect,
@@ -430,6 +429,54 @@ impl HintView<'_> {
                 stroke_width: style.border_width * scale,
                 corner_radius: style.border_radius * scale,
                 z_index: SEARCH_INPUT_Z_INDEX,
+            });
+            let text = self.content.search.unwrap_or_default();
+            let cursor = self.content.search_selection.cursor.min(text.len());
+            let font = style.font_size * scale;
+            let area = rect.inset(
+                (style.padding_x + style.border_width) * scale,
+                (style.padding_y + style.border_width) * scale,
+            );
+            let budget = (area.width / font - 1.0).max(0.0);
+            let mut start = cursor;
+            let mut used = 0.0;
+            for (i, c) in text[..cursor].char_indices().rev() {
+                let width = if c.is_ascii() { 0.75 } else { 1.0 };
+                if used + width > budget {
+                    break;
+                }
+                used += width;
+                start = i;
+            }
+            let visible = super::single_line_elide_width(&text[start..], budget);
+            let ink = cfg.for_appearance(ctx.palette.appearance).caption.clone();
+            let range = self.content.search_selection.range();
+            let left = range.start.max(start);
+            let right = range.end.min(text.len());
+            if right > left {
+                let x = (super::text_units(&text[start..left]) * font).min(area.width);
+                let width = (super::text_units(&text[left..right]) * font).min(area.width - x);
+                scene.push_shape(OverlayShape::Rect {
+                    rect: Rect::new(area.x + x, area.y, width, area.height),
+                    fill: ctx.palette.accent.with_opacity(0.3),
+                    stroke: Color::TRANSPARENT,
+                    stroke_width: 0.0,
+                    corner_radius: 0.0,
+                    z_index: SEARCH_INPUT_Z_INDEX + 1,
+                });
+            }
+            scene.push_label(
+                OverlayLabel::new(visible, area, ink)
+                    .with_fixed_bounds()
+                    .with_z_index(SEARCH_INPUT_Z_INDEX + 2),
+            );
+            scene.push_shape(OverlayShape::Rect {
+                rect: Rect::new(area.x + used * font, area.y, scale.max(1.0), area.height),
+                fill: style.text_color,
+                stroke: Color::TRANSPARENT,
+                stroke_width: 0.0,
+                corner_radius: 0.0,
+                z_index: SEARCH_INPUT_Z_INDEX + 3,
             });
         }
 

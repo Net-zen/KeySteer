@@ -73,8 +73,14 @@ impl Engine {
                     self.scheduler.text_prompt_serial =
                         self.scheduler.text_prompt_serial.wrapping_add(1);
                     prompt.id = self.scheduler.text_prompt_serial | (1 << 63);
+                    backend.set_text_capture(false);
                     if let Some((_, old)) = self.scheduler.text_prompt.take() {
                         backend.cancel_text_prompt(old.id);
+                    }
+                    if prompt.live_style.is_some() {
+                        self.scheduler.text_prompt = Some((owner.clone(), *prompt));
+                        backend.set_text_capture(true);
+                        continue;
                     }
                     self.scheduler.text_prompt = Some((owner.clone(), (*prompt).clone()));
                     if let Err(error) = backend.request_text_prompt(*prompt) {
@@ -85,12 +91,14 @@ impl Engine {
                 }
                 Command::CloseTextPrompt => {
                     if let Some((_, prompt)) = self.scheduler.text_prompt.take() {
-                        self.scheduler.text_prompt_returning_focus = true;
+                        self.scheduler.text_prompt_returning_focus = prompt.live_style.is_none();
+                        backend.set_text_capture(false);
                         backend.cancel_text_prompt(prompt.id);
                     }
                 }
                 Command::ReleaseTextPrompt => {
                     self.scheduler.text_prompt = None;
+                    backend.set_text_capture(false);
                     backend.release_text_prompt();
                 }
                 Command::CopyText(text) => {
@@ -98,6 +106,21 @@ impl Engine {
                         self.report_action_error(error, backend);
                     } else {
                         self.dispatch_to(owner, ModeEvent::TextCopied, backend)?;
+                    }
+                }
+                Command::ReadClipboard => match backend.read_clipboard() {
+                    Ok(text) => self.dispatch_to(owner, ModeEvent::TextPasted(text), backend)?,
+                    Err(error) => self.report_action_error(error, backend),
+                },
+                Command::CopyInputText { text, cut } => {
+                    if let Err(error) = backend.copy_text(&text) {
+                        self.report_action_error(error, backend);
+                    } else if cut {
+                        self.dispatch_to(
+                            owner,
+                            ModeEvent::TextEdit(crate::api::text_edit::EditAction::Delete),
+                            backend,
+                        )?;
                     }
                 }
                 Command::WindowPresets(request) => {
@@ -183,6 +206,7 @@ impl Engine {
                         .is_some_and(|p| p.session == session)
                         && let Some(prompt) = self.window_presets.pending.take()
                     {
+                        backend.set_text_capture(false);
                         backend.cancel_text_prompt(prompt.id);
                     }
                     self.scheduler.window_sessions.remove(&session);
@@ -343,6 +367,7 @@ impl Engine {
                 }
 
                 Command::ScanUi(request) => {
+                    self.scheduler.scan_activation = None;
                     let request = *request;
                     let bounds = request
                         .bounds

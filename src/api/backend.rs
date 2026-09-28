@@ -127,6 +127,9 @@ pub enum KeyDisposition {
 /// A native backend. Implementations live in `src/platform/<os>.rs` and are
 /// selected by `cfg(target_os)` in `src/platform/mod.rs`.
 pub trait Backend {
+    fn read_clipboard(&mut self) -> Result<String, String> {
+        Err("Clipboard is unavailable on this backend".into())
+    }
     fn copy_text(&mut self, _text: &str) -> Result<(), String> {
         Err("Clipboard is unavailable on this backend".into())
     }
@@ -175,6 +178,8 @@ pub trait Backend {
     /// may use this cold-path hint to avoid extracting text for physical-only
     /// configurations. An empty slice disables optional character observation.
     /// Physical key identity and disposition must remain unchanged.
+    fn set_text_capture(&mut self, _enabled: bool) {}
+
     fn set_character_bindings(&mut self, _keys: &[super::input::Key]) {}
 
     fn screens(&self) -> Result<Vec<Screen>, String>;

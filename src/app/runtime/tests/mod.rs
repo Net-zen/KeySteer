@@ -43,6 +43,8 @@ fn active_config(engine: &Engine) -> Config {
 #[derive(Default)]
 struct Recorder {
     copied_text: Vec<String>,
+    clipboard_input: String,
+    text_capture: bool,
     fail_copy: bool,
     released_text_prompts: usize,
     text_prompts: Vec<crate::api::window_presets::TextPrompt>,
@@ -126,6 +128,12 @@ impl Backend for FakeBackend {
         })
     }
 
+    fn set_text_capture(&mut self, enabled: bool) {
+        self.log.lock().unwrap().text_capture = enabled;
+    }
+    fn read_clipboard(&mut self) -> Result<String, String> {
+        Ok(self.log.lock().unwrap().clipboard_input.clone())
+    }
     fn request_text_prompt(
         &mut self,
         prompt: crate::api::window_presets::TextPrompt,
@@ -368,6 +376,9 @@ impl Mode for ProbeMode {
             ModeEvent::PanelWindowBounds { .. } => "panel_bounds",
             ModeEvent::TextChanged(_) => "text_changed",
             ModeEvent::TextSubmitted(_) => "text_submitted",
+            ModeEvent::TextInserted(_) | ModeEvent::TextPasted(_) | ModeEvent::TextEdit(_) => {
+                "text_edit"
+            }
             ModeEvent::CopyTextField(_) => "copy_field",
             ModeEvent::TextCopied => "text_copied",
             ModeEvent::Activated { .. } => "activated",

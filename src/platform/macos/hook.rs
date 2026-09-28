@@ -356,6 +356,10 @@ impl Drop for HookStartup {
 }
 
 impl HookThread {
+    pub(super) fn set_text_capture(&self, enabled: bool) {
+        self.signals.character_demand.set_text_capture(enabled);
+    }
+
     pub(super) fn set_character_bindings(&self, keys: &[Key]) {
         self.signals
             .character_demand
@@ -922,7 +926,7 @@ fn handle_event(
             let repeat = event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0;
             let input = InputEvent {
                 character: if key_state == KeyState::Down
-                    && !repeat
+                    && (!repeat || signals.character_demand.captures_text())
                     && signals.character_demand.is_enabled()
                     && !key.is_modifier()
                 {

@@ -372,6 +372,11 @@ impl Drop for MacOsBackend {
 }
 
 impl Backend for MacOsBackend {
+    fn read_clipboard(&mut self) -> Result<String, String> {
+        arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.get_text())
+            .map_err(|error| error.to_string())
+    }
     fn copy_text(&mut self, text: &str) -> Result<(), String> {
         arboard::Clipboard::new()
             .and_then(|mut clipboard| clipboard.set_text(text))
@@ -524,6 +529,12 @@ impl Backend for MacOsBackend {
             );
         }
         Ok(())
+    }
+
+    fn set_text_capture(&mut self, enabled: bool) {
+        if let Some(hook) = self.hook.as_ref() {
+            hook.set_text_capture(enabled);
+        }
     }
 
     fn set_character_bindings(&mut self, keys: &[crate::api::Key]) {

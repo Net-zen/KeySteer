@@ -415,7 +415,7 @@ target = "active"
 
 ## UIHint 搜索与信息复制
 
-扫描出标签后按 `/` 打开搜索框，可使用系统输入法输入中文，也可全选、复制、粘贴。输入标签字符、OCR 文字、辅助功能名称或角色都可以过滤；例如 `复制` / `fz`，以及 `按钮` / `an` / `button`。搜索时 label 编号保持不变，完整 label 也仅过滤。
+按 `/` 打开覆盖层直接绘制的搜索框，无须等待首批标签；支持键盘字符、简拼、全选和 Unicode 文本复制粘贴。目前不支持系统输入法组词候选窗口，中文可粘贴输入。输入标签字符、OCR 文字、辅助功能名称或角色都可以过滤；例如 `复制` / `fz`，以及 `按钮` / `an` / `button`。搜索时 label 编号保持不变，完整 label 也仅过滤。
 
 Enter 结束搜索：恰好一个结果时按普通 label 选择逻辑移动；多个或零个结果则清空查询、恢复本轮全部标签，继续留在 UIHint。Esc 取消搜索并恢复标签。一个结果不会自动关闭搜索，而会显示信息面板。
 
@@ -427,7 +427,7 @@ Enter 结束搜索：恰好一个结果时按普通 label 选择逻辑移动；�
 | Ctrl/Cmd+4 | 颜色（来源提供时） |
 
 
-缺失内容显示空位，快捷键不重排，也不会清空剪贴板。可通过 `ui_hint.search_copy_keys` 配置四个组合键。
+缺失内容显示空位，快捷键不重排，也不会清空剪贴板。可通过 `ui_hint.search_copy_keys` 配置四个组合键。搜索框编辑键由 `[ui_hint.search_edit_keys]` 配置，例如 `paste = "primary+v"`、`copy = "primary+c"`、`select_all = "primary+a"`；`primary` 在 macOS 为 Cmd、Windows 为 Ctrl，也可显式指定 `cmd` 或 `ctrl`。省略的编辑键继承默认值。复制输入选区保留搜索，复制信息槽成功后退出搜索。
 
 ```toml
 [ui_hint.search_input_ui]

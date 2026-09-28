@@ -272,9 +272,10 @@ pub enum WorkspaceValue {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextPrompt {
-    /// Live input shares the same native IME/editor as preset notes.
+    /// Some selects shared overlay editing; None opens a native preset-note editor.
+    pub edit_keys: std::sync::Arc<[(crate::api::KeyChord, crate::api::text_edit::EditAction)]>,
     pub live_style: Option<crate::api::overlay::SharedLabelStyle>,
-    pub copy_keys: Vec<crate::api::KeyChord>,
+    pub copy_keys: std::sync::Arc<[crate::api::KeyChord]>,
     /// Inline input bar in desktop coordinates, supplied by the host.
     pub bounds: crate::api::Rect,
     pub id: u64,

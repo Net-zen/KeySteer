@@ -350,7 +350,7 @@ impl ForwardedAlt {
         }
 
         state == KeyState::Down
-            && !repeat
+            && (!repeat || input::CHARACTER_CAPTURE.captures_text())
             && !is_modifier
             && disposition == KeyDisposition::Consume
             && self.0 != 0
@@ -1006,7 +1006,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     let repeat = update_pressed_state(info.vkCode, state);
     let event = BackendEvent::Input(InputEvent {
         character: if state == KeyState::Down
-            && !repeat
+            && (!repeat || input::CHARACTER_CAPTURE.captures_text())
             && !is_modifier
             && input::CHARACTER_CAPTURE.is_enabled()
         {

@@ -37,6 +37,14 @@ impl CharacterCapture {
         }
     }
 
+    pub fn captures_text(&self) -> bool {
+        self.demand.captures_text()
+    }
+
+    pub fn set_text_capture(&self, enabled: bool) {
+        self.demand.set_text_capture(enabled);
+    }
+
     pub fn configure(&self, keys: &[Key]) {
         let mut previous = self.characters.lock().unwrap_or_else(|e| e.into_inner());
         let characters = CharacterDemand::characters(keys, |key| virtual_key_for(key).is_some());
@@ -93,8 +101,10 @@ impl CharacterCapture {
     }
 
     fn is_candidate(&self, vk: u32, scan: u32, modifiers: u8, layout: usize) -> bool {
-        self.candidates
-            .is_candidate(vk as usize, scan, modifiers, layout)
+        self.demand.captures_text()
+            || self
+                .candidates
+                .is_candidate(vk as usize, scan, modifiers, layout)
     }
 }
 

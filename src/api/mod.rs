@@ -21,6 +21,7 @@ pub mod overlay;
 pub mod plugin;
 pub mod presentation;
 pub mod style;
+pub mod text_edit;
 pub mod theme;
 pub mod window;
 pub mod window_layout;

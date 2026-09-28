@@ -732,6 +732,26 @@ border_radius = -1
 
 # Search matches labels, accessibility semantics, OCR and Chinese initials.
 # Enter selects only a unique result; otherwise it restores all original labels.
+# Shared overlay editor shortcuts. primary = Cmd on macOS, Ctrl on Windows.
+# Each entry is configurable; omitted entries inherit these defaults.
+[ui_hint.search_edit_keys]
+accept = "enter"
+cancel = "esc"
+paste = "primary+v"
+copy = "primary+c"
+cut = "primary+x"
+select_all = "primary+a"
+left = "left"
+right = "right"
+home = "home"
+end = "end"
+select_left = "shift+left"
+select_right = "shift+right"
+select_home = "shift+home"
+select_end = "shift+end"
+backspace = "backspace"
+delete = "delete"
+
 [ui_hint.search_input_ui]
 position_mode = "screen" # screen or window
 position = ["100%", "50%", "0%", "50%"] # top, right, bottom, left

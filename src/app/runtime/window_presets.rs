@@ -168,8 +168,9 @@ impl Engine {
                     self.show_overlay(scene, backend)?;
                 }
                 let prompt = TextPrompt {
+                    edit_keys: Default::default(),
                     live_style: None,
-                    copy_keys: Vec::new(),
+                    copy_keys: Default::default(),
                     bounds,
                     id,
                     title: "Save preset".into(),

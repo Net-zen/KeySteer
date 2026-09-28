@@ -23,6 +23,7 @@ pub(super) struct PendingSequence {
 pub(super) struct Scheduler {
     pub(super) text_prompt: Option<(ModeId, crate::api::window_presets::TextPrompt)>,
     pub(super) text_prompt_serial: u64,
+    pub(super) scan_activation: Option<u32>,
     pub(super) text_prompt_returning_focus: bool,
     pub(super) panel_geometry: BTreeMap<u64, ModeId>,
     pub(super) audio_sessions: BTreeMap<u64, ModeId>,
@@ -36,6 +37,7 @@ impl Scheduler {
     pub(super) fn reset(&mut self) {
         self.panel_geometry.clear();
         self.text_prompt = None;
+        self.scan_activation = None;
         self.window_sessions.clear();
         self.audio_sessions.clear();
         self.sequences.clear();

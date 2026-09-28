@@ -273,6 +273,8 @@ pub struct UiHint {
     #[serde(deserialize_with = "deserialize_search_info_ui")]
     pub search_info_ui: SearchInputUi,
     pub search_copy_keys: Vec<String>,
+    #[serde(deserialize_with = "deserialize_search_edit_keys")]
+    pub search_edit_keys: std::collections::BTreeMap<crate::api::text_edit::EditAction, String>,
     pub inherits: Vec<String>,
     pub temporary_mode: Option<String>,
     pub temporary_mode_keys: Vec<String>,
@@ -387,6 +389,7 @@ impl Default for UiHint {
                 },
                 ..Default::default()
             },
+            search_edit_keys: crate::api::text_edit::default_keys(),
             search_copy_keys: (1..=4).map(|n| format!("primary+{n}")).collect(),
             inherits: vec!["hotkeys".into(), "normal".into()],
             temporary_mode: Some("normal".into()),
@@ -694,4 +697,13 @@ impl Default for Pointer {
             fast_multiplier: 2.0,
         }
     }
+}
+
+fn deserialize_search_edit_keys<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<std::collections::BTreeMap<crate::api::text_edit::EditAction, String>, D::Error> {
+    let overrides = <std::collections::BTreeMap<crate::api::text_edit::EditAction, String> as serde::Deserialize>::deserialize(deserializer)?;
+    let mut keys = crate::api::text_edit::default_keys();
+    keys.extend(overrides);
+    Ok(keys)
 }

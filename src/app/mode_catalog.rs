@@ -129,6 +129,19 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
                     .unwrap_or_else(|error| panic!("search requires validated copy key: {error}"))
             })
             .collect(),
+        search_edit_keys: config
+            .ui_hint
+            .search_edit_keys
+            .iter()
+            .map(|(action, key)| {
+                (
+                    crate::api::KeyChord::parse(key).unwrap_or_else(|error| {
+                        panic!("search requires validated editing key: {error}")
+                    }),
+                    *action,
+                )
+            })
+            .collect(),
         search_titles: ["OCR", "Accessibility", "Coordinates", "Color"].map(String::from),
         lifecycle: config.ui_hint.lifecycle.clone(),
         overlap_cycle_key: config.ui_hint.overlap_cycle_key.clone(),

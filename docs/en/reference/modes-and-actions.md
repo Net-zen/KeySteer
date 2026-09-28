@@ -393,7 +393,7 @@ Supported operations include cycling, mode entry, moving across displays, moveme
 
 ## UIHint search and information copying
 
-Press `/` after hints appear. The native editor supports IME text, selection, copy and paste. Search matches original hint labels, OCR text, accessibility names and semantic roles, including simplified-Chinese pinyin initials (`复制` / `fz`, `按钮` / `an` / `button`). Labels retain their original codes. Even a complete label only filters while searching.
+Press `/` to open the directly drawn overlay editor, even before the first scan batch. It supports keyboard characters, selection and Unicode copy/paste. IME composition is not implemented; paste Chinese text or type pinyin initials. Search matches original hint labels, OCR text, accessibility names and semantic roles, including simplified-Chinese pinyin initials (`复制` / `fz`, `按钮` / `an` / `button`). Labels retain their original codes. Even a complete label only filters while searching.
 
 Enter closes search. Exactly one match follows ordinary hint selection and moves the pointer; zero or multiple matches clear the query and restore all original hints without leaving UIHint. Esc restores all hints. A unique match keeps the editor open and displays a details panel.
 
@@ -401,8 +401,10 @@ The four stable shortcuts default to primary+1 (OCR), primary+2 (accessibility n
 
 `ui_hint.search_input_ui` and `ui_hint.search_info_ui` share font, size, color, border, radius, padding, width and offset settings. `position` accepts four percentage strings in top/right/bottom/left order, reusing Window card parsing. The input defaults to `position_mode = "screen"` and `["100%", "50%", "0%", "50%"]`; use `window` for window-relative placement. Details default to `position_mode = "search_input"` and `["0%", "50%", "100%", "50%"]`, above the input, and also support `screen` / `window`. Old anchor strings remain readable.
 
-Search data is prepared as scan batches arrive. Repeated searches reuse session indexes and the native editor; leaving UIHint or rescanning releases them.
+Search data is prepared as scan batches arrive. Repeated searches reuse session indexes and query storage; leaving UIHint or rescanning releases them.
 
 Panel percentages, light/dark styles, information headings and copy shortcuts are compiled at startup. Search reuses those results; target text and Chinese initial-letter indexes are prepared as scan results arrive.
 
 Spaces separate independent searches: `fz button ab` unions their matches in input order, retaining each target at its first match. Trailing spaces restore candidates for the next search. Multi-selection shows only OCR, accessibility and coordinates, copied in order with newline separators. Successful copying closes search and restores all hints while keeping UIHint active; failures and empty fields preserve the search. Display text is elided to one line; copying preserves the full content.
+
+Search editing shortcuts are configurable in `[ui_hint.search_edit_keys]`, e.g. `paste = "primary+v"`, `copy = "primary+c"`, `select_all = "primary+a"`. Missing entries inherit defaults. `primary` resolves to Cmd on macOS and Ctrl on Windows; explicit `cmd` and `ctrl` are also accepted. Copying selected input keeps search open; successfully copying an information field closes search.

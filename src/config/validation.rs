@@ -310,6 +310,14 @@ impl ConfigFile {
                 ));
             }
         }
+        for key in self.ui_hint.search_edit_keys.values() {
+            let chord = crate::api::KeyChord::parse(key).map_err(bad)?;
+            if !copy_keys.insert(chord.canonical()) {
+                return Err(bad(
+                    "search editing and field-copy keys must be distinct".into()
+                ));
+            }
+        }
         for (name, value) in [
             ("fill_color", self.mode_indicator.cursor.fill_color.as_ref()),
             (

@@ -2,6 +2,15 @@ export type StudioLocale = 'zh' | 'en'
 
 /** Display text only. Command values, paths and user content are never localized. */
 export const englishMessages: Record<string, string> = {
+  '搜索粘贴快捷键': 'Search paste shortcut', '搜索复制选区快捷键': 'Search copy selection shortcut',
+  '搜索剪切快捷键': 'Search cut shortcut', '搜索全选快捷键': 'Search select all shortcut',
+  '结束搜索快捷键': 'Submit search shortcut', '取消搜索快捷键': 'Cancel search shortcut',
+  '搜索光标左移': 'Search cursor left', '搜索光标右移': 'Search cursor right',
+  '搜索光标开头': 'Search cursor home', '搜索光标末尾': 'Search cursor end',
+  '搜索向左选择': 'Search select left', '搜索向右选择': 'Search select right',
+  '搜索选择到开头': 'Search select to start', '搜索选择到末尾': 'Search select to end',
+  '搜索退格': 'Search backspace', '搜索删除': 'Search delete',
+
   '搜索框定位': 'Search input reference', '搜索信息定位': 'Search details reference',
   '搜索框四边百分比': 'Search input inset percentages', '搜索信息四边百分比': 'Search details inset percentages',
   '搜索框字体': 'Search input font', '搜索信息字体': 'Search details font',

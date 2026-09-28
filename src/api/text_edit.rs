@@ -1,0 +1,170 @@
+//! Shared editing vocabulary for overlay input; no native widget owns the text.
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditAction {
+    Accept,
+    Cancel,
+    Paste,
+    Copy,
+    Cut,
+    SelectAll,
+    Left,
+    Right,
+    Home,
+    End,
+    SelectLeft,
+    SelectRight,
+    SelectHome,
+    SelectEnd,
+    Backspace,
+    Delete,
+}
+
+pub fn default_keys() -> std::collections::BTreeMap<EditAction, String> {
+    use EditAction::*;
+    [
+        (Accept, "enter"),
+        (Cancel, "esc"),
+        (Paste, "primary+v"),
+        (Copy, "primary+c"),
+        (Cut, "primary+x"),
+        (SelectAll, "primary+a"),
+        (Left, "left"),
+        (Right, "right"),
+        (Home, "home"),
+        (End, "end"),
+        (SelectLeft, "shift+left"),
+        (SelectRight, "shift+right"),
+        (SelectHome, "shift+home"),
+        (SelectEnd, "shift+end"),
+        (Backspace, "backspace"),
+        (Delete, "delete"),
+    ]
+    .into_iter()
+    .map(|(action, key)| (action, key.into()))
+    .collect()
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Selection {
+    pub cursor: usize,
+    pub anchor: usize,
+}
+
+impl Selection {
+    pub fn range(self) -> std::ops::Range<usize> {
+        self.cursor.min(self.anchor)..self.cursor.max(self.anchor)
+    }
+    /// Returns whether the query changed; capacity is retained even when empty.
+    pub fn insert(&mut self, text: &mut String, value: &str) -> bool {
+        let range = self.range();
+        // Most queries fit even measured in bytes. Count Unicode only near
+        // the limit, rather than walking the whole query on every keystroke.
+        let end = if text.len() - range.len() + value.len() <= 4096 {
+            value.len()
+        } else {
+            let remaining = 4096usize.saturating_sub(
+                text[..range.start].chars().count() + text[range.end..].chars().count(),
+            );
+            value
+                .char_indices()
+                .nth(remaining)
+                .map_or(value.len(), |(i, _)| i)
+        };
+        let changed = text[range.clone()] != value[..end];
+        if changed {
+            text.replace_range(range.clone(), &value[..end]);
+        }
+        self.cursor = range.start + end;
+        self.anchor = self.cursor;
+        changed
+    }
+    pub fn edit(&mut self, text: &mut String, action: EditAction) -> bool {
+        use EditAction::*;
+        let previous = text[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(i, _)| i);
+        let next = self.cursor + text[self.cursor..].chars().next().map_or(0, char::len_utf8);
+        if matches!(action, Backspace | Delete) {
+            if self.cursor == self.anchor {
+                self.anchor = if action == Backspace { previous } else { next };
+            }
+            return self.insert(text, "");
+        }
+        if action == SelectAll {
+            self.anchor = 0;
+            self.cursor = text.len();
+            return false;
+        }
+        self.cursor = match action {
+            Left if self.cursor != self.anchor => self.range().start,
+            Right if self.cursor != self.anchor => self.range().end,
+            Left | SelectLeft => previous,
+            Right | SelectRight => next,
+            Home | SelectHome => 0,
+            End | SelectEnd => text.len(),
+            _ => return false,
+        };
+        if !matches!(action, SelectLeft | SelectRight | SelectHome | SelectEnd) {
+            self.anchor = self.cursor;
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    #[ignore = "allocation measurement; run alone with --test-threads=1"]
+    fn warmed_editor_mutations_do_not_allocate() {
+        let mut text = String::with_capacity(256);
+        let mut selection = Selection::default();
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        for _ in 0..10_000 {
+            assert!(selection.insert(&mut text, "复制🦀"));
+            selection.edit(&mut text, EditAction::SelectAll);
+            assert!(selection.edit(&mut text, EditAction::Backspace));
+            assert!(!selection.edit(&mut text, EditAction::Backspace));
+        }
+        let stats = region.change();
+        assert_eq!(stats.allocations + stats.reallocations, 0, "{stats:?}");
+    }
+    #[test]
+    fn unicode_selection_deletion_and_capacity_reuse() {
+        let mut text = String::with_capacity(256);
+        let mut selection = Selection::default();
+        selection.insert(&mut text, "中🦀ab");
+        let storage = text.as_ptr();
+        selection.edit(&mut text, EditAction::Home);
+        selection.edit(&mut text, EditAction::SelectRight);
+        selection.edit(&mut text, EditAction::SelectRight);
+        assert_eq!(&text[selection.range()], "中🦀");
+        selection.insert(&mut text, "复制");
+        assert_eq!(text, "复制ab");
+        selection.edit(&mut text, EditAction::Backspace);
+        assert_eq!(text, "复ab");
+        selection.edit(&mut text, EditAction::Delete);
+        assert_eq!(text, "复b");
+        assert_eq!(text.as_ptr(), storage);
+        selection.edit(&mut text, EditAction::SelectAll);
+        selection.insert(&mut text, &"🦀".repeat(5000));
+        assert_eq!(text.chars().count(), 4096);
+        assert_eq!(selection.cursor, text.len());
+    }
+    #[test]
+    fn sparse_configuration_keeps_defaults_and_rejects_shortcut_collisions() {
+        let config =
+            crate::config::Config::parse("[ui_hint.search_edit_keys]\npaste = 'alt+v'").unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.ui_hint.search_edit_keys[&EditAction::Paste], "alt+v");
+        assert_eq!(config.ui_hint.search_edit_keys[&EditAction::Cancel], "esc");
+        let invalid =
+            crate::config::Config::parse("[ui_hint.search_edit_keys]\npaste = 'primary+1'")
+                .unwrap();
+        assert!(invalid.validate().is_err());
+    }
+}

@@ -340,6 +340,7 @@ impl Engine {
         for session in std::mem::take(&mut self.scheduler.window_sessions).into_keys() {
             backend.cancel_window_session(session);
         }
+        backend.set_text_capture(false);
         backend.release_text_prompt();
         self.scheduler.reset();
         if let Err(cancel_error) = self.cancel_all_scans(backend) {
@@ -604,6 +605,7 @@ impl Engine {
         let mut errors = crate::support::errors::ErrorBundle::default();
         errors.record("runtime", result);
         self.scheduler.text_prompt = None;
+        backend.set_text_capture(false);
         backend.release_text_prompt();
         for session in std::mem::take(&mut self.scheduler.audio_sessions).into_keys() {
             backend.cancel_audio_session(session);
@@ -774,8 +776,15 @@ impl Engine {
                 }
             }
             BackendEvent::FocusChanged(app) => {
-                // The native editor owns focus temporarily; keep the scan/application snapshot.
-                if self.scheduler.text_prompt.is_some() {
+                let expected_activation = self
+                    .scheduler
+                    .scan_activation
+                    .is_some_and(|pid| app.as_ref().is_some_and(|app| app.process_id == pid));
+                if app.is_some() {
+                    self.scheduler.scan_activation = None;
+                }
+                // Preserve the editing snapshot through transient focus notifications.
+                if self.scheduler.text_prompt.is_some() && !expected_activation {
                     if app.is_none()
                         || app
                             .as_ref()
@@ -785,6 +794,7 @@ impl Engine {
                         return Ok(());
                     }
                     if let Some((owner, prompt)) = self.scheduler.text_prompt.take() {
+                        backend.set_text_capture(false);
                         backend.cancel_text_prompt(prompt.id);
                         self.dispatch_to(&owner, ModeEvent::TextSubmitted(None), backend)?;
                     }
@@ -838,6 +848,7 @@ impl Engine {
                 if let Some(owner) = self.scan_owners.get(&id).cloned()
                     && owner == self.registry.active
                 {
+                    self.scheduler.scan_activation = Some(process_id);
                     self.dispatch_to(
                         &owner,
                         ModeEvent::UiScanActivationExpected { id, process_id },
@@ -1029,6 +1040,7 @@ impl Engine {
         for session in std::mem::take(&mut self.scheduler.window_sessions).into_keys() {
             backend.cancel_window_session(session);
         }
+        backend.set_text_capture(false);
         backend.release_text_prompt();
         self.scheduler.reset();
         self.registry.modal_stack.clear();
@@ -1106,6 +1118,7 @@ impl Engine {
 
         if target != self.registry.active {
             if let Some((_, prompt)) = self.scheduler.text_prompt.take() {
+                backend.set_text_capture(false);
                 backend.cancel_text_prompt(prompt.id);
             }
             self.retire_workspace_requests(Some(&self.registry.active.clone()));

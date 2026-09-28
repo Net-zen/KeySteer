@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 /// layout query. Windows applies this after its native physical candidate gate.
 pub(crate) struct CharacterDemand {
     enabled: AtomicBool,
+    text_capture: AtomicBool,
     ascii: [AtomicU64; 2],
 }
 
@@ -17,6 +18,7 @@ impl CharacterDemand {
     pub(crate) const fn new() -> Self {
         Self {
             enabled: AtomicBool::new(false),
+            text_capture: AtomicBool::new(false),
             ascii: [const { AtomicU64::new(0) }; 2],
         }
     }
@@ -58,11 +60,22 @@ impl CharacterDemand {
     }
 
     #[inline]
+    pub(crate) fn set_text_capture(&self, enabled: bool) {
+        self.text_capture.store(enabled, Ordering::Release);
+    }
+
+    pub(crate) fn captures_text(&self) -> bool {
+        self.text_capture.load(Ordering::Acquire)
+    }
+
     pub(crate) fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Acquire)
+        self.captures_text() || self.enabled.load(Ordering::Acquire)
     }
 
     pub(crate) fn decode(&self, units: &[u16]) -> Option<char> {
+        if self.captures_text() {
+            return single_printable_character(units);
+        }
         if let [unit] = units
             && *unit < 128
         {
@@ -161,6 +174,19 @@ impl CharacterCandidates {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn overlay_capture_accepts_layout_characters_and_restores_binding_demand() {
+        let demand = super::CharacterDemand::new();
+        demand.publish(&['?']);
+        assert_eq!(demand.decode(&[b'Z' as u16]), None);
+        demand.set_text_capture(true);
+        assert_eq!(demand.decode(&[b'Z' as u16]), Some('Z'));
+        assert_eq!(demand.decode(&[0xD83E, 0xDD80]), Some('🦀'));
+        demand.set_text_capture(false);
+        assert_eq!(demand.decode(&[b'Z' as u16]), None);
+        assert_eq!(demand.decode(&[b'?' as u16]), Some('?'));
+    }
+
     use super::*;
 
     #[test]

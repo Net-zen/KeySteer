@@ -633,6 +633,57 @@ impl Engine {
         }
 
         if let Some((owner, prompt)) = &self.scheduler.text_prompt {
+            if prompt.live_style.is_some() {
+                let owner = owner.clone();
+                let matches = |chord: &crate::api::KeyChord| {
+                    chord.activation_matches(&input.key)
+                        && chord.keys().len() == self.input.pressed.len()
+                        && chord.matches_pressed(&self.input.pressed)
+                };
+                let event = if input.state != KeyState::Down {
+                    None
+                } else if let Some(index) = prompt.copy_keys.iter().position(matches) {
+                    (!input.repeat).then_some(ModeEvent::CopyTextField(index))
+                } else if let Some((_, action)) =
+                    prompt.edit_keys.iter().find(|(key, _)| matches(key))
+                {
+                    Some(ModeEvent::TextEdit(*action))
+                } else {
+                    let alt = self
+                        .input
+                        .pressed
+                        .iter()
+                        .any(|key| matches!(key.as_str(), "left_alt" | "right_alt"));
+                    let command = self.input.pressed.iter().any(|key| {
+                        matches!(key.as_str(), "left_win" | "right_win")
+                            || (!alt && matches!(key.as_str(), "left_ctrl" | "right_ctrl"))
+                    });
+                    if command {
+                        None
+                    } else {
+                        input
+                            .character
+                            .or_else(|| {
+                                if alt {
+                                    None
+                                } else if input.key.as_str() == "space" {
+                                    Some(' ')
+                                } else {
+                                    input.key.as_char()
+                                }
+                            })
+                            .filter(|c| !c.is_control())
+                            .map(ModeEvent::TextInserted)
+                    }
+                };
+                // Acknowledge before clipboard access, filtering or painting.
+                let outcome = self.complete_key_disposition(&input, KeyOutcome::Consumed);
+                self.dispose_input(&input, outcome, trace_key, backend)?;
+                if let Some(event) = event {
+                    self.dispatch_to(&owner, event, backend)?;
+                }
+                return Ok(());
+            }
             let copy = prompt.copy_keys.iter().position(|chord| {
                 chord.activation_matches(&input.key)
                     && chord.keys().len() == self.input.pressed.len()

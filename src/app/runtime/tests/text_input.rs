@@ -9,7 +9,7 @@ fn text_input_engine(config: Config) -> Engine {
 }
 
 #[test]
-fn hint_native_search_routes_editing_copy_and_stale_results_by_owner() {
+fn hint_overlay_search_routes_editing_copy_and_stale_results_by_owner() {
     let mut engine = text_input_engine(Config::default());
     let (mut backend, log) = FakeBackend::new(Vec::new());
     engine.screens = backend.screens().unwrap();
@@ -24,13 +24,16 @@ fn hint_native_search_routes_editing_copy_and_stale_results_by_owner() {
         }],
     }), &mut backend).unwrap();
     for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
-    let old_id = log.lock().unwrap().text_prompts.last().unwrap().id;
+    assert!(log.lock().unwrap().text_prompts.is_empty(), "search must not create a native editor");
+    let old_id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+    assert!(log.lock().unwrap().text_capture);
+    log.lock().unwrap().clipboard_input = "复制".into();
     // Native activation can briefly report no foreground application.
     engine.handle_backend_event(BackendEvent::FocusChanged(None), &mut backend).unwrap();
     assert_eq!(engine.scheduler.text_prompt.as_ref().unwrap().1.id, old_id);
     log.lock().unwrap().dispositions.clear();
     for event in [key_down("left_ctrl"), key_down("v"), key_up("v"), key_up("left_ctrl")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
-    assert_eq!(log.lock().unwrap().dispositions, [KeyDisposition::Forward; 4]);
+    assert_eq!(log.lock().unwrap().dispositions, [KeyDisposition::Consume; 4]);
     engine.handle_backend_event(BackendEvent::TextPromptChanged { id: old_id, text: "fzwb".into() }, &mut backend).unwrap();
     log.lock().unwrap().dispositions.clear();
     let copy_modifier = if cfg!(target_os = "macos") { "left_win" } else { "left_ctrl" };
@@ -41,14 +44,15 @@ fn hint_native_search_routes_editing_copy_and_stale_results_by_owner() {
     log.lock().unwrap().fail_copy = false;
     log.lock().unwrap().dispositions.clear();
     for event in [key_down(copy_modifier), key_down("1"), key_up("1"), key_up(copy_modifier)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
-    assert_eq!(log.lock().unwrap().dispositions, [KeyDisposition::Forward, KeyDisposition::Consume, KeyDisposition::Consume, KeyDisposition::Forward]);
+    assert_eq!(log.lock().unwrap().dispositions, [KeyDisposition::Consume; 4]);
     assert_eq!(log.lock().unwrap().copied_text, ["复制文本"]);
     assert!(engine.scheduler.text_prompt.is_none());
+    assert!(!log.lock().unwrap().text_capture);
     assert_eq!(engine.active_mode(), &ModeId::ui_hint());
     assert!(log.lock().unwrap().warps.is_empty());
     engine.handle_backend_event(BackendEvent::TextPromptResult { id: old_id, value: Ok(None) }, &mut backend).unwrap();
     for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
-    let id = log.lock().unwrap().text_prompts.last().unwrap().id;
+    let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
     assert_ne!(id, old_id);
     engine.handle_backend_event(BackendEvent::TextPromptResult { id: old_id, value: Ok(Some("stale".into())) }, &mut backend).unwrap();
     assert_eq!(engine.scheduler.text_prompt.as_ref().unwrap().1.id, id);
@@ -540,4 +544,60 @@ fn text_input_default_backslash_leaves_f2_available_to_applications() {
             [KeyDisposition::Forward; 2]
         );
     }
+}
+
+#[test]
+fn overlay_editor_uses_layout_text_custom_paste_and_paired_capture() {
+    let mut config = Config::default();
+    config.ui_hint.search_edit_keys.insert(crate::api::text_edit::EditAction::Paste, "f8".into());
+    let mut engine = text_input_engine(config);
+    let (mut backend, log) = FakeBackend::new(Vec::new());
+    engine.screens = backend.screens().unwrap();
+    engine.set_active(ModeId::normal());
+    engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
+    for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+    let scan_id = log.lock().unwrap().scan_requests.last().unwrap().id;
+    engine.handle_backend_event(BackendEvent::UiScanActivationExpected { id: scan_id, process_id: 700 }, &mut backend).unwrap();
+    engine.handle_backend_event(BackendEvent::FocusChanged(None), &mut backend).unwrap();
+    engine.handle_backend_event(BackendEvent::FocusChanged(Some(crate::api::FocusedApp { process_id: 700, bundle_id: "test".into(), window_title: "target".into() })), &mut backend).unwrap();
+    assert!(engine.scheduler.text_prompt.is_some(), "expected activation must not close search");
+    assert_eq!(log.lock().unwrap().scan_requests.len(), 1);
+    let mut event = key_down("z");
+    if let BackendEvent::Input(input) = &mut event { input.character = Some('Z'); }
+    engine.handle_backend_event(event, &mut backend).unwrap();
+    engine.handle_backend_event(key_up("z"), &mut backend).unwrap();
+    log.lock().unwrap().clipboard_input = "复制🦀".into();
+    for event in [key_down("f8"), key_up("f8")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+    let query = |log: &Recorder| log.scenes.last().unwrap().labels.iter().find(|label| label.z_index == 10_002).unwrap().text.to_string();
+    assert_eq!(query(&log.lock().unwrap()), "Z复制🦀");
+    for event in [key_down("left"), key_up("left"), key_down("backspace"), key_up("backspace")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+    assert_eq!(query(&log.lock().unwrap()), "Z复🦀");
+    assert!(log.lock().unwrap().text_prompts.is_empty());
+    assert!(log.lock().unwrap().dispositions.iter().all(|d| *d == KeyDisposition::Consume));
+    for event in [key_down("enter"), key_up("enter")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+    assert_eq!(engine.active_mode(), &ModeId::ui_hint());
+    assert!(engine.scheduler.text_prompt.is_none());
+    assert!(!log.lock().unwrap().text_capture);
+}
+
+#[test]
+fn overlay_search_reentry_and_mode_exit_retire_capture_without_native_windows() {
+    let mut engine = text_input_engine(Config::default());
+    let (mut backend, log) = FakeBackend::new(Vec::new());
+    engine.screens = backend.screens().unwrap();
+    engine.set_active(ModeId::normal());
+    engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
+    for _ in 0..32 {
+        for event in [key_down("/"), key_up("/"), key_down("a"), key_up("a"), key_down("esc"), key_up("esc")] {
+            engine.handle_backend_event(event, &mut backend).unwrap();
+        }
+        assert!(engine.scheduler.text_prompt.is_none());
+        assert!(!log.lock().unwrap().text_capture);
+        assert_eq!(engine.active_mode(), &ModeId::ui_hint());
+    }
+    for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+    engine.activate(ModeId::normal(), Some(ModeId::ui_hint()), &mut backend).unwrap();
+    assert!(!log.lock().unwrap().text_capture);
+    assert!(engine.scheduler.text_prompt.is_none());
+    assert!(log.lock().unwrap().text_prompts.is_empty());
 }

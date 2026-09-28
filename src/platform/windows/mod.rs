@@ -572,6 +572,11 @@ impl Drop for WindowsBackend {
 }
 
 impl Backend for WindowsBackend {
+    fn read_clipboard(&mut self) -> Result<String, String> {
+        arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.get_text())
+            .map_err(|error| error.to_string())
+    }
     fn copy_text(&mut self, text: &str) -> Result<(), String> {
         arboard::Clipboard::new()
             .and_then(|mut clipboard| clipboard.set_text(text))
@@ -732,6 +737,10 @@ impl Backend for WindowsBackend {
             .as_mut()
             .ok_or_else(|| "keyboard hook is not running".to_string())?
             .set_disposition(disposition)
+    }
+
+    fn set_text_capture(&mut self, enabled: bool) {
+        input::CHARACTER_CAPTURE.set_text_capture(enabled);
     }
 
     fn set_character_bindings(&mut self, keys: &[crate::api::Key]) {
