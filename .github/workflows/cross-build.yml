@@ -35,8 +35,12 @@ jobs:
       # ARM64 warning. MSVC resources are still compiled with RC_PATH above.
       CROSS_COMPILE: ""
       XWIN_ARCH: ${{ matrix.xwin_arch }}
-      XWIN_CACHE_DIR: ${{ runner.temp }}/keysteer-xwin
     steps:
+      - name: Initialize runtime cache path
+        # runner context is unavailable in job-level env. RUNNER_TEMP exists
+        # once the runner starts, and GITHUB_ENV exposes this to later steps.
+        run: echo "XWIN_CACHE_DIR=$RUNNER_TEMP/keysteer-xwin" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v7
 
