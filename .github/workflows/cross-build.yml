@@ -1,4 +1,4 @@
-name: Test Windows cross-build on Linux
+name: Package Windows on Linux
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   windows:
-    name: Linux to Windows ${{ matrix.arch }} (unsigned)
+    name: Package Windows ${{ matrix.arch }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -17,24 +17,88 @@ jobs:
         include:
           - arch: x64
             target: x86_64-pc-windows-msvc
+            xwin_arch: x86_64
+            cpu: native
+            cl_flags: /clang:-march=native
           - arch: ARM64
             target: aarch64-pc-windows-msvc
+            xwin_arch: aarch64
+            cpu: generic
+            cl_flags: ""
     env:
       KEYSTEER_CROSS_WINDOWS: "1"
-      RUSTFLAGS: -C link-arg=/Brepro
+      # Optimize x64 for the actual runner CPU. ARM64 is cross-compiled on an
+      # x64 runner, so it must retain an architecture-appropriate generic CPU.
+      RUSTFLAGS: -C link-arg=/Brepro -C target-cpu=${{ matrix.cpu }}
       RC_PATH: llvm-rc
+      # winresource probes a GNU prefix even for MSVC; bypass the misleading
+      # ARM64 warning. MSVC resources are still compiled with RC_PATH above.
+      CROSS_COMPILE: ""
+      XWIN_ARCH: ${{ matrix.xwin_arch }}
+      XWIN_CACHE_DIR: ${{ runner.temp }}/keysteer-xwin
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install cross toolchain
+      - name: Resolve latest stable tools and configure LLVM repository
+        id: tools
         run: |
+          curl --fail --silent --show-error --retry 3 https://apt.llvm.org/llvm.sh -o "$RUNNER_TEMP/llvm.sh"
+          llvm_version="$(python3 -c 'import pathlib,re,sys; print(re.search(r"^CURRENT_LLVM_STABLE=([0-9]+)$", pathlib.Path(sys.argv[1]).read_text(), re.M)[1])' "$RUNNER_TEMP/llvm.sh")"
+          curl --fail --silent --show-error --retry 3 https://crates.io/api/v1/crates/cargo-xwin -o "$RUNNER_TEMP/cargo-xwin.json"
+          xwin_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["crate"]["max_stable_version"])' "$RUNNER_TEMP/cargo-xwin.json")"
+          [[ "$xwin_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "LLVM_VERSION=$llvm_version" >> "$GITHUB_ENV"
+          echo "CARGO_XWIN_VERSION=$xwin_version" >> "$GITHUB_ENV"
+          curl --fail --silent --show-error --retry 3 https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/keysteer-llvm.asc > /dev/null
+          echo "deb [signed-by=/etc/apt/trusted.gpg.d/keysteer-llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-$llvm_version main" \
+            | sudo tee /etc/apt/sources.list.d/keysteer-llvm.list > /dev/null
           sudo apt-get update
-          sudo apt-get install -y clang llvm lld
+          package_key="$(apt-cache policy "clang-$llvm_version" "llvm-$llvm_version" "lld-$llvm_version" osslsigncode zip | sha256sum | cut -d ' ' -f 1)"
+          echo "apt-key=$package_key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore system package downloads
+        uses: actions/cache@v4
+        with:
+          # Exclude apt's root-owned locks and partial download directory.
+          path: ${{ runner.temp }}/keysteer-apt/*.deb
+          key: cross-apt-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.apt-key }}
+          restore-keys: cross-apt-v2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install system tools and Rust target
+        run: |
+          mkdir -p "$RUNNER_TEMP/keysteer-apt/partial"
+          sudo apt-get -o Dir::Cache::archives="$RUNNER_TEMP/keysteer-apt" \
+            -o APT::Keep-Downloaded-Packages=true install -y \
+            "clang-$LLVM_VERSION" "llvm-$LLVM_VERSION" "lld-$LLVM_VERSION" osslsigncode zip
+          # Prefer versioned LLVM tools over those preinstalled on the runner.
+          echo "/usr/lib/llvm-$LLVM_VERSION/bin" >> "$GITHUB_PATH"
           rustup toolchain install stable --profile minimal
           rustup target add ${{ matrix.target }}
-          # Install the tool for the Linux host, without Windows linker flags.
-          env -u RUSTFLAGS cargo install --locked cargo-xwin
+
+      - name: Identify CPU for the build cache
+        id: cpu
+        env:
+          CPU_MODE: ${{ matrix.cpu }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          cache_key = "generic"
+          if os.environ["CPU_MODE"] == "native":
+              # Runner hardware can change without a toolchain or flags change.
+              # Separate caches to avoid reusing code for another instruction set.
+              block = pathlib.Path("/proc/cpuinfo").read_text().split("\n\n", 1)[0]
+              fields = dict(line.split(":", 1) for line in block.splitlines() if ":" in line)
+              fields = {key.strip(): value.strip() for key, value in fields.items()}
+              identity = {key: fields[key] for key in ("vendor_id", "cpu family", "model", "model name", "stepping", "flags")}
+              identity["flags"] = " ".join(sorted(identity["flags"].split()))
+              encoded = json.dumps(identity, sort_keys=True)
+              print(encoded)
+              cache_key = hashlib.sha256(encoded.encode()).hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"key={cache_key}\n")
+          PY
 
       - name: Prepare reproducible build date and lockfile
         run: |
@@ -47,46 +111,69 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v1-cross-windows-experiment
-          key: ${{ matrix.target }}-release
+          key: ${{ matrix.target }}-${{ matrix.cpu }}-${{ steps.cpu.outputs.key }}-${{ steps.tools.outputs.apt-key }}-xwin${{ env.CARGO_XWIN_VERSION }}-release
           cache-bin: false
           cache-workspace-crates: false
 
-      - name: Build complete Windows executable
+      - name: Restore cargo-xwin executable
+        id: xwin-tool
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/keysteer-tools
+          key: cargo-xwin-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_XWIN_VERSION }}
+
+      - name: Install cargo-xwin on cache miss
+        if: steps.xwin-tool.outputs.cache-hit != 'true'
         run: |
+          env -u RUSTFLAGS cargo install --locked --version "$CARGO_XWIN_VERSION" \
+            --root "$HOME/.cache/keysteer-tools" cargo-xwin
+
+      - name: Add cargo-xwin to PATH
+        run: echo "$HOME/.cache/keysteer-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Restore Windows SDK and CRT
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.XWIN_CACHE_DIR }}
+          key: xwin-sdk-v1-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-${{ matrix.target }}
+
+      - name: Build complete Windows executable
+        env:
+          # cargo-xwin merges CL_FLAGS into its generated target CFLAGS.
+          CL_FLAGS: ${{ matrix.cl_flags }}
+        run: |
+          rustc -Vv
+          clang-cl --version
+          lld-link --version
+          cargo xwin --version
           cargo xwin build --locked --release --bin keysteer --no-default-features --target ${{ matrix.target }}
 
-      - name: Collect unsigned executable and diagnostics
+      - name: Sign and package Windows executable
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          KEYSTEER_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+          KEYSTEER_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        run: bash packaging/windows/package-cross.sh ${{ matrix.target }}
+
+      - name: Summarize signed package
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          mkdir -p dist/cross
-          cp "target/$TARGET/release/keysteer.exe" dist/cross/KeySteer.exe
-          cp keysteer.default.toml dist/cross/
-          test -s dist/cross/KeySteer.exe
-          llvm-readobj --file-headers --coff-resources dist/cross/KeySteer.exe > dist/cross/pe-info.txt
           {
-            git rev-parse HEAD
-            rustc -Vv
-            cargo xwin --version
-            clang --version
-            lld-link --version
-          } > dist/cross/toolchain.txt
-          cp Cargo.lock dist/cross/Cargo.lock
-          cd dist/cross
-          sha256sum KeySteer.exe > SHA256SUMS
-          {
-            echo "### Linux → Windows $TARGET"
-            echo 'Unsigned compilation/linking experiment. Native runtime behavior is not tested.'
-            echo 'SHA256 covers the executable before signing, not the artifact ZIP.'
+            echo "### Windows $TARGET"
+            echo 'Signed with the existing Windows certificate and an RFC 3161 timestamp.'
+            echo 'Native UI behavior still requires Windows validation.'
+            echo 'SHA256 of the signed executable and package:'
             echo '```text'
-            cat SHA256SUMS
+            cd "dist/$TARGET"
+            sha256sum KeySteer/KeySteer.exe ./*.zip
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload experimental package
+      - name: Upload Windows package
         uses: actions/upload-artifact@v7
         with:
-          name: KeySteer-cross-Windows-${{ matrix.arch }}-unsigned
-          path: dist/cross/
+          name: KeySteer-Windows-${{ matrix.arch }}
+          path: dist/${{ matrix.target }}/*.zip
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
