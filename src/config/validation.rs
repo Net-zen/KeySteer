@@ -310,7 +310,12 @@ impl ConfigFile {
                 ));
             }
         }
-        for key in self.ui_hint.search_edit_keys.values() {
+        for key in self
+            .ui_hint
+            .search_edit_keys
+            .values()
+            .flat_map(|keys| keys.split_whitespace())
+        {
             let chord = crate::api::KeyChord::parse(key).map_err(bad)?;
             if !copy_keys.insert(chord.canonical()) {
                 return Err(bad(

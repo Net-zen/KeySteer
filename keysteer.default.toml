@@ -731,11 +731,11 @@ border_radius = -1
 # border_color     = "#8FA2F0FF"
 
 # Search matches labels, accessibility semantics, OCR and Chinese initials.
-# Enter selects only a unique result; otherwise it restores all original labels.
+# Accept exits search and restores labels; a unique result also moves the pointer.
 # Shared overlay editor shortcuts. primary = Cmd on macOS, Ctrl on Windows.
 # Each entry is configurable; omitted entries inherit these defaults.
 [ui_hint.search_edit_keys]
-accept = "enter"
+accept = "enter / primary+q" # alternatives separated by spaces
 cancel = "esc"
 paste = "primary+v"
 copy = "primary+c"

@@ -408,3 +408,7 @@ Panel percentages, light/dark styles, information headings and copy shortcuts ar
 Spaces separate independent searches: `fz button ab` unions their matches in input order, retaining each target at its first match. Trailing spaces restore candidates for the next search. Multi-selection shows only OCR, accessibility and coordinates, copied in order with newline separators. Successful copying closes search and restores all hints while keeping UIHint active; failures and empty fields preserve the search. Display text is elided to one line; copying preserves the full content.
 
 Search editing shortcuts are configurable in `[ui_hint.search_edit_keys]`, e.g. `paste = "primary+v"`, `copy = "primary+c"`, `select_all = "primary+a"`. Missing entries inherit defaults. `primary` resolves to Cmd on macOS and Ctrl on Windows; explicit `cmd` and `ctrl` are also accepted. Copying selected input keeps search open; successfully copying an information field closes search.
+
+Search accept shortcuts default to `accept = "enter / primary+q"`. Separate alternatives with spaces; a custom value replaces all accept defaults. Accept closes search and restores hints while keeping UIHint active; exactly one match also moves the pointer. Esc cancels without moving. Shortcuts are validated and compiled at startup.
+
+Use `@la` to match only the exact label `la`; `la` still searches label prefixes, text and initials. `@la @ka` selects two labels, and `@la button` mixes exact labels with ordinary search terms in input order.

@@ -136,7 +136,7 @@ export const fields = {
 
 for (const [action, label] of [
   ['paste', '搜索粘贴快捷键'], ['copy', '搜索复制选区快捷键'], ['cut', '搜索剪切快捷键'],
-  ['select_all', '搜索全选快捷键'], ['accept', '结束搜索快捷键'], ['cancel', '取消搜索快捷键'],
+  ['select_all', '搜索全选快捷键'], ['accept', '结束搜索快捷键（多个用空格分隔）'], ['cancel', '取消搜索快捷键'],
   ['left', '搜索光标左移'], ['right', '搜索光标右移'], ['home', '搜索光标开头'], ['end', '搜索光标末尾'],
   ['select_left', '搜索向左选择'], ['select_right', '搜索向右选择'], ['select_home', '搜索选择到开头'], ['select_end', '搜索选择到末尾'],
   ['backspace', '搜索退格'], ['delete', '搜索删除'],

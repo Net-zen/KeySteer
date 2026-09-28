@@ -133,6 +133,7 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
             .ui_hint
             .search_edit_keys
             .iter()
+            .flat_map(|(action, keys)| keys.split_whitespace().map(move |key| (action, key)))
             .map(|(action, key)| {
                 (
                     crate::api::KeyChord::parse(key).unwrap_or_else(|error| {

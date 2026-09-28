@@ -43,7 +43,11 @@ impl SearchText {
 
     pub(super) fn matches(&self, query: &str, label: &str) -> bool {
         query.split_whitespace().all(|word| {
-            label.starts_with(word) || self.text.contains(word) || self.initials.contains(word)
+            if let Some(exact_label) = word.strip_prefix('@') {
+                !exact_label.is_empty() && label == exact_label
+            } else {
+                label.starts_with(word) || self.text.contains(word) || self.initials.contains(word)
+            }
         })
     }
 }
@@ -79,6 +83,19 @@ pub(super) fn role_chinese(role: SemanticRole) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn label_query_also_matches_other_targets_text() {
+        let label = SearchText::new("Save", SemanticRole::Button);
+        let semantic = SearchText::new("Language", SemanticRole::Button);
+        assert!(label.matches("la", "la"));
+        assert!(semantic.matches("la", "ka"));
+        assert!(!label.matches("la", "ka"));
+        assert!(label.matches("@la", "la"));
+        assert!(!semantic.matches("@la", "ka"));
+        assert!(!semantic.matches("@la", "lab"));
+        assert!(!semantic.matches("@", "ka"));
+    }
+
     #[test]
     fn matches_simplified_chinese_initials_roles_labels_and_mixed_text() {
         let text = SearchText::new("复制文件 Ctrl+C", SemanticRole::Button);

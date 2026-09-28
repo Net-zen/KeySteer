@@ -25,7 +25,7 @@ pub enum EditAction {
 pub fn default_keys() -> std::collections::BTreeMap<EditAction, String> {
     use EditAction::*;
     [
-        (Accept, "enter"),
+        (Accept, "enter / primary+q"),
         (Cancel, "esc"),
         (Paste, "primary+v"),
         (Copy, "primary+c"),
@@ -207,5 +207,12 @@ mod tests {
             crate::config::Config::parse("[ui_hint.search_edit_keys]\npaste = 'primary+1'")
                 .unwrap();
         assert!(invalid.validate().is_err());
+        for value in ["enter primary+1", "enter enter", "enter primary+v"] {
+            let invalid = crate::config::Config::parse(&format!(
+                "[ui_hint.search_edit_keys]\naccept = '{value}'"
+            ))
+            .unwrap();
+            assert!(invalid.validate().is_err(), "{value}");
+        }
     }
 }

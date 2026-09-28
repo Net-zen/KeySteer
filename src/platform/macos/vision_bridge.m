@@ -273,7 +273,7 @@ NmkVisionResult *NmkDetectVisionElements(
             result->gray = calloc(width, height);
             CGColorSpaceRef space = CGColorSpaceCreateDeviceGray();
             CGContextRef context = result->gray != NULL && space != NULL
-                ? CGBitmapContextCreate(result->gray, width, height, 8, width, space, kCGImageAlphaNone)
+                ? CGBitmapContextCreate(result->gray, width, height, 8, width, space, (CGBitmapInfo)kCGImageAlphaNone)
                 : NULL;
             if (space != NULL) CGColorSpaceRelease(space);
             if (context == NULL) {

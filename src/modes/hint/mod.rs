@@ -287,6 +287,8 @@ impl HintMode {
                     &self.alphabet,
                     self.config.label_direction,
                 );
+                self.session.label_plan_count = self.session.hints.len();
+                self.session.next_label_index = self.session.hints.len();
             }
             std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
         }
@@ -436,7 +438,9 @@ impl HintMode {
                     {
                         self.session.search_seen[hint.value] = true;
                         if let Some(previous) = self.session.search_matches.get_mut(matched) {
-                            matches_changed |= previous.value != hint.value;
+                            matches_changed |= previous.value != hint.value
+                                || previous.label != hint.label
+                                || previous.bounds != hint.bounds;
                             previous.clone_from(hint);
                         } else {
                             self.session.search_matches.push(hint.clone());
@@ -475,8 +479,10 @@ impl HintMode {
             self.session.hints.clear();
             self.session.status = Some("Cannot assign Hint labels — check hint_characters".into());
         }
-        self.session.label_plan_count = self.session.hints.len();
-        self.session.next_label_index = self.session.hints.len();
+        if query.is_none() {
+            self.session.label_plan_count = self.session.hints.len();
+            self.session.next_label_index = self.session.hints.len();
+        }
         self.session.pending_relabel = false;
         if !self.session.scanning {
             self.session.release_scan_index();
@@ -1087,10 +1093,10 @@ impl Mode for HintMode {
                     self.release_search();
                     self.refresh_overlap_plan(ctx);
                     let mut commands = CommandBatch::one(Command::CloseTextPrompt);
-                    commands.extend(match selected {
-                        Some(index) => self.select(index),
-                        None => self.redraw(ctx),
-                    });
+                    if let Some(index) = selected {
+                        commands.push(Command::warp_to(self.session.scanned[index].rect.center()));
+                    }
+                    commands.extend(self.redraw(ctx));
                     commands
                 } else {
                     std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
@@ -1332,16 +1338,112 @@ mod tests {
         );
         assert!(matches!(mode.input, Input::Search(_)));
         let selected = press(&mut mode, &env, "enter");
-        assert!(selected.iter().any(|c| matches!(
-            c,
-            Command::FinishMode {
-                cause: FinishCause::Selection
-            }
-        )));
-        assert_eq!(mode.session.selected, Some(0));
+        assert!(
+            selected
+                .iter()
+                .any(|c| matches!(c, Command::WarpPointer { .. }))
+        );
+        assert!(
+            !selected
+                .iter()
+                .any(|c| matches!(c, Command::FinishMode { .. }))
+        );
+        assert!(!mode.session.finished);
+        assert_eq!(mode.session.hints.len(), 2);
         mode.handle(&ModeEvent::Deactivated, &env.ctx());
         assert_eq!(mode.session.search_text.capacity(), 0);
         assert_eq!(mode.session.search_hints.capacity(), 0);
+    }
+
+    #[test]
+    fn explicit_label_search_excludes_semantic_matches_and_unions_in_order() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(
+            &mut mode,
+            &env,
+            vec![target("Save", 0.0), target("Language", 200.0)],
+        );
+        // Reproduce an existing label colliding with another target's text.
+        mode.session.hints[0].label =
+            crate::api::hint::HintCode(smallvec::SmallVec::from_slice(b"la"));
+        mode.session.hints[1].label =
+            crate::api::hint::HintCode(smallvec::SmallVec::from_slice(b"ka"));
+        press(&mut mode, &env, "/");
+        mode.handle(&ModeEvent::TextChanged("la".into()), &env.ctx());
+        assert_eq!(mode.session.hints.len(), 2);
+        let out = mode.handle(&ModeEvent::TextChanged("@la".into()), &env.ctx());
+        assert_eq!(mode.session.hints.len(), 1);
+        assert_eq!(mode.session.hints[0].label.as_str(), "la");
+        assert_eq!(mode.overlap_plan.len(), 1);
+        assert_eq!(
+            scene_of(&out)
+                .labels
+                .iter()
+                .filter(|l| l.z_index < 10_000)
+                .count(),
+            1
+        );
+        mode.handle(
+            &ModeEvent::TextChanged("@ka @la language".into()),
+            &env.ctx(),
+        );
+        assert_eq!(
+            mode.session
+                .search_matches
+                .iter()
+                .map(|h| h.label.as_str())
+                .collect::<Vec<_>>(),
+            ["ka", "la"]
+        );
+    }
+
+    #[test]
+    fn filtered_search_preserves_full_label_plan_when_scan_updates_arrive() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(
+            &mut mode,
+            &env,
+            vec![
+                target("Unique", 0.0),
+                target("Other", 200.0),
+                target("Third", 400.0),
+            ],
+        );
+        let original = mode.session.hints.clone();
+        let plan = (mode.session.label_plan_count, mode.session.next_label_index);
+        press(&mut mode, &env, "/");
+        mode.handle(&ModeEvent::TextChanged("unique".into()), &env.ctx());
+        assert_eq!(mode.session.hints.len(), 1);
+        assert_eq!(
+            (mode.session.label_plan_count, mode.session.next_label_index),
+            plan
+        );
+        let out = deliver(&mut mode, &env, vec![target("Fourth", 600.0)]);
+        for old in original {
+            let current = mode
+                .session
+                .search_hints
+                .iter()
+                .find(|h| h.bounds == old.bounds)
+                .unwrap();
+            assert_eq!(current.label, old.label);
+        }
+        assert_eq!(mode.session.hints.len(), 1);
+        assert_eq!(mode.overlap_plan.len(), 1);
+        let visible: Vec<_> = scene_of(&out)
+            .labels
+            .iter()
+            .filter(|l| l.z_index < 10_000)
+            .collect();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(
+            visible[0].text.as_str(),
+            mode.session.hints[0].label.as_str()
+        );
     }
 
     #[test]

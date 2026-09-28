@@ -57,10 +57,11 @@ fn hint_overlay_search_routes_editing_copy_and_stale_results_by_owner() {
     engine.handle_backend_event(BackendEvent::TextPromptResult { id: old_id, value: Ok(Some("stale".into())) }, &mut backend).unwrap();
     assert_eq!(engine.scheduler.text_prompt.as_ref().unwrap().1.id, id);
     engine.handle_backend_event(BackendEvent::TextPromptResult { id, value: Ok(Some("fzwb".into())) }, &mut backend).unwrap();
-    assert_eq!(engine.active_mode(), &ModeId::normal());
+    assert_eq!(engine.active_mode(), &ModeId::ui_hint());
     assert_eq!(log.lock().unwrap().warps.last(), Some(&Point::new(35.0, 25.0)));
     assert!(engine.scheduler.text_prompt.is_none());
-    assert!(log.lock().unwrap().released_text_prompts >= 2);
+    assert!(!log.lock().unwrap().text_capture);
+    assert!(log.lock().unwrap().released_text_prompts >= 1);
 }
 
 #[test]
@@ -623,5 +624,30 @@ fn search_completion_error_and_capture_loss_retire_input_before_owner_is_dropped
         engine.handle_backend_event(BackendEvent::InputCaptureLost("test capture lost".into()), &mut backend).unwrap();
         assert!(!log.lock().unwrap().text_capture);
         assert!(engine.scheduler.text_prompt.is_none());
+    }
+}
+
+#[test]
+fn search_accept_alternatives_close_capture_and_keep_uihint() {
+    for binding in ["enter", "/", "primary+q", "f9"] {
+        let mut config = Config::default();
+        if binding == "f9" {
+            config.ui_hint.search_edit_keys.insert(crate::api::text_edit::EditAction::Accept, "f9".into());
+        }
+        let primary = if cfg!(target_os = "macos") { "left_win" } else { "left_ctrl" };
+        let mut engine = text_input_engine(config);
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
+        for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        assert!(engine.scheduler.text_prompt.is_some());
+        let modified = binding == "primary+q";
+        if modified { engine.handle_backend_event(key_down(primary), &mut backend).unwrap(); }
+        let key = if modified { "q" } else { binding };
+        for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        if modified { engine.handle_backend_event(key_up(primary), &mut backend).unwrap(); }
+        assert!(engine.scheduler.text_prompt.is_none(), "{binding}");
+        assert!(!log.lock().unwrap().text_capture, "{binding}");
+        assert_eq!(engine.active_mode(), &ModeId::ui_hint());
     }
 }

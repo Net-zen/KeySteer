@@ -4,7 +4,7 @@ export type StudioLocale = 'zh' | 'en'
 export const englishMessages: Record<string, string> = {
   '搜索粘贴快捷键': 'Search paste shortcut', '搜索复制选区快捷键': 'Search copy selection shortcut',
   '搜索剪切快捷键': 'Search cut shortcut', '搜索全选快捷键': 'Search select all shortcut',
-  '结束搜索快捷键': 'Submit search shortcut', '取消搜索快捷键': 'Cancel search shortcut',
+  '结束搜索快捷键（多个用空格分隔）': 'Finish search shortcuts (space-separated)', '取消搜索快捷键': 'Cancel search shortcut',
   '搜索光标左移': 'Search cursor left', '搜索光标右移': 'Search cursor right',
   '搜索光标开头': 'Search cursor home', '搜索光标末尾': 'Search cursor end',
   '搜索向左选择': 'Search select left', '搜索向右选择': 'Search select right',

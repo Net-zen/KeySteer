@@ -10,8 +10,8 @@
 | --- | --- |
 | 找目录、启动入口 | [项目地图](01-project-map.md) |
 | 输入、会话清理、事件、命令执行 | [运行时与 API](02-runtime-and-api.md) |
-| 配置、按键解析、持久化 | [配置](03-configuration.md) |
-| 模式、插件、完成与返回 | [模式生命周期](04-modes-and-lifecycle.md) |
+| 配置、快捷键预编译、按键解析、持久化 | [配置](03-configuration.md) |
+| 模式、搜索语法与退出、插件、完成与返回 | [模式生命周期](04-modes-and-lifecycle.md) |
 | UIA / AX / OCR 来源与融合、范围优先级、自动激活、扫描与取消 | [UI 扫描](05-ui-scanning.md) |
 | 原生能力、线程、资源及 共享搜索输入与原生备注 | [平台后端](06-platform-backends.md) |
 | 绘制、共享图层匹配、文字定位、响应与内存 | [性能](07-rendering-and-performance.md) |
