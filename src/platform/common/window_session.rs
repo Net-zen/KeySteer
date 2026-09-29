@@ -530,6 +530,7 @@ impl Session {
         result: &mut WindowResult,
     ) -> Result<Vec<(Snapshot, Rect)>, String> {
         let WindowOperation::ApplyLayout {
+            best_effort,
             additional_screens,
             transaction,
             revision,
@@ -575,9 +576,26 @@ impl Session {
                 }
                 let Ok(before) = access.snapshot(id, screens) else {
                     result.skipped += 1;
+                    if best_effort
+                        && let Some(WindowEditResult::Applied {
+                            skipped_windows, ..
+                        }) = result.edit.as_deref_mut()
+                    {
+                        skipped_windows.push(id);
+                    }
                     continue;
                 };
                 if !before.info.resizable || before.info.fullscreen {
+                    if best_effort {
+                        result.skipped += 1;
+                        if let Some(WindowEditResult::Applied {
+                            skipped_windows, ..
+                        }) = result.edit.as_deref_mut()
+                        {
+                            skipped_windows.push(id);
+                        }
+                        continue;
+                    }
                     return Err("Window does not support this layout".into());
                 }
                 if ![rect.x, rect.y, rect.width, rect.height]
@@ -952,6 +970,7 @@ impl Session {
                 });
             }
             WindowOperation::ApplyLayout {
+                best_effort,
                 additional_screens,
                 transaction,
                 revision,
@@ -961,6 +980,7 @@ impl Session {
                 strict,
             } => {
                 result.edit = Some(Box::new(WindowEditResult::Applied {
+                    skipped_windows: Vec::new(),
                     transaction,
                     revision,
                     accepted: false,
@@ -969,6 +989,7 @@ impl Session {
                 let batch = self.prepare_layout(
                     access,
                     WindowOperation::ApplyLayout {
+                        best_effort,
                         additional_screens,
                         transaction,
                         revision,
@@ -982,6 +1003,12 @@ impl Session {
                     result,
                 )?;
                 let edit = self.edit.as_mut().ok_or("Window edit expired")?;
+                let mut skipped_windows = match result.edit.as_deref_mut() {
+                    Some(WindowEditResult::Applied {
+                        skipped_windows, ..
+                    }) => std::mem::take(skipped_windows),
+                    _ => Vec::new(),
+                };
                 let mut failure = None;
                 let mut restore_failed = false;
                 let mut observed_minimum = None;
@@ -1031,10 +1058,24 @@ impl Session {
                                     },
                                 ),
                             ));
+                            if best_effort {
+                                skipped_windows.push(after.id);
+                                result.skipped += 1;
+                                actual.push(after);
+                                continue;
+                            }
                             failure = Some("Application rejected the requested size; restored the previous layout".into());
                             break;
                         }
                         Err(error) => {
+                            if best_effort {
+                                skipped_windows.push(before.info.id);
+                                result.skipped += 1;
+                                if let Ok(after) = access.snapshot(before.info.id, screens) {
+                                    actual.push(after.info);
+                                }
+                                continue;
+                            }
                             failure = Some(error);
                             break;
                         }
@@ -1089,11 +1130,18 @@ impl Session {
                         .filter_map(|s| access.snapshot(s.info.id, screens).ok().map(|s| s.info))
                         .collect();
                 }
+                if !skipped_windows.is_empty() && failure.is_none() {
+                    result.message = Some(format!(
+                        "Layout applied; skipped {} unsupported or unconfirmed window(s)",
+                        skipped_windows.len()
+                    ));
+                }
                 result.windows = Some(actual);
                 result.edit = Some(Box::new(WindowEditResult::Applied {
                     transaction,
                     revision,
                     accepted: failure.is_none(),
+                    skipped_windows,
                     minimums: if failure.is_some() {
                         edit.minimums.clone()
                     } else {
@@ -2109,6 +2157,7 @@ mod tests {
             let result = execute(
                 &mut access,
                 WindowOperation::ApplyLayout {
+                    best_effort: false,
                     transaction: 1,
                     revision: 1,
                     screen: 0,
@@ -2246,6 +2295,7 @@ mod tests {
 
     fn batch(revision: u64, width: f64) -> WindowOperation {
         WindowOperation::ApplyLayout {
+            best_effort: false,
             additional_screens: Vec::new(),
             transaction: 10,
             revision,
@@ -2368,6 +2418,7 @@ mod tests {
         );
         assert_eq!(access.writes.len(), writes);
         let operation = WindowOperation::ApplyLayout {
+            best_effort: false,
             additional_screens: Vec::new(),
             transaction: 10,
             revision: 8,

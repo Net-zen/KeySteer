@@ -1502,6 +1502,7 @@ fn editor_layout_history_and_initial_restore_preserve_membership() {
     let applied = session.execute(
         &mut access,
         WindowOperation::ApplyLayout {
+            best_effort: false,
             additional_screens: Vec::new(),
             transaction: 9,
             revision: 1,

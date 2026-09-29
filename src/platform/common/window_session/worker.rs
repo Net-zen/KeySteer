@@ -470,6 +470,7 @@ impl WindowWorker {
                                 } = request.operation
                                 {
                                     result.edit = Some(Box::new(WindowEditResult::Applied {
+                                        skipped_windows: Vec::new(),
                                         transaction,
                                         revision,
                                         accepted: false,

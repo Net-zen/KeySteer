@@ -370,6 +370,8 @@ pub enum WindowOperation {
     },
     /// Latest absolute geometry, in normalized screen work-area coordinates.
     ApplyLayout {
+        /// Keep successful placements when individual applications reject tiling.
+        best_effort: bool,
         additional_screens: Vec<WindowScreenLayout>,
         transaction: u64,
         revision: u64,
@@ -483,6 +485,7 @@ pub enum WindowEditResult {
         full_inventory: bool,
     },
     Applied {
+        skipped_windows: Vec<WindowId>,
         transaction: u64,
         revision: u64,
         accepted: bool,

@@ -1569,6 +1569,7 @@ mod tests {
         let applied = session.execute(
             &mut native,
             WindowOperation::ApplyLayout {
+                best_effort: false,
                 additional_screens: vec![],
                 transaction: 2,
                 revision: 1,

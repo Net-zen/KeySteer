@@ -7,9 +7,11 @@ outline: false
 
 ## 0.10.29
 
-- 修复 macOS 切换输入法时，保存布局备注输入框可能被意外关闭的问题。
+- 改善 Windows 和 macOS 输入超时后的按键状态恢复，并修复 macOS 切换输入法时保存布局备注被意外关闭的问题。
+- 窗口自动平铺遇到无法调整的窗口时会跳过该窗口，继续完成其他窗口布局。
 
-- Fixed layout-note editing being closed unexpectedly when switching input methods on macOS.
+- Improved key-state recovery after input timeouts on Windows and macOS, and fixed layout-note editing during macOS input-method switching.
+- Automatic window tiling now skips windows that cannot be adjusted and continues arranging the remaining windows.
 
 ## 0.10.28
 

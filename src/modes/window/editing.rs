@@ -99,6 +99,7 @@ impl WindowSession {
             edit.in_flight = Some((edit.revision, edit.model.clone()));
             edit.dirty = false;
             let operation = WindowOperation::ApplyLayout {
+                best_effort: matches!(edit.model, EditModel::Tree(_)),
                 additional_screens: edit
                     .additional_trees
                     .iter()
@@ -743,6 +744,7 @@ impl WindowSession {
                 self.flush_edit(out);
             }
             WindowEditResult::Applied {
+                skipped_windows,
                 transaction,
                 revision,
                 accepted,
@@ -761,6 +763,33 @@ impl WindowSession {
                 }
                 if *accepted {
                     edit.accepted = model;
+                    if !skipped_windows.is_empty() {
+                        let prune = |model: &mut EditModel| {
+                            if let EditModel::Tree(tree) = model {
+                                let live: Vec<_> = tree
+                                    .slots()
+                                    .into_iter()
+                                    .filter_map(|slot| slot.window)
+                                    .filter(|id| !skipped_windows.contains(id))
+                                    .collect();
+                                tree.retain_windows(&live);
+                            }
+                        };
+                        prune(&mut edit.accepted);
+                        prune(&mut edit.model);
+                        for model in edit.history.iter_mut().chain(edit.redo.iter_mut()) {
+                            prune(model);
+                        }
+                        for tree in edit.additional_trees.values_mut() {
+                            let live: Vec<_> = tree
+                                .slots()
+                                .into_iter()
+                                .filter_map(|slot| slot.window)
+                                .filter(|id| !skipped_windows.contains(id))
+                                .collect();
+                            tree.retain_windows(&live);
+                        }
+                    }
                     self.trees.append(&mut edit.additional_trees);
                 } else {
                     edit.additional_trees.clear();

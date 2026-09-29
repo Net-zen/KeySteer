@@ -175,7 +175,7 @@ impl WindowSession {
         if let Some(feedback) = &result.edit {
             changed |= !matches!(
                 feedback.as_ref(),
-                WindowEditResult::Applied { accepted: true, .. }
+                WindowEditResult::Applied { accepted: true, skipped_windows, .. } if skipped_windows.is_empty()
             );
             self.edit_result(feedback, ctx, &mut out);
         }

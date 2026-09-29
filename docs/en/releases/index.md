@@ -7,7 +7,8 @@ outline: false
 
 ## 0.10.29
 
-- Fixed layout-note editing being closed unexpectedly when switching input methods on macOS.
+- Improved key-state recovery after input timeouts on Windows and macOS, and fixed layout-note editing during macOS input-method switching.
+- Automatic window tiling now skips windows that cannot be adjusted and continues arranging the remaining windows.
 
 ## 0.10.28
 

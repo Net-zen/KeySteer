@@ -715,7 +715,7 @@ fn acknowledge_window_edit_with_acceptance(engine: &mut Engine, backend: &mut Fa
                 if let Some((_, rect)) = placements.iter().find(|(id, _)| *id == target.id) {
                     target.bounds = crate::api::window_layout::placed_rect(engine.screens[0].work_area, *rect, gap);
                 }
-                E::Applied { transaction, revision, accepted, minimums: Vec::new() }
+                E::Applied { skipped_windows: Vec::new(), transaction, revision, accepted, minimums: Vec::new() }
             }
             O::EndEdit { transaction, commit } => E::Ended { transaction, committed: commit },
             _ => break,

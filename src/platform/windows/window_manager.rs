@@ -1795,6 +1795,7 @@ mod tests {
             let applied = session.execute(
                 &mut access,
                 O::ApplyLayout {
+                    best_effort: false,
                     additional_screens: Vec::new(),
                     transaction: 91,
                     revision: 1,
@@ -1897,6 +1898,7 @@ mod tests {
                 let result = session.execute(
                     &mut access,
                     O::ApplyLayout {
+                        best_effort: false,
                         additional_screens: Vec::new(),
                         transaction: 10,
                         revision,
@@ -1945,6 +1947,7 @@ mod tests {
             let adjusted = session.execute(
                 &mut access,
                 O::ApplyLayout {
+                    best_effort: false,
                     additional_screens: Vec::new(),
                     transaction: 11,
                     revision: 1,
@@ -2232,6 +2235,7 @@ mod tests {
         let result = session.execute(
             &mut grouped,
             O::ApplyLayout {
+                best_effort: false,
                 additional_screens: Vec::new(),
                 transaction: 1,
                 revision: 1,
@@ -2808,6 +2812,7 @@ mod tests {
         let result = session.execute_deferred(
             &mut access,
             O::ApplyLayout {
+                best_effort: false,
                 transaction: 1,
                 revision: 1,
                 screen: entry.info.screen,

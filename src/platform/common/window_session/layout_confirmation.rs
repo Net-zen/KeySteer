@@ -42,6 +42,8 @@ pub(super) struct PendingLayout {
     watched: Vec<WindowId>,
     phase: Phase,
     strict: bool,
+    best_effort: bool,
+    skipped_windows: Vec<WindowId>,
     next_order: usize,
     seen: std::collections::BTreeSet<WindowId>,
     failure: Option<String>,
@@ -70,6 +72,13 @@ impl PendingLayout {
         request: &mut WindowRequest,
         screens: &Arc<[Screen]>,
     ) -> Result<Option<Self>, String> {
+        let best_effort = matches!(
+            request.operation,
+            WindowOperation::ApplyLayout {
+                best_effort: true,
+                ..
+            }
+        );
         let (transaction, strict, ending) = match request.operation {
             WindowOperation::ApplyLayout {
                 transaction,
@@ -156,6 +165,8 @@ impl PendingLayout {
                 Phase::Applying
             },
             strict,
+            best_effort,
+            skipped_windows: Vec::new(),
             next_order: 0,
             seen: Default::default(),
             failure: None,
@@ -215,9 +226,17 @@ impl PendingLayout {
                 }
                 let Ok(observed) = access.snapshot(id, &self.screens) else {
                     self.result.skipped += 1;
+                    if self.best_effort {
+                        self.skipped_windows.push(id);
+                    }
                     return Ok(());
                 };
                 if !observed.info.resizable || observed.info.fullscreen {
+                    if self.best_effort {
+                        self.skipped_windows.push(id);
+                        self.result.skipped += 1;
+                        return Ok(());
+                    }
                     return Err("Window does not support this layout".into());
                 }
                 let mut desired = crate::api::window_layout::placed_rect(
@@ -323,9 +342,6 @@ impl PendingLayout {
             {
                 frame.failure = Some(error);
             }
-            if let Some(error) = &frame.failure {
-                self.failure.get_or_insert_with(|| error.clone());
-            }
             if applying && self.strict && !rect_matches(frame.observed.info.bounds, frame.desired) {
                 let after = &frame.observed.info;
                 if !after.maximized {
@@ -350,9 +366,16 @@ impl PendingLayout {
                         ),
                     ));
                 }
-                self.failure.get_or_insert_with(|| {
+                frame.failure.get_or_insert_with(|| {
                     "Application rejected the requested size; restored the previous layout".into()
                 });
+            }
+            if let Some(error) = &frame.failure {
+                if applying && self.best_effort {
+                    self.skipped_windows.push(frame.before.info.id);
+                } else {
+                    self.failure.get_or_insert_with(|| error.clone());
+                }
             }
             self.completed.push(Completed {
                 order: frame.transaction_order,
@@ -450,7 +473,9 @@ impl PendingLayout {
         self.result.changed = if self.failure.is_none() {
             self.completed
                 .iter()
-                .filter(|frame| !same_placement(frame.before, &frame.observed))
+                .filter(|frame| {
+                    frame.failure.is_none() && !same_placement(frame.before, &frame.observed)
+                })
                 .count()
         } else {
             0
@@ -491,6 +516,7 @@ impl PendingLayout {
                 unreachable!()
             };
             WindowEditResult::Applied {
+                skipped_windows: std::mem::take(&mut self.skipped_windows),
                 transaction,
                 revision,
                 accepted: self.failure.is_none(),
@@ -507,7 +533,15 @@ impl PendingLayout {
         if self.result.changed > 0 {
             session.redo.clear();
         }
-        self.result.message = self.failure.take();
+        self.result.message = self.failure.take().or_else(|| {
+            (self.result.skipped > 0 && self.best_effort).then(|| {
+                format!(
+                    "Layout applied; skipped {} unsupported or unconfirmed window(s)",
+                    self.result.skipped
+                )
+            })
+        });
+
         let result = std::mem::replace(&mut self.result, Session::result_for(&self.request));
         Some(session.complete_result(access, result, &self.screens))
     }

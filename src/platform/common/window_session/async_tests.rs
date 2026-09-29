@@ -16,9 +16,65 @@ fn acknowledge(access: &mut Fake) {
 
 fn layout_request(count: u64) -> WindowRequest {
     WindowRequest { session: 1, id: 2, scope: None,
-        operation: WindowOperation::ApplyLayout { transaction: 7, revision: 1, screen: 0,
+        operation: WindowOperation::ApplyLayout { best_effort: false, transaction: 7, revision: 1, screen: 0,
             placements: (1..=count).map(|id| (WindowId(id), Rect::new(0.1, 0.1, 0.6, 0.6))).collect(),
             additional_screens: Vec::new(), gap: 0.0, strict: true } }
+}
+
+#[test]
+fn tolerant_layout_keeps_successes_and_continues_past_failed_window() {
+    for asynchronous in [false, true] {
+        let mut access = Fake::new(20);
+        let mut session = Session::default();
+        begin_async_edit(&mut session, &mut access);
+        access.deferred = asynchronous;
+        access.reject = Some(WindowId(2));
+        let mut request = layout_request(20);
+        if let WindowOperation::ApplyLayout { best_effort, .. } = &mut request.operation { *best_effort = true; }
+        let result = if asynchronous {
+            let mut pending = layout_confirmation::PendingLayout::begin(&mut session, &mut access, &request, &screens().into()).unwrap().unwrap();
+            finish_layout(&mut pending, &mut session, &mut access, false)
+        } else {
+            run(&mut session, &mut access, request.operation)
+        };
+        assert_eq!(result.changed, 19, "{:?}", result.message);
+        assert_eq!(result.skipped, 1);
+        assert!(matches!(result.edit.as_deref(), Some(WindowEditResult::Applied { accepted: true, skipped_windows, .. }) if skipped_windows == &[WindowId(2)]));
+        assert!(session.edit.is_some());
+        let desired = crate::api::window_layout::placed_rect(screens()[0].work_area, Rect::new(0.1, 0.1, 0.6, 0.6), 0.0);
+        assert!(rect_matches(access.windows[&WindowId(20)].info.bounds, desired));
+    }
+}
+
+#[test]
+fn tolerant_layout_cancellation_still_restores_all_attempts() {
+    let mut access = Fake::new(3);
+    let original = access.windows.clone();
+    let mut session = Session::default();
+    begin_async_edit(&mut session, &mut access);
+    let mut request = layout_request(3);
+    if let WindowOperation::ApplyLayout { best_effort, .. } = &mut request.operation { *best_effort = true; }
+    let mut pending = layout_confirmation::PendingLayout::begin(&mut session, &mut access, &request, &screens().into()).unwrap().unwrap();
+    pending.advance(&mut session, &mut access, false);
+    let result = finish_layout(&mut pending, &mut session, &mut access, true);
+    assert!(matches!(result.edit.as_deref(), Some(WindowEditResult::Applied { accepted: false, .. })));
+    for (id, snapshot) in original { assert!(same_placement(&snapshot, &access.windows[&id])); }
+}
+
+#[test]
+fn tolerant_layout_skips_newly_fixed_windows_before_submission() {
+    let mut access = Fake::new(3);
+    let mut session = Session::default();
+    begin_async_edit(&mut session, &mut access);
+    access.windows.get_mut(&WindowId(2)).unwrap().info.resizable = false;
+    let mut request = layout_request(3);
+    if let WindowOperation::ApplyLayout { best_effort, .. } = &mut request.operation { *best_effort = true; }
+    let mut pending = layout_confirmation::PendingLayout::begin(&mut session, &mut access, &request, &screens().into()).unwrap().unwrap();
+    pending.advance(&mut session, &mut access, false);
+    assert!(!access.submitted.contains_key(&WindowId(2)));
+    let result = finish_layout(&mut pending, &mut session, &mut access, false);
+    assert_eq!(result.changed, 2);
+    assert!(matches!(result.edit.as_deref(), Some(WindowEditResult::Applied { accepted: true, skipped_windows, .. }) if skipped_windows == &[WindowId(2)]));
 }
 
 fn begin_async_edit(session: &mut Session, access: &mut Fake) {
