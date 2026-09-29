@@ -453,9 +453,14 @@ impl WindowSession {
                     self.swap_source = Some(representative);
                     self.request(WindowOperation::Select(id), out);
                     return;
+                } else if edit.minimums.contains_key(&representative) {
+                    // A floating window from this transaction may be assigned again.
+                    self.swap_source = Some(representative);
+                    self.status = Some("Choose a region for this window".into());
+                    self.request(WindowOperation::Select(id), out);
+                    return;
                 } else {
-                    self.status =
-                        Some("Window is outside this tree; layout membership is unchanged".into());
+                    self.status = Some("Window is outside this edit transaction".into());
                     self.request(WindowOperation::Select(id), out);
                     return;
                 }
@@ -744,7 +749,7 @@ impl WindowSession {
                 self.flush_edit(out);
             }
             WindowEditResult::Applied {
-                skipped_windows,
+                skipped_windows: _,
                 transaction,
                 revision,
                 accepted,
@@ -761,35 +766,13 @@ impl WindowSession {
                     edit.in_flight = Some((pending, model));
                     return;
                 }
+                for &(id, minimum) in minimums {
+                    edit.minimums.insert(id, minimum);
+                }
                 if *accepted {
                     edit.accepted = model;
-                    if !skipped_windows.is_empty() {
-                        let prune = |model: &mut EditModel| {
-                            if let EditModel::Tree(tree) = model {
-                                let live: Vec<_> = tree
-                                    .slots()
-                                    .into_iter()
-                                    .filter_map(|slot| slot.window)
-                                    .filter(|id| !skipped_windows.contains(id))
-                                    .collect();
-                                tree.retain_windows(&live);
-                            }
-                        };
-                        prune(&mut edit.accepted);
-                        prune(&mut edit.model);
-                        for model in edit.history.iter_mut().chain(edit.redo.iter_mut()) {
-                            prune(model);
-                        }
-                        for tree in edit.additional_trees.values_mut() {
-                            let live: Vec<_> = tree
-                                .slots()
-                                .into_iter()
-                                .filter_map(|slot| slot.window)
-                                .filter(|id| !skipped_windows.contains(id))
-                                .collect();
-                            tree.retain_windows(&live);
-                        }
-                    }
+                    // A rejected rectangle is not a rejected membership. Keep the
+                    // assignment (including undo history) so later region edits retry it.
                     self.trees.append(&mut edit.additional_trees);
                 } else {
                     edit.additional_trees.clear();
@@ -800,9 +783,6 @@ impl WindowSession {
                     self.status.get_or_insert_with(|| {
                         "Layout could not be applied; choose a layout to retry".into()
                     });
-                    if !minimums.is_empty() {
-                        edit.minimums = minimums.iter().copied().collect();
-                    }
                     self.numbered_slots = 0;
                 }
                 self.rebuild_numbers();

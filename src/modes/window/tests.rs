@@ -503,3 +503,97 @@ fn divider_hold_uses_elapsed_pixels_and_one_undo_checkpoint() {
     );
     assert!(out.iter().any(|c| matches!(c, Command::WindowRequest(r) if matches!(r.operation, WindowOperation::EndEdit { commit: false, .. }))));
 }
+
+#[test]
+fn rejected_tree_rectangles_keep_membership_and_allow_reassignment() {
+    let config = crate::config::Config::default();
+    let palette = config.palette(Appearance::Dark);
+    let screens = [crate::api::Screen {
+        bounds: Rect::new(0.0, 0.0, 1200.0, 900.0),
+        work_area: Rect::new(0.0, 0.0, 1200.0, 900.0),
+        scale: 1.0,
+        is_primary: true,
+        name: None,
+    }];
+    let ctx = HostContext {
+        presenter: &crate::presentation::COMPOSER,
+        screens: &screens,
+        cursor: Point::default(),
+        focused_app: None,
+        palette: &palette,
+    };
+    let mut mode = crate::app::mode_catalog::window(&config);
+    let window = WindowInfo {
+        id: WindowId(1),
+        app: "test".into(),
+        title: "test".into(),
+        bounds: screens[0].work_area,
+        screen: 0,
+        resizable: true,
+        maximized: false,
+        minimized: false,
+        fullscreen: false,
+    };
+    mode.inventory.insert(window.id, window.clone());
+    mode.target = Some(window.clone());
+    mode.rebuild_numbers();
+    let mut tree = LayoutTree::import(&[window], None, screens[0].work_area);
+    tree.split(crate::api::Direction::Right);
+    let model = EditModel::Tree(tree.clone());
+    mode.edit = Some(LiveEdit {
+        additional_trees: BTreeMap::new(),
+        transaction: 1,
+        screen: 0,
+        model: model.clone(),
+        accepted: model.clone(),
+        history: vec![model.clone()],
+        redo: vec![],
+        divider_gesture: false,
+        entry_layout: false,
+        minimums: BTreeMap::new(),
+        gap_scale: 1.0,
+        ready: true,
+        revision: 1,
+        in_flight: Some((1, model.clone())),
+        dirty: false,
+        finishing: None,
+        ending: false,
+        deferred: vec![],
+    });
+    let mut out = CommandBatch::default();
+    mode.edit_result(
+        &WindowEditResult::Applied {
+            transaction: 1,
+            revision: 1,
+            accepted: true,
+            skipped_windows: vec![WindowId(1)],
+            minimums: vec![(WindowId(1), Point::new(650.0, 200.0))],
+        },
+        &ctx,
+        &mut out,
+    );
+    let edit = mode.edit.as_ref().unwrap();
+    assert_eq!(edit.model, model);
+    assert_eq!(edit.history, vec![model]);
+    assert_eq!(edit.minimums[&WindowId(1)], Point::new(650.0, 200.0));
+    assert!(!out.iter().any(|c| matches!(c, Command::WindowRequest(r) if matches!(r.operation, WindowOperation::ApplyLayout { .. }))));
+    // Also exercise a window outside the tree but still in the edit transaction.
+    if let EditModel::Tree(tree) = &mut mode.edit.as_mut().unwrap().model {
+        tree.retain_windows(&[]);
+    }
+    mode.choose_number(false, mode.numbers[&WindowId(1)], &ctx, &mut out);
+    assert_eq!(mode.swap_source, Some(WindowId(1)));
+    let destination = tree.slots()[1].id;
+    mode.choose_number(true, destination, &ctx, &mut out);
+    let EditModel::Tree(tree) = &mode.edit.as_ref().unwrap().model else {
+        panic!()
+    };
+    let slot = tree
+        .slots()
+        .into_iter()
+        .find(|s| s.id == destination)
+        .unwrap();
+    assert_eq!(slot.window, Some(WindowId(1)));
+    assert!(slot.rect.width * screens[0].work_area.width >= 650.0);
+    assert!(out.iter().any(|c| matches!(c, Command::WindowRequest(r) if matches!(r.operation, WindowOperation::ApplyLayout { .. }))));
+}

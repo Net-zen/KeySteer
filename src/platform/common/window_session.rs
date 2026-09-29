@@ -1011,7 +1011,7 @@ impl Session {
                 };
                 let mut failure = None;
                 let mut restore_failed = false;
-                let mut observed_minimum = None;
+                let mut observed_minimums = Vec::new();
                 let mut actual = Vec::with_capacity(batch.len());
                 let mut attempted = 0;
                 for (index, (before, requested)) in batch.iter().enumerate() {
@@ -1037,27 +1037,30 @@ impl Session {
                         Ok(after) => {
                             // An unchanged or still-maximized frame is not evidence
                             // of an application's minimum size (restore may lag).
-                            observed_minimum = (!after.maximized).then_some((
-                                after.id,
-                                Point::new(
-                                    if after.bounds.width > requested.width + 1.5
-                                        && (after.bounds.width - before.info.bounds.width).abs()
-                                            > 1.5
-                                    {
-                                        after.bounds.width
-                                    } else {
-                                        0.0
-                                    },
-                                    if after.bounds.height > requested.height + 1.5
-                                        && (after.bounds.height - before.info.bounds.height).abs()
-                                            > 1.5
-                                    {
-                                        after.bounds.height
-                                    } else {
-                                        0.0
-                                    },
-                                ),
-                            ));
+                            if !after.maximized {
+                                observed_minimums.push((
+                                    after.id,
+                                    Point::new(
+                                        if after.bounds.width > requested.width + 1.5
+                                            && (after.bounds.width - before.info.bounds.width).abs()
+                                                > 1.5
+                                        {
+                                            after.bounds.width
+                                        } else {
+                                            0.0
+                                        },
+                                        if after.bounds.height > requested.height + 1.5
+                                            && (after.bounds.height - before.info.bounds.height)
+                                                .abs()
+                                                > 1.5
+                                        {
+                                            after.bounds.height
+                                        } else {
+                                            0.0
+                                        },
+                                    ),
+                                ));
+                            }
                             if best_effort {
                                 skipped_windows.push(after.id);
                                 result.skipped += 1;
@@ -1111,24 +1114,28 @@ impl Session {
                         }
                     }
                     result.changed = 0;
-                    if !cancelled() {
-                        for (id, min) in &mut edit.minimums {
-                            let queried = access.minimum_size(*id);
-                            let observed = observed_minimum
-                                .filter(|(window, _)| window == id)
-                                .map_or(Point::new(0.0, 0.0), |(_, min)| min);
-                            *min = Point::new(
-                                queried.x.max(observed.x).max(min.x),
-                                queried.y.max(observed.y).max(min.y),
-                            );
-                            self.minimums.insert(*id, *min);
-                        }
-                    }
                     actual = edit
                         .before
                         .iter()
                         .filter_map(|s| access.snapshot(s.info.id, screens).ok().map(|s| s.info))
                         .collect();
+                }
+                if !cancelled() && (failure.is_some() || !skipped_windows.is_empty()) {
+                    for (id, min) in &mut edit.minimums {
+                        if failure.is_none() && !skipped_windows.contains(id) {
+                            continue;
+                        }
+                        let queried = access.minimum_size(*id);
+                        let observed = observed_minimums
+                            .iter()
+                            .find(|(window, _)| window == id)
+                            .map_or(Point::default(), |(_, min)| *min);
+                        *min = Point::new(
+                            min.x.max(queried.x).max(observed.x),
+                            min.y.max(queried.y).max(observed.y),
+                        );
+                        self.minimums.insert(*id, *min);
+                    }
                 }
                 if !skipped_windows.is_empty() && failure.is_none() {
                     result.message = Some(format!(
@@ -1141,12 +1148,12 @@ impl Session {
                     transaction,
                     revision,
                     accepted: failure.is_none(),
-                    skipped_windows,
-                    minimums: if failure.is_some() {
+                    minimums: if failure.is_some() || !skipped_windows.is_empty() {
                         edit.minimums.clone()
                     } else {
                         Vec::new()
                     },
+                    skipped_windows,
                 }));
                 if restore_failed {
                     self.recover_edit(access);

@@ -453,10 +453,13 @@ impl PendingLayout {
             self.failure = Some("Application rejected restoration; edit ended and entry-layout recovery was attempted".into());
         }
         if let Some(edit) = session.edit.as_mut()
-            && self.failure.is_some()
+            && (self.failure.is_some() || !self.skipped_windows.is_empty())
             && !cancelled()
         {
             for (id, min) in &mut edit.minimums {
+                if self.failure.is_none() && !self.skipped_windows.contains(id) {
+                    continue;
+                }
                 let queried = access.minimum_size(*id);
                 let observed = self
                     .minimums
@@ -516,11 +519,10 @@ impl PendingLayout {
                 unreachable!()
             };
             WindowEditResult::Applied {
-                skipped_windows: std::mem::take(&mut self.skipped_windows),
                 transaction,
                 revision,
                 accepted: self.failure.is_none(),
-                minimums: if self.failure.is_some() {
+                minimums: if self.failure.is_some() || !self.skipped_windows.is_empty() {
                     session
                         .edit
                         .as_ref()
@@ -528,6 +530,7 @@ impl PendingLayout {
                 } else {
                     Vec::new()
                 },
+                skipped_windows: std::mem::take(&mut self.skipped_windows),
             }
         }));
         if self.result.changed > 0 {

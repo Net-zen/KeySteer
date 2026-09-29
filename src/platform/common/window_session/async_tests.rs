@@ -347,3 +347,59 @@ fn cancelled_history_retains_unstarted_work_and_inverse_of_submitted_changes() {
     assert_eq!(session.history.back().unwrap().1.len(), 20 - submitted);
     assert_eq!(session.redo.back().unwrap().1.len(), submitted);
 }
+
+#[test]
+fn tolerant_layout_reports_minimums_and_retries_a_larger_region() {
+    for asynchronous in [false, true] {
+        let mut access = Fake::new(2);
+        let mut session = Session::default();
+        begin_async_edit(&mut session, &mut access);
+        let mut request = layout_request(2);
+        if let WindowOperation::ApplyLayout { best_effort, .. } = &mut request.operation { *best_effort = true; }
+        // Constraints can become known only after a native write is rejected.
+        access.minimum = Point::new(800.0, 500.0);
+        access.reject = Some(WindowId(1));
+        let result = if asynchronous {
+            let mut pending = layout_confirmation::PendingLayout::begin(&mut session, &mut access, &request, &screens().into()).unwrap().unwrap();
+            finish_layout(&mut pending, &mut session, &mut access, false)
+        } else {
+            run(&mut session, &mut access, request.operation.clone())
+        };
+        assert!(matches!(result.edit.as_deref(), Some(WindowEditResult::Applied { accepted: true, minimums, .. }) if minimums.contains(&(WindowId(1), access.minimum))));
+        assert_eq!(session.minimums[&WindowId(1)], access.minimum);
+        access.reject = None;
+        if let WindowOperation::ApplyLayout { revision, placements, .. } = &mut request.operation {
+            *revision += 1;
+            placements[0].1 = Rect::new(0.0, 0.0, 0.9, 0.9);
+        }
+        let result = if asynchronous {
+            let mut pending = layout_confirmation::PendingLayout::begin(&mut session, &mut access, &request, &screens().into()).unwrap().unwrap();
+            finish_layout(&mut pending, &mut session, &mut access, false)
+        } else {
+            run(&mut session, &mut access, request.operation)
+        };
+        assert!(matches!(result.edit.as_deref(), Some(WindowEditResult::Applied { accepted: true, skipped_windows, .. }) if skipped_windows.is_empty()));
+        assert!(access.windows[&WindowId(1)].info.bounds.width >= 800.0);
+    }
+}
+
+#[test]
+fn tolerant_async_layout_learns_each_observed_size_clamp() {
+    let mut access = Fake::new(2);
+    let mut session = Session::default();
+    begin_async_edit(&mut session, &mut access);
+    let mut request = layout_request(2);
+    if let WindowOperation::ApplyLayout { best_effort, .. } = &mut request.operation { *best_effort = true; }
+    let mut pending = layout_confirmation::PendingLayout::begin(&mut session, &mut access, &request, &screens().into()).unwrap().unwrap();
+    let start = Instant::now();
+    let mut result = None;
+    for step in 0..30 {
+        for (id, rect) in &mut access.submitted { rect.width = rect.width.max(800.0 + id.0 as f64); }
+        acknowledge(&mut access);
+        result = pending.advance_at(&mut session, &mut access, false, start + Duration::from_millis(step * 20));
+        if result.is_some() { break; }
+    }
+    let result = result.unwrap();
+    assert!(matches!(result.edit.as_deref(), Some(WindowEditResult::Applied { accepted: true, minimums, .. }) if minimums.len() == 2));
+    for id in 1..=2 { assert_eq!(session.minimums[&WindowId(id)].x, 800.0 + id as f64); }
+}
