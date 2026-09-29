@@ -416,3 +416,13 @@ Use `@la` to match only the exact label `la`; `la` still searches label prefixes
 A bare `@` keeps candidate labels visible without selecting them all. Continue with `@l` to filter by label prefix, then complete `@la` to match that label. The same rule applies after a space, e.g. `@ka @`.
 
 The marker also works as a suffix: `ld@` is equivalent to `@ld`. Append `@` to a mixed query to restrict it to labels; removing it restores mixed matching. Prefix and suffix forms can be mixed in multi-selection, e.g. `ld@ @ka`.
+
+Window Move targeting entrances are configured independently in `[window.bindings]`. Grid / recursive_grid entrances are no longer copied automatically from Normal. Rebind these defaults or set them to `"none"` to disable them. Normal bindings and app overrides do not change Window’s own bindings; holding primary retains the existing temporary-layer precedence. Add the entries as needed to existing explicit `[window.bindings]` tables.
+
+```toml
+[window.bindings]
+g = "grid"
+"primary+f" = "recursive_grid"
+```
+
+`primary+g` is not a Window default binding; g follows the configured temporary layer while primary is held. Other Window submodes do not receive these two default targeting entrances.

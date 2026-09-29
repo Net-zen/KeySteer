@@ -1566,3 +1566,43 @@ fn default_mapped_chord_restores_all_sources_after_suspension_failure() {
         ]
     );
 }
+
+#[test]
+fn window_targeting_keeps_existing_temporary_layer_resolution() {
+    let config = Config::parse(r#"
+[key_aliases]
+primary = "left_alt"
+[normal.bindings]
+f = "none"
+g = "none"
+n = "recursive_grid"
+b = "grid"
+[window.bindings]
+g = "none"
+"primary+f" = "none"
+"primary+g" = "none"
+"primary+m" = "recursive_grid"
+c = "grid"
+"#).unwrap();
+    let mut engine = chord_test_engine(&config);
+    engine.set_active(ModeId::window());
+    engine.rebuild_tables();
+    for name in ["f", "g"] {
+        let key = Key::new(name).unwrap();
+        let pressed = [Key::new("left_alt").unwrap(), key.clone()];
+        assert!(engine.lookup_for_pressed(&key, &pressed).is_none(), "borrowed {name}");
+    }
+    for (name, mode) in [("n", ModeId::recursive_grid()), ("b", ModeId::grid())] {
+        let key = Key::new(name).unwrap();
+        assert!(engine.lookup_for_pressed(&key, std::slice::from_ref(&key)).is_none());
+        let resolved = engine.lookup_for_pressed(&key, &[Key::new("left_alt").unwrap(), key.clone()]).unwrap();
+        assert_eq!(resolved.owner, ModeId::normal());
+        assert_eq!(resolved.binding.as_ref(), &Binding::Mode(mode));
+    }
+    let key = Key::new("m").unwrap();
+    let resolved = engine.lookup_for_pressed(&key, &[Key::new("left_alt").unwrap(), key.clone()]).unwrap();
+    assert_eq!(resolved.owner, ModeId::window());
+    assert_eq!(resolved.binding.as_ref(), &Binding::Mode(ModeId::recursive_grid()));
+    let key = Key::new("c").unwrap();
+    assert_eq!(engine.lookup_for_pressed(&key, std::slice::from_ref(&key)).unwrap().binding.as_ref(), &Binding::Mode(ModeId::grid()));
+}

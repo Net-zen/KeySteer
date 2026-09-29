@@ -468,3 +468,13 @@ font_size = 14
 单独输入 `@` 保留候选标签显示，不代表全选；输入 `@l` 按标签前缀缩小范围，完整 `@la` 对应唯一标签。空格后的 `@` 同样显示下一项候选，已选项及复制顺序保持不变。
 
 `@` 也可后置：`ld@` 与 `@ld` 等价，只匹配标签。普通搜索词后追加 `@` 即可切换到标签匹配，删除标记则恢复混合搜索；多选可混用，如 `ld@ @ka`。
+
+Window Move 的定位入口由 `[window.bindings]` 独立配置，不再自动复制 Normal 的 grid / recursive_grid 入口。默认如下，可改键或设为 `"none"` 禁用；Normal 的改键和应用覆盖不会改变 window 自有绑定；按住 primary 后仍保留原有临时层优先规则。已有显式 `[window.bindings]` 表请按需补入。
+
+```toml
+[window.bindings]
+g = "grid"
+"primary+f" = "recursive_grid"
+```
+
+`primary+g` 不在 Window 默认绑定中；按住 primary 后，是否由 g 进入 Grid 取决于临时层的配置。其他 Window 子模式不增加这两个默认定位入口。

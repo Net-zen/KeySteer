@@ -201,54 +201,6 @@ impl ModeRegistry {
         }
     }
 
-    fn inherited_entries(
-        &self,
-        id: &ModeId,
-        seen: &mut Vec<ModeId>,
-        entries: &mut BTreeMap<String, (KeyChord, Binding)>,
-    ) {
-        if seen.contains(id) {
-            return;
-        }
-        seen.push(id.clone());
-        if let Some(table) = self.table(id) {
-            for entry in table.iter_entries() {
-                entries
-                    .entry(entry.chord.canonical())
-                    .or_insert_with(|| (entry.chord.clone(), entry.binding.as_ref().clone()));
-            }
-        }
-        if let Some(route) = self.routes.get(id) {
-            for parent in &route.inherits {
-                self.inherited_entries(parent, seen, entries);
-            }
-        }
-    }
-
-    /// Borrow only targeting entrances; window bindings (including `none`)
-    /// and their inherited bindings retain priority after alias resolution.
-    fn compile_window_targeting_entrances(&mut self) {
-        let mut normal = BTreeMap::new();
-        let mut occupied = BTreeMap::new();
-        self.inherited_entries(&ModeId::normal(), &mut Vec::new(), &mut normal);
-        self.inherited_entries(&ModeId::window(), &mut Vec::new(), &mut occupied);
-        if let Some(table) = self.table_mut_or_default(&ModeId::window()) {
-            for (_, (chord, binding)) in normal {
-                let conflict = occupied.values().any(|(existing, _)| {
-                    existing.keys().len() == chord.keys().len()
-                        && (existing.matches_pressed(chord.keys())
-                            || chord.matches_pressed(existing.keys()))
-                });
-                if !conflict
-                    && matches!(&binding, Binding::Mode(id)
-                    if *id == ModeId::grid() || *id == ModeId::recursive_grid())
-                {
-                    table.insert(chord, binding);
-                }
-            }
-        }
-    }
-
     pub(super) fn tables(&self) -> impl Iterator<Item = (&ModeId, &CompiledKeymap)> {
         self.slots
             .iter()
@@ -606,7 +558,6 @@ impl Engine {
         // A plugin's suggested chord applies in `normal`, which is where the
         // user works, and only if that chord is still free.
         self.registry.merge_plugin_bindings_into_normal();
-        self.registry.compile_window_targeting_entrances();
 
         // A literal character can only select a single-key chord. Keep one
         // interned Key per character instead of searching every mode per input.

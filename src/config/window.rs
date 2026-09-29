@@ -206,6 +206,8 @@ impl Default for Window {
                     ("shift+c", W::ResetInitial),
                 ],
                 &[
+                    ("g", ModeId::grid()),
+                    ("primary+f", ModeId::recursive_grid()),
                     ("a", ModeId::window_quick()),
                     ("e", ModeId::window_editor()),
                     ("t", ModeId::window_tab()),

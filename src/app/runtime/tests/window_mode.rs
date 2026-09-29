@@ -1767,7 +1767,7 @@ fn window_targeting_default_finish_resumes_and_late_results_do_not_cover_grid() 
 }
 
 #[test]
-fn window_targeting_entrances_respect_conflicts_and_normal_rebinding() {
+fn window_targeting_entrances_are_independent_of_normal_rebinding() {
     let mut config = Config::default();
     config.normal.bindings.remove("g");
     config.normal.bindings.insert("b".into(), Binding::Mode(ModeId::grid()));
@@ -1775,9 +1775,9 @@ fn window_targeting_entrances_respect_conflicts_and_normal_rebinding() {
     config.normal.bindings.insert("n".into(), Binding::Mode(ModeId::grid()));
     let (engine, _, _) = window_test_engine(&config);
     let bindings = engine.bindings_in(&ModeId::window());
-    assert!(bindings.contains(&("n".into(), Binding::Mode(ModeId::grid()))));
+    assert!(!bindings.iter().any(|(key, _)| key == "n"));
     assert!(bindings.contains(&("b".into(), Binding::Disabled)));
-    assert!(!bindings.iter().any(|(key, _)| key == "g"));
+    assert!(bindings.contains(&("g".into(), Binding::Mode(ModeId::grid()))));
     assert!(bindings.contains(&("f".into(), Binding::Window(crate::api::window::WindowAction::ToggleMaximize))));
 }
 
@@ -1798,9 +1798,11 @@ recursive_picker = "grid"
 m = "recursive_grid"
 [window.bindings]
 b = "none"
+recursive_picker = "recursive_grid"
 [[window.app_configs]]
 bundle_id = "custom.exe"
 [window.app_configs.bindings]
+recursive_picker = "grid"
 m = "window_center"
 "#).unwrap();
     let (mut engine, mut backend, log) = window_test_engine(&config);
@@ -1871,6 +1873,7 @@ fn window_targeting_help_respects_custom_temporary_keys_and_explicit_conflicts()
     config.normal.bindings.remove("f");
     config.normal.bindings.insert("n".into(), Binding::Mode(ModeId::recursive_grid()));
     config.window.bindings.insert("n".into(), Binding::Window(crate::api::window::WindowAction::Center));
+    config.window.bindings.insert("alt+n".into(), Binding::Mode(ModeId::recursive_grid()));
     config.window.bindings.insert("ctrl+n".into(), Binding::Disabled);
     let (mut engine, mut backend, log) = window_test_engine(&config);
     enter_window(&mut engine, &mut backend, &log);

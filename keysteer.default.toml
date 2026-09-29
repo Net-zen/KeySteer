@@ -365,6 +365,9 @@ border_width = 3.0
 
 [window.bindings]
 "?" = "key_help"
+# Independent targeting entrances; changes to normal.bindings do not affect these.
+g = "grid"
+"primary+f" = "recursive_grid"
 h = "window_left"
 j = "window_down"
 k = "window_up"
