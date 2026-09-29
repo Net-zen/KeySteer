@@ -47,6 +47,16 @@ struct NativeKeyDecisions {
 }
 
 impl NativeKeyDecisions {
+    fn timeout_fallback(&self, virtual_key: u32) -> KeyDisposition {
+        let word = virtual_key as usize / 64;
+        let mask = 1u64 << (virtual_key as usize % 64);
+        if word < self.held.len() && self.held[word] & self.consumed[word] & mask != 0 {
+            KeyDisposition::Consume
+        } else {
+            KeyDisposition::Forward
+        }
+    }
+
     fn resolve(
         &mut self,
         virtual_key: u32,
@@ -1027,7 +1037,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         timestamp_millis: info.time as u64,
     });
     let disposition = if let Some((mailbox, generation)) = begin_disposition(event) {
-        match mailbox.wait(generation, Duration::from_millis(100)) {
+        let fallback =
+            NATIVE_DECISIONS.with(|decisions| decisions.get().timeout_fallback(info.vkCode));
+        match mailbox.wait_with_fallback(generation, Duration::from_millis(100), fallback) {
             Some(disposition) => Some(disposition),
             None => {
                 queue_timeout_warning();
@@ -1121,7 +1133,13 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
             let repeat = input.repeat;
             let proposed =
                 begin_disposition(BackendEvent::Input(input)).and_then(|(mailbox, generation)| {
-                    let result = mailbox.wait(generation, Duration::from_millis(100));
+                    let fallback = NATIVE_DECISIONS
+                        .with(|decisions| decisions.get().timeout_fallback(native_key));
+                    let result = mailbox.wait_with_fallback(
+                        generation,
+                        Duration::from_millis(100),
+                        fallback,
+                    );
                     if result.is_none() {
                         queue_timeout_warning();
                     }
@@ -1147,6 +1165,36 @@ mod tests {
     use super::*;
     use std::hint::black_box;
     use std::time::Instant;
+
+    #[test]
+    fn timeout_acknowledgement_follows_native_keyboard_and_side_button_pairing() {
+        for key in [4, 5, 65, 160, 255, 256] {
+            for pressed in [
+                None,
+                Some(KeyDisposition::Forward),
+                Some(KeyDisposition::Consume),
+            ] {
+                for state in [KeyState::Down, KeyState::Up] {
+                    let mut native = NativeKeyDecisions::default();
+                    if let Some(decision) = pressed {
+                        native.resolve(key, KeyState::Down, Some(decision));
+                    }
+                    let fallback = native.timeout_fallback(key);
+                    let mailbox = DispositionMailbox::default();
+                    let generation = mailbox.begin();
+                    let response = mailbox.wait_with_fallback(generation, Duration::ZERO, fallback);
+                    assert_eq!(response, None);
+                    assert_eq!(native.resolve(key, state, response), fallback);
+                    assert!(!mailbox.complete(generation, KeyDisposition::Consume));
+                    assert!(!mailbox.complete(generation, KeyDisposition::Defer));
+                    assert_eq!(
+                        mailbox.complete(generation, KeyDisposition::Forward),
+                        fallback == KeyDisposition::Forward
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn mouse_side_button_edges_use_distinct_native_pairing_slots() {

@@ -1085,6 +1085,8 @@ fn disposition_for(
     mailbox: &crate::platform::common::disposition_mailbox::DispositionMailbox,
     event: BackendEvent,
 ) -> CallbackResult {
+    let forwards_on_timeout =
+        matches!(&event, BackendEvent::Input(input) if !input.key.is_mouse_side_button());
     let correlation_id = crate::support::perf_probe::next_correlation_id();
     crate::support::perf_probe::mark_correlated("hook_received", correlation_id);
     let Some(generation) = mailbox.try_begin() else {
@@ -1103,7 +1105,12 @@ fn disposition_for(
     }
     super::workspace::wake_main_run_loop();
 
-    let result = match mailbox.wait(generation, DISPOSITION_TIMEOUT) {
+    let response = if forwards_on_timeout {
+        mailbox.wait_with_fallback(generation, DISPOSITION_TIMEOUT, KeyDisposition::Forward)
+    } else {
+        mailbox.wait(generation, DISPOSITION_TIMEOUT)
+    };
+    let result = match response {
         Some(KeyDisposition::Consume) => CallbackResult::Drop,
         Some(KeyDisposition::Defer | KeyDisposition::Forward) => CallbackResult::Keep,
         None => {

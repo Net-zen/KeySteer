@@ -529,6 +529,11 @@ impl Engine {
         input: crate::api::input::InputEvent,
         backend: &mut dyn Backend,
     ) -> Result<(), String> {
+        // Native note entry forwards keys. Do not rebuild window help/overlays
+        // for each IME modifier or composing key; AppKit owns this editing UI.
+        if self.window_presets.pending.is_some() {
+            return self.handle_key_inner(input, backend);
+        }
         let switch_was_visible = self
             .quick_switch
             .pending

@@ -256,7 +256,9 @@ fn window_saved_layout_note_forwards_input_then_r_one_restores_the_saved_regions
         assert!(engine.window_presets.pending.is_some());
         assert!(!log.lock().unwrap().cancelled_text_prompts.contains(&prompt.id));
     }
+    let scenes_before_typing = log.lock().unwrap().scenes.len();
     for event in [key_down("x"), key_up("x"), key_down("esc"), key_up("esc")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+    assert_eq!(log.lock().unwrap().scenes.len(), scenes_before_typing, "native editing must not rebuild the window overlay per key");
     assert_eq!(log.lock().unwrap().window_requests.len(), before, "typing notes must not edit the layout");
     assert!(log.lock().unwrap().dispositions.iter().rev().take(4).all(|d| *d == KeyDisposition::Forward));
     engine.handle_backend_event(BackendEvent::TextPromptResult { id: prompt.id, value: Ok(Some("工作 · 写代码".into())) }, &mut backend).unwrap();
