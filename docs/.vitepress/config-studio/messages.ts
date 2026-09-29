@@ -56,6 +56,7 @@ export const englishMessages: Record<string, string> = {
   '确认复制': 'Confirm copy',
   '当前配置': 'Current configuration',
   '复制失败': 'Copy failed',
+  '当前浏览器无法访问剪贴板，请下载 TOML 文件': 'Clipboard access is unavailable in this browser. Please download the TOML file.',
   '文件不能超过 2 MiB': 'Files must not exceed 2 MiB',
   '单层只使用根层定位键，每次从整屏定位；Esc、Enter、Tab、Backspace、Space 保留 Normal 绑定，无需重置。': 'A single level uses only root selection keys and always targets the full screen. Esc, Enter, Tab, Backspace and Space keep their Normal bindings; no reset is needed.',
   'Normal 盲操定位': 'Normal blind positioning',

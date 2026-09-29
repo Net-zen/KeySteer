@@ -72,7 +72,8 @@ const languageStateScript = `(() => {
     return base + (english ? 'en/' : '') + withoutLanguage
   }
   const currentIsEnglish = () => normalise(relativePath()).startsWith('en/')
-  const stored = localStorage.getItem(key)
+  let stored = null
+  try { stored = localStorage.getItem(key) } catch {}
   if (stored === 'en' && !currentIsEnglish()) {
     const destination = switchPath(true)
     if (destination && destination !== location.pathname) location.replace(destination)
@@ -83,7 +84,7 @@ const languageStateScript = `(() => {
     if (!target) return
     const english = target.getAttribute('href')?.includes('/en/') ?? false
     const destination = switchPath(english)
-    localStorage.setItem(key, english ? 'en' : 'zh')
+    try { localStorage.setItem(key, english ? 'en' : 'zh') } catch {}
     if (!destination) return
     event.preventDefault()
     location.assign(destination)

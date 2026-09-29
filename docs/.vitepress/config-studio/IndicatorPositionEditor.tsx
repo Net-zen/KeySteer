@@ -1,3 +1,4 @@
+import { observeSize } from './observe-size'
 import { computed, defineComponent, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useStudioI18n } from './i18n'
 import { modeIndicatorPreview } from '../simulator/mode-indicator'
@@ -15,9 +16,13 @@ export default defineComponent({
     const dragging = ref(false)
     const host = ref<HTMLElement>()
     const scale = ref(1)
-    let observer: ResizeObserver | undefined
-    onMounted(() => { observer = new ResizeObserver(entries => { scale.value = entries[0].contentRect.width / 360 }); if (host.value) observer.observe(host.value) })
-    onBeforeUnmount(() => observer?.disconnect())
+    let stopObserving: (() => void) | undefined
+    onMounted(() => {
+      if (host.value) stopObserving = observeSize([host.value], (_, size) => {
+        if (size.width > 0) scale.value = size.width / 360
+      })
+    })
+    onBeforeUnmount(() => stopObserving?.())
     let pointer: number | undefined
     let previous: number[] = []
     const resolvedBadge = computed(() => modeIndicatorPreview(props.document, props.mode, props.appearance, { x: 50, y: 50 }, { width: 360, height: 240 }))

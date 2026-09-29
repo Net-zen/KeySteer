@@ -1,3 +1,4 @@
+import { observeSize } from '../config-studio/observe-size'
 import { useStudioI18n } from '../config-studio/i18n'
 import SettingsNavigation from '../config-studio/SettingsNavigation'
 import ConfigDiff from '../config-studio/ConfigDiff'
@@ -320,7 +321,7 @@ export default defineComponent({
     }
     const filteredActionGroups = computed(() => actionGroups
       .filter(group => !actionCategory.value || group.name === actionCategory.value)
-      .toSorted((a, b) => {
+      .sort((a, b) => {
         const priority = activeMode.value.startsWith('window') ? ['Window', '窗口布局方向', 'Tabs', '模式'] : ['移动', '点击', '滚动', '模式', '按键状态']
         const rank = (name: string) => priority.includes(name) ? priority.indexOf(name) : priority.length
         return rank(a.name) - rank(b.name)
@@ -337,7 +338,7 @@ export default defineComponent({
     const screen = ref<HTMLElement | null>(null)
     const simulatorArmed = ref(false)
     const canvasScale = ref(1)
-    let previewObserver: ResizeObserver | undefined
+    let stopPreviewObserver: (() => void) | undefined
     const layoutNote = ref('')
     const layoutNoteInput = ref<HTMLInputElement>()
     const layoutStorageError = ref('')
@@ -618,7 +619,10 @@ export default defineComponent({
       review.value = { before: importedSource.value, after: source, beforeName: sourceName.value, afterName: t('当前配置'), action,
         confirm: () => {
           if (action === '确认复制') {
-            void navigator.clipboard.writeText(source).then(() => { message.value = 'TOML 已复制到剪贴板' })
+            void Promise.resolve().then(() => {
+              if (!navigator.clipboard?.writeText) throw new Error(t('当前浏览器无法访问剪贴板，请下载 TOML 文件'))
+              return navigator.clipboard.writeText(source)
+            }).then(() => { message.value = 'TOML 已复制到剪贴板' })
               .catch(error => { message.value = `${t('复制失败')}: ${formatError(error)}` })
           } else {
             downloadText(source, 'keysteer.user.toml')
@@ -921,14 +925,12 @@ export default defineComponent({
       } catch (error) { layoutStorageError.value = formatError(error) }
       void initialize()
       animationFrame = requestAnimationFrame(animate)
-      previewObserver = new ResizeObserver(entries => {
-        const rect = entries[0]?.contentRect
-        if (rect && rect.width && rect.height) canvasScale.value = Math.min(rect.width / 960, rect.height / 600)
+      if (screen.value) stopPreviewObserver = observeSize([screen.value], (_, rect) => {
+        if (rect.width && rect.height) canvasScale.value = Math.min(rect.width / 960, rect.height / 600)
       })
-      if (screen.value) previewObserver.observe(screen.value)
     })
     onBeforeUnmount(() => {
-      previewObserver?.disconnect()
+      stopPreviewObserver?.()
       cancelAnimationFrame(animationFrame)
     })
 
@@ -1533,12 +1535,12 @@ function bindingTable(
   effectiveDocument?: ConfigDocument,
 ): Record<string, any> {
   if (mode === 'hotkeys') {
-    if (create && !document.hotkeys) document.hotkeys = structuredClone(effectiveDocument?.hotkeys ?? {})
+    if (create && !document.hotkeys) document.hotkeys = cloneConfigDocument(effectiveDocument?.hotkeys ?? {})
     return document.hotkeys ?? {}
   }
   if (create && !document[mode]) document[mode] = {}
   if (create && !document[mode].bindings) {
-    document[mode].bindings = structuredClone(effectiveDocument?.[mode]?.bindings ?? {})
+    document[mode].bindings = cloneConfigDocument(effectiveDocument?.[mode]?.bindings ?? {})
   }
   return document[mode]?.bindings ?? {}
 }
@@ -1795,14 +1797,13 @@ const KeyHelpPreview = defineComponent({
     const { t } = useStudioI18n()
     const host = ref<HTMLElement>()
     const size = ref({ width: 800, height: 450 })
-    let observer: ResizeObserver | undefined
+    let stopObserving: (() => void) | undefined
     onMounted(() => {
-      observer = new ResizeObserver(([entry]) => {
-        size.value = { width: entry.contentRect.width, height: entry.contentRect.height }
+      if (host.value) stopObserving = observeSize([host.value], (_, rect) => {
+        size.value = { width: rect.width, height: rect.height }
       })
-      if (host.value) observer.observe(host.value)
     })
-    onBeforeUnmount(() => observer?.disconnect())
+    onBeforeUnmount(() => stopObserving?.())
     const entries = computed(() => keyHelpEntries(props.document, props.mode, props.isMac))
     return () => {
       if (!props.document.key_help) return null
