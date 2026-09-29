@@ -198,7 +198,7 @@ impl WindowWorker {
                             ) {
                                 if !cancelled() {
                                     if pending.is_layout()
-                                        && let Some(error) = &result.message
+                                        && let Some(error) = layout_error(&result)
                                     {
                                         crate::report_error!("window-layout", "{error}");
                                     }
@@ -869,5 +869,55 @@ impl Drop for WindowWorker {
         {
             crate::report_error!("window-worker", "{error}");
         }
+    }
+}
+
+// A partial best-effort application is UI feedback, not a worker error.
+fn layout_error(result: &WindowResult) -> Option<&str> {
+    if matches!(
+        result.edit.as_deref(),
+        Some(WindowEditResult::Applied { accepted: true, .. })
+    ) {
+        None
+    } else {
+        result.message.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod layout_diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn accepted_layout_advisories_are_not_errors() {
+        let mut result = Session::result_for(&WindowRequest {
+            session: 1,
+            id: 1,
+            scope: None,
+            operation: WindowOperation::CancelPending,
+        });
+        result.message = Some("partial layout".into());
+        for accepted in [true, false] {
+            result.edit = Some(Box::new(WindowEditResult::Applied {
+                transaction: 1,
+                revision: 1,
+                accepted,
+                skipped_windows: vec![WindowId(2)],
+                minimums: vec![],
+            }));
+            assert_eq!(
+                layout_error(&result),
+                if accepted {
+                    None
+                } else {
+                    Some("partial layout")
+                }
+            );
+        }
+        result.edit = Some(Box::new(WindowEditResult::Ended {
+            transaction: 1,
+            committed: false,
+        }));
+        assert_eq!(layout_error(&result), Some("partial layout"));
     }
 }

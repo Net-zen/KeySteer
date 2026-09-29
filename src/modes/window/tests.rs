@@ -597,3 +597,19 @@ fn rejected_tree_rectangles_keep_membership_and_allow_reassignment() {
     assert!(slot.rect.width * screens[0].work_area.width >= 650.0);
     assert!(out.iter().any(|c| matches!(c, Command::WindowRequest(r) if matches!(r.operation, WindowOperation::ApplyLayout { .. }))));
 }
+
+#[test]
+fn partial_layout_status_identifies_windows_with_bounded_text() {
+    let config = crate::config::Config::default();
+    let mut mode = crate::app::mode_catalog::window(&config);
+    mode.numbers.insert(WindowId(7), 5);
+    mode.numbers.insert(WindowId(8), 8);
+    assert_eq!(
+        mode.skipped_layout_status(&[WindowId(7), WindowId(8)]),
+        "Not fitted: #5, #8"
+    );
+    assert_eq!(
+        mode.skipped_layout_status(&[WindowId(7), WindowId(8), WindowId(9), WindowId(10)]),
+        "Not fitted: #5, #8, #?, +1"
+    );
+}

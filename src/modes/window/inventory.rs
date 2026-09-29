@@ -3,6 +3,25 @@ use super::*;
 use crate::api::window::WindowResult;
 
 impl WindowSession {
+    pub(super) fn skipped_layout_status(&self, skipped: &[WindowId]) -> String {
+        use std::fmt::Write;
+        let mut message = String::from("Not fitted: ");
+        for (index, id) in skipped.iter().take(3).enumerate() {
+            if index > 0 {
+                message.push_str(", ");
+            }
+            if let Some(number) = self.numbers.get(id) {
+                let _ = write!(message, "#{number}");
+            } else {
+                message.push_str("#?");
+            }
+        }
+        if skipped.len() > 3 {
+            let _ = write!(message, ", +{}", skipped.len() - 3);
+        }
+        message
+    }
+
     pub(super) fn window_result(
         &mut self,
         mut result: WindowResult,
@@ -124,6 +143,16 @@ impl WindowSession {
             if self.edit.is_none() {
                 self.screen = target.screen;
             }
+        }
+        if let Some(WindowEditResult::Applied {
+            accepted: true,
+            skipped_windows,
+            ..
+        }) = result.edit.as_deref()
+            && !skipped_windows.is_empty()
+        {
+            self.rebuild_numbers();
+            result.message = Some(self.skipped_layout_status(skipped_windows));
         }
         // Polling must not erase operation errors or the pending selection hint.
         let ended = matches!(result.edit.as_deref(), Some(WindowEditResult::Ended { .. }));
