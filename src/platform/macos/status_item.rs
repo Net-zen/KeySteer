@@ -102,13 +102,15 @@ define_class!(
             // Activation is asynchronous. Re-establish the editor after AppKit
             // delivers activation, without holding a borrow through callbacks.
             let editor = self.ivars().note.borrow().as_ref()
-                .map(|note| (note.id, note.panel.clone(), note.field.clone()));
-            if let Some((id, panel, field)) = editor {
+                .map(|note| (note.panel.clone(), note.field.clone()));
+            if let Some((panel, field)) = editor {
                 panel.makeKeyAndOrderFront(None);
-                if !panel.makeFirstResponder(Some(&field)) {
-                    let note = self.ivars().note.borrow_mut().take();
-                    if let Some(note) = note { note.panel.close(); }
-                    emit(BackendEvent::TextPromptResult { id, value: Err("Text input rejected first responder after activation".into()) });
+                // Switching input sources can reactivate us while AppKit's
+                // field editor/IME still owns the editing transaction. Do not
+                // replace that responder or turn a transient refusal into a
+                // cancellation. Initial focus is validated by focus_text_prompt.
+                if field.currentEditor().is_none() {
+                    let _ = panel.makeFirstResponder(Some(&field));
                 }
             }
         }

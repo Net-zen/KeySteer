@@ -30,3 +30,5 @@ UI 扫描的 UiScanActivationExpected 按 scan owner 路由，必须在对应原
 UIHint live TextPrompt 仅建立共享输入路由，不调用原生 request_text_prompt。runtime 在任何编辑、剪贴板和绘制工作前确认按键处置；TextInserted／TextEdit／TextPasted 交给 Mode，原生备注仍走原有异步协议。
 
 输入会话完成（含取消、错误）须先关闭字符捕获，再移除 owner 并派发结果；关闭命令重复执行也要确保捕获关闭。旧请求的迟到结果不得关闭新会话，live 搜索结束不进入原生窗口的焦点恢复流程。
+
+原生布局保存备注期间冻结模式的焦点快照，输入法辅助进程、候选窗口及应用重新激活不能取消编辑；会话由明确的提交／取消、模式退出或暂停收尾。普通按键和输入法切换快捷键继续转发给原生编辑器。

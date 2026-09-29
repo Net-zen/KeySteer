@@ -243,6 +243,19 @@ fn window_saved_layout_note_forwards_input_then_r_one_restores_the_saved_regions
     assert!(!log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|l| l.z_index == i32::MAX - 1));
     assert!(log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|l| l.text == "`1"));
     let before = log.lock().unwrap().window_requests.len();
+    // Switching an IME may activate a helper, report no focus, then return to
+    // KeySteer. None of those notifications may cancel native note entry.
+    let editing_mode = engine.active_mode().clone();
+    for app in [
+        Some(FocusedApp { process_id: 9876, bundle_id: "test.input-method".into(), window_title: "Candidates".into() }),
+        None,
+        Some(FocusedApp { process_id: std::process::id(), bundle_id: "test.keysteer".into(), window_title: "Save layout".into() }),
+    ] {
+        engine.handle_backend_event(BackendEvent::FocusChanged(app), &mut backend).unwrap();
+        assert_eq!(engine.active_mode(), &editing_mode);
+        assert!(engine.window_presets.pending.is_some());
+        assert!(!log.lock().unwrap().cancelled_text_prompts.contains(&prompt.id));
+    }
     for event in [key_down("x"), key_up("x"), key_down("esc"), key_up("esc")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
     assert_eq!(log.lock().unwrap().window_requests.len(), before, "typing notes must not edit the layout");
     assert!(log.lock().unwrap().dispositions.iter().rev().take(4).all(|d| *d == KeyDisposition::Forward));

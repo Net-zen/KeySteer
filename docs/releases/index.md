@@ -5,6 +5,12 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.10.29
+
+- 修复 macOS 切换输入法时，保存布局备注输入框可能被意外关闭的问题。
+
+- Fixed layout-note editing being closed unexpectedly when switching input methods on macOS.
+
 ## 0.10.28
 
 - 优化 OCR 文字预览与复制，清理中文间的多余空格，减少分块接缝处的重复文字。

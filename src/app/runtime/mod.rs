@@ -779,6 +779,13 @@ impl Engine {
                 }
             }
             BackendEvent::FocusChanged(app) => {
+                // Native layout-note editing owns its lifetime until an explicit
+                // result/cancel. IME switching may temporarily focus a helper
+                // process; forwarding that focus to the mode tears down its
+                // layout and cancels the still-active native editor.
+                if self.window_presets.pending.is_some() {
+                    return Ok(());
+                }
                 let expected_activation = self
                     .scheduler
                     .scan_activation

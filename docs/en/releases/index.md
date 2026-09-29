@@ -5,6 +5,10 @@ outline: false
 
 # Release notes
 
+## 0.10.29
+
+- Fixed layout-note editing being closed unexpectedly when switching input methods on macOS.
+
 ## 0.10.28
 
 - Improved OCR previews and copying by removing extra spaces between Chinese characters and reducing duplicate text at tile seams.

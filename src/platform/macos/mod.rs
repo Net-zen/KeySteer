@@ -224,6 +224,12 @@ impl MacOsBackend {
         if let Some(event) = self.hook.as_mut().and_then(HookThread::try_next_event) {
             return Some(event);
         }
+        if let Some(frame) = self
+            .background_budget
+            .take_ready_frame(|| self.frame_clock.try_next())
+        {
+            return Some(frame);
+        }
         if self.background_budget.yield_due() {
             // Service ready native sources even while completions keep arriving.
             // Recheck synchronous input after AppKit had an opportunity to run.
@@ -231,8 +237,11 @@ impl MacOsBackend {
             if let Some(event) = self.hook.as_mut().and_then(HookThread::try_next_event) {
                 return Some(event);
             }
-            if let Some(elapsed) = self.frame_clock.try_next() {
-                return Some(BackendEvent::Frame(elapsed));
+            if let Some(frame) = self
+                .background_budget
+                .take_ready_frame(|| self.frame_clock.try_next())
+            {
+                return Some(frame);
             }
         }
         if let Some(event) = self.scan_mailbox.take_activation() {

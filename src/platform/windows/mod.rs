@@ -337,10 +337,11 @@ impl WindowsBackend {
         if let Some(event) = self.next_hook_event()? {
             return Ok(Some(event));
         }
-        if self.background_budget.yield_due()
-            && let Some(elapsed) = self.frame_clock.try_next()
+        if let Some(frame) = self
+            .background_budget
+            .take_ready_frame(|| self.frame_clock.try_next())
         {
-            return Ok(Some(BackendEvent::Frame(elapsed)));
+            return Ok(Some(frame));
         }
         if self.prewarm_ocr {
             self.vision.begin_discovery();
