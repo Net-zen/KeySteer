@@ -117,6 +117,7 @@ export default async ({ command }: { command: string }) => {
   head: [
     ['link', { rel: 'icon', type: 'image/png', href: `${base}generated/keysteer-icon.png` }],
     ['meta', { name: 'theme-color', content: '#6578d4' }],
+    ['style', { id: 'ks-html-page-style' }, '.ks-standalone{min-width:0}'],
     ['script', {}, languageStateScript],
   ],
   vite: {
