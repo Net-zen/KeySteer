@@ -1,3 +1,4 @@
+import { quickSwitchColors } from '../simulator/quick-switch-style'
 import { useStudioI18n } from './i18n'
 import { defineComponent } from 'vue'
 
@@ -14,7 +15,7 @@ export default defineComponent({
     const { t } = useStudioI18n()
     return () => {
       const ui = props.settings.ui ?? {}
-      const color = (value: any, fallback: string) => typeof value === 'string' ? value : value?.[props.appearance] ?? fallback
+      const colors = quickSwitchColors(props.settings, props.appearance)
       const auto = (value: any, fallback: number) => value == null || Number(value) < 0 ? fallback : Number(value)
       const size = auto(ui.font_size, 28)
       const mouse = (props.settings.position ?? 'mouse') === 'mouse'
@@ -26,9 +27,9 @@ export default defineComponent({
         top: mouse ? `clamp(8px, calc(${props.pointer.y}% + 24px), calc(100% - ${height}px - 8px))` : `clamp(${Math.min(height / 2, 250)}px, ${center.y}%, calc(100% - ${Math.min(height / 2, 250)}px))`,
         transform: mouse ? 'none' : 'translate(-50%, -50%)',
         fontSize: `${size}px`, fontFamily: ui.font_family || 'inherit',
-        color: color(ui.text_color, props.appearance === 'dark' ? '#e8eeff' : '#1a3479'),
-        background: color(ui.background_color, props.appearance === 'dark' ? '#182444' : '#eef2ff'),
-        border: `${auto(ui.border_width, 1)}px solid ${color(ui.border_color, '#8b9cda')}`,
+        color: colors.text_color,
+        background: colors.background_color,
+        border: `${auto(ui.border_width, 1)}px solid ${colors.border_color}`,
         borderRadius: `${auto(ui.border_radius, size * .35)}px`,
         padding: `${auto(ui.padding_y, size * .2)}px ${auto(ui.padding_x, 10)}px`,
         paddingLeft: `${auto(ui.padding_x, 10) + size * .55}px`,

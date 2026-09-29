@@ -1,3 +1,4 @@
+import { quickSwitchColors } from '../simulator/quick-switch-style'
 import { observeSize } from '../config-studio/observe-size'
 import { useStudioI18n } from '../config-studio/i18n'
 import SettingsNavigation from '../config-studio/SettingsNavigation'
@@ -33,9 +34,9 @@ import { quickRulerPlan } from '../simulator/window-ratios'
 import { windowHelpSections, windowHelpGrid, windowHelpActionSupported, type HelpEntry } from '../simulator/window-help'
 import { consumeConfigHandoff } from '../simulator/config-handoff'
 import CommonConfigControls from '../config-studio/CommonConfigControls'
-import ModeStyleControls from '../config-studio/ModeStyleControls'
+import ModeStyleControls, { StyleControl } from '../config-studio/ModeStyleControls'
 import ModeIndicatorControls from '../config-studio/ModeIndicatorControls'
-import { modeIndicatorPreview } from '../simulator/mode-indicator'
+import { cursorMarkerPreview, modeIndicatorPreview } from '../simulator/mode-indicator'
 import {
   cloneConfigDocument,
   parseConfigDocument,
@@ -411,6 +412,7 @@ export default defineComponent({
       await nextTick()
       if (open) layoutNoteInput.value?.focus(); else screen.value?.focus()
     })
+    const cursorPreview = computed(() => cursorMarkerPreview(effectiveDocument.value ?? {}, appearance.value, (['left', 'middle', 'right'] as const).find(button => simulator.pressedButtons.has(button)), simulator.mode))
     const clickPulse = ref(0)
     const scrollPulse = ref('')
     const isMac = ref(false)
@@ -1112,6 +1114,11 @@ export default defineComponent({
                 {simulator.mode === 'grid' && <TargetGrid mode="grid" settings={targetingSettings.value} path={simulator.targeting.grid.path} />}
                 {simulator.mode === 'recursive_grid' && <TargetGrid mode="recursive_grid" settings={targetingSettings.value} path={simulator.targeting.recursiveGrid.path} />}
                 {simulator.mode === 'ui_hint' && <HintOverlay settings={targetingSettings.value} />}
+                {cursorPreview.value.enabled && simulator.mode !== 'idle' && <svg class="ks-cursor-marker" aria-hidden="true"
+                  style={{ left: `${simulator.pointer.x}%`, top: `${simulator.pointer.y}%`, width: `${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width}px`, height: `${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width}px` }}
+                  viewBox={`${-cursorPreview.value.radius - cursorPreview.value.stroke_width / 2} ${-cursorPreview.value.radius - cursorPreview.value.stroke_width / 2} ${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width} ${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width}`}>
+                  <circle r={cursorPreview.value.radius} fill={cursorPreview.value.fill} stroke={cursorPreview.value.stroke} stroke-width={cursorPreview.value.stroke_width} />
+                </svg>}
                 <div class={{ 'ks-pointer': true, pressed: simulator.pressedButtons.has('left') }} style={{ left: `${simulator.pointer.x}%`, top: `${simulator.pointer.y}%` }}>
                   <span key={clickPulse.value} class={clickPulse.value ? 'pulse' : ''} />
                 </div>
@@ -1133,11 +1140,17 @@ export default defineComponent({
             </section>
     )
     const renderQuickSwitch = () => (
-            <details class="ks-toml-details ks-quick-settings" open>
-              <summary>{t("快速模式切换")}</summary>
-              <div class="ks-settings-body">
-              <p>{t("操作模式中长按 ")}{String(effectiveDocument.value?.quick_switch?.key ?? 'q').toUpperCase()}{t(" 展开，配合 1…9 选择；松开收起。Idle 不接管，黑名单仅限制快速切换。")}</p>
-              <button class="ks-button" disabled={!document.value} onClick={previewQuickSwitch}>{t("在模拟器中预览")}</button>
+            <section class="ks-settings-section ks-quick-settings">
+              <header class="ks-settings-section-heading">
+                <div class="ks-quick-heading-row">
+                  <div class="ks-quick-heading-copy">
+                    <h2>{selectedTab.value === 'behavior' ? t("快速模式切换") : t("外观设置")}</h2>
+                    <p>{t("操作模式中长按 ")}{String(effectiveDocument.value?.quick_switch?.key ?? 'q').toUpperCase()}{t(" 展开，配合 1…9 选择；松开收起。Idle 不接管，黑名单仅限制快速切换。")}</p>
+                  </div>
+                  <button class="ks-button" disabled={!document.value} onClick={previewQuickSwitch}>{t("在模拟器中预览")}</button>
+                </div>
+              </header>
+              <div class="ks-settings-section-body ks-settings-body">
               <div class="ks-settings-grid">
               <label hidden={selectedTab.value !== 'behavior'} data-config-path="quick_switch.key">{t("触发键")}<input value={effectiveDocument.value?.quick_switch?.key ?? 'q'} onChange={event => {
                 const value = (event.target as HTMLInputElement).value.trim().toLowerCase()
@@ -1152,17 +1165,34 @@ export default defineComponent({
               }}><option value="screen">{t("当前屏幕中心")}</option><option value="window">{t("当前窗口中心")}</option><option value="mouse">{t("鼠标模式提示下方")}</option></select></label>
               <label hidden={selectedTab.value !== 'behavior'} data-config-path="quick_switch.blacklist">{t("面板黑名单（逗号分隔）")}<input value={(effectiveDocument.value?.quick_switch?.blacklist ?? ['idle']).join(', ')}
                 onChange={event => { if (document.value) { document.value.quick_switch ??= {}; document.value.quick_switch.blacklist = (event.target as HTMLInputElement).value.split(',').map(value => value.trim()).filter(Boolean) } }} /></label>
+              <h3 hidden={selectedTab.value !== 'appearance'}>{t('常用布局')}</h3>
               {(['font_size', 'border_width', 'border_radius', 'padding_x', 'padding_y'] as const).map(field => <label hidden={selectedTab.value !== 'appearance'} data-config-path={`quick_switch.ui.${field}`} key={field}>{{ font_size: t("字号"), border_width: t("边框宽度"), border_radius: t("圆角（-1 自动）"), padding_x: t("左右内边距"), padding_y: t("上下内边距") }[field]}
                 <input type="number" min={field === 'font_size' ? 1 : field === 'border_width' ? 0 : -1} max="200"
                   value={effectiveDocument.value?.quick_switch?.ui?.[field] ?? (field === 'font_size' ? 28 : field === 'border_width' ? 1 : field === 'padding_x' ? 10 : -1)}
                   onChange={event => { const value = Number((event.target as HTMLInputElement).value); if (document.value && Number.isInteger(value)) { document.value.quick_switch ??= {}; document.value.quick_switch.ui ??= {}; document.value.quick_switch.ui[field] = value } }} />
               </label>)}
-              {(['background_color', 'text_color', 'border_color'] as const).map(field => <label hidden={selectedTab.value !== 'appearance'} data-config-path={`quick_switch.ui.${field}`} key={field}>{{ background_color: t("背景颜色"), text_color: t("文字颜色"), border_color: t("边框颜色") }[field]}
-                <input placeholder={t("#RRGGBBAA · 留空继承主题")} value={typeof effectiveDocument.value?.quick_switch?.ui?.[field] === 'string' ? effectiveDocument.value.quick_switch.ui[field] : ''}
-                  onChange={event => { const value = (event.target as HTMLInputElement).value.trim(); if (document.value && (!value || /^#[0-9a-f]{8}$/i.test(value))) { document.value.quick_switch ??= {}; document.value.quick_switch.ui ??= {}; if (value) document.value.quick_switch.ui[field] = value; else delete document.value.quick_switch.ui[field] } }} />
-              </label>)}
-              </div></div>
-            </details>
+              </div>
+              {selectedTab.value === 'appearance' && <section class="ks-quick-colors">
+                <h3>{t('模式颜色')}</h3>
+                <div class="ks-style-fields">{(['background_color', 'text_color', 'border_color'] as const).map(field => <StyleControl key={field}
+                  field={{ path: `quick_switch.ui.${field}`, label: { background_color: '背景颜色', text_color: '文字颜色', border_color: '边框颜色' }[field], kind: 'color' }}
+                  value={effectiveDocument.value?.quick_switch?.ui?.[field] ?? quickSwitchColors(effectiveDocument.value?.quick_switch ?? {}, appearance.value)[field]}
+                  appearance={appearance.value}
+                  inherited={document.value?.quick_switch?.ui?.[field] === undefined}
+                  onUpdate={value => {
+                    const valid = typeof value === 'string' ? /^#[0-9a-f]{8}$/i.test(value)
+                      : value && typeof value === 'object' && Object.values(value).every(color => typeof color === 'string' && /^#[0-9a-f]{8}$/i.test(color))
+                    if (!document.value || !valid) return
+                    document.value.quick_switch ??= {}; document.value.quick_switch.ui ??= {}
+                    document.value.quick_switch.ui[field] = value
+                    quickRows.value = [...quickCandidates.value]; quickVisible.value = true
+                  }}
+                  onReset={() => {
+                    if (document.value?.quick_switch?.ui) delete document.value.quick_switch.ui[field]
+                  }} />)}</div>
+              </section>}
+              </div>
+            </section>
 
     )
     const renderUsage = () => (
@@ -1236,7 +1266,7 @@ export default defineComponent({
               {currentPage.value.tabs.length > 0 && <div class="ks-settings-tabs" aria-label={t("设置类型")}>{currentPage.value.tabs.map(tab => <button aria-pressed={selectedTab.value === tab} onClick={() => { releasePreview(); selectedTab.value = tab }}>{t(tabLabels[tab])}</button>)}</div>}
             </div>
             {selectedTab.value === 'keys' && currentPage.value.mode && renderKeyboard()}
-            {document.value && effectiveDocument.value && selectedTab.value !== 'keys' && <>
+            {document.value && effectiveDocument.value && selectedTab.value !== 'keys' && <div class="ks-settings-tab-content">
               {selectedTab.value === 'appearance' && (pageId.value === 'mode_indicator' || currentPage.value.mode && currentPage.value.mode !== 'hotkeys') && <ModeIndicatorControls
                 mode={pageId.value === 'mode_indicator' ? undefined : currentPage.value.mode}
                 document={document.value} effectiveDocument={effectiveDocument.value} appearance={appearance.value}
@@ -1244,7 +1274,7 @@ export default defineComponent({
               {['normal', 'text_input', 'grid', 'recursive_grid', 'ui_hint'].includes(pageId.value) && <CommonConfigControls page={pageId.value} tab={selectedTab.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} />}
               {pageId.value === 'normal' && selectedTab.value === 'behavior' && <NormalTargetingControls document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => { document.value = next; simulator.blindTargeting.pendingReset = true }} />}
               {(pageId.value.startsWith('window') || ['grid', 'recursive_grid', 'ui_hint', 'key_help'].includes(pageId.value)) && <ModeStyleControls page={pageId.value} tab={selectedTab.value} mode={(pageId.value === 'window_card' ? 'window' : pageId.value) as any} appearance={appearance.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} onAppearanceChange={next => appearance.value = next} />}
-            </>}
+            </div>}
             {pageId.value === 'quick_switch' && renderQuickSwitch()}
             {pageId.value === 'mode_usage' && renderUsage()}
             {pageId.value === 'files' && renderFiles()}

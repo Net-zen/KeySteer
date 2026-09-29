@@ -1,7 +1,7 @@
 import { defineComponent } from 'vue'
 import { StyleControl } from './ModeStyleControls'
-import { indicatorFields } from './indicator-fields'
-import { resolveModeIndicator, modeIndicatorPreview } from '../simulator/mode-indicator'
+import { cursorFields, indicatorFields } from './indicator-fields'
+import { resolveModeIndicator, modeIndicatorPreview, cursorMarkerPreview } from '../simulator/mode-indicator'
 import { cloneConfigDocument, deleteConfigPath, getConfigPath, setConfigPath, type ConfigDocument } from './document'
 import { useStudioI18n } from './i18n'
 import IndicatorPositionEditor from './IndicatorPositionEditor'
@@ -27,9 +27,36 @@ export default defineComponent({
       const resolved = resolveModeIndicator(props.effectiveDocument, props.mode ?? '')
       const previewDocument = props.mode ? props.effectiveDocument : { ...props.effectiveDocument, mode_indicator: { ...props.effectiveDocument.mode_indicator, modes: {} } }
       const preview = modeIndicatorPreview(previewDocument, mode, props.appearance, { x: 50, y: 50 })
-      const controls = <div class="ks-style-controls">
-        <strong>{t('模式标识符')}</strong>
-        <p>{t(props.mode ? '位置相对模拟鼠标；正 X 向右，正 Y 向下。重置后继承全局样式。' : '所有模式共用此样式；单个模式可在外观页覆盖。-1 表示自动尺寸。')}</p>
+      const controls = <div class="ks-style-controls ks-indicator-controls">
+        {!props.mode && <section class="ks-settings-section">
+          <header class="ks-settings-section-heading">
+            <h2>{t('光标圆环')}</h2>
+            <p>{t('预览未按下及左、中、右键按下状态；圆环设置独立于文字标识符。')}</p>
+          </header>
+          <div class="ks-settings-section-body">
+          <div class="ks-cursor-previews">
+            {([undefined, 'left', 'middle', 'right'] as const).map((button, index) => {
+              const marker = cursorMarkerPreview(props.effectiveDocument, props.appearance, button)
+              const extent = Math.max(72, marker.radius + marker.stroke_width / 2 + 8)
+              const label = t(['未按下', '左键按下', '中键按下', '右键按下'][index])
+              return <figure><svg role="img" aria-label={label} viewBox={`${-extent} ${-extent} ${extent * 2} ${extent * 2}`}>
+                {marker.enabled && <circle r={marker.radius} fill={marker.fill} stroke={marker.stroke} stroke-width={marker.stroke_width} />}
+                <path d="M-3 0H3M0-3V3" stroke="currentColor" stroke-width="1" />
+              </svg><figcaption>{label}</figcaption></figure>
+            })}
+          </div>
+          <div class="ks-style-fields">{cursorFields.map(field => <StyleControl field={field}
+            value={getConfigPath(props.effectiveDocument, field.path)} appearance={props.appearance}
+            inherited={getConfigPath(props.document, field.path) === undefined}
+            onUpdate={value => update(field.path, value)} onReset={() => update(field.path)} />)}</div>
+          </div>
+        </section>}
+        <section class="ks-settings-section">
+          <header class="ks-settings-section-heading">
+            <h2>{t('模式标识符')}</h2>
+            <p>{t(props.mode ? '位置相对模拟鼠标；正 X 向右，正 Y 向下。重置后继承全局样式。' : '所有模式共用此样式；单个模式可在外观页覆盖。-1 表示自动尺寸。')}</p>
+          </header>
+          <div class="ks-settings-section-body">
         <IndicatorPositionEditor document={previewDocument} mode={mode} appearance={props.appearance} onChange={value => update(`mode_indicator${props.mode ? `.modes.${props.mode}` : ''}.ui.indicator_offset`, value)} />
         <div class="ks-style-fields">{indicatorFields(props.mode).map(field => {
           const key = field.path.split('.').at(-1)!
@@ -39,6 +66,8 @@ export default defineComponent({
             inherited={getConfigPath(props.document, field.path) === undefined}
             onUpdate={value => update(field.path, value)} onReset={() => update(field.path)} />
         })}</div>
+          </div>
+        </section>
       </div>
       return props.mode ? <details class="ks-style-advanced"><summary>{t('模式标识符 · 单独覆盖（可选）')}</summary>{controls}</details> : controls
     }

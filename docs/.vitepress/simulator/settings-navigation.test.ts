@@ -1,7 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { categories, pages, fieldLocation, searchSettings, utilitySearchFields } from '../config-studio/navigation.ts'
-import { commonSearchFields, styleSearchFields } from '../config-studio/fields.ts'
+import { lifecycleModes, lifecycleOptions, lifecycleClickActions, commonSearchFields, styleSearchFields } from '../config-studio/fields.ts'
+
+test('macOS scroll directions and full-page distance are searchable on Normal behavior', () => {
+  for (const path of ['platform.macos.scroll.invert_horizontal', 'platform.macos.scroll.invert_vertical', 'scroll.scroll_step_full']) {
+    assert.deepEqual(fieldLocation(path), { page: 'normal', tab: 'behavior' })
+    assert.ok(searchSettings(commonSearchFields, path).some(entry => entry.path === path))
+  }
+  assert.ok(searchSettings(commonSearchFields, 'macOS 纵向').some(entry => entry.path.endsWith('invert_vertical')))
+  assert.ok(searchSettings(commonSearchFields, 'macOS horizontal').some(entry => entry.path.endsWith('invert_horizontal')))
+})
 
 test('every existing visual control has a reachable category and tab', () => {
   const entries = [...commonSearchFields, ...styleSearchFields, ...utilitySearchFields]
@@ -40,5 +49,19 @@ test('each window mode exposes its own target source control', () => {
     const path = mode + '.target'
     assert.deepEqual(fieldLocation(path), {page: mode, tab: 'behavior'})
     assert.ok(styleSearchFields.some(field => field.path === path))
+  }
+})
+
+test('lifecycle controls cover supported modes and prevent recursive action choices', () => {
+  for (const mode of lifecycleModes) for (const event of ['after_finish', 'after_click'] as const) {
+    const path = `${mode}.lifecycle.${event}`
+    assert.equal(styleSearchFields.filter(field => field.path === path).length, 1)
+    assert.deepEqual(fieldLocation(path), { page: mode, tab: 'behavior' })
+    assert.ok(searchSettings(styleSearchFields, path).some(field => field.path === path))
+    const options = lifecycleOptions(event, ['plugin:screen-selector'])
+    assert.ok(options.includes('plugin:screen-selector'))
+    for (const action of ['keep', 'restart', 'return', 'normal', 'window_editor']) assert.ok(options.includes(action))
+    assert.equal(options.includes('finish'), event === 'after_click')
+    for (const action of lifecycleClickActions) assert.equal(options.includes(action), event === 'after_finish')
   }
 })

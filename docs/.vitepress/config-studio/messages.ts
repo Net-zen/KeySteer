@@ -2,6 +2,23 @@ export type StudioLocale = 'zh' | 'en'
 
 /** Display text only. Command values, paths and user content are never localized. */
 export const englishMessages: Record<string, string> = {
+  '完成后动作': 'Action after completion', '点击后动作': 'Action after click',
+  'keep 保留当前状态；restart 重新开始；return 返回上层模式。点击后仅响应成功的模拟点击。': 'keep preserves state; restart starts over; return restores the parent mode. After-click actions only follow successful synthetic clicks.',
+  '生命周期写入 TOML；网页预览暂不完整模拟这些动作。': 'Lifecycle settings are saved to TOML; the web preview does not fully simulate these actions.',
+
+  '显示光标圆环': 'Show cursor ring', '光标圆环': 'Cursor ring',
+  '圆环半径': 'Ring radius', '圆环线宽': 'Ring stroke width',
+  '左键按下颜色': 'Left button pressed color', '中键按下颜色': 'Middle button pressed color', '右键按下颜色': 'Right button pressed color',
+  '未按下': 'Released', '左键按下': 'Left pressed', '中键按下': 'Middle pressed', '右键按下': 'Right pressed',
+  '预览未按下及左、中、右键按下状态；圆环设置独立于文字标识符。': 'Preview released and left, middle, and right pressed states. Cursor rings are independent of text indicators.',
+
+  'macOS 横向滚动反转': 'macOS horizontal scroll inversion',
+  'macOS 纵向滚动反转': 'macOS vertical scroll inversion',
+  '仅 macOS 生效；反转水平滚轮方向，默认关闭': 'macOS only; reverse horizontal wheel direction. Off by default.',
+  '仅 macOS 生效；反转垂直滚轮方向，默认开启': 'macOS only; reverse vertical wheel direction. On by default.',
+  '整页滚动': 'Full-page scrolling',
+  'scroll_full_* 的像素距离': 'Pixel distance for scroll_full_* actions',
+
   '搜索粘贴快捷键': 'Search paste shortcut', '搜索复制选区快捷键': 'Search copy selection shortcut',
   '搜索剪切快捷键': 'Search cut shortcut', '搜索全选快捷键': 'Search select all shortcut',
   '结束搜索快捷键（多个用空格分隔）': 'Finish search shortcuts (space-separated)', '取消搜索快捷键': 'Cancel search shortcut',

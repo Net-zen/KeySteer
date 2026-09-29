@@ -56,3 +56,20 @@ export function modeIndicatorPreview(document: ConfigDocument, mode: string, app
     boxShadow: `inset 0 0 0 ${Math.max(0, ui.border_width)}px ${color(ui.border_color, theme.accent)}`,
   } }
 }
+
+/** Match presentation::dynamic::cursor_marker, including 20% pressed fill alpha. */
+export function cursorMarkerPreview(document: ConfigDocument, appearance: string, pressed?: 'left' | 'middle' | 'right', mode?: string) {
+  const cursor = { enabled: true, radius: 13, stroke_width: 2,
+    left_pressed_color: '#00FF00FF', middle_pressed_color: '#FF00FFFF', right_pressed_color: '#00FFFFFF',
+    ...document.mode_indicator?.cursor, ...(mode ? document.mode_indicator?.modes?.[mode]?.cursor : {}),
+  }
+  const theme = { ...palettes[appearance === 'light' ? 'light' : 'dark'], ...document.theme?.[appearance] }
+  const color = (value: any, fallback: string): string => typeof value === 'string' ? value : value?.[appearance] ?? fallback
+  const pressedColor = pressed ? color(cursor[`${pressed}_pressed_color`], '') : ''
+  const alpha = pressedColor.length === 9 ? parseInt(pressedColor.slice(7), 16) : 255
+  return { ...cursor,
+    radius: Math.max(1, Number(cursor.radius)), stroke_width: Math.max(0, Number(cursor.stroke_width)),
+    fill: pressedColor ? pressedColor.slice(0, 7) + Math.round(alpha * .2).toString(16).padStart(2, '0') : color(cursor.fill_color, theme.accent.slice(0, 7) + '22'),
+    stroke: pressedColor || color(cursor.stroke_color, theme.accent_alt.slice(0, 7) + 'D2'),
+  }
+}

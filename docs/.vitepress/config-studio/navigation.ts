@@ -1,5 +1,5 @@
 import { translate } from './messages.ts'
-import { indicatorFields, indicatorModes } from './indicator-fields.ts'
+import { cursorFields, indicatorFields, indicatorModes } from './indicator-fields.ts'
 export type SettingsTab = 'keys' | 'behavior' | 'appearance'
 export const tabLabels: Record<SettingsTab, string> = { keys: '按键', behavior: '行为', appearance: '外观' }
 export const categories = [
@@ -26,6 +26,7 @@ export const pages: SettingsPage[] = [
 /** The UI organization never changes the persisted TOML path. */
 export function fieldLocation(path: string): { page: string; tab: SettingsTab } {
   if (path.startsWith('mode_indicator.')) return { page: path.startsWith('mode_indicator.modes.') ? path.split('.')[2] : 'mode_indicator', tab: 'appearance' }
+  if (path.startsWith('platform.macos.scroll.')) return { page: 'normal', tab: 'behavior' }
   const root = path.split('.')[0]
   if (root === 'pointer' || root === 'scroll' || root === 'normal') return { page: 'normal', tab: 'behavior' }
   if (root === 'theme' || root === 'key_help') return { page: 'key_help', tab: 'appearance' }
@@ -35,6 +36,7 @@ export function fieldLocation(path: string): { page: string; tab: SettingsTab } 
 }
 export interface SearchEntry { path: string; label: string; page: string; tab: SettingsTab }
 export const utilitySearchFields: SearchEntry[] = [
+  ...cursorFields.map(field => ({ ...field, ...fieldLocation(field.path) })),
   ...Object.entries({ targeting: '启用 Normal 盲操定位', method: '盲操定位方式', reset_on: '盲操重置条件', grid_cols: '盲操列数', grid_rows: '盲操行数', keys: '盲操定位键', max_depth: '盲操最大层数', min_size_width: '盲操最小宽度', min_size_height: '盲操最小高度', layers: '盲操按层覆盖' }).map(([field, label]) => ({ path: `normal.targeting${field === 'targeting' ? '' : `.${field}`}`, label, page: 'normal', tab: 'behavior' as const })),
   ...[undefined, ...indicatorModes].flatMap(mode => indicatorFields(mode).map(field => ({ ...field, ...fieldLocation(field.path) }))),
   ...Object.entries({ key: '触发键', enabled: '启用快速切换', hold_ms: '长按毫秒', position: '面板位置', blacklist: '面板黑名单' }).map(([field, label]) => ({ path: `quick_switch.${field}`, label, page: 'quick_switch', tab: 'behavior' as const })),

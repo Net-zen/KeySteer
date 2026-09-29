@@ -195,7 +195,19 @@ for (const mode of ['window_quick', 'window_editor', 'window_restore', 'window_t
   if (mode === 'window_quick') own.layout.push({ path: `${mode}.split_ratios`, label: '比例（逗号分隔，支持分数）', kind: 'ratios' })
   if (mode !== 'window_tab') own.layout.push({ path: `${mode}.gap`, label: '布局间距', kind: 'number', min: 0, step: 1 })
   if (mode === 'window_editor') own.advanced.push({ path: `${mode}.resize_step`, label: '分割线步长', kind: 'number', min: 0 }, { path: `${mode}.resize_speed`, label: '分割线速度', kind: 'number', min: 0 })
-  if (mode === 'window_restore') own.advanced.push({ path: `${mode}.lifecycle.after_finish`, label: '恢复成功后', kind: 'select', options: ['window_editor', 'window', 'window_restore', 'keep', 'normal', 'idle'] })
+}
+
+export const lifecycleModes = ['grid', 'recursive_grid', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab'] as const
+export const lifecycleClickActions = ['left_click', 'right_click', 'middle_click', 'double_click']
+export function lifecycleOptions(event: 'after_finish' | 'after_click', plugins: string[] = []): string[] {
+  return ['keep', 'restart', 'return', ...(event === 'after_finish' ? lifecycleClickActions : ['finish']),
+    'idle', 'normal', 'text_input', ...lifecycleModes, ...plugins]
+}
+for (const mode of lifecycleModes) {
+  fields[mode].advanced.push(
+    { path: `${mode}.lifecycle.after_finish`, label: '完成后动作', kind: 'select', options: lifecycleOptions('after_finish') },
+    { path: `${mode}.lifecycle.after_click`, label: '点击后动作', kind: 'select', options: lifecycleOptions('after_click') },
+  )
 }
 
 export const paletteFields = ['surface', 'accent', 'accent_alt', 'on_accent_alt', 'text'] as const
@@ -244,6 +256,8 @@ export const frequentFields: ConfigField[] = [
     { value: 'hybrid', label: 'Hybrid（默认）' },
     { value: 'axtree', label: 'Accessibility Tree' },
   ] },
+  { path: 'platform.macos.scroll.invert_horizontal', label: 'macOS 横向滚动反转', description: '仅 macOS 生效；反转水平滚轮方向，默认关闭', kind: 'boolean' },
+  { path: 'platform.macos.scroll.invert_vertical', label: 'macOS 纵向滚动反转', description: '仅 macOS 生效；反转垂直滚轮方向，默认开启', kind: 'boolean' },
 ]
 
 export const advancedFields: ConfigField[] = [
@@ -253,6 +267,7 @@ export const advancedFields: ConfigField[] = [
   { path: 'pointer.fast_multiplier', label: 'Fast 倍率', description: 'fast 修饰键的速度倍率', kind: 'number', min: 0.1, max: 10, step: 0.1 },
   { path: 'scroll.scroll_step', label: '滚动步长', description: '普通滚动一次的像素距离', kind: 'number', min: 1, max: 5000, step: 10 },
   { path: 'scroll.scroll_step_half', label: '半页滚动', description: 'scroll_half_* 的像素距离', kind: 'number', min: 1, max: 50000, step: 50 },
+  { path: 'scroll.scroll_step_full', label: '整页滚动', description: 'scroll_full_* 的像素距离', kind: 'number', min: 1, max: 2147483647, step: 1000 },
   { path: 'grid.cursor_follow_selection', label: 'Grid 光标跟随', description: '每次选中后移到当前单元格中心', kind: 'boolean' },
   { path: 'recursive_grid.cursor_follow_selection', label: '递归光标跟随', description: '每次选中后移到当前单元格中心', kind: 'boolean' },
   { path: 'ui_hint.hint_characters', label: '提示字符', description: '用于生成 UI Hint 标签的字符集合', kind: 'text' },

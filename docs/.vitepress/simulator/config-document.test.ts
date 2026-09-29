@@ -3,6 +3,23 @@ import test from 'node:test'
 import { reactive } from 'vue'
 import { readFile } from 'node:fs/promises'
 
+test('macOS scroll edits export at platform scope and reset to shipped defaults', async () => {
+  const { setConfigPath, deleteConfigPath } = await import('../config-studio/document.ts')
+  const { stringify } = await import('smol-toml')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  const document = parseConfigDocument('[platform.macos.scroll]\ninvert_horizontal = true\n[scroll]\nscroll_step = 75').document
+  assert.equal(resolveConfigDocument(defaults, document).platform.macos.scroll.invert_vertical, true)
+  setConfigPath(document, 'platform.macos.scroll.invert_vertical', false)
+  setConfigPath(document, 'scroll.scroll_step_full', 900000)
+  const exported = parseConfigDocument(stringify(document)).document
+  assert.deepEqual({ ...exported.platform.macos.scroll }, { invert_horizontal: true, invert_vertical: false })
+  assert.deepEqual({ ...exported.scroll }, { scroll_step: 75, scroll_step_full: 900000 })
+  assert.equal(exported.platform.windows, undefined)
+  deleteConfigPath(exported, 'platform.macos.scroll.invert_vertical')
+  assert.equal(resolveConfigDocument(defaults, exported).platform.macos.scroll.invert_vertical, true)
+  assert.equal(exported.platform.macos.scroll.invert_horizontal, true)
+})
+
 test('optional Normal targeting stays absent by default and survives import/export', async () => {
   const { stringify } = await import('smol-toml')
   const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document

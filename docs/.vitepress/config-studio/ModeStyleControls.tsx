@@ -13,7 +13,7 @@ import {
   type ConfigDocument,
 } from './document'
 
-import { fields, paletteFields, paletteLabels, type TargetingMode, type Appearance, type StyleField } from './fields'
+import { lifecycleOptions, fields, paletteFields, paletteLabels, type TargetingMode, type Appearance, type StyleField } from './fields'
 export default defineComponent({
   name: 'ModeStyleControls',
   props: {
@@ -36,6 +36,7 @@ export default defineComponent({
       ((field.path.startsWith('window.card.') || field.path.startsWith('window_editor.card.')) || /^window(?:_\w+)?\.ui\./.test(field.path))
     const fieldValue = (field: StyleField): unknown => {
       const configured = getConfigPath(props.effectiveDocument, field.path)
+      if (field.path.includes('.lifecycle.')) return configured ?? 'keep'
       if (configured !== undefined || !isCardField(field)) return configured
       if (field.path.endsWith('.ui.border_width')) return 1
       if (field.kind !== 'color') return undefined
@@ -64,7 +65,7 @@ export default defineComponent({
       <div class="ks-style-fields">
         {items.filter(field => { const location = fieldLocation(field.path); return location.page === props.page && location.tab === props.tab }).map((field) => (
           <StyleControl
-            field={field}
+            field={field.path.includes('.lifecycle.') ? { ...field, options: lifecycleOptions(field.path.endsWith('after_finish') ? 'after_finish' : 'after_click', Object.keys(props.effectiveDocument.plugin_modes ?? {})) } : field}
             value={fieldValue(field)}
             appearance={props.appearance}
             inherited={getConfigPath(props.document, field.path) === undefined}
@@ -84,7 +85,7 @@ export default defineComponent({
       return (
         <div class="ks-style-controls">
           <div class="ks-style-heading">
-            <div><strong>{props.tab === 'behavior' ? t("行为参数") : t("外观设置")}</strong><span>{t("修改即时显示在右侧预览；默认值继续继承")}</span></div>
+            <div><h2>{props.tab === 'behavior' ? t("行为参数") : t("外观设置")}</h2><span>{t("修改即时显示在右侧预览；默认值继续继承")}</span></div>
             <div class="ks-appearance-switch" aria-label={t("预览配色")}>
               {(['dark', 'light'] as Appearance[]).map((appearance) => (
                 <button class={{ active: props.appearance === appearance }} onClick={() => emit('appearanceChange', appearance)}>
@@ -121,9 +122,19 @@ export default defineComponent({
             <span class="ks-style-section-label">{t("常用布局")}</span>
             {renderFields(modeFields.value.layout.filter(field => !isCardField(field)))}
           </div>
+          {props.tab === 'behavior' && modeFields.value.advanced.some(field => field.path.includes('.lifecycle.')) && <section class="ks-style-section ks-settings-section">
+            <header class="ks-settings-section-heading">
+              <h2>{t('生命周期')}</h2>
+              <p>{t('keep 保留当前状态；restart 重新开始；return 返回上层模式。点击后仅响应成功的模拟点击。')}</p>
+              <p>{t('生命周期写入 TOML；网页预览暂不完整模拟这些动作。')}</p>
+            </header>
+            <div class="ks-settings-section-body">
+              {renderFields(modeFields.value.advanced.filter(field => field.path.includes('.lifecycle.')))}
+            </div>
+          </section>}
           <details class="ks-style-advanced">
             <summary>{t("高级设置")}</summary>
-            {renderFields(modeFields.value.advanced.filter(field => !isCardField(field)))}
+            {renderFields(modeFields.value.advanced.filter(field => !isCardField(field) && !field.path.includes('.lifecycle.')))}
           </details>
         </div>
       )

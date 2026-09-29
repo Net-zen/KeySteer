@@ -2,9 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { stringify } from 'smol-toml'
-import { resolveModeIndicator, modeIndicatorPreview } from './mode-indicator.ts'
+import { cursorMarkerPreview, resolveModeIndicator, modeIndicatorPreview } from './mode-indicator.ts'
 import { cloneConfigDocument, parseConfigDocument, resolveConfigDocument, setConfigPath, deleteConfigPath } from '../config-studio/document.ts'
-import { indicatorFields } from '../config-studio/indicator-fields.ts'
+import { cursorFields, indicatorFields } from '../config-studio/indicator-fields.ts'
 import { fieldLocation, pages, searchSettings, utilitySearchFields } from '../config-studio/navigation.ts'
 
 const defaults = parseConfigDocument(readFileSync(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
@@ -100,5 +100,40 @@ test('shared and per-mode badge controls can be found on appearance pages', () =
       assert.ok(pages.find(page => page.id === location.page)?.tabs.includes('appearance'))
       assert.ok(searchSettings(utilitySearchFields, field.path).some(result => result.path === field.path))
     }
+  }
+})
+
+test('cursor ring geometry, pressed alpha and per-mode overrides match native presentation', () => {
+  const doc = cloneConfigDocument(defaults)
+  const original = cursorMarkerPreview(doc, 'light')
+  assert.equal(original.radius, 13)
+  assert.equal(original.stroke_width, 2)
+  assert.equal(original.fill, doc.theme.light.accent.slice(0, 7) + '22')
+  setConfigPath(doc, 'mode_indicator.cursor.radius', 24)
+  setConfigPath(doc, 'mode_indicator.cursor.stroke_width', 0)
+  setConfigPath(doc, 'mode_indicator.cursor.left_pressed_color', '#12345680')
+  const marker = cursorMarkerPreview(doc, 'light', 'left')
+  assert.equal(marker.radius, 24)
+  assert.equal(marker.stroke_width, 0)
+  assert.equal(marker.stroke, '#12345680')
+  assert.equal(marker.fill, '#1234561a')
+  assert.equal(cursorMarkerPreview(doc, 'dark', 'middle').stroke, '#FF00FFFF')
+  assert.equal(cursorMarkerPreview(doc, 'dark', 'right').stroke, '#00FFFFFF')
+  setConfigPath(doc, 'mode_indicator.modes.normal.cursor.enabled', false)
+  assert.equal(cursorMarkerPreview(doc, 'light', undefined, 'normal').enabled, false)
+  assert.equal(cursorMarkerPreview(doc, 'light').enabled, true)
+})
+
+test('all six cursor controls are searchable, exportable and reset independently', () => {
+  assert.equal(cursorFields.length, 6)
+  const doc = parseConfigDocument('[mode_indicator.cursor]\nradius = 24\nleft_pressed_color = "#12345680"').document
+  const saved = parseConfigDocument(stringify(doc)).document
+  assert.equal(saved.mode_indicator.cursor.radius, 24)
+  assert.equal(saved.mode_indicator.cursor.left_pressed_color, '#12345680')
+  deleteConfigPath(saved, 'mode_indicator.cursor.radius')
+  assert.equal(cursorMarkerPreview(resolveConfigDocument(defaults, saved), 'light').radius, 13)
+  for (const field of cursorFields) {
+    assert.deepEqual(fieldLocation(field.path), { page: 'mode_indicator', tab: 'appearance' })
+    assert.ok(searchSettings(utilitySearchFields, field.path).some(entry => entry.path === field.path))
   }
 })
