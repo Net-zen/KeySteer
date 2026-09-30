@@ -1,0 +1,43 @@
+name: Windows legacy CPU package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    name: Windows x64 (generic CPU)
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      # Do not inherit the GitHub runner's AVX2/BMI2 capabilities.
+      RUSTFLAGS: -C target-cpu=x86-64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up release Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build and package portable Windows x64
+        shell: pwsh
+        run: |
+          ./packaging/windows/package.ps1 -Target x86_64-pc-windows-msvc -OutputRoot dist-legacy
+          $archives = @(Get-ChildItem -LiteralPath 'dist-legacy/x86_64-pc-windows-msvc' -Filter '*.zip' -File)
+          if ($archives.Count -ne 1) {
+            throw "Expected one portable ZIP, found $($archives.Count)"
+          }
+          Rename-Item -LiteralPath $archives[0].FullName -NewName "$($archives[0].BaseName)-legacy-cpu.zip"
+
+      - name: Upload legacy CPU package
+        uses: actions/upload-artifact@v7
+        with:
+          name: KeySteer-Windows-x64-legacy-cpu
+          path: dist-legacy/x86_64-pc-windows-msvc/*-legacy-cpu.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
