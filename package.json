@@ -2,7 +2,7 @@
   "name": "keysteer-docs",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.6.0",
+  "packageManager": "pnpm@12.8.1",
   "engines": {
     "node": ">=24"
   },
@@ -21,7 +21,7 @@
     "cytoscape-cose-bilkent": "^4.1.0",
     "dayjs": "^1.11.23",
     "debug": "^4.4.3",
-    "mermaid": "^12.0.0",
+    "mermaid": "^12.1.0",
     "smol-toml": "1.9.0",
     "typescript": "7.0.2",
     "vitepress": "1.6.4",
