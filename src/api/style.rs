@@ -10,18 +10,18 @@ use serde::{Deserialize, Serialize};
 use crate::api::backend::Appearance;
 use crate::api::overlay::{Color, LabelStyle, Placement, SharedLabelStyle, TextAlignment};
 
-use super::theme::{Palette, ThemedColor};
+use super::theme::{ColorValue, CompiledColor, Palette, ThemedColor};
 
 /// Runtime-neutral mode badge and cursor decoration settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ModeIndicator {
-    pub cursor: CursorIndicatorUi,
-    pub ui: IndicatorUi,
-    pub modes: BTreeMap<String, ModeIndicatorEntry>,
+pub struct ModeIndicator<C: ColorValue = ThemedColor> {
+    pub cursor: CursorIndicatorUi<C>,
+    pub ui: IndicatorUi<C>,
+    pub modes: BTreeMap<String, ModeIndicatorEntry<C>>,
 }
 
-impl Default for ModeIndicator {
+impl<C: ColorValue> Default for ModeIndicator<C> {
     fn default() -> Self {
         let ui = IndicatorUi {
             label: LabelUi {
@@ -54,8 +54,8 @@ impl Default for ModeIndicator {
     }
 }
 
-impl ModeIndicator {
-    pub fn for_mode(&self, mode_id: &str, display_name: &str) -> Option<(String, IndicatorUi)> {
+impl<C: ColorValue> ModeIndicator<C> {
+    pub fn for_mode(&self, mode_id: &str, display_name: &str) -> Option<(String, IndicatorUi<C>)> {
         self.for_mode_with(mode_id, || display_name.to_owned())
     }
 
@@ -63,7 +63,7 @@ impl ModeIndicator {
         &self,
         mode_id: &str,
         display_name: impl FnOnce() -> String,
-    ) -> Option<(String, IndicatorUi)> {
+    ) -> Option<(String, IndicatorUi<C>)> {
         let entry = self.modes.get(mode_id);
         let enabled = entry
             .and_then(|entry| entry.enabled)
@@ -80,15 +80,10 @@ impl ModeIndicator {
         Some((text, ui))
     }
 
-    pub fn cursor_for_mode(&self, mode_id: &str) -> Option<CursorIndicatorUi> {
-        self.cursor_for_mode_ref(mode_id)
-            .map(ResolvedCursorIndicatorUi::into_owned)
-    }
-
     pub(crate) fn cursor_for_mode_ref(
         &self,
         mode_id: &str,
-    ) -> Option<ResolvedCursorIndicatorUi<'_>> {
+    ) -> Option<ResolvedCursorIndicatorUi<'_, C>> {
         if mode_id == "idle" {
             return None;
         }
@@ -124,39 +119,24 @@ impl ModeIndicator {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct ResolvedCursorIndicatorUi<'a> {
+pub(crate) struct ResolvedCursorIndicatorUi<'a, C: ColorValue = ThemedColor> {
     pub enabled: bool,
     pub radius: i32,
-    pub fill_color: Option<&'a ThemedColor>,
-    pub stroke_color: Option<&'a ThemedColor>,
-    pub left_pressed_color: Option<&'a ThemedColor>,
-    pub middle_pressed_color: Option<&'a ThemedColor>,
-    pub right_pressed_color: Option<&'a ThemedColor>,
+    pub fill_color: Option<&'a C>,
+    pub stroke_color: Option<&'a C>,
+    pub left_pressed_color: Option<&'a C>,
+    pub middle_pressed_color: Option<&'a C>,
+    pub right_pressed_color: Option<&'a C>,
     pub stroke_width: i32,
 }
 
-impl ResolvedCursorIndicatorUi<'_> {
-    fn into_owned(self) -> CursorIndicatorUi {
-        CursorIndicatorUi {
-            enabled: self.enabled,
-            radius: self.radius,
-            fill_color: self.fill_color.cloned(),
-            stroke_color: self.stroke_color.cloned(),
-            left_pressed_color: self.left_pressed_color.cloned(),
-            middle_pressed_color: self.middle_pressed_color.cloned(),
-            right_pressed_color: self.right_pressed_color.cloned(),
-            stroke_width: self.stroke_width,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ModeIndicatorEntry {
+pub struct ModeIndicatorEntry<C: ColorValue = ThemedColor> {
     pub enabled: Option<bool>,
     pub text: Option<String>,
-    pub cursor: CursorIndicatorOverride,
-    pub ui: IndicatorUiOverride,
+    pub cursor: CursorIndicatorOverride<C>,
+    pub ui: IndicatorUiOverride<C>,
 }
 
 pub const AUTO: i32 = -1;
@@ -172,7 +152,11 @@ fn font_size_default() -> i32 {
 }
 
 /// Resolve an optional configured color against a derived default.
-pub fn resolve(configured: Option<&ThemedColor>, appearance: Appearance, derived: Color) -> Color {
+pub fn resolve<C: ColorValue>(
+    configured: Option<&C>,
+    appearance: Appearance,
+    derived: Color,
+) -> Color {
     configured
         .and_then(|c| c.resolve(appearance))
         .unwrap_or(derived)
@@ -277,7 +261,7 @@ pub fn percentage_position(position: &[String; 4]) -> Result<[f64; 4], &'static 
 /// Visual style shared by hint labels, grid cells and badges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct LabelUi {
+pub struct LabelUi<C: ColorValue = ThemedColor> {
     pub font_size: i32,
     /// Empty means the platform default UI font.
     pub font_family: String,
@@ -288,10 +272,10 @@ pub struct LabelUi {
     /// `-1` = auto.
     pub padding_y: i32,
     pub border_width: i32,
-    pub background_color: Option<ThemedColor>,
-    pub text_color: Option<ThemedColor>,
-    pub matched_text_color: Option<ThemedColor>,
-    pub border_color: Option<ThemedColor>,
+    pub background_color: Option<C>,
+    pub text_color: Option<C>,
+    pub matched_text_color: Option<C>,
+    pub border_color: Option<C>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -336,7 +320,7 @@ impl QuickSwitchStyles {
     }
 }
 
-impl Default for LabelUi {
+impl<C: ColorValue> Default for LabelUi<C> {
     fn default() -> Self {
         Self {
             font_size: font_size_default(),
@@ -353,7 +337,7 @@ impl Default for LabelUi {
     }
 }
 
-impl LabelUi {
+impl<C: ColorValue> LabelUi<C> {
     /// Turn configuration into a concrete [`LabelStyle`].
     ///
     /// `background`, `text` and `border` are the theme-derived defaults used
@@ -405,15 +389,15 @@ impl LabelUi {
 /// `[ui_hint.boundary_highlight]`: optional outlines around hinted elements.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct BoundaryHighlight {
+pub struct BoundaryHighlight<C: ColorValue = ThemedColor> {
     pub enabled: bool,
     pub border_width: i32,
     pub border_radius: i32,
-    pub background_color: Option<ThemedColor>,
-    pub border_color: Option<ThemedColor>,
+    pub background_color: Option<C>,
+    pub border_color: Option<C>,
 }
 
-impl Default for BoundaryHighlight {
+impl<C: ColorValue> Default for BoundaryHighlight<C> {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -425,7 +409,7 @@ impl Default for BoundaryHighlight {
     }
 }
 
-impl BoundaryHighlight {
+impl<C: ColorValue> BoundaryHighlight<C> {
     pub fn fill(&self, palette: &Palette) -> Color {
         resolve(
             self.background_color.as_ref(),
@@ -752,14 +736,14 @@ pub fn percentage_region(
 /// `[mode_indicator.ui]`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct IndicatorUi {
+pub struct IndicatorUi<C: ColorValue = ThemedColor> {
     #[serde(flatten)]
-    pub label: LabelUi,
+    pub label: LabelUi<C>,
     /// Shared right/top anchor relative to the cursor hotspot, in scene units.
     pub indicator_offset: [i16; 2],
 }
 
-impl Default for IndicatorUi {
+impl<C: ColorValue> Default for IndicatorUi<C> {
     fn default() -> Self {
         Self {
             label: LabelUi::default(),
@@ -770,75 +754,48 @@ impl Default for IndicatorUi {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct CursorIndicatorUi {
+pub struct CursorIndicatorUi<C: ColorValue = ThemedColor> {
     pub enabled: bool,
     pub radius: i32,
-    pub fill_color: Option<ThemedColor>,
-    pub stroke_color: Option<ThemedColor>,
-    pub left_pressed_color: Option<ThemedColor>,
-    pub middle_pressed_color: Option<ThemedColor>,
-    pub right_pressed_color: Option<ThemedColor>,
+    pub fill_color: Option<C>,
+    pub stroke_color: Option<C>,
+    pub left_pressed_color: Option<C>,
+    pub middle_pressed_color: Option<C>,
+    pub right_pressed_color: Option<C>,
     pub stroke_width: i32,
 }
 
-impl Default for CursorIndicatorUi {
+impl<C: ColorValue> Default for CursorIndicatorUi<C> {
     fn default() -> Self {
         Self {
             enabled: true,
             radius: 13,
             fill_color: None,
             stroke_color: None,
-            left_pressed_color: Some(ThemedColor::Both("#00FF00FF".into())),
-            middle_pressed_color: Some(ThemedColor::Both("#FF00FFFF".into())),
-            right_pressed_color: Some(ThemedColor::Both("#00FFFFFF".into())),
+            left_pressed_color: Some(ThemedColor::Both("#00FF00FF".into()).into()),
+            middle_pressed_color: Some(ThemedColor::Both("#FF00FFFF".into()).into()),
+            right_pressed_color: Some(ThemedColor::Both("#00FFFFFF".into()).into()),
             stroke_width: 2,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct CursorIndicatorOverride {
+pub struct CursorIndicatorOverride<C: ColorValue = ThemedColor> {
     pub enabled: Option<bool>,
     pub radius: Option<i32>,
-    pub fill_color: Option<ThemedColor>,
-    pub stroke_color: Option<ThemedColor>,
-    pub left_pressed_color: Option<ThemedColor>,
-    pub middle_pressed_color: Option<ThemedColor>,
-    pub right_pressed_color: Option<ThemedColor>,
+    pub fill_color: Option<C>,
+    pub stroke_color: Option<C>,
+    pub left_pressed_color: Option<C>,
+    pub middle_pressed_color: Option<C>,
+    pub right_pressed_color: Option<C>,
     pub stroke_width: Option<i32>,
 }
 
-impl CursorIndicatorOverride {
-    pub fn apply(&self, base: &CursorIndicatorUi) -> CursorIndicatorUi {
-        CursorIndicatorUi {
-            enabled: self.enabled.unwrap_or(base.enabled),
-            radius: self.radius.unwrap_or(base.radius),
-            fill_color: self.fill_color.clone().or_else(|| base.fill_color.clone()),
-            stroke_color: self
-                .stroke_color
-                .clone()
-                .or_else(|| base.stroke_color.clone()),
-            left_pressed_color: self
-                .left_pressed_color
-                .clone()
-                .or_else(|| base.left_pressed_color.clone()),
-            middle_pressed_color: self
-                .middle_pressed_color
-                .clone()
-                .or_else(|| base.middle_pressed_color.clone()),
-            right_pressed_color: self
-                .right_pressed_color
-                .clone()
-                .or_else(|| base.right_pressed_color.clone()),
-            stroke_width: self.stroke_width.unwrap_or(base.stroke_width),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct IndicatorUiOverride {
+pub struct IndicatorUiOverride<C: ColorValue = ThemedColor> {
     pub indicator_offset: Option<[i16; 2]>,
     pub font_size: Option<i32>,
     pub font_family: Option<String>,
@@ -846,14 +803,14 @@ pub struct IndicatorUiOverride {
     pub padding_x: Option<i32>,
     pub padding_y: Option<i32>,
     pub border_width: Option<i32>,
-    pub background_color: Option<ThemedColor>,
-    pub text_color: Option<ThemedColor>,
-    pub matched_text_color: Option<ThemedColor>,
-    pub border_color: Option<ThemedColor>,
+    pub background_color: Option<C>,
+    pub text_color: Option<C>,
+    pub matched_text_color: Option<C>,
+    pub border_color: Option<C>,
 }
 
-impl IndicatorUiOverride {
-    pub fn apply(&self, base: &IndicatorUi) -> IndicatorUi {
+impl<C: ColorValue> IndicatorUiOverride<C> {
+    pub fn apply(&self, base: &IndicatorUi<C>) -> IndicatorUi<C> {
         let mut resolved = base.clone();
         if let Some(value) = self.indicator_offset {
             resolved.indicator_offset = value;
@@ -902,9 +859,77 @@ mod tests {
     use crate::api::geometry::Rect;
 
     #[test]
+    fn compiled_indicator_preserves_overrides_and_live_palette_defaults() {
+        let source: ModeIndicator = toml::from_str(
+            r##"
+            [ui]
+            text_color = { light = "#aAbBcCFF", dark = "#12345680" }
+            [cursor]
+            stroke_color = "#00000000"
+            [modes.normal.ui]
+            background_color = "#11223344"
+            [modes.normal.cursor]
+            left_pressed_color = { light = "#FF000080", dark = "#00FF0040" }
+        "##,
+        )
+        .unwrap();
+        let original = toml::to_string(&source).unwrap();
+        let compiled = source.compile();
+        assert_eq!(toml::to_string(&source).unwrap(), original);
+        assert!(original.contains("#aAbBcCFF"));
+        for mode in ["normal", "ui_hint", "idle"] {
+            let before = source.for_mode(mode, mode);
+            let after = compiled.for_mode(mode, mode);
+            assert_eq!(before.is_some(), after.is_some());
+            for appearance in [Appearance::Light, Appearance::Dark] {
+                let palette = Palette {
+                    appearance,
+                    surface: Color::rgb(7, 8, 9),
+                    ..Default::default()
+                };
+                if let (Some((name, ui)), Some((compiled_name, compiled_ui))) = (&before, &after) {
+                    assert_eq!(name, compiled_name);
+                    assert_eq!(ui.indicator_offset, compiled_ui.indicator_offset);
+                    assert_eq!(
+                        ui.label
+                            .resolve(&palette, palette.surface, palette.text, palette.accent),
+                        compiled_ui.label.resolve(
+                            &palette,
+                            palette.surface,
+                            palette.text,
+                            palette.accent
+                        ),
+                    );
+                }
+                let cursor = source.cursor_for_mode_ref(mode);
+                let compiled_cursor = compiled.cursor_for_mode_ref(mode);
+                assert_eq!(cursor.is_some(), compiled_cursor.is_some());
+                if let (Some(a), Some(b)) = (cursor, compiled_cursor) {
+                    assert_eq!(
+                        (a.enabled, a.radius, a.stroke_width),
+                        (b.enabled, b.radius, b.stroke_width)
+                    );
+                    for (a, b) in [
+                        (a.fill_color, b.fill_color),
+                        (a.stroke_color, b.stroke_color),
+                        (a.left_pressed_color, b.left_pressed_color),
+                        (a.middle_pressed_color, b.middle_pressed_color),
+                        (a.right_pressed_color, b.right_pressed_color),
+                    ] {
+                        assert_eq!(
+                            resolve(a, appearance, palette.accent),
+                            resolve(b, appearance, palette.accent)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn auto_padding_scales_with_font_size() {
         let palette = Palette::default();
-        let ui = LabelUi {
+        let ui: LabelUi = LabelUi {
             font_size: 20,
             ..Default::default()
         };
@@ -917,7 +942,7 @@ mod tests {
     #[test]
     fn explicit_values_override_auto() {
         let palette = Palette::default();
-        let ui = LabelUi {
+        let ui: LabelUi = LabelUi {
             padding_x: 3,
             border_radius: 0,
             ..Default::default()
@@ -930,7 +955,7 @@ mod tests {
     #[test]
     fn configured_color_wins_over_derived_default() {
         let palette = Palette::default();
-        let ui = LabelUi {
+        let ui: LabelUi = LabelUi {
             background_color: Some(ThemedColor::Both("#FF0000FF".into())),
             ..Default::default()
         };
@@ -949,21 +974,21 @@ mod tests {
 /// Available-key panel style; typography and layout adapt to this compact block.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct KeyHelp {
+pub struct KeyHelp<C: ColorValue = ThemedColor> {
     pub mouse_key_help: bool,
     pub window_key_help: bool,
     pub font_family: String,
     pub font_size: f64,
-    pub background_color: Option<ThemedColor>,
-    pub text_color: Option<ThemedColor>,
-    pub border_color: Option<ThemedColor>,
+    pub background_color: Option<C>,
+    pub text_color: Option<C>,
+    pub border_color: Option<C>,
     pub border_width: f64,
     pub border_radius: f64,
     pub padding_x: f64,
     pub padding_y: f64,
 }
 
-impl Default for KeyHelp {
+impl<C: ColorValue> Default for KeyHelp<C> {
     fn default() -> Self {
         Self {
             mouse_key_help: false,
@@ -1264,4 +1289,189 @@ impl ResolvedWindowStyle {
             min_height,
         }
     }
+}
+
+impl<C: ColorValue> Default for ModeIndicatorEntry<C> {
+    fn default() -> Self {
+        Self {
+            enabled: None,
+            text: None,
+            cursor: Default::default(),
+            ui: Default::default(),
+        }
+    }
+}
+
+impl<C: ColorValue> Default for CursorIndicatorOverride<C> {
+    fn default() -> Self {
+        Self {
+            enabled: None,
+            radius: None,
+            fill_color: None,
+            stroke_color: None,
+            left_pressed_color: None,
+            middle_pressed_color: None,
+            right_pressed_color: None,
+            stroke_width: None,
+        }
+    }
+}
+
+impl<C: ColorValue> Default for IndicatorUiOverride<C> {
+    fn default() -> Self {
+        Self {
+            indicator_offset: None,
+            font_size: None,
+            font_family: None,
+            border_radius: None,
+            padding_x: None,
+            padding_y: None,
+            border_width: None,
+            background_color: None,
+            text_color: None,
+            matched_text_color: None,
+            border_color: None,
+        }
+    }
+}
+
+impl ModeIndicator {
+    pub fn compile(&self) -> ModeIndicator<CompiledColor> {
+        ModeIndicator {
+            cursor: self.cursor.compile(),
+            ui: self.ui.compile(),
+            modes: self
+                .modes
+                .iter()
+                .map(|(id, entry)| (id.clone(), entry.compile()))
+                .collect(),
+        }
+    }
+}
+
+impl ModeIndicatorEntry {
+    pub fn compile(&self) -> ModeIndicatorEntry<CompiledColor> {
+        ModeIndicatorEntry {
+            enabled: self.enabled,
+            text: self.text.clone(),
+            cursor: self.cursor.compile(),
+            ui: self.ui.compile(),
+        }
+    }
+}
+
+impl LabelUi {
+    pub fn compile(&self) -> LabelUi<CompiledColor> {
+        LabelUi {
+            font_size: self.font_size,
+            font_family: self.font_family.clone(),
+            border_radius: self.border_radius,
+            padding_x: self.padding_x,
+            padding_y: self.padding_y,
+            border_width: self.border_width,
+            background_color: self.background_color.as_ref().map(CompiledColor::from),
+            text_color: self.text_color.as_ref().map(CompiledColor::from),
+            matched_text_color: self.matched_text_color.as_ref().map(CompiledColor::from),
+            border_color: self.border_color.as_ref().map(CompiledColor::from),
+        }
+    }
+}
+
+impl BoundaryHighlight {
+    pub fn compile(&self) -> BoundaryHighlight<CompiledColor> {
+        BoundaryHighlight {
+            enabled: self.enabled,
+            border_width: self.border_width,
+            border_radius: self.border_radius,
+            background_color: self.background_color.as_ref().map(CompiledColor::from),
+            border_color: self.border_color.as_ref().map(CompiledColor::from),
+        }
+    }
+}
+
+impl IndicatorUi {
+    pub fn compile(&self) -> IndicatorUi<CompiledColor> {
+        IndicatorUi {
+            label: self.label.compile(),
+            indicator_offset: self.indicator_offset,
+        }
+    }
+}
+
+impl CursorIndicatorUi {
+    pub fn compile(&self) -> CursorIndicatorUi<CompiledColor> {
+        CursorIndicatorUi {
+            enabled: self.enabled,
+            radius: self.radius,
+            fill_color: self.fill_color.as_ref().map(CompiledColor::from),
+            stroke_color: self.stroke_color.as_ref().map(CompiledColor::from),
+            left_pressed_color: self.left_pressed_color.as_ref().map(CompiledColor::from),
+            middle_pressed_color: self.middle_pressed_color.as_ref().map(CompiledColor::from),
+            right_pressed_color: self.right_pressed_color.as_ref().map(CompiledColor::from),
+            stroke_width: self.stroke_width,
+        }
+    }
+}
+
+impl CursorIndicatorOverride {
+    pub fn compile(&self) -> CursorIndicatorOverride<CompiledColor> {
+        CursorIndicatorOverride {
+            enabled: self.enabled,
+            radius: self.radius,
+            fill_color: self.fill_color.as_ref().map(CompiledColor::from),
+            stroke_color: self.stroke_color.as_ref().map(CompiledColor::from),
+            left_pressed_color: self.left_pressed_color.as_ref().map(CompiledColor::from),
+            middle_pressed_color: self.middle_pressed_color.as_ref().map(CompiledColor::from),
+            right_pressed_color: self.right_pressed_color.as_ref().map(CompiledColor::from),
+            stroke_width: self.stroke_width,
+        }
+    }
+}
+
+impl IndicatorUiOverride {
+    pub fn compile(&self) -> IndicatorUiOverride<CompiledColor> {
+        IndicatorUiOverride {
+            indicator_offset: self.indicator_offset,
+            font_size: self.font_size,
+            font_family: self.font_family.clone(),
+            border_radius: self.border_radius,
+            padding_x: self.padding_x,
+            padding_y: self.padding_y,
+            border_width: self.border_width,
+            background_color: self.background_color.as_ref().map(CompiledColor::from),
+            text_color: self.text_color.as_ref().map(CompiledColor::from),
+            matched_text_color: self.matched_text_color.as_ref().map(CompiledColor::from),
+            border_color: self.border_color.as_ref().map(CompiledColor::from),
+        }
+    }
+}
+
+impl KeyHelp {
+    pub fn compile(&self) -> KeyHelp<CompiledColor> {
+        KeyHelp {
+            mouse_key_help: self.mouse_key_help,
+            window_key_help: self.window_key_help,
+            font_family: self.font_family.clone(),
+            font_size: self.font_size,
+            background_color: self.background_color.as_ref().map(CompiledColor::from),
+            text_color: self.text_color.as_ref().map(CompiledColor::from),
+            border_color: self.border_color.as_ref().map(CompiledColor::from),
+            border_width: self.border_width,
+            border_radius: self.border_radius,
+            padding_x: self.padding_x,
+            padding_y: self.padding_y,
+        }
+    }
+}
+
+/// Concrete runtime styles; source-color forms stay at the configuration boundary.
+pub mod compiled {
+    use super::CompiledColor;
+    pub type ModeIndicator = super::ModeIndicator<CompiledColor>;
+    pub type LabelUi = super::LabelUi<CompiledColor>;
+    pub type BoundaryHighlight = super::BoundaryHighlight<CompiledColor>;
+    pub type IndicatorUi = super::IndicatorUi<CompiledColor>;
+    pub type KeyHelp = super::KeyHelp<CompiledColor>;
+    pub(crate) type ResolvedCursorIndicatorUi<'a> =
+        super::ResolvedCursorIndicatorUi<'a, CompiledColor>;
 }

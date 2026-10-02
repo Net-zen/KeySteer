@@ -5,6 +5,17 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.10.30
+
+优化窗口移动、缩放和 UI Hint 搜索响应，减少重复计算与临时内存分配。
+
+Improved window movement, resizing, and UI Hint search responsiveness, reducing repeated work and temporary allocations.
+
+| CPU 处理耗时（p50） / CPU processing time (p50) | 优化前 / Before | 优化后 / After | 降低 / Reduction |
+| --- | ---: | ---: | ---: |
+| 窗口移动请求处理（40 个窗口） / Move request handling (40 windows) | 71.85 μs | 0.10 μs | 99.9% |
+| UI Hint 搜索确认（2000 个目标） / UI Hint search acceptance (2000 targets) | 241.60 μs | 127.65 μs | 47.2% |
+
 ## 0.10.29
 
 - 改善 Windows 和 macOS 输入超时后的按键状态恢复，并修复 macOS 切换输入法时保存布局备注被意外关闭的问题。

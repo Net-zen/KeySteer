@@ -633,22 +633,20 @@ impl<A: WindowAccess> Grouped<A> {
         } else {
             source.info.bounds
         };
+        let mut minimum_height = 0.0_f64;
         for member in &members {
             self.native.tab_eligible(*member, screens)?;
             let minimum = self.native.minimum_size(*member);
             rect.width = rect.width.max(minimum.x);
             rect.height = rect.height.max(minimum.y);
+            minimum_height = minimum_height.max(minimum.y);
         }
         let display = screens
             .get(source.info.screen)
             .ok_or("Display is unavailable")?;
         let header = self.native.tab_bar_height(display);
         rect.height = rect.height.min(display.work_area.height - header);
-        let minimum = members
-            .iter()
-            .map(|id| self.native.minimum_size(*id).y)
-            .fold(0.0_f64, f64::max);
-        if rect.width > display.work_area.width || rect.height < minimum {
+        if rect.width > display.work_area.width || rect.height < minimum_height {
             return Err("The members' minimum sizes do not fit this display".into());
         }
         rect.x = rect.x.clamp(

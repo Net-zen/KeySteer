@@ -3,9 +3,9 @@
 //! to the host implementation. Views are consumed synchronously, never retained.
 
 use super::hint::CompactHint;
-use super::style::LabelUi;
-use super::style::{BoundaryHighlight, CompiledSearchPanel, HintPlacement};
-use super::theme::ThemedColor;
+use super::style::compiled::{BoundaryHighlight, LabelUi};
+use super::style::{CompiledSearchPanel, HintPlacement};
+use super::theme::CompiledColor as ThemedColor;
 use super::window::{WindowId, WindowInfo};
 use super::window_layout::LayoutTree;
 use super::{HostContext, OverlayScene, Rect};

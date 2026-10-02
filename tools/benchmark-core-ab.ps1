@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory)][string]$CandidateExecutable,
     [Parameter(Mandatory)][string]$OutputDirectory,
     [ValidateRange(1, 20)][int]$Rounds = 3,
-    [ValidateSet('All', 'Runtime', 'SmallHint')][string]$Mode = 'All',
+    [ValidateSet('All', 'Runtime', 'SmallHint', 'HintRegressions')][string]$Mode = 'All',
     [long]$Affinity = 4
 )
 
@@ -35,6 +35,11 @@ for ($round = 1; $round -le $Rounds; $round++) {
     $order = if ($round % 2 -eq 1) { @('baseline', 'candidate') } else { @('candidate', 'baseline') }
     foreach ($name in $order) {
         Write-Output "round=$round version=$name"
+        if ($Mode -eq 'HintRegressions') {
+            & $taskBins[$name] --regressions | Tee-Object -FilePath (Join-Path $taskOutput "$round-$name-hint.txt")
+            if ($LASTEXITCODE -ne 0) { throw "hint benchmark failed: $name" }
+            continue
+        }
         if ($Mode -ne 'Runtime') {
             if ($Mode -eq 'SmallHint') {
                 & $taskBins[$name] --hint-small | Tee-Object -FilePath (Join-Path $taskOutput "$round-$name-core.txt")

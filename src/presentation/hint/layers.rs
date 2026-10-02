@@ -285,10 +285,17 @@ pub(crate) fn build_visual_layer_plan(
         let component = &mut component[..component_len];
         component.sort_unstable();
 
-        if component.len() == 2 {
-            packed_component_layers[component[0]] = (2u32 << u16::BITS) | 1;
-            packed_component_layers[component[1]] = 2u32 << u16::BITS;
-            global_layer_count = global_layer_count.max(2);
+        // In a clique every label needs its own layer. Canonicalization orders
+        // those layers front-to-back regardless of the coloring candidate.
+        if component
+            .iter()
+            .all(|&vertex| usize::from(graph.degree(vertex)) == component.len() - 1)
+        {
+            for (layer, &vertex) in component.iter().rev().enumerate() {
+                packed_component_layers[vertex] =
+                    ((component.len() as u32) << u16::BITS) | layer as u32;
+            }
+            global_layer_count = global_layer_count.max(component.len());
             continue;
         }
 
@@ -426,10 +433,15 @@ fn build_wide_plan(
             });
         }
         wide.component.sort_unstable();
-        let depth = if wide.component.len() == 2 {
-            wide.best[wide.component[0]] = 1;
-            wide.best[wide.component[1]] = 0;
-            2
+        let depth = if wide
+            .component
+            .iter()
+            .all(|&vertex| usize::from(graph.degree(vertex)) == wide.component.len() - 1)
+        {
+            for (layer, &vertex) in wide.component.iter().rev().enumerate() {
+                wide.best[vertex] = layer as u16;
+            }
+            wide.component.len()
         } else {
             color_component_wide(&graph, placements, wide)
         };
@@ -1087,11 +1099,17 @@ mod tests {
         }
         plan.release_retained();
 
-        let dense = (0..256)
-            .map(|index| (index, Rect::new(0.0, 0.0, 20.0, 20.0)))
-            .collect::<Vec<_>>();
-        build_visual_layer_plan(&dense, dense.len(), overlap, &mut plan);
-        assert_eq!(plan.layer_count(), 256);
+        for count in [3, 256, 513] {
+            let dense = (0..count)
+                .map(|index| (index, Rect::new(0.0, 0.0, 20.0, 20.0)))
+                .collect::<Vec<_>>();
+            assert_matches_quadratic_reference(&dense);
+            build_visual_layer_plan(&dense, dense.len(), overlap, &mut plan);
+            assert_eq!(plan.layer_count(), count);
+            for index in 0..count {
+                assert_eq!(plan.layer(index), Some(count - index - 1));
+            }
+        }
 
         let dynamic = (0..2_000)
             .map(|index| (index, Rect::new(index as f64 * 100.0, 0.0, 20.0, 20.0)))

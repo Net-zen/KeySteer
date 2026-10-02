@@ -795,15 +795,24 @@ impl WindowSession {
                     },
                     _ => return out,
                 };
+                let had_status = self.status.is_some();
+                let selecting = source.is_some() || self.selection.is_some();
                 if *state == KeyState::Down {
                     self.status = None;
                 }
-                if source.is_some() || self.selection.is_some() {
+                if selecting {
                     self.targeted_action(action, source, *state, key, ctx, &mut out);
                 } else {
                     self.action(action, *state, key, ctx, &mut out);
                 }
-                redraw = *state == KeyState::Down;
+                // Native move/resize changes no visible geometry until its
+                // acknowledgement. Do not compose the old border/cards again
+                // on the initial press or an ignored keyboard repeat.
+                redraw = *state == KeyState::Down
+                    && (selecting
+                        || had_status
+                        || self.status.is_some()
+                        || !matches!(action, W::Left | W::Down | W::Up | W::Right));
             }
             ModeEvent::Key {
                 key,

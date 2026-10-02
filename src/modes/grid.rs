@@ -1,116 +1,75 @@
-//! Grid mode.
-//!
-//! The active display is divided into a row-major keyboard layout. Selecting a
-//! cell narrows the next layer to that cell; by default, two selections identify
-//! the target. The cursor can follow every live selection and that behaviour is
-//! toggled for the current mode session with a configurable key.
+//! Ordinary and recursive visible grids share selection and lifecycle handling.
+//! Their geometry is precompiled by the catalog; each keeps its existing view.
 
 use crate::api::binding::Binding;
 use crate::api::command::{Command, CommandBatch, FinishCause, HostContext, Mode, ModeEvent};
 use crate::api::geometry::Rect;
 use crate::api::input::{Key, KeyState, ModeId};
-use crate::api::lifecycle::TargetingLifecycle;
 use crate::api::overlay::Color;
-use crate::api::presentation::{GridLayout, GridView, View};
+use crate::api::presentation::{
+    GridLayout, GridStyle, GridView, RecursiveGridStyle, RecursiveGridView, View,
+};
 use crate::api::theme::Palette;
 
-use super::targeting::{Layout, Selection, TargetingController};
+use super::targeting::{Selection, TargetingController};
 
-pub use crate::api::presentation::GridStyle as VisualSettings;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Settings {
-    pub grid_cols: u32,
-    pub grid_rows: u32,
-    pub keys: String,
-    pub max_depth: u32,
-    pub cursor_follow_selection: bool,
-    pub lifecycle: TargetingLifecycle,
-    pub ui: VisualSettings,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-struct Cell {
-    rect: Rect,
+pub(crate) enum Appearance {
+    Grid(GridStyle),
+    Recursive(RecursiveGridStyle),
 }
 
 pub struct GridMode {
     controller: TargetingController,
-    ui: VisualSettings,
+    appearance: Appearance,
 }
 
 impl GridMode {
-    pub fn new(settings: Settings) -> Self {
-        let controller = TargetingController::new(
-            Layout {
-                rows: settings.grid_rows.max(1) as usize,
-                cols: settings.grid_cols.max(1) as usize,
-                keys: settings.keys.chars().collect(),
-            },
-            &[],
-            settings.max_depth,
-            None,
-            settings.cursor_follow_selection,
-            settings.lifecycle,
-        );
+    pub(crate) fn new(controller: TargetingController, appearance: Appearance) -> Self {
         Self {
             controller,
-            ui: settings.ui,
+            appearance,
         }
     }
 
-    fn depth(&self) -> u32 {
-        self.controller.session.depth()
-    }
-
-    fn current(&self) -> Option<Rect> {
-        self.controller.session.current()
-    }
-
-    fn root(&self) -> Option<Rect> {
-        self.controller.session.root()
-    }
-
-    #[cfg(test)]
-    fn cells(&self) -> Vec<Cell> {
-        let Some(area) = self.current() else {
-            return Vec::new();
+    fn view(&self) -> View<'_> {
+        let session = &self.controller.session;
+        let layout = self.controller.layout_at(session.depth());
+        let layout = GridLayout {
+            rows: layout.rows,
+            cols: layout.cols,
+            keys: &layout.keys,
         };
-        self.controller
-            .layout_at(0)
-            .keys
-            .iter()
-            .enumerate()
-            .filter_map(|(index, _)| {
-                area.subdivision(
-                    self.controller.layout_at(0).rows,
-                    self.controller.layout_at(0).cols,
-                    index,
-                )
-                .map(|rect| Cell { rect })
-            })
-            .collect()
-    }
-
-    fn view(&self) -> GridView<'_> {
-        GridView {
-            layout: GridLayout {
-                rows: self.controller.layout_at(0).rows,
-                cols: self.controller.layout_at(0).cols,
-                keys: &self.controller.layout_at(0).keys,
-            },
-            ui: &self.ui,
-            current: self.current(),
-            root: self.root(),
-            terminal: self.controller.session.terminal,
-            depth: self.depth(),
-            max_depth: self.controller.max_depth,
+        match &self.appearance {
+            Appearance::Grid(ui) => View::Grid(GridView {
+                layout,
+                ui,
+                current: session.current(),
+                root: session.root(),
+                terminal: session.terminal,
+                depth: session.depth(),
+                max_depth: self.controller.max_depth,
+            }),
+            Appearance::Recursive(ui) => {
+                let next = self.controller.layout_at(session.depth() + 1);
+                View::RecursiveGrid(RecursiveGridView {
+                    layout,
+                    next_layout: GridLayout {
+                        rows: next.rows,
+                        cols: next.cols,
+                        keys: &next.keys,
+                    },
+                    ui,
+                    current: session.current(),
+                    root: session.root(),
+                    terminal: session.terminal,
+                    can_descend: self.controller.can_descend(),
+                })
+            }
         }
     }
 
     fn redraw(&self, ctx: &HostContext<'_>) -> CommandBatch {
-        CommandBatch::one(ctx.present(View::Grid(self.view())))
+        CommandBatch::one(ctx.present(self.view()))
     }
 
     fn toggle_cursor_follow(&mut self, ctx: &HostContext<'_>) -> CommandBatch {
@@ -127,10 +86,6 @@ impl GridMode {
             Command::HideOverlay,
             Command::SwitchMode(self.controller.session.return_mode.clone()),
         )
-    }
-
-    fn reset(&mut self, bounds: Rect) {
-        self.controller.reset(bounds);
     }
 
     fn retarget(&mut self, bounds: Rect, preserve: bool, ctx: &HostContext<'_>) -> CommandBatch {
@@ -164,11 +119,18 @@ impl GridMode {
 
 impl Mode for GridMode {
     fn id(&self) -> ModeId {
-        ModeId::grid()
+        match self.appearance {
+            Appearance::Grid(_) => ModeId::grid(),
+            Appearance::Recursive(_) => ModeId::recursive_grid(),
+        }
     }
 
     fn display_name(&self) -> String {
-        "Grid".into()
+        match self.appearance {
+            Appearance::Grid(_) => "Grid",
+            Appearance::Recursive(_) => "Recursive Grid",
+        }
+        .into()
     }
 
     fn claims_key(&self, key: &Key) -> bool {
@@ -190,23 +152,26 @@ impl Mode for GridMode {
     }
 
     fn indicator_color(&self, palette: &Palette) -> Option<Color> {
-        Some(palette.accent)
+        Some(match self.appearance {
+            Appearance::Grid(_) => palette.accent,
+            Appearance::Recursive(_) => palette.accent_alt,
+        })
     }
 
     fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
         match event {
             ModeEvent::Pushed { previous } => {
                 self.controller.session.return_mode = previous.clone();
-                self.reset(ctx.active_bounds());
+                self.controller.reset(ctx.active_bounds());
                 self.redraw(ctx)
             }
             ModeEvent::Activated { previous } => {
                 self.controller.session.return_mode = previous.clone().unwrap_or_else(ModeId::idle);
-                self.reset(ctx.active_bounds());
+                self.controller.reset(ctx.active_bounds());
                 self.redraw(ctx)
             }
             ModeEvent::Restarted => {
-                self.reset(ctx.active_bounds());
+                self.controller.reset(ctx.active_bounds());
                 self.redraw(ctx)
             }
             ModeEvent::FinishRequested { .. } if self.controller.session.finished => {
@@ -226,14 +191,16 @@ impl Mode for GridMode {
                 &self.controller.session.return_mode,
             ),
             ModeEvent::ScreensChanged(_) => {
-                self.reset(ctx.active_bounds());
+                self.controller.reset(ctx.active_bounds());
                 self.redraw(ctx)
             }
             ModeEvent::ScreenRetargeted { screen, preserve } => {
                 self.retarget(screen.bounds, *preserve, ctx)
             }
-            ModeEvent::PointerMoved(_) if self.root() != Some(ctx.active_bounds()) => {
-                self.reset(ctx.active_bounds());
+            ModeEvent::PointerMoved(_)
+                if self.controller.session.root() != Some(ctx.active_bounds()) =>
+            {
+                self.controller.reset(ctx.active_bounds());
                 self.redraw(ctx)
             }
             ModeEvent::Resumed => self.redraw(ctx),
@@ -265,14 +232,28 @@ impl Mode for GridMode {
 mod tests {
     use super::*;
     use crate::api::overlay::{OverlayScene, OverlayShape};
-    impl GridMode {
-        fn scene(&self, palette: &Palette) -> OverlayScene {
-            self.view().scene(palette)
-        }
-    }
 
     use crate::api::geometry::{Point, Screen};
     use crate::config::Config;
+
+    fn cells(mode: &GridMode) -> Vec<Rect> {
+        let Some(area) = mode.controller.session.current() else {
+            return Vec::new();
+        };
+        mode.controller
+            .layout_at(0)
+            .keys
+            .iter()
+            .enumerate()
+            .filter_map(|(index, _)| {
+                area.subdivision(
+                    mode.controller.layout_at(0).rows,
+                    mode.controller.layout_at(0).cols,
+                    index,
+                )
+            })
+            .collect()
+    }
 
     struct Env {
         screens: Vec<Screen>,
@@ -398,7 +379,7 @@ mod tests {
         let mut mode = crate::app::mode_catalog::grid(&env.config);
         let recorder = Recorder {
             calls: AtomicUsize::new(0),
-            keys: mode.view().layout.keys.as_ptr() as usize,
+            keys: mode.controller.layout_at(0).keys.as_ptr() as usize,
         };
         let mut context = env.ctx();
         context.presenter = &recorder;
@@ -499,7 +480,7 @@ mod tests {
 
         let out = press(&mut mode, &env, "1");
         let scene = scene_of(&out);
-        assert_eq!(mode.depth(), 1);
+        assert_eq!(mode.controller.session.depth(), 1);
         assert_eq!(scene.labels.len(), mode.controller.layout_at(0).keys.len());
         assert_eq!(
             scene
@@ -512,11 +493,14 @@ mod tests {
                 "x", "c", "v", "b",
             ]
         );
+        let View::Grid(view) = mode.view() else {
+            panic!("expected Grid view")
+        };
         assert!(
             scene
                 .labels
                 .iter()
-                .all(|label| label.style.text_color == mode.view().style(&env.palette).text_color)
+                .all(|label| label.style.text_color == view.style(&env.palette).text_color)
         );
     }
 
@@ -542,23 +526,23 @@ mod tests {
         let mut mode = crate::app::mode_catalog::grid(&env.config);
         activate(&mut mode, &env);
 
-        let first = mode.cells()[0].rect;
+        let first = cells(&mode)[0];
         let out = press(&mut mode, &env, "1");
-        assert_eq!(mode.current(), Some(first));
-        assert_eq!(mode.depth(), 1);
+        assert_eq!(mode.controller.session.current(), Some(first));
+        assert_eq!(mode.controller.session.depth(), 1);
         assert!(out.contains(&Command::warp_to(first.center())));
 
-        let second = mode.cells()[0].rect;
+        let second = cells(&mode)[0];
         let out = press(&mut mode, &env, "1");
-        assert_eq!(mode.current(), Some(second));
-        assert_eq!(mode.depth(), 2);
+        assert_eq!(mode.controller.session.current(), Some(second));
+        assert_eq!(mode.controller.session.depth(), 2);
         assert!(!mode.controller.session.terminal);
         assert!(out.contains(&Command::warp_to(second.center())));
 
-        let third = mode.cells()[0].rect;
+        let third = cells(&mode)[0];
         let out = press(&mut mode, &env, "1");
-        assert_eq!(mode.current(), Some(third));
-        assert_eq!(mode.depth(), 3);
+        assert_eq!(mode.controller.session.current(), Some(third));
+        assert_eq!(mode.controller.session.depth(), 3);
         assert!(mode.controller.session.terminal);
         assert!(out.contains(&Command::warp_to(third.center())));
         assert!(
@@ -584,13 +568,13 @@ mod tests {
         let mut mode = crate::app::mode_catalog::grid(&env.config);
         activate(&mut mode, &env);
         press(&mut mode, &env, "1");
-        assert_eq!(mode.depth(), 1);
+        assert_eq!(mode.controller.session.depth(), 1);
 
         env.cursor = Point::new(1400.0, 350.0);
         let out = mode.handle(&ModeEvent::PointerMoved(env.cursor), &env.ctx());
 
-        assert_eq!(mode.root(), Some(env.screens[1].bounds));
-        assert_eq!(mode.depth(), 0);
+        assert_eq!(mode.controller.session.root(), Some(env.screens[1].bounds));
+        assert_eq!(mode.controller.session.depth(), 0);
         assert_eq!(scene_of(&out).clip, Some(env.screens[1].bounds));
     }
 
@@ -606,7 +590,7 @@ mod tests {
         press(&mut mode, &env, "1");
         let third_layer = press(&mut mode, &env, "1");
         let labels = &scene_of(&third_layer).labels;
-        assert_eq!(mode.depth(), 2);
+        assert_eq!(mode.controller.session.depth(), 2);
         assert_eq!(
             labels.len(),
             mode.controller.layout_at(0).rows * mode.controller.layout_at(0).cols
@@ -646,13 +630,17 @@ mod tests {
         activate(&mut mode, &env);
         toggle_follow(&mut mode, &env);
         press(&mut mode, &env, "1");
-        let selected = mode.current().unwrap();
-        let depth = mode.depth();
+        let selected = mode.controller.session.current().unwrap();
+        let depth = mode.controller.session.depth();
 
         let out = toggle_follow(&mut mode, &env);
 
         assert!(mode.controller.session.cursor_follow_selection);
-        assert_eq!(mode.depth(), depth, "toggle must not select another layer");
+        assert_eq!(
+            mode.controller.session.depth(),
+            depth,
+            "toggle must not select another layer"
+        );
         assert!(out.contains(&Command::warp_to(selected.center())));
         assert!(
             out.iter()
@@ -671,7 +659,7 @@ mod tests {
         activate(&mut mode, &env);
         toggle_follow(&mut mode, &env);
         press(&mut mode, &env, "1");
-        let selected = mode.current().unwrap();
+        let selected = mode.controller.session.current().unwrap();
 
         let out = press(&mut mode, &env, "enter");
         assert!(out.contains(&Command::warp_to(selected.center())));
@@ -709,9 +697,11 @@ mod tests {
             &env.ctx(),
         );
         assert_eq!(mode.controller.session.path.as_slice(), [5, 6]);
-        assert_eq!(mode.depth(), 2);
+        assert_eq!(mode.controller.session.depth(), 2);
         assert_eq!(scene_of(&out).clip, Some(target.bounds));
-        assert!(out.contains(&Command::warp_to(mode.current().unwrap().center())));
+        assert!(out.contains(&Command::warp_to(
+            mode.controller.session.current().unwrap().center()
+        )));
 
         let out = mode.handle(
             &ModeEvent::ScreenRetargeted {
@@ -721,8 +711,8 @@ mod tests {
             &env.ctx(),
         );
         assert!(mode.controller.session.path.is_empty());
-        assert_eq!(mode.depth(), 0);
-        assert_eq!(mode.current(), Some(target.bounds));
+        assert_eq!(mode.controller.session.depth(), 0);
+        assert_eq!(mode.controller.session.current(), Some(target.bounds));
         assert_eq!(scene_of(&out).clip, Some(target.bounds));
     }
 
@@ -733,14 +723,17 @@ mod tests {
         activate(&mut mode, &env);
         press(&mut mode, &env, "q");
         press(&mut mode, &env, "q");
-        assert_eq!(mode.depth(), 2);
+        assert_eq!(mode.controller.session.depth(), 2);
 
         press(&mut mode, &env, "backspace");
-        assert_eq!(mode.depth(), 1);
+        assert_eq!(mode.controller.session.depth(), 1);
         assert!(!mode.controller.session.terminal);
         press(&mut mode, &env, "space");
-        assert_eq!(mode.depth(), 0);
-        assert_eq!(mode.current(), Some(env.screens[0].bounds));
+        assert_eq!(mode.controller.session.depth(), 0);
+        assert_eq!(
+            mode.controller.session.current(),
+            Some(env.screens[0].bounds)
+        );
     }
 
     #[test]
@@ -751,7 +744,7 @@ mod tests {
         let mut mode = crate::app::mode_catalog::grid(&env.config);
         activate(&mut mode, &env);
         press(&mut mode, &env, "1");
-        let selected = mode.current();
+        let selected = mode.controller.session.current();
 
         let finished = mode.handle(
             &ModeEvent::FinishRequested {
@@ -760,7 +753,7 @@ mod tests {
             &env.ctx(),
         );
         assert!(mode.controller.session.finished);
-        assert_eq!(mode.current(), selected);
+        assert_eq!(mode.controller.session.current(), selected);
         let scene = scene_of(&finished);
         assert_eq!(
             scene.labels.len(),
@@ -790,7 +783,7 @@ mod tests {
 
         press(&mut mode, &env, "backspace");
         assert!(!mode.controller.session.finished);
-        assert_eq!(mode.depth(), 0);
+        assert_eq!(mode.controller.session.depth(), 0);
     }
 
     #[test]
@@ -816,3 +809,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "grid/recursive_tests.rs"]
+mod recursive_tests;

@@ -35,6 +35,10 @@ impl DisplayWatcher {
         DISPLAY_CHANGED.swap(false, Ordering::AcqRel)
     }
 
+    pub fn retry_refresh(&self) {
+        DISPLAY_CHANGED.store(true, Ordering::Release);
+    }
+
     pub fn stop(&mut self) -> Result<(), String> {
         if !self.registered {
             return Ok(());

@@ -475,8 +475,7 @@ impl NormalMode {
         }
     }
 
-    fn release_all(&mut self) -> bool {
-        let was_moving = !self.moving.is_empty();
+    fn release_all(&mut self) {
         self.moving.clear();
         self.scrolling.clear();
         self.speeds.clear();
@@ -486,7 +485,6 @@ impl NormalMode {
         self.motion.reset();
         self.frame_driven = false;
         self.fallback_tick = None;
-        was_moving
     }
 
     fn frame(&mut self, elapsed: Duration) -> CommandBatch {

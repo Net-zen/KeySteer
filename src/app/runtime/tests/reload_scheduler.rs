@@ -1,4 +1,47 @@
 #[test]
+fn zero_delay_work_runs_after_present_in_the_same_runtime_turn() {
+    struct AfterPresent(Arc<Mutex<Recorder>>);
+    impl Mode for AfterPresent {
+        fn id(&self) -> ModeId {
+            ModeId::normal()
+        }
+        fn handle(&mut self, event: &ModeEvent, _: &HostContext<'_>) -> CommandBatch {
+            match event {
+                ModeEvent::UiScanned(_) => CommandBatch::two(
+                    Command::show_overlay(OverlayScene::new()),
+                    Command::SetTimer {
+                        id: "after_present".into(),
+                        delay: Duration::ZERO,
+                        repeating: false,
+                    },
+                ),
+                ModeEvent::Timer { id, .. } if id == "after_present" => {
+                    self.0.lock().unwrap().timeline.push("prewarm");
+                    CommandBatch::new()
+                }
+                _ => CommandBatch::new(),
+            }
+        }
+    }
+    let (mut backend, log) =
+        FakeBackend::new(vec![BackendEvent::UiScanned(crate::api::UiScanResult {
+            id: 1,
+            targets: Vec::new(),
+            retired: Vec::new(),
+            status: UiScanStatus::Success,
+        })]);
+    let mut engine = Engine::new(Config::default(), Appearance::Dark);
+    engine.register(Box::new(AfterPresent(log.clone())));
+    engine.registry.active = ModeId::normal();
+    engine.scan_owners.insert(1, ModeId::normal());
+    engine
+        .run_runtime_turn(&mut backend, Duration::ZERO)
+        .unwrap();
+    assert_eq!(log.lock().unwrap().timeline, ["present", "prewarm"]);
+    assert!(engine.scheduler.timers.is_empty());
+}
+
+#[test]
 fn switching_modes_drops_the_previous_modes_timers() {
     struct Ticker(ModeId);
     impl Mode for Ticker {

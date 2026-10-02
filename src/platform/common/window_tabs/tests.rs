@@ -158,6 +158,7 @@ struct Fake {
     fail_bar: bool,
     writes: usize,
     snapshot_reads: Cell<usize>,
+    minimum_reads: Cell<usize>,
     hidden: BTreeSet<WindowId>,
     hidden_foreground: usize,
     header: f64,
@@ -682,6 +683,7 @@ fn setup() -> Grouped<Fake> {
         fail_bar: false,
         writes: 0,
         snapshot_reads: Cell::new(0),
+        minimum_reads: Cell::new(0),
         hidden: BTreeSet::new(),
         hidden_foreground: 0,
         header: 0.0,
@@ -820,6 +822,10 @@ impl WindowAccess for Fake {
     }
     fn pointer(&self) -> Result<Point, String> {
         Ok(Point::default())
+    }
+    fn minimum_size(&self, _: WindowId) -> Point {
+        self.minimum_reads.set(self.minimum_reads.get() + 1);
+        Point::new(100.0, 80.0)
     }
     fn reset(&mut self) {
         self.windows.clear();
@@ -1900,6 +1906,29 @@ fn keyboard_geometry_reads_only_active_member_and_preserves_other_groups() {
             .is_err()
     );
     assert_eq!(access.native.bars, before);
+}
+
+#[test]
+fn alignment_reads_member_minimums_once_and_rejects_displays_that_do_not_fit() {
+    for (width, height, fits) in [
+        (1200.0, 800.0, true),
+        (90.0, 800.0, false),
+        (1200.0, 70.0, false),
+    ] {
+        let mut access = two_groups();
+        let active = access.groups.state.groups[0].active;
+        let members = access.groups.state.groups[0].members.len();
+        let other = access.native.bars[1].clone();
+        let mut displays = screens();
+        displays[0].work_area.width = width;
+        displays[0].work_area.height = height;
+        let writes = access.native.writes;
+        access.native.minimum_reads.set(0);
+        assert_eq!(access.align(active, &displays, &|| false).is_ok(), fits);
+        assert_eq!(access.native.minimum_reads.get(), members);
+        assert_eq!(access.native.writes - writes, usize::from(fits));
+        assert_eq!(access.native.bars[1], other);
+    }
 }
 
 #[test]

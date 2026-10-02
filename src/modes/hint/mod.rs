@@ -23,7 +23,8 @@ use crate::api::hint::LabelDirection;
 use crate::api::input::{Key, KeyChord, KeyState, ModeId};
 use crate::api::lifecycle::TargetingLifecycle;
 use crate::api::overlay::{Color, OverlayText};
-use crate::api::style::{BoundaryHighlight, CompiledSearchPanel, HintPlacement, LabelUi};
+use crate::api::style::compiled::{BoundaryHighlight, LabelUi};
+use crate::api::style::{CompiledSearchPanel, HintPlacement};
 use crate::api::theme::Palette;
 pub(crate) mod labeling;
 mod search;
@@ -43,6 +44,7 @@ enum Match<T> {
 }
 
 const SCAN_RETRY_TIMER_ID: &str = "ui_hint.scan_retry";
+const SEARCH_PREWARM_TIMER_ID: &str = "ui_hint.search_prewarm";
 const NO_WINDOW_UNDER_POINTER: &str =
     "No window under the pointer — move the pointer over a window";
 use crate::api::presentation::hint_cache::INLINE_LABELS;
@@ -175,6 +177,9 @@ impl HintMode {
             Command::HideOverlay,
         );
         commands.push(Command::ReleaseTextPrompt);
+        commands.push(Command::CancelTimer {
+            id: SEARCH_PREWARM_TIMER_ID.into(),
+        });
         commands.push(request);
         self.window_bounds = None;
         if self.config.search_input_ui.position_mode == crate::api::style::PanelPositionMode::Window
@@ -272,9 +277,6 @@ impl HintMode {
             }
             (false, false)
         };
-        if added {
-            self.session.ensure_search_names();
-        }
         if searching {
             if !stable_labels {
                 let _ = hints::assign_compact_into(
@@ -624,7 +626,21 @@ impl HintMode {
     }
 
     fn redraw(&self, ctx: &HostContext<'_>) -> CommandBatch {
-        CommandBatch::one(ctx.present(self.view()))
+        let mut commands = CommandBatch::one(ctx.present(self.view()));
+        if self.session.active
+            && !self.session.finished
+            && !self.session.scanned.is_empty()
+            && !self.session.search_names_initialized
+        {
+            // Engine flushes this scene before firing due timers in the same
+            // turn, so the renderer can start before search preprocessing.
+            commands.push(Command::SetTimer {
+                id: SEARCH_PREWARM_TIMER_ID.into(),
+                delay: Duration::ZERO,
+                repeating: false,
+            });
+        }
+        commands
     }
 
     fn search_info(&self) -> Option<crate::api::presentation::HintInfoView<'_>> {
@@ -680,6 +696,37 @@ impl HintMode {
         }
     }
 
+    fn finish_search(&mut self, accept: bool, ctx: &HostContext<'_>) -> CommandBatch {
+        if accept && self.session.pending_relabel {
+            self.relabel_with_refresh(ctx, false);
+        }
+        let selected = if accept {
+            let candidates = if self.input.text().chars().any(char::is_whitespace) {
+                &self.session.search_matches
+            } else {
+                &self.session.hints
+            };
+            (candidates.len() == 1).then(|| candidates[0].value)
+        } else {
+            None
+        };
+        std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
+        self.release_search();
+        self.refresh_overlap_plan(ctx);
+        let mut commands = CommandBatch::new();
+        if accept {
+            commands.push(Command::CloseTextPrompt);
+        }
+        if let Some(index) = selected {
+            commands.push(Command::warp_to(self.session.scanned[index].rect.center()));
+        }
+        commands.extend(self.redraw(ctx));
+        if !accept {
+            commands.push(Command::CloseTextPrompt);
+        }
+        commands
+    }
+
     fn show_status(&self, ctx: &HostContext<'_>) -> CommandBatch {
         CommandBatch::one(
             ctx.present(View::Status(StatusView {
@@ -716,12 +763,12 @@ impl HintMode {
     }
 
     fn key_down(&mut self, key: &Key, ctx: &HostContext<'_>) -> CommandBatch {
-        if let Input::Search(query) = &self.input {
+        if matches!(self.input, Input::Search(_)) {
             if key.as_str() == "enter" {
-                return self.handle(&ModeEvent::TextSubmitted(Some(query.clone())), ctx);
+                return self.finish_search(true, ctx);
             }
             if key.as_str() == "esc" {
-                return self.handle(&ModeEvent::TextSubmitted(None), ctx);
+                return self.finish_search(false, ctx);
             }
         }
         if self.session.finished {
@@ -989,13 +1036,10 @@ impl Mode for HintMode {
             let mut encoded = [0; 4];
             match event {
                 ModeEvent::TextEdit(EditAction::Accept) => {
-                    let Input::Search(query) = &self.input else {
-                        unreachable!()
-                    };
-                    return self.handle(&ModeEvent::TextSubmitted(Some(query.clone())), ctx);
+                    return self.finish_search(true, ctx);
                 }
                 ModeEvent::TextEdit(EditAction::Cancel) => {
-                    return self.handle(&ModeEvent::TextSubmitted(None), ctx);
+                    return self.finish_search(false, ctx);
                 }
                 ModeEvent::TextEdit(EditAction::Paste) => {
                     return CommandBatch::one(Command::ReadClipboard);
@@ -1087,35 +1131,20 @@ impl Mode for HintMode {
                 }
             }
             ModeEvent::TextSubmitted(text) if matches!(self.input, Input::Search(_)) => {
-                if let Some(text) = text {
-                    self.input = Input::Search(text.clone());
-                    self.relabel(ctx);
-                    let candidates = if text.chars().any(char::is_whitespace) {
-                        &self.session.search_matches
-                    } else {
-                        &self.session.hints
-                    };
-                    let selected = (candidates.len() == 1).then(|| candidates[0].value);
-                    std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
-                    self.release_search();
-                    self.refresh_overlap_plan(ctx);
-                    let mut commands = CommandBatch::one(Command::CloseTextPrompt);
-                    if let Some(index) = selected {
-                        commands.push(Command::warp_to(self.session.scanned[index].rect.center()));
+                if let Some(text) = text
+                    && self.input.text() != text
+                {
+                    if let Input::Search(query) = &mut self.input {
+                        query.clone_from(text);
                     }
-                    commands.extend(self.redraw(ctx));
-                    commands
-                } else {
-                    std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
-                    self.release_search();
-                    self.refresh_overlap_plan(ctx);
-                    let mut commands = self.redraw(ctx);
-                    commands.push(Command::CloseTextPrompt);
-                    commands
+                    // A submitted value can differ from the last live edit.
+                    // Filter it once; only the restored full view needs layout.
+                    self.relabel_with_refresh(ctx, false);
                 }
+                self.finish_search(text.is_some(), ctx)
             }
             ModeEvent::TextCopied if matches!(self.input, Input::Search(_)) => {
-                self.handle(&ModeEvent::TextSubmitted(None), ctx)
+                self.finish_search(false, ctx)
             }
             ModeEvent::CopyTextField(index) => {
                 let value = self
@@ -1167,6 +1196,9 @@ impl Mode for HintMode {
                 commands.push(Command::CancelTimer {
                     id: SCAN_RETRY_TIMER_ID.into(),
                 });
+                commands.push(Command::CancelTimer {
+                    id: SEARCH_PREWARM_TIMER_ID.into(),
+                });
                 commands
             }
             ModeEvent::UiScanned(result)
@@ -1187,6 +1219,14 @@ impl Mode for HintMode {
                 CommandBatch::new()
             }
             ModeEvent::UiScanned(result) => self.handle_scan_result(result.clone(), ctx),
+            ModeEvent::Timer { id, .. }
+                if id == SEARCH_PREWARM_TIMER_ID
+                    && self.session.active
+                    && !self.session.finished =>
+            {
+                self.session.ensure_search_names();
+                CommandBatch::new()
+            }
             ModeEvent::Timer { id, .. }
                 if id == SCAN_RETRY_TIMER_ID
                     && self.session.active
@@ -1357,6 +1397,32 @@ mod tests {
         );
         assert!(!mode.session.finished);
         assert_eq!(mode.session.hints.len(), 2);
+        // Live acceptance retains the query allocation, while an external
+        // submission may carry a value not seen in the last edit event.
+        for event in [
+            ModeEvent::TextEdit(crate::api::text_edit::EditAction::Accept),
+            ModeEvent::TextSubmitted(Some("fzwj".into())),
+            ModeEvent::TextSubmitted(Some("ztwj".into())),
+        ] {
+            press(&mut mode, &env, "/");
+            mode.handle(&ModeEvent::TextChanged("fzwj".into()), &env.ctx());
+            let query_buffer = mode.input.text().as_ptr();
+            let expected = if matches!(&event, ModeEvent::TextSubmitted(Some(text)) if text == "ztwj")
+            {
+                mode.session.scanned[1].rect.center()
+            } else {
+                mode.session.scanned[0].rect.center()
+            };
+            let commands = mode.handle(&event, &env.ctx());
+            assert!(commands.iter().any(|command| matches!(
+                command, Command::WarpPointer { x, y } if (*x, *y) == (expected.x, expected.y)
+            )));
+            assert_eq!(mode.session.search_query.as_ptr(), query_buffer);
+            assert_eq!(mode.session.hints.len(), 2);
+            assert!(mode.session.search_matches.is_empty());
+            assert!(mode.session.search_hints.is_empty());
+            assert!(!mode.session.finished);
+        }
         mode.handle(&ModeEvent::Deactivated, &env.ctx());
         assert_eq!(mode.session.search_text.capacity(), 0);
         assert_eq!(mode.session.search_hints.capacity(), 0);
@@ -1886,17 +1952,36 @@ mod tests {
     }
 
     fn deliver(mode: &mut HintMode, env: &Env, targets: Vec<UiTarget>) -> Vec<Command> {
-        mode.handle_owned(
-            ModeEvent::UiScanned(crate::api::UiScanResult {
-                retired: Vec::new(),
-                id: mode.session.scan_id,
-                targets,
-                status: UiScanStatus::Success,
-            }),
-            &env.ctx(),
-        )
-        .into_iter()
-        .collect()
+        let commands: Vec<_> = mode
+            .handle_owned(
+                ModeEvent::UiScanned(crate::api::UiScanResult {
+                    retired: Vec::new(),
+                    id: mode.session.scan_id,
+                    targets,
+                    status: UiScanStatus::Success,
+                }),
+                &env.ctx(),
+            )
+            .into_iter()
+            .collect();
+        // Match Engine's end-of-turn handling after submitting the scene.
+        if commands.iter().any(|command| {
+            matches!(command,
+                Command::SetTimer { id, .. } if id == SEARCH_PREWARM_TIMER_ID
+            )
+        }) {
+            assert!(
+                mode.handle(
+                    &ModeEvent::Timer {
+                        id: SEARCH_PREWARM_TIMER_ID.into(),
+                        elapsed: Duration::ZERO,
+                    },
+                    &env.ctx()
+                )
+                .is_empty()
+            );
+        }
+        commands
     }
 
     fn press(mode: &mut HintMode, env: &Env, name: &str) -> Vec<Command> {
@@ -2167,6 +2252,47 @@ mod tests {
         );
         assert_eq!(scene_of(&out).labels.len(), 2);
         assert_eq!(scene_of(&out).clip, Some(env.screens[0].bounds));
+    }
+
+    #[test]
+    fn search_prewarm_follows_first_scene_and_tolerates_early_search_and_exit() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        let warm = ModeEvent::Timer {
+            id: SEARCH_PREWARM_TIMER_ID.into(),
+            elapsed: Duration::ZERO,
+        };
+        for early_search in [false, true] {
+            activate(&mut mode, &env);
+            let commands = mode.handle_owned(
+                ModeEvent::UiScanned(UiScanResult {
+                    id: mode.session.scan_id,
+                    targets: vec![target("Save", 0.0)],
+                    retired: Vec::new(),
+                    status: UiScanStatus::Partial,
+                }),
+                &env.ctx(),
+            );
+            assert!(matches!(commands[0], Command::ShowOverlay(_)));
+            assert!(
+                matches!(&commands[1], Command::SetTimer { id, delay, repeating: false }
+                if id == SEARCH_PREWARM_TIMER_ID && delay.is_zero())
+            );
+            assert!(!mode.session.search_names_initialized);
+            if early_search {
+                press(&mut mode, &env, "/");
+                press(&mut mode, &env, "s");
+                assert_eq!(mode.session.hints.len(), 1);
+            }
+            assert!(mode.handle(&warm, &env.ctx()).is_empty());
+            assert!(mode.session.search_names_initialized);
+            let storage = mode.session.search_text.as_ptr();
+            assert!(mode.handle(&warm, &env.ctx()).is_empty());
+            assert_eq!(mode.session.search_text.as_ptr(), storage);
+            mode.handle(&ModeEvent::Deactivated, &env.ctx());
+            assert!(mode.handle(&warm, &env.ctx()).is_empty());
+            assert_eq!(mode.session.search_text.capacity(), 0);
+        }
     }
 
     #[test]
@@ -3487,7 +3613,8 @@ mod tests {
         assert!(
             completed
                 .iter()
-                .all(|command| !matches!(command, Command::SetTimer { .. }))
+                .all(|command| !matches!(command, Command::SetTimer { id, .. }
+                    if id == SCAN_RETRY_TIMER_ID))
         );
     }
 

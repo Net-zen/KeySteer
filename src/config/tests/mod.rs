@@ -1129,7 +1129,7 @@ fn per_mode_indicator_entries_parse_alongside_the_shared_ui() {
 
 #[test]
 fn mode_indicator_only_builds_a_display_name_when_needed() {
-    let indicator = ModeIndicator::default();
+    let indicator: ModeIndicator = ModeIndicator::default();
     let calls = std::cell::Cell::new(0);
     let (normal, _) = indicator
         .for_mode_with("normal", || {
@@ -1262,7 +1262,7 @@ fn mode_indicator_merges_per_mode_cursor_and_badge_styles() {
     .unwrap();
     let cursor = config
         .mode_indicator
-        .cursor_for_mode("normal")
+        .cursor_for_mode_ref("normal")
         .expect("cursor");
     assert_eq!(cursor.radius, 18);
     assert_eq!(cursor.stroke_width, 1);
@@ -1344,19 +1344,19 @@ fn cursor_pressed_colors_are_configurable_and_inherit_into_modes() {
 
     let cursor = config
         .mode_indicator
-        .cursor_for_mode("normal")
+        .cursor_for_mode_ref("normal")
         .expect("normal cursor");
     assert_eq!(
         cursor.left_pressed_color,
-        Some(ThemedColor::Both("#123456FF".into()))
+        Some(&ThemedColor::Both("#123456FF".into()))
     );
     assert_eq!(
         cursor.middle_pressed_color,
-        Some(ThemedColor::Both("#BB33CCFF".into()))
+        Some(&ThemedColor::Both("#BB33CCFF".into()))
     );
     assert_eq!(
         cursor.right_pressed_color,
-        Some(ThemedColor::Both("#44DDEEFF".into()))
+        Some(&ThemedColor::Both("#44DDEEFF".into()))
     );
 }
 

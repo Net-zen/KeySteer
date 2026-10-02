@@ -149,17 +149,21 @@ impl ScanSession {
                 old += 1;
                 retain
             });
-            removed_hints.extend(self.hints.extract_if(.., |hint| {
-                let index = remap[hint.value];
-                if index == usize::MAX {
-                    true
-                } else {
-                    hint.value = index;
-                    false
-                }
-            }));
-            self.rebuild_target_lookup();
-            self.invalidate_search_names();
+            // A retirement may be outside this session's bounds or already
+            // applied. Keep valid labels and search text when nothing changed.
+            if self.scanned.len() != before {
+                removed_hints.extend(self.hints.extract_if(.., |hint| {
+                    let index = remap[hint.value];
+                    if index == usize::MAX {
+                        true
+                    } else {
+                        hint.value = index;
+                        false
+                    }
+                }));
+                self.rebuild_target_lookup();
+                self.invalidate_search_names();
+            }
         }
         let retained = self.scanned.len();
         let changed = self.append_targets(targets) || retained != before;
@@ -275,7 +279,7 @@ impl ScanSession {
         self.seen_targets.clear();
         self.next_same_rect.clear();
         for (index, target) in self.scanned.iter().enumerate() {
-            let previous = self.seen_targets.insert(target_key(target), index);
+            let previous = self.seen_targets.insert(rect_key(target.rect), index);
             self.next_same_rect.push(previous.unwrap_or(usize::MAX));
         }
     }
@@ -310,7 +314,7 @@ impl ScanSession {
 
             let mut retained = 0;
             for index in 0..self.scanned.len() {
-                let key = target_key(&self.scanned[index]);
+                let key = rect_key(self.scanned[index].rect);
                 let head = self.seen_targets.get(&key).copied().unwrap_or(usize::MAX);
                 let duplicate = self.contains_target(head, &self.scanned[index]);
                 if !duplicate {
@@ -370,7 +374,7 @@ impl ScanSession {
         {
             return false;
         }
-        let key = target_key(&target);
+        let key = rect_key(target.rect);
         let head = self.seen_targets.get(&key).copied().unwrap_or(usize::MAX);
         if self.contains_target(head, &target) {
             return false;
@@ -385,10 +389,6 @@ impl ScanSession {
         self.seen_targets.insert(key, index);
         true
     }
-}
-
-fn target_key(target: &UiTarget) -> (i64, i64, i64, i64) {
-    rect_key(target.rect)
 }
 
 fn rect_key(rect: Rect) -> (i64, i64, i64, i64) {
@@ -625,6 +625,54 @@ mod tests {
         session.ensure_search_names();
         assert!(session.search_text[0].matches("button", ""));
         assert!(!session.append_targets(session.scanned.clone()));
+    }
+
+    #[test]
+    fn unmatched_retirements_preserve_search_index_and_labels() {
+        let alphabet = ['a', 's', 'd'];
+        for add_target in [false, true] {
+            let mut session = labeled_session(20, &alphabet, LabelDirection::Normal);
+            session.ensure_search_names();
+            let labels: Vec<_> = session
+                .hints
+                .iter()
+                .map(|hint| hint.label.clone())
+                .collect();
+            // Same quantized bucket as target 0, but no exact rectangle match.
+            let mut retired = session.scanned[0].rect;
+            retired.x += 0.01;
+            let targets = if add_target {
+                vec![UiTarget {
+                    rect: Rect::new(0.0, 50.0, 20.0, 20.0),
+                    name: "Added".into(),
+                    role: SemanticRole::Button,
+                    details: None,
+                }]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(
+                session.apply_stable_update(
+                    targets,
+                    &[retired, Rect::new(-100.0, -100.0, 1.0, 1.0)],
+                    &alphabet,
+                    LabelDirection::Normal,
+                    true,
+                ),
+                (add_target, true)
+            );
+            assert!(session.search_names_initialized);
+            assert_eq!(session.search_text.len(), session.scanned.len());
+            for (index, label) in labels.iter().enumerate() {
+                assert_eq!(&session.hints[index].label, label);
+                assert_eq!(session.hints[index].value, index);
+                assert!(session.search_text[index].matches(&index.to_string(), ""));
+            }
+            if add_target {
+                assert!(session.search_text[20].matches("added", ""));
+            }
+            assert!(!session.append_targets(session.scanned.clone()));
+        }
     }
 
     #[test]

@@ -64,45 +64,36 @@ impl Overlay {
         Self::default()
     }
 
-    pub fn present(&mut self, scene: Arc<OverlayScene>) -> Result<(), String> {
+    pub fn present(&mut self, scene: Arc<OverlayScene>, screens: &[Screen]) -> Result<(), String> {
         autoreleasepool(|_| {
-            let screens = super::screens::list_screens()?;
-            self.present_on_screens(scene, &screens)
+            let areas = display_areas(scene.clip, screens);
+            if areas.is_empty() {
+                self.dismiss()?;
+                return Ok(());
+            }
+            // Retain unchanged panels and their text/shape caches across submissions.
+            for surface in &mut self.surfaces {
+                if !surface.area.is_some_and(|area| areas.contains(&area)) {
+                    surface.dismiss()?;
+                }
+            }
+            self.surfaces.retain(|surface| surface.visible);
+            for area in areas {
+                if let Some(surface) = self.surfaces.iter_mut().find(|s| s.area == Some(area)) {
+                    surface.present_inner(scene.clone(), area)?;
+                } else {
+                    let mut surface = Surface::new();
+                    surface.present_inner(scene.clone(), area)?;
+                    self.surfaces.push(surface);
+                }
+            }
+            self.source_point = scene
+                .cursor_marker
+                .as_ref()
+                .map(|m| m.center)
+                .or_else(|| scene.indicator.as_ref().map(|i| i.position));
+            Ok(())
         })
-    }
-
-    fn present_on_screens(
-        &mut self,
-        scene: Arc<OverlayScene>,
-        screens: &[Screen],
-    ) -> Result<(), String> {
-        let areas = display_areas(scene.clip, screens);
-        if areas.is_empty() {
-            self.dismiss()?;
-            return Ok(());
-        }
-        // Retain unchanged panels and their text/shape caches across submissions.
-        for surface in &mut self.surfaces {
-            if !surface.area.is_some_and(|area| areas.contains(&area)) {
-                surface.dismiss()?;
-            }
-        }
-        self.surfaces.retain(|surface| surface.visible);
-        for area in areas {
-            if let Some(surface) = self.surfaces.iter_mut().find(|s| s.area == Some(area)) {
-                surface.present_inner(scene.clone(), area)?;
-            } else {
-                let mut surface = Surface::new();
-                surface.present_inner(scene.clone(), area)?;
-                self.surfaces.push(surface);
-            }
-        }
-        self.source_point = scene
-            .cursor_marker
-            .as_ref()
-            .map(|m| m.center)
-            .or_else(|| scene.indicator.as_ref().map(|i| i.position));
-        Ok(())
     }
 
     pub fn update_positions(
@@ -932,7 +923,9 @@ impl WindowContent {
                     rect: main,
                     style: &indicator.style,
                     analysis: LabelTextAnalysis::analyze(&indicator.text, 0),
-                    fixed_bounds: false,
+                    // Badge height includes padding; center the font's line
+                    // within it instead of using the compact Hint offset.
+                    fixed_bounds: true,
                     edit: None,
                     z_index: 0,
                 },
@@ -947,7 +940,7 @@ impl WindowContent {
                         rect,
                         style: &indicator.style,
                         analysis: LabelTextAnalysis::analyze(text, 0),
-                        fixed_bounds: false,
+                        fixed_bounds: true,
                         edit: None,
                         z_index: 1,
                     },
@@ -1494,14 +1487,10 @@ mod tests {
         let mut scene = OverlayScene::new();
         scene.clip = Some(Screen::virtual_bounds(&screens));
         let mut overlay = Overlay::new();
-        overlay
-            .present_on_screens(Arc::new(scene.clone()), &screens)
-            .unwrap();
+        overlay.present(Arc::new(scene.clone()), &screens).unwrap();
         assert!(overlay.is_visible());
         assert_eq!(overlay.surfaces.len(), 3);
-        overlay
-            .present_on_screens(Arc::new(scene.clone()), &screens)
-            .unwrap();
+        overlay.present(Arc::new(scene.clone()), &screens).unwrap();
         assert!(
             overlay
                 .surfaces
@@ -1510,13 +1499,11 @@ mod tests {
         );
         // Same scene after unplugging a display still removes its native panel.
         overlay
-            .present_on_screens(Arc::new(scene.clone()), &screens[..2])
+            .present(Arc::new(scene.clone()), &screens[..2])
             .unwrap();
         assert_eq!(overlay.surfaces.len(), 2);
         scene.clip = Some(screens[1].bounds);
-        overlay
-            .present_on_screens(Arc::new(scene), &screens)
-            .unwrap();
+        overlay.present(Arc::new(scene), &screens).unwrap();
         assert_eq!(overlay.surfaces.len(), 1);
         assert_eq!(overlay.surfaces[0].area, Some(screens[1].bounds));
         overlay.dismiss().unwrap();

@@ -1,4 +1,4 @@
-//! Configuration-independent, fully resolved theme values.
+//! Theme palettes and source/numeric color representations.
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,94 @@ impl ThemedColor {
             (Self::PerAppearance { dark, .. }, Appearance::Dark) => dark,
         };
         Color::parse(raw)
+    }
+}
+
+/// A style's color representation: source text while configuring, numeric
+/// values after compilation. Runtime styles use CompiledColor exclusively.
+pub trait ColorValue: Clone + From<ThemedColor> {
+    fn resolve(&self, appearance: Appearance) -> Option<Color>;
+}
+
+impl ColorValue for ThemedColor {
+    fn resolve(&self, appearance: Appearance) -> Option<Color> {
+        self.resolve(appearance)
+    }
+}
+
+/// Both appearances parsed once. Invalid programmatic values retain the same
+/// per-appearance fallback as source colors; validated configs contain Some.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompiledColor {
+    light: Option<Color>,
+    dark: Option<Color>,
+}
+
+impl From<&ThemedColor> for CompiledColor {
+    fn from(source: &ThemedColor) -> Self {
+        match source {
+            ThemedColor::Both(value) => {
+                let color = Color::parse(value);
+                Self {
+                    light: color,
+                    dark: color,
+                }
+            }
+            ThemedColor::PerAppearance { light, dark } => Self {
+                light: Color::parse(light),
+                dark: Color::parse(dark),
+            },
+        }
+    }
+}
+
+impl From<ThemedColor> for CompiledColor {
+    fn from(source: ThemedColor) -> Self {
+        Self::from(&source)
+    }
+}
+
+impl CompiledColor {
+    pub fn resolve(&self, appearance: Appearance) -> Option<Color> {
+        match appearance {
+            Appearance::Light => self.light,
+            Appearance::Dark => self.dark,
+        }
+    }
+}
+
+impl ColorValue for CompiledColor {
+    fn resolve(&self, appearance: Appearance) -> Option<Color> {
+        self.resolve(appearance)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compiled_colors_preserve_alpha_theme_and_invalid_value_fallbacks() {
+        for source in [
+            ThemedColor::Both("#00000000".into()),
+            ThemedColor::Both(" #aAbBcC80 ".into()),
+            ThemedColor::PerAppearance {
+                light: "#123456FF".into(),
+                dark: "#ABCDEF40".into(),
+            },
+            ThemedColor::PerAppearance {
+                light: "#11223344".into(),
+                dark: "invalid".into(),
+            },
+            ThemedColor::Both("a€aaaa".into()),
+        ] {
+            let compiled = CompiledColor::from(&source);
+            for appearance in [Appearance::Light, Appearance::Dark] {
+                assert_eq!(compiled.resolve(appearance), source.resolve(appearance));
+            }
+        }
+        assert!(!std::mem::needs_drop::<CompiledColor>());
+        assert!(std::mem::size_of::<Option<CompiledColor>>() <= 12);
     }
 }
 

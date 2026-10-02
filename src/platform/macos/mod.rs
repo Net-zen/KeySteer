@@ -201,18 +201,31 @@ impl MacOsBackend {
         if let Some(item) = self.status_item.as_mut() {
             item.maintain_icon_attachment();
         }
-        if self
+        let _ = self.refresh_screens();
+    }
+
+    fn refresh_screens(&mut self) -> Result<(), String> {
+        let changed = self
             .display_watcher
             .as_ref()
-            .is_some_and(screens::DisplayWatcher::take_changed)
-            && let Ok(current) = screens::list_screens()
-            && !current.is_empty()
-            && current != self.screens
-        {
-            self.screens = current.clone();
-            self.pending
-                .push_back(BackendEvent::ScreensChanged(current));
+            .is_none_or(screens::DisplayWatcher::take_changed);
+        if changed || self.screens.is_empty() {
+            let current = screens::list_screens().inspect_err(|_| {
+                if let Some(watcher) = &self.display_watcher {
+                    watcher.retry_refresh();
+                }
+            })?;
+            if current.is_empty() {
+                if let Some(watcher) = &self.display_watcher {
+                    watcher.retry_refresh();
+                }
+            } else if current != self.screens {
+                self.screens = current.clone();
+                self.pending
+                    .push_back(BackendEvent::ScreensChanged(current));
+            }
         }
+        Ok(())
     }
 
     fn try_event(&mut self) -> Option<BackendEvent> {
@@ -664,7 +677,10 @@ impl Backend for MacOsBackend {
     }
 
     fn present(&mut self, scene: Arc<OverlayScene>) -> Result<(), String> {
-        self.overlay.present(scene)?;
+        // A ready frame can precede the ordinary native-event refresh. Consume
+        // display changes here too, but never enumerate displays per frame.
+        self.refresh_screens()?;
+        self.overlay.present(scene, &self.screens)?;
         if self.frame_clock.is_running() {
             if let Ok(source) = self.overlay.display_link_source() {
                 self.frame_clock.start(source);
