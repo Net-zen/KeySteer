@@ -292,7 +292,7 @@ fn wake_main() {
     {
         wake();
     } else {
-        super::workspace::wake_main_run_loop();
+        super::event_loop::wake_main_run_loop();
     }
 }
 pub(super) fn publish(bars: &[TabBar], owners: &[(WindowId, isize)]) {

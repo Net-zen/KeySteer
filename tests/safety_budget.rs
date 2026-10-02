@@ -57,8 +57,13 @@ use std::path::{Path, PathBuf};
 // Explicit editor activation/focus is checked in one owning-thread block.
 // One standard AppKit editor-command block, with responder-chain ownership.
 // UIHint adopts one retained, type-checked AX window for shared activation.
-const MAX_UNSAFE_EXPRESSIONS: usize = 396;
-const MAX_UNSAFE_FILES: usize = 40;
+// Standard About adds one typed AppKit dictionary/link/presentation boundary.
+// The native loop replaces menu interruption: five scoped CF boundaries own
+// registration, callback context reads, deadline changes, and invalidation;
+// one test-only boundary borrows framework mode constants. No Send/Sync or
+// raw ownership transfer is added; callbacks cannot outlive their registration.
+const MAX_UNSAFE_EXPRESSIONS: usize = 403;
+const MAX_UNSAFE_FILES: usize = 41;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
     // with one bounded diagnostic callback into centralized logging.
@@ -77,7 +82,8 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/permissions.rs", 5),
     // Shutdown adds only NSObjectProtocol / NSApplicationDelegate conformance on
     // the retained main-thread status target; no new raw native calls or Send/Sync.
-    ("src/platform/macos/status_item.rs", 9),
+    ("src/platform/macos/status_item.rs", 10),
+    ("src/platform/macos/event_loop.rs", 6),
     ("src/platform/windows/text_prompt.rs", 17),
     ("src/platform/macos/vision.rs", 6),
     ("src/platform/windows/accessibility.rs", 30),

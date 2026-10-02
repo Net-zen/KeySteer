@@ -542,8 +542,10 @@ impl Engine {
         &mut self,
         backend: &mut dyn Backend,
         timeout: Duration,
-    ) -> Result<(), String> {
-        if let Some(event) = backend.poll(timeout)? {
+    ) -> Result<bool, String> {
+        let event = backend.poll(timeout)?;
+        let handled = event.is_some();
+        if let Some(event) = event {
             let event_result = self.handle_backend_event(event, backend);
             if let Err(error) = event_result
                 && !self.recover_from_input_error(backend)
@@ -560,9 +562,28 @@ impl Engine {
             && self.scheduler.timers.is_empty()
             && self.scheduler.sequences.is_empty()
         {
-            return Ok(());
+            return Ok(handled);
         }
-        self.run_scheduled_work(backend)
+        self.run_scheduled_work(backend)?;
+        Ok(handled)
+    }
+
+    fn run_ready_turns(&mut self, backend: &mut dyn Backend) -> Result<Option<Duration>, String> {
+        // Bound each native callback so AppKit can keep tracking menus and
+        // deliver display frames even under sustained input/background work.
+        for _ in 0..64 {
+            if self.should_quit {
+                return Ok(None);
+            }
+            let handled = self.run_runtime_turn(backend, Duration::ZERO)?;
+            if self.should_quit {
+                return Ok(None);
+            }
+            if !handled {
+                return Ok(Some(self.next_timeout()));
+            }
+        }
+        Ok((!self.should_quit).then_some(Duration::ZERO))
     }
 
     // Keep deferred-work recovery out of the common input turn's instruction path.
@@ -642,12 +663,15 @@ impl Engine {
     pub fn run(&mut self, backend: &mut dyn Backend) -> Result<(), String> {
         self.start_runtime(backend)?;
 
-        let result = (|| {
-            while !self.should_quit {
-                self.run_runtime_turn(backend, self.next_timeout())?;
-            }
-            Ok(())
-        })();
+        let result = match backend.run_event_loop(&mut |backend| self.run_ready_turns(backend)) {
+            Some(result) => result,
+            None => (|| {
+                while !self.should_quit {
+                    self.run_runtime_turn(backend, self.next_timeout())?;
+                }
+                Ok(())
+            })(),
+        };
 
         self.finish_runtime(backend, result)
     }

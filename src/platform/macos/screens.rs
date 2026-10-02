@@ -75,7 +75,7 @@ pub(super) extern "C" fn display_changed(
 ) {
     let _ = user_info;
     DISPLAY_CHANGED.store(true, Ordering::Release);
-    super::workspace::wake_main_run_loop();
+    super::event_loop::wake_main_run_loop();
 }
 
 pub fn list_screens() -> Result<Vec<Screen>, String> {

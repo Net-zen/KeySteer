@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Controls::{
-    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_INFORMATION_ICON, TDCBF_OK_BUTTON,
-    TDF_SIZE_TO_CONTENT, TDF_USE_COMMAND_LINKS, TaskDialogIndirect,
+    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TDCBF_OK_BUTTON, TDF_SIZE_TO_CONTENT,
+    TDF_USE_COMMAND_LINKS, TDF_USE_HICON_MAIN, TaskDialogIndirect,
 };
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
@@ -748,7 +748,7 @@ fn show_message(
         let message = wide(message);
         let response = match buttons {
             DialogButtons::Repository => {
-                let repository_title = wide("KeySteer");
+                let repository_title = wide("Open KeySteer on GitHub");
                 let custom_buttons = [TASKDIALOG_BUTTON {
                     nButtonID: ABOUT_REPOSITORY_BUTTON,
                     pszButtonText: PCWSTR(repository_title.as_ptr()),
@@ -756,11 +756,13 @@ fn show_message(
                 let config = TASKDIALOGCONFIG {
                     cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
                     hwndParent: owner,
-                    dwFlags: TDF_USE_COMMAND_LINKS | TDF_SIZE_TO_CONTENT,
+                    dwFlags: TDF_USE_COMMAND_LINKS | TDF_SIZE_TO_CONTENT | TDF_USE_HICON_MAIN,
                     dwCommonButtons: TDCBF_OK_BUTTON,
                     pszWindowTitle: PCWSTR(title.as_ptr()),
                     Anonymous1: TASKDIALOGCONFIG_0 {
-                        pszMainIcon: TD_INFORMATION_ICON,
+                        // LoadIconW returns a shared resource, alive for the
+                        // entire native dialog; it must not be destroyed here.
+                        hMainIcon: load_app_icon(),
                     },
                     pszMainInstruction: PCWSTR(title.as_ptr()),
                     pszContent: PCWSTR(message.as_ptr()),
