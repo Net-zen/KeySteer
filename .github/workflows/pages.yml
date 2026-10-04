@@ -1,6 +1,13 @@
 name: Deploy documentation
 
 on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: 'Download release tag (latest = latest stable release)'
+        type: string
+        required: false
+        default: latest
   workflow_dispatch:
     inputs:
       release_tag:

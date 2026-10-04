@@ -32,7 +32,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 正式产物走 `packaging/` 脚本和 `.github/workflows/`，检查应用身份、资源和签名。纯文档修改验证链接、代码路径和 `git diff --check` 即可。
 
-`.github/workflows/cross-build.yml` 在 Linux 上交叉构建 Windows MSVC x64/ARM64 和 macOS Intel/Apple Silicon。提供与 `build.yml` 一致的平台选择、发布开关和 release/pre-release 选项，发布默认关闭；开启后必须全部四包成功。`packaging/windows/package-cross.sh` 对已编译 EXE 使用现有 `WINDOWS_SIGNING_PFX_BASE64`、`WINDOWS_SIGNING_PASSWORD` 和可选 `WINDOWS_TIMESTAMP_URL` 完成 Authenticode 签名、RFC 3161 时间戳和签名校验；缺少证书或签名失败时不上传包。产物名称与 `package.ps1` 一致：`KeySteer-v<version>-<target>.zip` 内含 `KeySteer/KeySteer.exe` 和 `KeySteer/keysteer.default.toml`。签名校验显式信任提供的证书链并验证叶证书指纹，不代表公共信任或 Windows 原生运行验证。原生构建保留在 `build.yml`；两种工作流使用相同的版本标签、产物名称和发布说明规则。
+`.github/workflows/cross-build.yml` 在 Linux 上交叉构建 Windows MSVC x64/ARM64 和 macOS Intel/Apple Silicon。手动运行提供平台选择、发布开关（默认开启）和 release/pre-release 选项；发布必须全部四包成功。推送或强制更新任意 tag 自动构建并发布全部四包，删除 tag 不构建。tag 运行沿用所选 tag，版本格式的预发布 tag（如 `v1.2.3-rc.1`）自动标记 pre-release；分支手动发布仍按 Cargo 版本生成 `v<version>` 或 `v<version>-pre`。发布先删除同名旧 Release 及全部附件，再删除远端旧 tag、在本次提交重建 tag，并创建全新 Release，保证同名 tag／相同正式或预发布版本以最新运行产物为准。正式版设为 Latest，预发布不占用 Latest。发布运行共用 concurrency 组，新运行取消旧运行，避免旧构建较晚完成后覆盖新发布。
+
+构建成功后调用可复用的 `.github/workflows/pages.yml`，同时保留 Pages 的手动入口。发布成功时传入本次 release tag，使下载入口对应本次产物（包括显式选择的预发布）；仅构建时使用 `latest`。任一构建或发布失败、取消时不部署。Pages 所需 `contents: read`、`pages: write`、`id-token: write` 由调用 job 授予；tag 更新使用 `GITHUB_TOKEN`，不会递归触发 tag 构建。
+
+`packaging/windows/package-cross.sh` 对已编译 EXE 使用现有 `WINDOWS_SIGNING_PFX_BASE64`、`WINDOWS_SIGNING_PASSWORD` 和可选 `WINDOWS_TIMESTAMP_URL` 完成 Authenticode 签名、RFC 3161 时间戳和签名校验；缺少证书或签名失败时不上传包。产物名称与 `package.ps1` 一致：`KeySteer-v<version>-<target>.zip` 内含 `KeySteer/KeySteer.exe` 和 `KeySteer/keysteer.default.toml`。签名校验显式信任提供的证书链并验证叶证书指纹，不代表公共信任或 Windows 原生运行验证。原生构建保留在 `build.yml`；两种工作流使用相同的产物名称和发布说明来源，原生工作流仍拒绝重复 Release。
 
 两个构建工作流复用 `.github/actions/setup-rust`，统一从 `rust-lang/rust` 官方 Release API 解析最新稳定版本，由 `dtolnay/rust-toolchain` 安装工具链与目标架构并设置构建日期。仅在 Cargo.toml 与 Cargo.lock 的项目版本不同步时调用 `cargo update`，避免每次初始化都更新索引。ZIP 上传关闭二次压缩；原生 Windows 签名证书在打包结束或失败后清理。
 

@@ -1,6 +1,9 @@
 name: Cross build and publish
 
 on:
+  push:
+    tags:
+      - '**'
   workflow_dispatch:
     inputs:
       platform:
@@ -29,10 +32,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Publish runs share a group across refs so an older build cannot publish
+  # after a newer build of the same package version.
+  group: cross-build-${{ github.repository }}-${{ (github.event_name == 'push' || inputs.publish) && 'publish' || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows:
     name: Windows ${{ matrix.arch }}
-    if: ${{ inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all' }}
+    if: ${{ !github.event.deleted && (github.event_name == 'push' || inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -152,7 +161,7 @@ jobs:
 
   macos:
     name: macOS ${{ matrix.arch }}
-    if: ${{ inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all' }}
+    if: ${{ !github.event.deleted && (github.event_name == 'push' || inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -255,8 +264,10 @@ jobs:
   release:
     # A public release must contain every supported platform. Partial manual
     # builds still retain their downloadable workflow artifacts.
-    if: ${{ inputs.publish }}
+    if: ${{ !github.event.deleted && (github.event_name == 'push' || inputs.publish) }}
     needs: [windows, macos]
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
     # Keep release tooling stable across GitHub's ubuntu-latest migrations.
     runs-on: ubuntu-24.04
     permissions:
@@ -295,30 +306,73 @@ jobs:
           test "$(find release-assets -maxdepth 1 -name '*.sha256' | wc -l)" -eq 0
           find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
 
-      - name: Create GitHub Release
+      - name: Replace tag and GitHub Release
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TYPE: ${{ inputs.release_type }}
           VERSION: ${{ steps.version.outputs.value }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         shell: bash
         run: |
-          prerelease_flag=()
-          if [[ "$RELEASE_TYPE" == "pre-release" ]]; then
-            tag="v$VERSION-pre.$GITHUB_RUN_NUMBER"
-            title="KeySteer v$VERSION pre-release #$GITHUB_RUN_NUMBER"
-            prerelease_flag=(--prerelease)
+          prerelease=false
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            tag="$REF_NAME"
+            title="KeySteer $tag"
+            if [[ "$RELEASE_TYPE" == "pre-release" || "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+- ]]; then
+              prerelease=true
+            fi
+          elif [[ "$RELEASE_TYPE" == "pre-release" ]]; then
+            tag="v$VERSION-pre"
+            title="KeySteer v$VERSION pre-release"
+            prerelease=true
           else
             tag="v$VERSION"
             title="KeySteer v$VERSION"
           fi
+
+          # Delete the old release and every attached asset before recreating
+          # the tag at this build's commit. GITHUB_TOKEN prevents trigger loops.
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "release already exists: $tag" >&2
-            exit 1
+            gh release delete "$tag" --yes
+          fi
+          remote_tag="$(git ls-remote origin "refs/tags/$tag")"
+          if [[ -n "$remote_tag" ]]; then
+            git push origin ":refs/tags/$tag"
+          fi
+          git push origin "$GITHUB_SHA:refs/tags/$tag"
+
+          latest_flag=(--latest)
+          if [[ "$prerelease" == "true" ]]; then
+            latest_flag=(--latest=false)
           fi
           gh release create "$tag" \
+            --verify-tag \
             --target "$GITHUB_SHA" \
             --title "$title" \
-            "${prerelease_flag[@]}" \
+            --prerelease="$prerelease" \
+            "${latest_flag[@]}" \
             --generate-notes \
             --notes-file release-body.md \
             release-assets/*.zip
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  pages:
+    name: Deploy documentation after build
+    needs: [windows, macos, release]
+    # Partial build-only runs may skip one platform and the release job.
+    # Failed or cancelled builds/publications must never deploy the website.
+    if: >-
+      ${{ !cancelled() && !github.event.deleted &&
+          (needs.windows.result == 'success' || needs.macos.result == 'success') &&
+          (needs.windows.result == 'success' || needs.windows.result == 'skipped') &&
+          (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
+          (needs.release.result == 'success' || needs.release.result == 'skipped') }}
+    uses: ./.github/workflows/pages.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    with:
+      release_tag: ${{ needs.release.outputs.tag || 'latest' }}
