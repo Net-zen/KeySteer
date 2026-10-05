@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct Input {
     pub text: String,
     pub selection: crate::api::text_edit::Selection,
+    pub help: String,
     last_activation: Option<WindowId>,
     before: Vec<WindowId>,
     implicit_anchor: Option<WindowId>,
@@ -72,6 +73,7 @@ impl WindowSession {
         self.multi_input = Some(Input {
             text: String::new(),
             selection: crate::api::text_edit::Selection::default(),
+            help: self.multi_help(),
             last_activation: None,
             before: self.multi.clone(),
             implicit_anchor,
@@ -263,19 +265,15 @@ impl WindowSession {
         }
     }
 
-    pub(super) fn operation_targets(&self) -> smallvec::SmallVec<[WindowId; 4]> {
-        let mut targets = smallvec::SmallVec::new();
-        if matches!(
+    pub(super) fn operation_targets(&self) -> impl Iterator<Item = WindowId> + '_ {
+        let multi = matches!(
             self.kind,
             WindowKind::Move | WindowKind::Quick | WindowKind::Editor
         ) && self.selection.is_none()
-            && self.multi_anchor.is_some()
-        {
-            targets.extend(self.logical_multi_targets());
-        } else if let Some(target) = &self.target {
-            targets.push(target.id);
-        }
-        targets
+            && self.multi_anchor.is_some();
+        self.logical_multi_targets()
+            .take(if multi { usize::MAX } else { 0 })
+            .chain(self.target.iter().filter(move |_| !multi).map(|w| w.id))
     }
 
     fn logical_multi_targets(&self) -> impl Iterator<Item = WindowId> + '_ {

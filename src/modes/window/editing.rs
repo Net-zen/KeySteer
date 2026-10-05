@@ -28,11 +28,10 @@ impl WindowSession {
             Vec::new()
         } else if tree {
             self.operation_targets()
-                .iter()
-                .map(|id| self.tabs.state.representative(*id))
+                .map(|id| self.tabs.state.representative(id))
                 .collect()
         } else {
-            self.operation_targets().into_vec()
+            self.operation_targets().collect()
         };
         let model = if tree {
             EditModel::Tree(LayoutTree::import(&[], None, screen.work_area))
@@ -83,16 +82,15 @@ impl WindowSession {
     }
 
     pub(super) fn flush_edit(&mut self, out: &mut CommandBatch) {
-        let targets = self.operation_targets();
-        let Some(edit) = &mut self.edit else { return };
+        let Some(edit) = &self.edit else { return };
         if !edit.ready || edit.in_flight.is_some() || edit.ending || self.temporary {
             return;
         }
         if edit.dirty {
             let placements = match &edit.model {
-                EditModel::Quick(quick) => targets
-                    .iter()
-                    .map(|id| (*id, quick.rect_with(&self.settings.split_ratios)))
+                EditModel::Quick(quick) => self
+                    .operation_targets()
+                    .map(|id| (id, quick.rect_with(&self.settings.split_ratios)))
                     .collect(),
                 EditModel::Tree(tree) => tree
                     .slots()
@@ -100,6 +98,7 @@ impl WindowSession {
                     .filter_map(|s| s.window.map(|id| (id, s.rect)))
                     .collect(),
             };
+            let Some(edit) = &mut self.edit else { return };
             edit.revision += 1;
             edit.in_flight = Some((edit.revision, edit.model.clone()));
             edit.dirty = false;
@@ -126,6 +125,7 @@ impl WindowSession {
             };
             self.request(operation, out);
         } else if let Some(finish) = edit.finishing {
+            let Some(edit) = &mut self.edit else { return };
             edit.ending = true;
             let operation = WindowOperation::EndEdit {
                 transaction: edit.transaction,
@@ -200,7 +200,7 @@ impl WindowSession {
         if self.multi_anchor.is_some() {
             self.request(
                 WindowOperation::TileSelection {
-                    targets: self.operation_targets().into_vec(),
+                    targets: self.operation_targets().collect(),
                     gap: self.settings.gap,
                     group: self.group,
                 },

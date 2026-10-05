@@ -31,6 +31,9 @@ use numbering::{NumberIndex, NumberInput};
 const NUMBER_TIMER: &str = "window_number";
 const INVENTORY_TIMER: &str = "window_inventory";
 
+// Keep the single-digit multi-selection range inline; larger selections still grow.
+type OwnedWindowTargets = smallvec::SmallVec<[WindowId; 9]>;
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub multi_bindings: std::sync::Arc<[(crate::api::KeyChord, std::sync::Arc<Binding>)]>,
@@ -351,7 +354,7 @@ impl WindowSession {
     }
 
     fn adjust(&mut self, change: WindowChange, out: &mut CommandBatch) {
-        let targets = self.operation_targets();
+        let targets: OwnedWindowTargets = self.operation_targets().collect();
         let delta = if targets.len() > 1 {
             match (&change, &self.target) {
                 (WindowChange::MoveTo(point), Some(anchor)) => Some(Point::new(

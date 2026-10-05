@@ -120,6 +120,70 @@ fn multi_selection_caret_edits_activate_the_preceding_number_without_changing_th
 }
 
 #[test]
+fn multi_help_uses_current_bindings_and_counts_tab_groups_once() {
+    use crate::api::window_tabs::{TabGroup, TabGroupId};
+    let mut config = crate::config::Config::default();
+    config.window.multi_select.bindings = crate::config::Bindings::from([
+        ("f2 f3".into(), Binding::Window(W::MultiConfirm)),
+        (
+            "left".into(),
+            Binding::Send(crate::api::KeyChord::parse("left").unwrap()),
+        ),
+    ]);
+    let mut mode = crate::app::mode_catalog::window(&config);
+    mode.target = Some(window(1));
+    mode.inventory
+        .extend((1..=8).map(|id| (WindowId(id), window(id))));
+    mode.tabs.state.groups.push(TabGroup {
+        id: TabGroupId(1),
+        members: vec![WindowId(2), WindowId(3)],
+        active: WindowId(3),
+    });
+    mode.begin_multi(&mut CommandBatch::new());
+    mode.multi = (1..=8).map(WindowId).collect();
+    let detail = mode.detail();
+    assert!(detail.starts_with("Multi-select · 7 selected\nInput: ▏\n"));
+    assert_eq!(
+        detail.lines().last(),
+        Some("F2: Confirm · F3: Confirm · ARROW LEFT: ←")
+    );
+    mode.finish_multi();
+    assert!(mode.multi_input.is_none());
+}
+
+#[test]
+#[ignore = "run alone with --test-threads=1 so allocator counts are isolated"]
+fn multi_help_refresh_only_allocates_the_returned_text() {
+    let mut mode = session(32);
+    mode.begin_multi(&mut CommandBatch::new());
+    mode.multi = (1..=32).map(WindowId).collect();
+
+    let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+    assert_eq!(std::hint::black_box(mode.operation_targets().count()), 32);
+    assert_eq!(region.change().allocations, 0);
+
+    let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+    std::hint::black_box(mode.detail());
+    let stats = region.change();
+    println!("multi help refresh: {stats:?}");
+    assert_eq!(stats.allocations, 1, "only the returned text needs storage");
+
+    for count in [1, 4, 5, 9, 10, 32] {
+        mode.multi = (1..=count).map(WindowId).collect();
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        let targets: OwnedWindowTargets = mode.operation_targets().collect();
+        let stats = region.change();
+        assert!(targets.iter().copied().eq((1..=count).map(WindowId)));
+        assert_eq!(targets.spilled(), count > 9);
+        if count <= 9 {
+            assert_eq!(stats.allocations, 0, "{count} targets should stay inline");
+        } else {
+            assert!(stats.allocations > 0);
+        }
+    }
+}
+
+#[test]
 fn deleting_all_multi_input_reactivates_the_captured_window_once() {
     use crate::api::text_edit::EditAction as E;
     with_context(|ctx| {
@@ -327,7 +391,7 @@ fn multi_selection_continuous_digits_toggle_and_clear_restores_captured_identity
         Some(crate::api::window::WindowTarget::Active)
     );
     assert!(out.iter().any(|c| matches!(c, Command::WindowRequest(r) if r.operation == WindowOperation::Activate(WindowId(1)))));
-    assert_eq!(mode.operation_targets().as_slice(), &[WindowId(1)]);
+    assert_eq!(mode.operation_targets().collect::<Vec<_>>(), [WindowId(1)]);
 }
 
 #[test]
@@ -343,7 +407,7 @@ fn multi_selection_tab_members_toggle_one_unit_and_move_resize_once_per_unit() {
     mode.begin_multi(&mut out);
     type_input(&mut mode, "2");
     assert_eq!(
-        mode.operation_targets().as_slice(),
+        mode.operation_targets().collect::<Vec<_>>(),
         &[WindowId(1), WindowId(3)]
     );
     for change in [
@@ -375,7 +439,7 @@ fn multi_selection_tab_members_toggle_one_unit_and_move_resize_once_per_unit() {
         assert_eq!(targets, [WindowId(3), WindowId(1)]);
     }
     type_input(&mut mode, "3");
-    assert_eq!(mode.operation_targets().as_slice(), &[WindowId(1)]);
+    assert_eq!(mode.operation_targets().collect::<Vec<_>>(), [WindowId(1)]);
 }
 
 #[test]
@@ -442,7 +506,7 @@ fn multi_selection_spaced_prefix_never_removes_a_single_digit_until_committed() 
     type_input(&mut mode, " ");
     assert!(!mode.multi.contains(&WindowId(1)));
     mode.clear_multi(&mut CommandBatch::new());
-    assert_eq!(mode.operation_targets().as_slice(), &[WindowId(1)]);
+    assert_eq!(mode.operation_targets().collect::<Vec<_>>(), [WindowId(1)]);
 }
 
 #[test]

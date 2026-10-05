@@ -14,7 +14,7 @@
 | 模式、窗口多选、撤销与清除退出的焦点恢复、鼠标中心及光标预览、局部平铺与 Tab 分组、共享网格生命周期、搜索语法与退出、插件、完成与返回 | [模式生命周期](04-modes-and-lifecycle.md) |
 | UIA / AX / OCR 来源与融合、范围优先级、自动激活、扫描与取消、视觉故障隔离与恢复 | [UI 扫描](05-ui-scanning.md) |
 | 原生能力、线程、状态菜单与 About、资源、平铺容错与尺寸约束、共享搜索输入与原生备注 | [平台后端](06-platform-backends.md) |
-| 非阻塞绘制、窗口卡片选中提示与几何确认、显示快照复用、目标去重、标签方案与重叠层规划、搜索响应 | [性能](07-rendering-and-performance.md) |
+| 非阻塞绘制、窗口卡片与多选帮助热路径、几何确认、显示快照复用、目标去重、标签方案与重叠层规划、搜索响应 | [性能](07-rendering-and-performance.md) |
 | 构建与共享工具链、Linux 跨平台编译与签名发布、缓存、测试隔离、打包、网页 | [验证](08-build-docs-and-tests.md) |
 | 跨层改动 | [改动指南](09-change-guide.md)、[架构边界](10-architecture-boundaries.md) |
 

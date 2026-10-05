@@ -68,7 +68,7 @@ impl WindowSession {
                     W::AudioNext => AudioAction::DeviceNext,
                     _ => AudioAction::ToggleMute,
                 };
-                let targets = self.operation_targets();
+                let targets: OwnedWindowTargets = self.operation_targets().collect();
                 if self.multi_anchor.is_some() {
                     if !targets.is_empty() {
                         self.request_audio(
@@ -253,7 +253,8 @@ impl WindowSession {
             _ if self.edit.is_some() => {}
             W::Size => self.size = !self.size,
             W::Close if self.kind == WindowKind::Move => {
-                for id in self.operation_targets() {
+                // Own the identities before requests mutate the session.
+                for id in self.operation_targets().collect::<OwnedWindowTargets>() {
                     if self.closing.contains_key(&id) {
                         continue;
                     }
