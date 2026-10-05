@@ -204,16 +204,16 @@ impl VisualLayerPlan {
         ))
     }
 
-    /// No visible rectangles overlap; filtered hints also remain unstacked.
-    pub(crate) fn finish_unstacked(&mut self, hint_count: usize) {
+    /// An empty, ready plan represents no overlap for every Hint index.
+    /// Retain compact capacity for later overlapping updates in this scan.
+    pub(crate) fn finish_unstacked(&mut self) {
         if !matches!(self.layers, LayerStorage::Compact(_)) {
             self.layers = LayerStorage::default();
         }
         let LayerStorage::Compact(layers) = &mut self.layers else {
             return;
         };
-        layers.resize(hint_count, COMPACT_UNSTACKED);
-        layers.fill(COMPACT_UNSTACKED);
+        layers.clear();
         self.layer_count = 0;
         self.ready = true;
     }
@@ -260,7 +260,7 @@ impl VisualLayerPlan {
         depth: usize,
     ) {
         if depth == 0 {
-            self.finish_unstacked(hint_count);
+            self.finish_unstacked();
             return;
         }
         self.layer_count = depth;

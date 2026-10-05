@@ -164,6 +164,17 @@ pub(crate) fn prepare_hints(
     let visual_scale = visual_layer_scale(ctx, content.scan_bounds);
     let visual_padding_x = (style.padding_x * visual_scale).round();
     let visual_padding_y = (style.padding_y * visual_scale).round();
+    let placements = || {
+        content
+            .hints
+            .iter()
+            .enumerate()
+            .filter(|(_, hint)| hint.label.as_str().starts_with(content.prefix))
+            .map(|(index, hint)| {
+                let rect = placed_hint_rect(&content.style, hint, &style, uniform_width);
+                (index, visual_layer_rect(rect, visual_scale))
+            })
+    };
     let visible = if content.prefix.is_empty() {
         content.hints.len()
     } else {
@@ -174,49 +185,40 @@ pub(crate) fn prepare_hints(
             .count()
     };
     let stacked = |left, right| visually_stacked(left, right, visual_padding_x, visual_padding_y);
+    prepare_hint_plan(
+        placements(),
+        visible,
+        content.hints.len(),
+        uniform_width.is_some(),
+        stacked,
+        layers,
+        workspace,
+    );
+}
+
+#[inline(never)]
+fn prepare_hint_plan(
+    placements: impl Iterator<Item = (usize, Rect)>,
+    visible: usize,
+    hint_count: usize,
+    uniform_size: bool,
+    stacked: impl Fn(Rect, Rect) -> bool,
+    layers: &mut VisualLayerPlan,
+    workspace: &mut Option<Vec<(usize, Rect)>>,
+) {
     if visible > INLINE_LABELS {
-        let mut placements = workspace.take().unwrap_or_default();
-        placements.clear();
+        let mut buffer = workspace.take().unwrap_or_default();
+        buffer.clear();
         // Filtering loses the iterator's exact lower bound. The visible count
         // is already known, so avoid repeated growth on the first wide scan.
-        placements.reserve(visible);
-        placements.extend(
-            content
-                .hints
-                .iter()
-                .enumerate()
-                .filter(|(_, hint)| hint.label.as_str().starts_with(content.prefix))
-                .map(|(index, hint)| {
-                    let rect = placed_hint_rect(&content.style, hint, &style, uniform_width);
-                    (index, visual_layer_rect(rect, visual_scale))
-                }),
-        );
-        build_visual_layer_plan(
-            &placements,
-            content.hints.len(),
-            uniform_width.is_some(),
-            stacked,
-            layers,
-        );
-        *workspace = Some(placements);
+        buffer.reserve(visible);
+        buffer.extend(placements);
+        build_visual_layer_plan(&buffer, hint_count, uniform_size, stacked, layers);
+        *workspace = Some(buffer);
     } else {
-        let placements: SmallVec<[(usize, Rect); INLINE_LABELS]> = content
-            .hints
-            .iter()
-            .enumerate()
-            .filter(|(_, hint)| hint.label.as_str().starts_with(content.prefix))
-            .map(|(index, hint)| {
-                let rect = placed_hint_rect(&content.style, hint, &style, uniform_width);
-                (index, visual_layer_rect(rect, visual_scale))
-            })
-            .collect();
-        build_visual_layer_plan(
-            &placements,
-            content.hints.len(),
-            uniform_width.is_some(),
-            stacked,
-            layers,
-        );
+        let mut buffer = SmallVec::<[(usize, Rect); INLINE_LABELS]>::new();
+        buffer.extend(placements);
+        build_visual_layer_plan(&buffer, hint_count, uniform_size, stacked, layers);
     }
 }
 

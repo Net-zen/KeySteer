@@ -359,7 +359,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   pages:
-    name: Deploy documentation after build
+    name: Request documentation deployment after build
     needs: [windows, macos, release]
     # Partial build-only runs may skip one platform and the release job.
     # Failed or cancelled builds/publications must never deploy the website.
@@ -369,10 +369,23 @@ jobs:
           (needs.windows.result == 'success' || needs.windows.result == 'skipped') &&
           (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
           (needs.release.result == 'success' || needs.release.result == 'skipped') }}
-    uses: ./.github/workflows/pages.yml
+    # Reusable workflows inherit the caller's tag ref, which github-pages
+    # rejects. Dispatch a separate run from the allowed default branch instead.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: read
-      pages: write
-      id-token: write
-    with:
-      release_tag: ${{ needs.release.outputs.tag || 'latest' }}
+      actions: write
+    steps:
+      - name: Dispatch Pages from the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAGES_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag || 'latest' }}
+        run: |
+          test -n "$PAGES_BRANCH"
+          gh workflow run pages.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$PAGES_BRANCH" \
+            --raw-field "release_tag=$RELEASE_TAG"
+          echo "Pages workflow dispatched from $PAGES_BRANCH for $RELEASE_TAG"

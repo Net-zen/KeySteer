@@ -59,12 +59,14 @@ impl SearchText {
         Self::new(&format!("{name} {ocr} {accessibility}"), target.role)
     }
     pub(super) fn new(name: &str, role: SemanticRole) -> Self {
-        let text = format!(
-            "{} {} {}",
-            name.to_lowercase(),
-            role.as_str(),
-            role_chinese(role)
-        );
+        let role_name = role.as_str();
+        let role_translation = role_chinese(role);
+        let mut text = name.to_lowercase();
+        text.reserve_exact(2 + role_name.len() + role_translation.len());
+        text.push(' ');
+        text.push_str(role_name);
+        text.push(' ');
+        text.push_str(role_translation);
         let mut initials = String::with_capacity(text.len());
         for ch in text.chars() {
             if let Some(py) = ch.to_pinyin() {

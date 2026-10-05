@@ -1463,7 +1463,8 @@ mod tests {
         for c in ['@', 'l', 'a'] {
             mode.handle(&ModeEvent::TextInserted(c), &env.ctx());
             assert_eq!(mode.session.hints.len(), if c == '@' { 2 } else { 1 });
-            assert_eq!(mode.overlap_plan.len(), mode.session.hints.len());
+            assert!(mode.overlap_plan.is_ready());
+            assert_eq!(mode.overlap_plan.layer_count(), 0);
         }
         for _ in 0..2 {
             mode.handle(
@@ -1486,7 +1487,8 @@ mod tests {
         let out = mode.handle(&ModeEvent::TextChanged("@la".into()), &env.ctx());
         assert_eq!(mode.session.hints.len(), 1);
         assert_eq!(mode.session.hints[0].label.as_str(), "la");
-        assert_eq!(mode.overlap_plan.len(), 1);
+        assert!(mode.overlap_plan.is_ready());
+        assert_eq!(mode.overlap_plan.layer_info(0), None);
         assert_eq!(
             scene_of(&out)
                 .labels
@@ -1555,7 +1557,8 @@ mod tests {
             assert_eq!(current.label, old.label);
         }
         assert_eq!(mode.session.hints.len(), 1);
-        assert_eq!(mode.overlap_plan.len(), 1);
+        assert!(mode.overlap_plan.is_ready());
+        assert_eq!(mode.overlap_plan.layer_info(0), None);
         let visible: Vec<_> = scene_of(&out)
             .labels
             .iter()
@@ -2003,6 +2006,97 @@ mod tests {
             assert_eq!(actual.rect, expected.rect);
             assert_eq!(actual.text, expected.text);
             assert_eq!(actual.z_index, expected.z_index);
+        }
+    }
+
+    #[test]
+    fn prepared_layout_matches_materialized_plan_at_capacity_boundaries() {
+        use crate::presentation::hint::{visual_layer_rect, visual_layer_scale};
+
+        for scale in [1.0, 1.25, 2.0] {
+            let mut env = Env::new();
+            env.screens[0].bounds = Rect::new(0.0, 0.0, 12_000.0, 12_000.0);
+            env.screens[0].work_area = env.screens[0].bounds;
+            env.screens[0].scale = scale;
+            for count in [24, 64, 128, 511, 512, 513] {
+                for late_overlap in [false, true] {
+                    let mut mode = crate::app::mode_catalog::hint(&env.config);
+                    activate(&mut mode, &env);
+                    deliver(
+                        &mut mode,
+                        &env,
+                        (0..count)
+                            .map(|index| {
+                                let position = if late_overlap && index + 1 == count {
+                                    0
+                                } else {
+                                    index
+                                };
+                                UiTarget {
+                                    details: None,
+                                    rect: Rect::new(
+                                        (position % 100) as f64 * 80.0,
+                                        (position / 100) as f64 * 40.0,
+                                        64.0,
+                                        24.0,
+                                    ),
+                                    name: format!("Control {index}"),
+                                    role: SemanticRole::Button,
+                                }
+                            })
+                            .collect(),
+                    );
+                    assert_eq!(mode.session.hints.len(), count);
+                    let prefix = mode.session.hints[0].label.as_str()[..1].to_owned();
+                    // Filter away the overlap, then restore it on the same plan.
+                    for prefix in ["", prefix.as_str(), "!", ""] {
+                        mode.input = Input::Labels(prefix.into());
+                        mode.refresh_overlap_plan(&env.ctx());
+                        let style = mode.resolved_hint_label_style(&env.palette);
+                        let visual_scale = visual_layer_scale(&env.ctx(), mode.session.scan_bounds);
+                        let placements: Vec<_> = mode
+                            .session
+                            .hints
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, hint)| mode.hint_is_visible(hint))
+                            .map(|(index, hint)| {
+                                let rect = placed_hint_rect(&mode.config, hint, &style);
+                                (index, visual_layer_rect(rect, visual_scale))
+                            })
+                            .collect();
+                        let mut reference = VisualLayerPlan::default();
+                        build_visual_layer_plan(
+                            &placements,
+                            count,
+                            mode.uniform_label_chars().is_some(),
+                            |a, b| {
+                                visually_stacked(
+                                    a,
+                                    b,
+                                    (style.padding_x * visual_scale).round(),
+                                    (style.padding_y * visual_scale).round(),
+                                )
+                            },
+                            &mut reference,
+                        );
+                        assert_eq!(mode.overlap_plan.layer_count(), reference.layer_count());
+                        for index in 0..count {
+                            assert_eq!(
+                                mode.overlap_plan.layer_info(index),
+                                reference.layer_info(index)
+                            );
+                        }
+                        for cycle in [0, 1, 2] {
+                            mode.overlap_cycle = cycle;
+                            let actual = mode.scene(&env.ctx());
+                            std::mem::swap(&mut mode.overlap_plan, &mut reference);
+                            assert_eq!(actual, mode.scene(&env.ctx()));
+                            std::mem::swap(&mut mode.overlap_plan, &mut reference);
+                        }
+                    }
+                }
+            }
         }
     }
 
