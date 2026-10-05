@@ -2077,7 +2077,7 @@ fn window_multi_selection_input_bindings_confirm_clear_and_preserve_active_targe
         let keys = if customized { vec!["f4"] } else { vec![modifier, "x"] };
         for key in &keys { engine.handle_backend_event(key_down(key), &mut backend).unwrap(); }
         for key in keys.iter().rev() { engine.handle_backend_event(key_up(key), &mut backend).unwrap(); }
-        assert!(log.lock().unwrap().window_requests.iter().any(|r| r.operation == O::Select(WindowId(77))));
+        assert!(log.lock().unwrap().window_requests.iter().any(|r| r.operation == O::Activate(WindowId(77))));
         assert!(!engine.window_help_visible());
         for key in [enter, "2", "space", "1", "2", if customized { "t" } else { "e" }] {
             for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
@@ -2141,6 +2141,90 @@ fn window_multi_input_backspace_to_empty_requests_original_foreground_window() {
 }
 
 #[test]
+fn multi_selection_cancel_clear_exit_and_restart_restore_original_focus() {
+    use crate::api::window::{WindowId, WindowInfo, WindowOperation as O, WindowResult};
+    for action in ["esc", "clear", "exit", "finish", "restart"] {
+        for confirmed in [false, true] {
+            if action == "esc" && confirmed { continue; }
+            let mut config = Config::default();
+            config.window.lifecycle.after_finish = crate::api::LifecycleAction::Mode(ModeId::normal());
+            let (mut engine, mut backend, log) = window_test_engine(&config);
+            enter_window(&mut engine, &mut backend, &log);
+            engine.dispatch_to(&ModeId::window(), ModeEvent::Timer {
+                id: "window_inventory".into(), elapsed: Duration::from_millis(500),
+            }, &mut backend).unwrap();
+            let inventory = log.lock().unwrap().window_requests.last().unwrap().clone();
+            let windows: Vec<_> = [77, 88, 99].into_iter().map(|id| WindowInfo {
+                id: WindowId(id), title: format!("Window {id}"), app: "test".into(),
+                bounds: Rect::new(100.0, 100.0, 400.0, 300.0), screen: 0,
+                resizable: true, maximized: false, minimized: false, fullscreen: false,
+            }).collect();
+            let reply = |id, target: WindowInfo| BackendEvent::WindowResult(Box::new(WindowResult {
+                session: inventory.session, id, target: Some(target), windows: None,
+                tabs: None, closed: vec![], pointer: None, changed: 0, skipped: 0,
+                message: None, edit: None,
+            }));
+            let mut result = match reply(inventory.id, windows[0].clone()) {
+                BackendEvent::WindowResult(result) => result, _ => unreachable!(),
+            };
+            result.windows = Some(windows.clone());
+            engine.handle_backend_event(BackendEvent::WindowResult(result), &mut backend).unwrap();
+            for key in ["left_ctrl", "2", "3"] {
+                for event in [key_down(key), key_up(key)] {
+                    engine.handle_backend_event(event, &mut backend).unwrap();
+                }
+            }
+            let preview = log.lock().unwrap().window_requests.last().unwrap().clone();
+            assert_eq!(preview.operation, O::Activate(WindowId(99)));
+            engine.handle_backend_event(reply(preview.id, windows[2].clone()), &mut backend).unwrap();
+            if confirmed {
+                for event in [key_down("enter"), key_up("enter")] {
+                    engine.handle_backend_event(event, &mut backend).unwrap();
+                }
+            }
+            log.lock().unwrap().window_requests.clear();
+            match action {
+                "esc" => {
+                    for event in [key_down("esc"), key_up("esc")] {
+                        engine.handle_backend_event(event, &mut backend).unwrap();
+                    }
+                }
+                "clear" => {
+                    for event in [key_down("left_ctrl"), key_down("x"), key_up("x"), key_up("left_ctrl")] {
+                        engine.handle_backend_event(event, &mut backend).unwrap();
+                    }
+                }
+                "exit" => engine.execute([Command::SwitchMode(ModeId::normal())], &mut backend).unwrap(),
+                "finish" => engine.execute([Command::FinishMode { cause: crate::api::FinishCause::Explicit }], &mut backend).unwrap(),
+                "restart" => engine.execute([Command::RestartMode], &mut backend).unwrap(),
+                _ => unreachable!(),
+            }
+            let restore = log.lock().unwrap().window_requests.last().unwrap().clone();
+            assert_eq!(restore.operation, O::Activate(WindowId(77)), "{action}, confirmed={confirmed}");
+            assert_eq!(engine.active_mode(), &ModeId::window());
+            assert!(!log.lock().unwrap().cancelled_window_sessions.contains(&inventory.session),
+                "restoration must finish before cancelling the window session");
+            engine.handle_backend_event(reply(restore.id, windows[0].clone()), &mut backend).unwrap();
+            if matches!(action, "exit" | "finish") {
+                assert_eq!(engine.active_mode(), &ModeId::normal());
+                assert!(log.lock().unwrap().cancelled_window_sessions.contains(&inventory.session));
+            } else {
+                assert_eq!(engine.active_mode(), &ModeId::window());
+                let detail = engine.registry.get(&ModeId::window()).unwrap().indicator_detail().unwrap();
+                assert!(!detail.contains("Input:"), "{action}: {detail}");
+                if action == "esc" { assert!(detail.contains("1 selected"), "{detail}"); }
+                if action == "restart" {
+                    let log = log.lock().unwrap();
+                    assert!(log.cancelled_window_sessions.contains(&inventory.session));
+                    assert_ne!(log.window_requests.last().unwrap().session, inventory.session);
+                }
+            }
+            assert!(log.lock().unwrap().sent.is_empty());
+        }
+    }
+}
+
+#[test]
 fn quick_and_restore_clear_multi_selection_without_changing_target_preferences() {
     use crate::api::window::{WindowId, WindowInfo, WindowOperation as O, WindowResult, WindowTarget};
     for source in [None, Some(WindowTarget::Active), Some(WindowTarget::Mouse)] {
@@ -2179,6 +2263,14 @@ fn quick_and_restore_clear_multi_selection_without_changing_target_preferences()
                 for event in [key_down(entry), key_up(entry)] {
                     engine.handle_backend_event(event, &mut backend).unwrap();
                 }
+                assert_eq!(engine.active_mode(), &ModeId::window());
+                let restore = log.lock().unwrap().window_requests.last().unwrap().clone();
+                assert_eq!(restore.operation, O::Activate(WindowId(77)));
+                engine.handle_backend_event(BackendEvent::WindowResult(Box::new(WindowResult {
+                    session: restore.session, id: restore.id, target: Some(windows[0].clone()),
+                    windows: None, tabs: None, closed: vec![], pointer: None,
+                    changed: 0, skipped: 0, message: None, edit: None,
+                })), &mut backend).unwrap();
                 assert_eq!(engine.active_mode(), &destination);
                 assert!(!engine.registry.get(&destination).unwrap().keyboard_prompt_active());
                 let expected = if entry == "a" {

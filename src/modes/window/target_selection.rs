@@ -229,9 +229,8 @@ impl WindowSession {
     }
 
     pub(super) fn retarget_entry(&mut self, source: WindowTarget, out: &mut CommandBatch) {
-        self.multi.clear();
-        self.multi_anchor = None;
-        self.multi_input = None;
+        self.restore_multi_focus(out);
+        self.discard_multi();
         self.target = None;
         self.enter_pending = true;
         self.request(WindowOperation::Retarget(source), out);

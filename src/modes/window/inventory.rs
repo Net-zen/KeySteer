@@ -315,6 +315,15 @@ impl WindowSession {
         if self.closing.values().any(|request| result.id >= *request) {
             self.refresh(&mut out);
         }
+        if self
+            .multi_exit
+            .as_ref()
+            .is_some_and(|pending| result.id >= pending.0)
+            && let Some(pending) = self.multi_exit.take()
+        {
+            let (_, next) = *pending;
+            out.push(next);
+        }
         if changed
             && !out.iter().any(|c| {
                 matches!(

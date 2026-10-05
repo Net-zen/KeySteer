@@ -33,7 +33,7 @@ fn type_input(mode: &mut WindowSession, text: &str) {
         } else {
             Key::new(c.to_string()).unwrap()
         };
-        assert!(mode.multi_input_key(&key, false));
+        assert!(mode.multi_input_key(&key, false, &mut CommandBatch::new()));
     }
 }
 
@@ -266,8 +266,8 @@ fn multi_selection_input_is_immediate_and_uses_spaces_for_complete_labels() {
     assert_eq!(mode.multi, (1..=7).map(WindowId).collect::<Vec<_>>());
     type_input(&mut mode, " 12 23 123 ");
     assert_eq!(mode.multi, [1, 2, 3, 4, 5, 6, 7, 12, 23, 123].map(WindowId));
-    mode.multi_input_key(&Key::new("backspace").unwrap(), false);
-    mode.multi_input_key(&Key::new("backspace").unwrap(), false);
+    mode.multi_input_key(&Key::new("backspace").unwrap(), false, &mut out);
+    mode.multi_input_key(&Key::new("backspace").unwrap(), false, &mut out);
     type_input(&mut mode, " ");
     assert_eq!(
         mode.multi,
@@ -279,8 +279,26 @@ fn multi_selection_input_is_immediate_and_uses_spaces_for_complete_labels() {
     mode.begin_multi(&mut out);
     type_input(&mut mode, "3 23 ");
     assert_eq!(mode.multi, [1, 2, 4, 5, 6, 7].map(WindowId));
-    mode.multi_input_key(&Key::new("esc").unwrap(), false);
+    out = CommandBatch::new();
+    mode.multi_input_key(&Key::new("esc").unwrap(), false, &mut out);
     assert_eq!(mode.multi, [1, 2, 3, 4, 5, 6, 7, 23].map(WindowId));
+    assert!(out.iter().any(|command| matches!(command,
+        Command::WindowRequest(request) if request.operation == WindowOperation::Activate(WindowId(1)))));
+}
+
+#[test]
+fn clearing_a_missing_multi_anchor_does_not_wait_for_an_activation_result() {
+    let mut mode = session(3);
+    mode.begin_multi(&mut CommandBatch::new());
+    type_input(&mut mode, "23");
+    mode.inventory.remove(&WindowId(1));
+    let mut out = CommandBatch::new();
+    assert!(!mode.restore_multi_before(Command::SwitchMode(ModeId::normal()), &mut out));
+    assert!(out.is_empty());
+    assert!(mode.multi_exit.is_none());
+    assert!(mode.multi_input.is_none());
+    assert!(mode.multi_anchor.is_none());
+    assert!(mode.multi.is_empty());
 }
 
 #[test]
@@ -308,7 +326,7 @@ fn multi_selection_continuous_digits_toggle_and_clear_restores_captured_identity
         mode.settings.target,
         Some(crate::api::window::WindowTarget::Active)
     );
-    assert!(out.iter().any(|c| matches!(c, Command::WindowRequest(r) if r.operation == WindowOperation::Select(WindowId(1)))));
+    assert!(out.iter().any(|c| matches!(c, Command::WindowRequest(r) if r.operation == WindowOperation::Activate(WindowId(1)))));
     assert_eq!(mode.operation_targets().as_slice(), &[WindowId(1)]);
 }
 

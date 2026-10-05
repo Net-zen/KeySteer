@@ -86,8 +86,16 @@ impl Mode for WindowMode {
             .session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if session.kind.clears_multi_on_handoff(target) {
-            session.discard_multi();
+        if (session.kind.clears_multi_on_handoff(target)
+            || !target.is_window()
+            || session.multi_exit.is_some())
+            && (session.multi_anchor.is_some() || session.multi_exit.is_some())
+        {
+            let mut out = CommandBatch::new();
+            if session.restore_multi_before(Command::SwitchMode(target.clone()), &mut out) {
+                out.push(ctx.present(session.view()));
+                return Some(out);
+            }
         }
         if session.selection.is_some() {
             let mut out = CommandBatch::new();
@@ -150,15 +158,18 @@ impl Mode for WindowMode {
             return CommandBatch::new();
         }
         let mut scope_changed = false;
+        let mut out = CommandBatch::new();
         if matches!(
             event,
             ModeEvent::Activated { .. } | ModeEvent::Pushed { .. } | ModeEvent::Restarted
         ) {
             scope_changed = session.settings.all_screens != self.settings.all_screens
                 || session.settings.include_minimized != self.settings.include_minimized;
-            if session.kind.clears_multi_on_handoff(&self.kind.id())
-                || matches!(self.kind, WindowKind::Quick | WindowKind::Restore)
+            if !matches!(event, ModeEvent::Restarted)
+                && (session.kind.clears_multi_on_handoff(&self.kind.id())
+                    || matches!(self.kind, WindowKind::Quick | WindowKind::Restore))
             {
+                session.restore_multi_focus(&mut out);
                 session.discard_multi();
             }
             session.entry_target = std::mem::replace(&mut self.entry_target, self.settings.target);
@@ -173,7 +184,6 @@ impl Mode for WindowMode {
         } else if session.kind != self.kind {
             return CommandBatch::new();
         }
-        let mut out = CommandBatch::new();
         if scope_changed && session.session != 0 {
             session.refresh_pending = None;
             session.refresh(&mut out);

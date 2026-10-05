@@ -209,6 +209,43 @@ impl Drop for CaptureLease {
     }
 }
 
+#[cfg(test)]
+pub(super) fn deferred_capture_fixture(generation: u64) -> (CaptureLease, impl Fn() -> bool) {
+    let shared = Arc::new(Shared::default());
+    {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.wake_pending = true;
+        state.capture = Some(CaptureGate {
+            generation,
+            ready: None,
+            deferred_frame: Some(Frame {
+                scene: Arc::new(OverlayScene::new()),
+                area: Rect::new(0.0, 0.0, 32.0, 32.0),
+                scale: 1.0,
+            }),
+            deferred_positions: None,
+        });
+        state.phase = OverlayPhase::HiddenForCapture(generation);
+    }
+    let lease = CaptureLease {
+        shared: Arc::clone(&shared),
+        thread_id: 0,
+        generation,
+        ready: None,
+        released: false,
+    };
+    (lease, move || {
+        let state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.capture.is_none() && state.phase == OverlayPhase::Normal && state.latest.is_some()
+    })
+}
+
 impl OverlayWorker {
     pub(super) fn start(events: EventSender) -> Result<Self, String> {
         let shared = Arc::new(Shared::default());

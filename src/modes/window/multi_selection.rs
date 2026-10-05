@@ -84,16 +84,23 @@ impl WindowSession {
         self.status = None;
     }
 
-    pub(super) fn multi_input_key(&mut self, key: &Key, repeat: bool) -> bool {
+    pub(super) fn multi_input_key(
+        &mut self,
+        key: &Key,
+        repeat: bool,
+        out: &mut CommandBatch,
+    ) -> bool {
+        if key.as_str() == "esc"
+            && let Some(input) = self.multi_input.take()
+        {
+            self.restore_multi_focus(out);
+            self.multi = input.before;
+            return true;
+        }
         let Some(input) = &mut self.multi_input else {
             return false;
         };
         match key.as_str() {
-            "esc" => {
-                self.multi = std::mem::take(&mut input.before);
-                self.multi_input = None;
-                return true;
-            }
             "backspace" | "delete" | "arrow_left" | "arrow_right" | "home" | "end" => {
                 use crate::api::text_edit::EditAction as E;
                 let action = match key.as_str() {
@@ -172,10 +179,36 @@ impl WindowSession {
     }
 
     pub(super) fn discard_multi(&mut self) {
-        // Mode handoffs keep their existing target. Explicit clear still restores the anchor.
         self.multi_input = None;
         self.multi_anchor = None;
         self.multi.clear();
+    }
+
+    pub(super) fn restore_multi_focus(&mut self, out: &mut CommandBatch) -> bool {
+        let Some(id) = self
+            .multi_anchor
+            .filter(|id| self.inventory.contains_key(id))
+        else {
+            return false;
+        };
+        self.request(WindowOperation::Activate(id), out);
+        true
+    }
+
+    /// Finish restoration before an exit can cancel the worker's session.
+    pub(super) fn restore_multi_before(&mut self, next: Command, out: &mut CommandBatch) -> bool {
+        if let Some(pending) = &mut self.multi_exit {
+            pending.1 = next;
+            return true;
+        }
+        if !self.restore_multi_focus(out) {
+            self.discard_multi();
+            return false;
+        }
+        self.stop_movement(out);
+        self.multi_exit = Some(Box::new((self.request, next)));
+        self.discard_multi();
+        true
     }
 
     fn recompute_multi_input(&mut self, commit_last: bool) {
@@ -306,12 +339,8 @@ impl WindowSession {
 
     pub(super) fn clear_multi(&mut self, out: &mut CommandBatch) {
         self.stop_movement(out);
-        self.multi_input = None;
         self.cancel_number(out);
-        if let Some(id) = self.multi_anchor.take() {
-            // Restore the captured identity; never re-resolve active/mouse preferences.
-            self.request(WindowOperation::Select(id), out);
-        }
-        self.multi.clear();
+        self.restore_multi_focus(out);
+        self.discard_multi();
     }
 }

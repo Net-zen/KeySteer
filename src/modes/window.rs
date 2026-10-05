@@ -125,6 +125,7 @@ pub struct WindowSession {
     kind: WindowKind,
     pending_transition: Option<ModeId>,
     pending_handoff: bool,
+    multi_exit: Option<Box<(u64, Command)>>,
     preserve_session: bool,
     enter_pending: bool,
     restore_pending: bool,
@@ -184,6 +185,7 @@ impl WindowSession {
             kind: WindowKind::Move,
             pending_transition: None,
             pending_handoff: false,
+            multi_exit: None,
             preserve_session: false,
             enter_pending: false,
             restore_pending: false,
@@ -606,6 +608,21 @@ impl WindowSession {
         }
     }
     pub(crate) fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
+        let continuation = match event {
+            ModeEvent::Restarted => Some(Command::RestartMode),
+            ModeEvent::FinishRequested { cause } => Some(Command::FinishMode { cause: *cause }),
+            _ => None,
+        };
+        if let Some(next) = continuation
+            && (self.multi_anchor.is_some() || self.multi_exit.is_some())
+        {
+            let mut out = CommandBatch::new();
+            if self.restore_multi_before(next, &mut out) {
+                out.push(ctx.present(self.view()));
+                return out;
+            }
+        }
+        let mut input_out = CommandBatch::new();
         if self.multi_input.is_some()
             && self.kind == WindowKind::Move
             && let ModeEvent::TextEdit(action) = event
@@ -624,9 +641,9 @@ impl WindowSession {
                 state: KeyState::Down,
                 repeat,
             } = event
-            && self.multi_input_key(key, *repeat)
+            && self.multi_input_key(key, *repeat, &mut input_out)
         {
-            let mut out = CommandBatch::new();
+            let mut out = input_out;
             self.activate_multi_front(&mut out);
             self.center_multi_pointer(ctx, &mut out);
             out.push(ctx.present(self.view()));
@@ -652,6 +669,7 @@ impl WindowSession {
                 self.deleting_presets = false;
                 self.pending_transition = None;
                 self.pending_handoff = false;
+                self.multi_exit = None;
                 self.tabs.queue.clear();
                 self.tabs.in_flight = None;
                 if self.session != 0 && !matches!(event, ModeEvent::Restarted) {
@@ -761,6 +779,7 @@ impl WindowSession {
                 self.reopen_edit = None;
                 self.pending_transition = None;
                 self.pending_handoff = false;
+                self.multi_exit = None;
                 self.enter_pending = false;
                 self.restore_pending = false;
                 self.library_open = false;
