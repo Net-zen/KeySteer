@@ -332,10 +332,7 @@ impl super::window_move::WindowAccess for MovableWindow {
         // SAFETY: the type tag describes exactly the CGPoint at this pointer.
         // AXValueCreate copies its contents; OwnedCf owns the resulting +1 object.
         let value = unsafe {
-            OwnedCf::from_create_rule(AXValueCreate(
-                AX_VALUE_CGPOINT,
-                (&point as *const CGPoint).cast(),
-            ))
+            OwnedCf::from_create_rule(AXValueCreate(AX_VALUE_CGPOINT, (&raw const point).cast()))
         }
         .ok_or_else(|| WriteError::Rejected("cannot create AX window position".to_string()))?;
         self.set_attribute(&self.attributes.position, value.as_ptr())
@@ -731,16 +728,8 @@ fn element_rect(element: AXUIElementRef, attributes: &AxAttributes) -> Option<Re
             return None;
         }
         (
-            AXValueGetValue(
-                position.as_ptr(),
-                AX_VALUE_CGPOINT,
-                (&mut point as *mut CGPoint).cast(),
-            ),
-            AXValueGetValue(
-                size.as_ptr(),
-                AX_VALUE_CGSIZE,
-                (&mut dimensions as *mut CGSize).cast(),
-            ),
+            AXValueGetValue(position.as_ptr(), AX_VALUE_CGPOINT, (&raw mut point).cast()),
+            AXValueGetValue(size.as_ptr(), AX_VALUE_CGSIZE, (&raw mut dimensions).cast()),
         )
     };
     let rect = Rect::new(point.x, point.y, dimensions.width, dimensions.height);

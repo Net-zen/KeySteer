@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::api::{Appearance, Binding, Mode, ModeId, ModeIndicator, Palette, Plugin};
+use crate::api::{Appearance, Binding, Mode, ModeId, Palette, Plugin};
 
 pub type Bindings = BTreeMap<String, Binding>;
 
@@ -30,8 +30,8 @@ pub struct EngineSettings {
     pub invert_scroll: (bool, bool),
     pub default_scan_roles: Vec<String>,
     pub ui_hint_overlap_key: String,
-    pub mode_indicator: ModeIndicator,
-    pub key_help: crate::api::style::KeyHelp,
+    pub mode_indicator: crate::api::style::compiled::ModeIndicator,
+    pub key_help: crate::api::style::compiled::KeyHelp,
     pub usage_save_after_entries: u32,
     pub quick_switch: QuickSwitchSettings,
 }

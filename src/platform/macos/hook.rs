@@ -546,7 +546,7 @@ impl TapCaptureLifecycle {
             )
             .is_ok()
         {
-            super::workspace::wake_main_run_loop();
+            super::event_loop::wake_main_run_loop();
         }
         stop_run_loop(&self.run_loop);
     }
@@ -689,14 +689,11 @@ fn event_tap_thread(handshake: HookHandshake, context: HookThreadContext) {
         }
     };
 
-    let source = match tap.mach_port().create_runloop_source(0) {
-        Ok(source) => source,
-        Err(_) => {
-            let _ = ready.send(Err(
-                "cannot create a run-loop source for the macOS event tap".into(),
-            ));
-            return;
-        }
+    let Ok(source) = tap.mach_port().create_runloop_source(0) else {
+        let _ = ready.send(Err(
+            "cannot create a run-loop source for the macOS event tap".into(),
+        ));
+        return;
     };
     let run_loop = CFRunLoop::get_current();
     if let Ok(mut shared) = shared_run_loop.lock() {
@@ -753,7 +750,7 @@ fn event_tap_thread(handshake: HookHandshake, context: HookThreadContext) {
                     ),
                     generation: None,
                 });
-                super::workspace::wake_main_run_loop();
+                super::event_loop::wake_main_run_loop();
             }
             Some(TapDisabled::Timeout) => {
                 lifecycle.signal_capture_loss(CAPTURE_LOSS_REPEATED_TIMEOUT);
@@ -1016,7 +1013,7 @@ fn handle_event(
                     })
                     .is_ok();
                 if sent {
-                    super::workspace::wake_main_run_loop();
+                    super::event_loop::wake_main_run_loop();
                 } else {
                     // A full engine queue must never block a CGEventTap
                     // callback. Clear the coalescing marker so the next
@@ -1103,7 +1100,7 @@ fn disposition_for(
         crate::support::perf_probe::mark_correlated("disposition_returned", correlation_id);
         return CallbackResult::Keep;
     }
-    super::workspace::wake_main_run_loop();
+    super::event_loop::wake_main_run_loop();
 
     let response = if forwards_on_timeout {
         mailbox.wait_with_fallback(generation, DISPOSITION_TIMEOUT, KeyDisposition::Forward)

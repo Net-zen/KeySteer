@@ -851,8 +851,7 @@ impl Backend for WindowsBackend {
             .screens
             .iter()
             .find(|screen| screen.bounds.contains(&center))
-            .map(|screen| screen.scale)
-            .unwrap_or(1.0);
+            .map_or(1.0, |screen| screen.scale);
         self.overlay.present(scene, area, scale)
     }
 

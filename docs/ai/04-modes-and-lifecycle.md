@@ -7,12 +7,14 @@ Mode/Plugin 是平台无关状态机：接收 `ModeEvent` 和 `HostContext`，�
 | 能力 | 位置 |
 | --- | --- |
 | 空闲、连续移动 | `src/modes/idle.rs`、`src/modes/normal.rs` |
-| 网格与共享定位状态 | `src/modes/grid.rs`、`src/modes/recursive_grid.rs`、`src/modes/targeting.rs` |
+| 网格与共享定位状态 | `src/modes/grid.rs`、`src/modes/targeting.rs` |
 | Hint 标签、搜索、扫描会话 | `src/modes/hint/` |
 | 窗口模式、编辑、分组与恢复 | `src/modes/window.rs`、`src/modes/window/` |
 | 临时文本透传 | `src/modes/text_input.rs` |
 | 插件 | `src/plugins/builtin/` |
 | 注册与生命周期词汇 | `src/app/mode_catalog.rs`、`src/api/lifecycle.rs` |
+
+普通网格与递归网格共用 `GridMode` 的事件、命令和生命周期实现，保留各自的视图、样式和模式身份。catalog 直接装配 `TargetingController` 与样式；几何选择仍由控制器负责，Normal 的静默定位也复用该控制器。
 
 ## 关键约束
 
@@ -33,3 +35,11 @@ Mode/Plugin 是平台无关状态机：接收 `ModeEvent` 和 `HostContext`，�
 `@` 也可后置：`ld@` 与 `@ld` 等价，只匹配标签。普通搜索词后追加 `@` 即可切换到标签匹配，删除标记则恢复混合搜索；多选可混用，如 `ld@ @ka`。
 
 OCR 预览与复制共用流式空白清理：去除汉字间和中文标点周围的识别空格，其他连续水平空白压为单空格，保留英文词边界与换行；不改动原始扫描数据及辅助功能字段，不构建中间字符串。
+
+Window 多选状态与输入位于 `window/multi_selection.rs`，按窗口身份保存最初目标与选择集合；第一段逐位立即切换，空格后的完整编号仅在下一空格或确认时切换；操作键自动确认并继续执行原操作。输入复用 `api/text_edit.rs` 的光标／选区，在任意位置插入和删除；选择集合始终按完整输入从进入时快照重算，前台预览跟随光标前的编号。`WindowOperation::Activate` 激活预览但不移动鼠标、不替换 worker 会话目标；确认回传预览窗口几何和 Tab 状态，模式仍保留最初多选身份。显式清空恢复最初窗口；Window 与 Editor／Tab 交接保留选择，Quick／Restore 进入和离开均丢弃多选及输入，并先恢复最初窗口的焦点。Quick 继续遵循现有 `target` 配置与会话目标交接逻辑。帮助面板仅显示简短状态、输入光标及配置映射，不附示例。选中 tab 成员代表整个组，几何操作每组只提交一次。移动、缩放、状态、关闭和音频使用同一选择集合；Editor 有多选时仅以选中组建立自动平铺事务，未多选时仍使用全局候选。
+
+输入全部删除或 Esc 撤销后恢复本轮输入前的选择快照，并用 `WindowOperation::Activate` 恢复最初窗口的原生焦点；显式清空、结束、退出或重启会话也恢复该焦点。清除退出先等待激活请求的异步确认，再继续切换或重启，避免会话取消抢先丢弃恢复请求；最初窗口已关闭时直接完成清理。连续空输入不重复激活，不重新解析 active/mouse，不额外移动鼠标。
+
+多个逻辑窗口选中时，鼠标跟随已确认窗口中心的等权平均点；选择变化和几何确认更新该点，不叠加各窗口结果的相对鼠标偏移。Tab 组只贡献一个中心，最小化窗口不参与。初始进入及单个逻辑窗口保留原有鼠标跟随语义，不使用预测几何定位。
+
+Tab 入口优先使用显式多选，发送 `TabOperation::EnterSelection` 而非自动按应用组合；后端先解析并验证全部所选身份，将已分组成员扩展为整组，再以单次可撤销事务合并。空选择或失效选择不得回退到自动组合；未多选时沿用 `Enter`。

@@ -73,6 +73,14 @@ struct Session {
     pending_closed: Vec<WindowId>,
     resize_minimum: Option<(WindowId, u64, usize, f64, Point)>,
     move_remainder: Option<(WindowId, u64, f64, Rect, Point)>,
+    gesture_target: Option<(WindowId, u64)>,
+    gesture_peers: std::collections::BTreeMap<WindowId, GestureCache>,
+}
+
+#[derive(Default)]
+struct GestureCache {
+    movement: Option<(WindowId, u64, f64, Rect, Point)>,
+    minimum: Option<(WindowId, u64, usize, f64, Point)>,
 }
 
 struct EditTransaction {
@@ -294,6 +302,7 @@ impl Session {
     ) {
         if self.screens != screens {
             self.resize_minimum = None;
+            self.gesture_peers.clear();
             self.screens.clear();
             self.screens.extend_from_slice(screens);
         }
@@ -331,6 +340,8 @@ impl Session {
             _ => None,
         };
         let standalone = request.operation.is_standalone_cycle();
+        let preview = matches!(request.operation, WindowOperation::Activate(_));
+        let anchor = self.target;
         let outcome = self.apply(
             access,
             request.operation,
@@ -359,7 +370,12 @@ impl Session {
                 }));
             }
         }
-        self.complete_result(access, result, screens)
+        let result = self.complete_result(access, result, screens);
+        if preview {
+            // Foreground previews do not replace the session's captured target.
+            self.target = anchor.filter(|id| !result.closed.contains(id));
+        }
+        result
     }
 
     fn complete_result(
@@ -420,6 +436,29 @@ impl Session {
         result
     }
 
+    fn select_gesture_target(&mut self, target: WindowId, group: u64) {
+        if let Some((previous, old_group)) = self.gesture_target {
+            if old_group != group {
+                self.gesture_peers.clear();
+                self.move_remainder = None;
+                self.resize_minimum = None;
+            } else if previous != target {
+                self.gesture_peers.insert(
+                    previous,
+                    GestureCache {
+                        movement: self.move_remainder.take(),
+                        minimum: self.resize_minimum.take(),
+                    },
+                );
+                if let Some(cache) = self.gesture_peers.get(&target) {
+                    self.move_remainder = cache.movement;
+                    self.resize_minimum = cache.minimum;
+                }
+            }
+        }
+        self.gesture_target = Some((target, group));
+    }
+
     fn adjustment_rect(
         &mut self,
         access: &impl WindowAccess,
@@ -429,6 +468,7 @@ impl Session {
         before: &Snapshot,
         screens: &[Screen],
     ) -> Result<Option<Rect>, String> {
+        self.select_gesture_target(target, group);
         let screen = screens
             .get(before.info.screen)
             .ok_or("display is unavailable")?;
@@ -706,6 +746,10 @@ impl Session {
                     result.message = Some("Close requested".into());
                 }
             }
+            WindowOperation::CloseGroup(id) => {
+                access.close_group(id, cancelled)?;
+                result.message = Some("Close requested".into());
+            }
             WindowOperation::Enumerate => {
                 let windows = self.enumerate(access, screens, cancelled)?;
                 for window in &windows {
@@ -716,14 +760,15 @@ impl Session {
                 }
                 result.windows = Some(windows);
             }
-            WindowOperation::Select(id) => {
+            WindowOperation::Select(id) | WindowOperation::Activate(id) => {
+                let move_pointer = matches!(operation, WindowOperation::Select(_));
                 self.capture_initial(access, id, screens);
                 access.snapshot(id, screens)?;
                 result.message = access.activate_window(id, screens, cancelled).err();
                 self.error.clone_from(&result.message);
                 let after = access.snapshot(id, screens)?;
                 self.target = Some(id);
-                result.pointer = Some(after.info.bounds.center());
+                result.pointer = move_pointer.then(|| after.info.bounds.center());
                 result.target = Some(after.info);
             }
             WindowOperation::Cycle
@@ -1333,10 +1378,32 @@ impl Session {
                 change_result?;
                 self.target = Some(target);
             }
-            WindowOperation::Tile { target, gap, group } => {
+            operation @ (WindowOperation::Tile { .. } | WindowOperation::TileSelection { .. }) => {
+                let (target, selected, gap, group) = match operation {
+                    WindowOperation::Tile { target, gap, group } => (target, None, gap, group),
+                    WindowOperation::TileSelection {
+                        targets,
+                        gap,
+                        group,
+                    } => {
+                        let Some(target) = targets.first().copied() else {
+                            return Ok(());
+                        };
+                        let selected = targets
+                            .into_iter()
+                            .map(|id| access.layout_representative(id))
+                            .collect::<std::collections::BTreeSet<_>>();
+                        (target, Some(selected), gap, group)
+                    }
+                    _ => unreachable!(),
+                };
                 let target_screen = access.snapshot(target, screens)?.info.screen;
                 let mut windows = self.enumerate(access, screens, cancelled)?;
-                if self.scope.is_none_or(|scope| scope.screen.is_some()) {
+                if let Some(selected) = &selected {
+                    windows.retain(|window| {
+                        selected.contains(&access.layout_representative(window.id))
+                    });
+                } else if self.scope.is_none_or(|scope| scope.screen.is_some()) {
                     windows.retain(|w| w.screen == target_screen);
                 }
                 result.skipped = windows
@@ -1800,6 +1867,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn multi_selection_fractional_motion_and_history_include_every_target() {
+        let mut access = Fake::new(3);
+        let initial = access.windows.clone();
+        let mut session = Session::default();
+        for _ in 0..20 {
+            for id in [1, 2] {
+                let result = run(
+                    &mut session,
+                    &mut access,
+                    WindowOperation::Adjust {
+                        target: WindowId(id),
+                        change: WindowChange::Move { dx: 0.1, dy: 0.0 },
+                        group: 5,
+                    },
+                );
+                assert!(result.message.is_none(), "{:?}", result.message);
+            }
+        }
+        for id in [WindowId(1), WindowId(2)] {
+            assert!(
+                (access.windows[&id].info.bounds.x - initial[&id].info.bounds.x - 4.0).abs() < 0.01
+            );
+        }
+        assert_eq!(session.history.len(), 1);
+        assert_eq!(session.history[0].1.len(), 2);
+        run(&mut session, &mut access, WindowOperation::Undo);
+        for id in [WindowId(1), WindowId(2), WindowId(3)] {
+            assert_eq!(access.windows[&id].info.bounds, initial[&id].info.bounds);
+        }
+        run(&mut session, &mut access, WindowOperation::Redo);
+        assert_ne!(
+            access.windows[&WindowId(1)].info.bounds,
+            initial[&WindowId(1)].info.bounds
+        );
+        assert_eq!(
+            access.windows[&WindowId(3)].info.bounds,
+            initial[&WindowId(3)].info.bounds
+        );
+    }
+
+    #[test]
+    fn multi_selection_tile_leaves_unselected_windows_untouched() {
+        let mut access = Fake::new(3);
+        let unselected = access.windows[&WindowId(2)].info.bounds;
+        let mut session = Session::default();
+        let result = run(
+            &mut session,
+            &mut access,
+            WindowOperation::TileSelection {
+                targets: vec![WindowId(1), WindowId(3)],
+                gap: 0.0,
+                group: 1,
+            },
+        );
+        assert_eq!(result.changed, 2);
+        assert_eq!(access.windows[&WindowId(2)].info.bounds, unselected);
+        assert_eq!(session.history[0].1.len(), 2);
+    }
+
     fn run(session: &mut Session, access: &mut Fake, operation: WindowOperation) -> WindowResult {
         session.execute(
             access,
@@ -1812,6 +1939,48 @@ mod tests {
             &screens(),
             &|| false,
         )
+    }
+
+    #[test]
+    fn input_activation_updates_foreground_and_tab_selection_without_warping_or_retargeting() {
+        use crate::api::window_tabs::{TabGroup, TabGroupId, TabState};
+        let mut access = Fake::new(3);
+        access.tabs = Some(TabState {
+            groups: vec![TabGroup {
+                id: TabGroupId(1),
+                members: vec![WindowId(2), WindowId(3)],
+                active: WindowId(2),
+            }],
+            ..TabState::default()
+        });
+        let mut session = Session::default();
+        run(
+            &mut session,
+            &mut access,
+            WindowOperation::Select(WindowId(1)),
+        );
+        let result = run(
+            &mut session,
+            &mut access,
+            WindowOperation::Activate(WindowId(3)),
+        );
+        assert_eq!(access.selected.get(), Some(WindowId(3)));
+        assert_eq!(result.target.unwrap().id, WindowId(3));
+        assert_eq!(result.tabs.unwrap().groups[0].active, WindowId(3));
+        assert!(result.pointer.is_none());
+        assert_eq!(session.target, Some(WindowId(1)));
+        assert!(session.initial.contains_key(&WindowId(3)));
+        access.closed.push(WindowId(1));
+        let result = run(
+            &mut session,
+            &mut access,
+            WindowOperation::Activate(WindowId(2)),
+        );
+        assert_eq!(result.closed, [WindowId(1)]);
+        assert_eq!(
+            session.target, None,
+            "a foreground preview cannot restore a closed anchor"
+        );
     }
 
     #[test]

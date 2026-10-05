@@ -182,12 +182,7 @@ impl Engine {
             Ok(engine) => engine,
             Err(error) => panic!("Engine::new requires a valid catalog: {error}"),
         };
-        engine.attach_configuration(Box::new(ConfigRepository::new(
-            config.clone(),
-            source,
-            None,
-            None,
-        )));
+        engine.attach_configuration(Box::new(ConfigRepository::new(config, source, None, None)));
         engine
     }
 
@@ -292,8 +287,8 @@ pub fn compile(config: &ConfigFile) -> Result<RuntimePlan, String> {
             invert_scroll: config.effective_scroll_invert(),
             default_scan_roles: config.ui_hint.clickable_roles.clone(),
             ui_hint_overlap_key: config.ui_hint.overlap_cycle_key.clone(),
-            mode_indicator: config.mode_indicator.clone(),
-            key_help: config.key_help.clone(),
+            mode_indicator: config.mode_indicator.compile(),
+            key_help: config.key_help.compile(),
             usage_save_after_entries: config.mode_usage.save_after_entries,
             quick_switch: {
                 let style = |appearance| {
@@ -362,6 +357,45 @@ mod tests {
         assert!(!ids.contains(&ModeId::grid()));
         assert_eq!(ids.iter().filter(|id| **id == ModeId::idle()).count(), 1);
         assert!(plan.route(&ModeId::normal()).is_some());
+    }
+
+    #[test]
+    fn color_compilation_keeps_config_text_and_configuration_generations_independent() {
+        use crate::api::{Color, ThemedColor};
+        let mut config = ConfigFile::default();
+        config.key_help.text_color = Some(ThemedColor::PerAppearance {
+            light: "#aAbBcCFF".into(),
+            dark: "#12345680".into(),
+        });
+        let source = config.to_toml().unwrap();
+        let first = compile(&config).unwrap();
+        assert_eq!(config.to_toml().unwrap(), source);
+        let color = |plan: &RuntimePlan, appearance| {
+            plan.settings
+                .key_help
+                .text_color
+                .as_ref()
+                .unwrap()
+                .resolve(appearance)
+        };
+        assert_eq!(
+            color(&first, Appearance::Light),
+            Some(Color::rgb(170, 187, 204))
+        );
+        assert_eq!(
+            color(&first, Appearance::Dark),
+            Some(Color::rgba(18, 52, 86, 128))
+        );
+        config.key_help.text_color = Some(ThemedColor::Both("#00000000".into()));
+        let second = compile(&config).unwrap();
+        assert_eq!(color(&second, Appearance::Dark), Some(Color::TRANSPARENT));
+        assert_eq!(
+            color(&first, Appearance::Dark),
+            Some(Color::rgba(18, 52, 86, 128))
+        );
+        config.key_help.text_color = Some(ThemedColor::Both("invalid".into()));
+        assert!(compile(&config).is_err());
+        assert_eq!(color(&second, Appearance::Light), Some(Color::TRANSPARENT));
     }
 
     #[test]

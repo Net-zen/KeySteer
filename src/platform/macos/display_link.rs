@@ -12,8 +12,8 @@ use std::time::Duration;
 use objc2::rc::{Allocated, Retained, autoreleasepool};
 use objc2::runtime::NSObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
-use objc2_app_kit::NSView;
-use objc2_foundation::{NSDate, NSRunLoop, NSRunLoopCommonModes};
+use objc2_app_kit::{NSEventTrackingRunLoopMode, NSModalPanelRunLoopMode, NSView};
+use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes};
 use objc2_quartz_core::CADisplayLink;
 
 struct FrameTargetIvars {
@@ -115,12 +115,17 @@ impl DisplayFrameClock {
         // callback signature, and both target and source stay retained.
         let link =
             unsafe { source.displayLinkWithTarget_selector(&self.target, sel!(displayFrame:)) };
-        // Native cadence is the default. Registering in common modes keeps
-        // motion synchronised during AppKit event/menu tracking as well.
-        // SAFETY: `link`, the main run loop and the process-lifetime common
-        // mode token remain live for the synchronous registration.
+        // Match the runtime's native modes so all frame-driven modes continue
+        // during menus, even when tracking is not in AppKit's common-mode set.
+        // SAFETY: link, main loop, and process-lifetime mode tokens remain live.
         unsafe {
-            link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes);
+            for mode in [
+                NSRunLoopCommonModes,
+                NSEventTrackingRunLoopMode,
+                NSModalPanelRunLoopMode,
+            ] {
+                link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), mode);
+            }
         }
         self.link = Some(link);
     }
@@ -150,10 +155,7 @@ impl DisplayFrameClock {
             return Some(elapsed);
         }
 
-        let deadline = NSDate::dateWithTimeIntervalSinceNow(timeout.as_secs_f64());
-        let run_loop = NSRunLoop::mainRunLoop();
-        let mode = super::native::default_run_loop_modes().foundation;
-        let _handled = run_loop.runMode_beforeDate(mode, &deadline);
+        super::event_loop::wait_for_app_event(timeout);
         // Any non-frame AppKit wake returns control to Backend::poll so a
         // synchronously waiting hook is checked before another VBlank wait.
         self.target.take_elapsed()

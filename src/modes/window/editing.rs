@@ -24,10 +24,14 @@ impl WindowSession {
             return;
         }
         // Build once, from the worker's fresh inventory and constraints.
-        let targets = if tree {
+        let targets = if tree && self.multi_anchor.is_none() {
             Vec::new()
+        } else if tree {
+            self.operation_targets()
+                .map(|id| self.tabs.state.representative(id))
+                .collect()
         } else {
-            target.map(|target| vec![target.id]).unwrap_or_default()
+            self.operation_targets().collect()
         };
         let model = if tree {
             EditModel::Tree(LayoutTree::import(&[], None, screen.work_area))
@@ -69,7 +73,7 @@ impl WindowSession {
             WindowOperation::BeginEdit {
                 transaction,
                 targets,
-                screen: tree.then_some(self.screen),
+                screen: (tree && self.multi_anchor.is_none()).then_some(self.screen),
                 group: self.group,
             },
             out,
@@ -78,23 +82,23 @@ impl WindowSession {
     }
 
     pub(super) fn flush_edit(&mut self, out: &mut CommandBatch) {
-        let Some(edit) = &mut self.edit else { return };
+        let Some(edit) = &self.edit else { return };
         if !edit.ready || edit.in_flight.is_some() || edit.ending || self.temporary {
             return;
         }
         if edit.dirty {
             let placements = match &edit.model {
                 EditModel::Quick(quick) => self
-                    .target
-                    .as_ref()
-                    .map(|w| vec![(w.id, quick.rect_with(&self.settings.split_ratios))])
-                    .unwrap_or_default(),
+                    .operation_targets()
+                    .map(|id| (id, quick.rect_with(&self.settings.split_ratios)))
+                    .collect(),
                 EditModel::Tree(tree) => tree
                     .slots()
                     .into_iter()
                     .filter_map(|s| s.window.map(|id| (id, s.rect)))
                     .collect(),
             };
+            let Some(edit) = &mut self.edit else { return };
             edit.revision += 1;
             edit.in_flight = Some((edit.revision, edit.model.clone()));
             edit.dirty = false;
@@ -121,6 +125,7 @@ impl WindowSession {
             };
             self.request(operation, out);
         } else if let Some(finish) = edit.finishing {
+            let Some(edit) = &mut self.edit else { return };
             edit.ending = true;
             let operation = WindowOperation::EndEdit {
                 transaction: edit.transaction,
@@ -192,6 +197,17 @@ impl WindowSession {
     pub(super) fn tile(&mut self, out: &mut CommandBatch) {
         self.trees.remove(&self.screen);
         self.group += 1;
+        if self.multi_anchor.is_some() {
+            self.request(
+                WindowOperation::TileSelection {
+                    targets: self.operation_targets().collect(),
+                    gap: self.settings.gap,
+                    group: self.group,
+                },
+                out,
+            );
+            return;
+        }
         if let Some(target) = &self.target {
             self.request(
                 WindowOperation::Tile {
@@ -484,6 +500,8 @@ impl WindowSession {
                 self.flush_edit(out);
             }
         } else if !slot && let Some(id) = id {
+            self.multi.clear();
+            self.multi_anchor = None;
             if self.edit.is_some() {
                 self.finish_edit(Finish::Select(id), out);
             } else {
@@ -513,6 +531,7 @@ impl WindowSession {
                 {
                     return;
                 }
+                let minimum_by_window: BTreeMap<_, _> = minimums.iter().copied().collect();
                 let saved = if self
                     .edit
                     .as_ref()
@@ -548,9 +567,18 @@ impl WindowSession {
                         let windows: Vec<_> = self
                             .visible_windows()
                             .filter(|w| w.screen == self.screen)
-                            .filter(|w| minimums.iter().any(|(id, _)| *id == w.id))
+                            .filter(|w| minimum_by_window.contains_key(&w.id))
                             .cloned()
                             .collect();
+                        if self.edit.as_ref().is_some_and(|edit| !edit.entry_layout) {
+                            return LayoutTree::import(
+                                &windows,
+                                self.target
+                                    .as_ref()
+                                    .map(|w| self.tabs.state.representative(w.id)),
+                                screen.work_area,
+                            );
+                        }
                         let mut cached = self.trees.get(&self.screen).cloned();
                         if let Some(tree) = &mut cached {
                             tree.retain_windows(&windows.iter().map(|w| w.id).collect::<Vec<_>>());
@@ -574,15 +602,6 @@ impl WindowSession {
                                 cached = None;
                             }
                         }
-                        if self.edit.as_ref().is_some_and(|edit| !edit.entry_layout) {
-                            return LayoutTree::import(
-                                &windows,
-                                self.target
-                                    .as_ref()
-                                    .map(|w| self.tabs.state.representative(w.id)),
-                                screen.work_area,
-                            );
-                        }
                         cached.unwrap_or_else(|| {
                             LayoutTree::automatic(
                                 &windows,
@@ -590,7 +609,7 @@ impl WindowSession {
                                     .as_ref()
                                     .map(|w| self.tabs.state.representative(w.id)),
                                 screen.work_area,
-                                &minimums.iter().copied().collect(),
+                                &minimum_by_window,
                                 self.settings.gap * *gap_scale,
                             )
                             .unwrap_or_else(|_| {
@@ -621,9 +640,7 @@ impl WindowSession {
                         }
                         let windows: Vec<_> = self
                             .visible_windows()
-                            .filter(|w| {
-                                w.screen == index && minimums.iter().any(|(id, _)| *id == w.id)
-                            })
+                            .filter(|w| w.screen == index && minimum_by_window.contains_key(&w.id))
                             .cloned()
                             .collect();
                         if windows.is_empty() {
@@ -637,7 +654,7 @@ impl WindowSession {
                                         &windows,
                                         None,
                                         screen.work_area,
-                                        &minimums.iter().copied().collect(),
+                                        &minimum_by_window,
                                         self.settings.gap
                                             * screen_scales.get(index).copied().unwrap_or(1.0),
                                     )
@@ -646,7 +663,7 @@ impl WindowSession {
                             )
                             .and_then(|mut tree| {
                                 tree.fit(
-                                    &minimums.iter().copied().collect(),
+                                    &minimum_by_window,
                                     screen.work_area,
                                     self.settings.gap
                                         * screen_scales.get(index).copied().unwrap_or(1.0),
@@ -674,7 +691,7 @@ impl WindowSession {
                 if edit.transaction != *transaction || edit.ending {
                     return;
                 }
-                edit.minimums = minimums.iter().copied().collect();
+                edit.minimums = minimum_by_window;
                 edit.gap_scale = *gap_scale;
                 edit.ready = true;
                 if let Some(tree) = fresh {

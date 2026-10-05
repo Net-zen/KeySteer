@@ -221,7 +221,7 @@ impl Logger {
         if state.file.is_none() {
             match open_append(&self.path) {
                 Ok(file) => {
-                    state.bytes = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+                    state.bytes = file.metadata().map_or(0, |metadata| metadata.len());
                     state.file = Some(file);
                 }
                 Err(error) => {
@@ -288,7 +288,7 @@ impl Logger {
         let rotation = rotate_files(&self.path);
         match open_append(&self.path) {
             Ok(file) => {
-                state.bytes = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+                state.bytes = file.metadata().map_or(0, |metadata| metadata.len());
                 state.file = Some(file);
             }
             Err(reopen_error) => {
@@ -387,9 +387,7 @@ pub(crate) fn start_session(backend_name: &str) {
     {
         return;
     }
-    let log_path = path()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "<unavailable>".into());
+    let log_path = path().map_or_else(|| "<unavailable>".into(), |path| path.display().to_string());
     info(
         "session",
         format!(
@@ -404,9 +402,10 @@ pub(crate) fn start_session(backend_name: &str) {
                 "release"
             },
             backend_name,
-            std::env::current_exe()
-                .map(|value| value.display().to_string())
-                .unwrap_or_else(|error| format!("<unavailable: {error}>")),
+            std::env::current_exe().map_or_else(
+                |error| format!("<unavailable: {error}>"),
+                |value| value.display().to_string()
+            ),
             log_path,
         ),
     );
@@ -554,17 +553,17 @@ pub fn install_panic_hook() {
                 .copied()
                 .or_else(|| panic.payload().downcast_ref::<String>().map(String::as_str))
                 .unwrap_or("non-string panic payload");
-            let location = panic
-                .location()
-                .map(|location| {
+            let location = panic.location().map_or_else(
+                || "unknown location".into(),
+                |location| {
                     format!(
                         "{}:{}:{}",
                         location.file(),
                         location.line(),
                         location.column()
                     )
-                })
-                .unwrap_or_else(|| "unknown location".into());
+                },
+            );
             report_error(
                 "panic",
                 format!(

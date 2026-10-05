@@ -107,6 +107,7 @@ fn window_scenes_match_pre_optimization_baseline() {
                                     },
                                 };
                                 let view = WindowView {
+                                    selected: &[],
                                     text_cache: None,
                                     configurable_position: kind != 2,
                                     tabs: &tabs,
@@ -121,7 +122,14 @@ fn window_scenes_match_pre_optimization_baseline() {
                                     tree: (kind != 0).then_some(&tree),
                                     gap: 0.0,
                                 };
-                                let mut scene = view.scene(&ctx);
+                                // Keep the independently captured layout baseline. The
+                                // intentionally added selection decoration is tested separately.
+                                let mut scene = match styles.for_appearance(appearance).guide_line {
+                                    Some(style) => {
+                                        view.scene_using::<_, false>(&ctx, Guides(style))
+                                    }
+                                    None => view.scene_using::<_, false>(&ctx, NoGuides),
+                                };
                                 for stage in 0..3 {
                                     scene.sort_in_place();
                                     if stage > 0 {

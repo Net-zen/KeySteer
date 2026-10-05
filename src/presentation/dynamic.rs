@@ -1,7 +1,7 @@
 //! Stateless geometry and styling for host-owned cursor decorations.
 use crate::api::binding::Button;
 use crate::api::overlay::{Color, CursorMarker, Indicator};
-use crate::api::style::{IndicatorUi, ResolvedCursorIndicatorUi};
+use crate::api::style::compiled::{IndicatorUi, ResolvedCursorIndicatorUi};
 use crate::api::{Palette, Point, Screen};
 
 pub(crate) struct HeldTargetsText {

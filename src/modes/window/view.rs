@@ -1,8 +1,39 @@
 //! Read-only window presentation data; no scene construction.
 use super::*;
 use crate::api::presentation::{View, WindowView};
+use std::fmt::Write;
 
 impl WindowSession {
+    pub(super) fn multi_help(&self) -> String {
+        let mut help = String::new();
+        for (chord, binding) in self.settings.multi_bindings.iter() {
+            if !help.is_empty() {
+                help.push_str(" · ");
+            }
+            let action = match binding.as_ref() {
+                Binding::Window(W::MultiConfirm) => "Confirm",
+                Binding::Window(W::ClearMulti) => "Clear",
+                Binding::Send(chord) => match crate::api::text_edit::navigation_action(chord) {
+                    Some(crate::api::text_edit::EditAction::Left) => "←",
+                    Some(crate::api::text_edit::EditAction::Right) => "→",
+                    Some(crate::api::text_edit::EditAction::Home) => "Home",
+                    Some(crate::api::text_edit::EditAction::End) => "End",
+                    Some(crate::api::text_edit::EditAction::Backspace) => "Backspace",
+                    Some(crate::api::text_edit::EditAction::Delete) => "Delete",
+                    _ => "Select",
+                },
+                _ => "",
+            };
+            // String writes cannot fail; all arguments use infallible formatting.
+            let _ = write!(
+                help,
+                "{}: {action}",
+                crate::api::input::display_key_chord(&chord.canonical()),
+            );
+        }
+        help
+    }
+
     pub(super) fn detail(&self) -> String {
         if self.kind == WindowKind::Tab {
             return self.tab_detail();
@@ -47,6 +78,14 @@ impl WindowSession {
             }
             return detail;
         }
+        if let Some(input) = &self.multi_input {
+            let (before, after) = input.text.split_at(input.selection.cursor);
+            return format!(
+                "Multi-select · {} selected\nInput: {before}▏{after}\n{}",
+                self.operation_targets().count(),
+                input.help,
+            );
+        }
         let state = match self.edit.as_ref().map(|e| &e.model) {
             Some(EditModel::Quick(quick)) => format!(
                 "Quick · {}",
@@ -62,6 +101,9 @@ impl WindowSession {
             .into(),
         };
         let mut detail = state;
+        if self.kind == WindowKind::Move && self.multi_anchor.is_some() {
+            let _ = write!(detail, " · {} selected", self.operation_targets().count());
+        }
         if let Some(window) = &self.target {
             let app = window
                 .app
@@ -107,13 +149,26 @@ impl WindowSession {
                 _ => None,
             });
         View::Window(WindowView {
+            selected: if matches!(self.kind, WindowKind::Move | WindowKind::Quick) {
+                &self.multi
+            } else {
+                &[]
+            },
             text_cache: Some(&self.text_cache),
             configurable_position: matches!(self.kind, WindowKind::Move | WindowKind::Editor),
             tabs: &self.tabs.state,
             group_input: self.kind == WindowKind::Tab && self.number.slot,
             styles: &self.settings.styles,
             border_width: self.settings.border_width,
-            target: self.target.as_ref().filter(|w| !w.minimized),
+            target: self.target.as_ref().filter(|w| {
+                !w.minimized
+                    && (!matches!(self.kind, WindowKind::Move | WindowKind::Quick)
+                        || self.multi_anchor.is_none()
+                        || self.multi.iter().any(|id| {
+                            self.tabs.state.representative(*id)
+                                == self.tabs.state.representative(w.id)
+                        }))
+            }),
             screen: self.screen,
             inventory: &self.inventory,
             visible: &self.visible,

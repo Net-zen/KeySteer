@@ -99,7 +99,9 @@ jobs:
   macos:
     name: Package macOS ${{ matrix.arch }}
     if: ${{ inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all' }}
-    runs-on: macos-14
+    # Link against the current AppKit SDK so standard controls adopt macOS 26
+    # styling. package.sh retains the macOS 14 deployment target.
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:

@@ -18,16 +18,16 @@ fn app_name(window: &crate::api::window::WindowInfo) -> &str {
 
 pub(crate) const RENDERERS: crate::api::style::WindowSceneRenderers =
     crate::api::style::WindowSceneRenderers {
-        plain: |view, ctx| view.scene_using(ctx, NoGuides),
+        plain: |view, ctx| view.scene_using::<_, true>(ctx, NoGuides),
         with_guides: |view, ctx| {
             let Some(style) = view
                 .styles
                 .for_appearance(ctx.palette.appearance)
                 .guide_line
             else {
-                return view.scene_using(ctx, NoGuides);
+                return view.scene_using::<_, true>(ctx, NoGuides);
             };
-            view.scene_using(ctx, Guides(style))
+            view.scene_using::<_, true>(ctx, Guides(style))
         },
     };
 
@@ -97,12 +97,27 @@ fn formatted_eq(mut expected: &str, args: std::fmt::Arguments<'_>) -> bool {
 }
 
 impl WindowView<'_> {
-    fn text_matches(&self, window: &crate::api::window::WindowInfo, lines: &[String]) -> bool {
+    fn card_selected(&self, id: crate::api::window::WindowId) -> bool {
+        let representative = self.tabs.representative(id);
+        self.target
+            .is_some_and(|target| self.tabs.representative(target.id) == representative)
+            || self
+                .selected
+                .iter()
+                .any(|id| self.tabs.representative(*id) == representative)
+    }
+
+    fn text_matches(
+        &self,
+        window: &crate::api::window::WindowInfo,
+        lines: &[String],
+        marker: &str,
+    ) -> bool {
         if let Some(group) = self.tabs.containing(window.id) {
             lines.len() == group.members.len() + 1
                 && formatted_eq(
                     &lines[0],
-                    format_args!("~{} · {} windows", group.id.0, group.members.len()),
+                    format_args!("{marker}~{} · {} windows", group.id.0, group.members.len()),
                 )
                 && group.members.iter().zip(&lines[1..]).all(|(id, line)| {
                     let number = self.numbers.get(id).copied().unwrap_or(0);
@@ -122,16 +137,24 @@ impl WindowView<'_> {
                     )
                 })
         } else {
-            lines.len() == 2 && lines[0] == app_name(window) && lines[1] == window.title
+            lines.len() == 2
+                && formatted_eq(&lines[0], format_args!("{marker}{}", app_name(window)))
+                && lines[1] == window.title
         }
     }
     pub(crate) fn scene(&self, ctx: &HostContext<'_>) -> OverlayScene {
         (self.styles.render_scene)(self, ctx)
     }
 
-    fn scene_using<G: CardGuides>(&self, ctx: &HostContext<'_>, guides: G) -> OverlayScene {
+    // Production enables selection decoration. Tests can compare the unchanged
+    // layout renderer to independent scene snapshots captured before decoration.
+    fn scene_using<G: CardGuides, const SELECTION_MARKS: bool>(
+        &self,
+        ctx: &HostContext<'_>,
+        guides: G,
+    ) -> OverlayScene {
         let mut next_group = 0;
-        let mut scene = self.screen_scene(ctx, &mut next_group, guides);
+        let mut scene = self.screen_scene::<_, SELECTION_MARKS>(ctx, &mut next_group, guides);
         scene.clip = ctx.screens.get(self.screen).map(|s| s.bounds);
         if self.tree.is_none() {
             for screen in 0..ctx.screens.len() {
@@ -139,6 +162,7 @@ impl WindowView<'_> {
                     && self
                         .visible
                         .iter()
+                        .chain(self.selected)
                         .any(|id| self.inventory.get(id).is_some_and(|w| w.screen == screen))
                 {
                     let other = Self {
@@ -146,7 +170,11 @@ impl WindowView<'_> {
                         target: None,
                         ..*self
                     }
-                    .screen_scene(ctx, &mut next_group, guides);
+                    .screen_scene::<_, SELECTION_MARKS>(
+                        ctx,
+                        &mut next_group,
+                        guides,
+                    );
                     scene.clip = Some(scene.clip.map_or(ctx.screens[screen].bounds, |clip| {
                         clip.union(&ctx.screens[screen].bounds)
                     }));
@@ -157,7 +185,7 @@ impl WindowView<'_> {
         }
         scene
     }
-    fn screen_scene<G: CardGuides>(
+    fn screen_scene<G: CardGuides, const SELECTION_MARKS: bool>(
         &self,
         ctx: &HostContext<'_>,
         next_group: &mut u32,
@@ -211,6 +239,30 @@ impl WindowView<'_> {
                 self.border_width,
             ));
         }
+        for (index, id) in self.selected.iter().enumerate() {
+            if self.selected[..index].iter().any(|previous| {
+                self.tabs.representative(*previous) == self.tabs.representative(*id)
+            }) {
+                continue;
+            }
+            let id = self.tabs.containing(*id).map_or(*id, |group| group.active);
+            if self.target.is_some_and(|target| {
+                self.tabs.representative(target.id) == self.tabs.representative(id)
+            }) {
+                continue;
+            }
+            if let Some(window) = self
+                .inventory
+                .get(&id)
+                .filter(|w| !w.minimized && w.screen == self.screen)
+            {
+                scene.push_shape(OverlayShape::outline(
+                    window.bounds,
+                    style.border_color,
+                    self.border_width,
+                ));
+            }
+        }
         let style = &resolved.number;
         let small = &resolved.app;
         let title_style = &resolved.title;
@@ -250,15 +302,20 @@ impl WindowView<'_> {
         let lines: Vec<std::sync::Arc<[String]>> = windows
             .iter()
             .map(|window| {
+                let marker = if SELECTION_MARKS && self.card_selected(window.id) {
+                    "✓ "
+                } else {
+                    ""
+                };
                 if let Some(lines) = cache.as_ref().and_then(|cache| cache.get(&window.id))
-                    && self.text_matches(window, lines)
+                    && self.text_matches(window, lines, marker)
                 {
                     return lines.clone();
                 }
                 let built: Vec<String> = {
                     if let Some(group) = self.tabs.containing(window.id) {
                         std::iter::once(format!(
-                            "~{} · {} windows",
+                            "{marker}~{} · {} windows",
                             group.id.0,
                             group.members.len()
                         ))
@@ -278,7 +335,10 @@ impl WindowView<'_> {
                         }))
                         .collect()
                     } else {
-                        vec![app_name(window).to_string(), window.title.clone()]
+                        vec![
+                            format!("{marker}{}", app_name(window)),
+                            window.title.clone(),
+                        ]
                     }
                 };
                 let lines: std::sync::Arc<[String]> = built.into();
@@ -381,14 +441,25 @@ impl WindowView<'_> {
                     tree: self.tree.is_some(),
                 },
             );
+            let selected = SELECTION_MARKS && self.card_selected(window.id);
+            let background = if selected {
+                &resolved.selected_background
+            } else {
+                &resolved.background
+            };
+            let number_style = if selected {
+                &resolved.selected_number
+            } else {
+                style
+            };
             scene.push_label(
-                OverlayLabel::new("", card, resolved.background.clone())
+                OverlayLabel::new("", card, background.clone())
                     .with_z_index(19)
                     .with_placement(group, Role::Background),
             );
             let number_rect = Rect::new(card.x, card.y, number_width * scale, card.height);
             scene.push_label(
-                OverlayLabel::new(text, logical(number_rect, scale), style.clone())
+                OverlayLabel::new(text, logical(number_rect, scale), number_style.clone())
                     .with_z_index(20)
                     .with_placement(group, Role::Fixed),
             );
@@ -537,8 +608,10 @@ mod tests {
         let mut tabs = TabState::default();
         let render = |inventory: &std::collections::BTreeMap<_, _>,
                       numbers: &std::collections::BTreeMap<_, _>,
-                      tabs: &TabState| {
+                      tabs: &TabState,
+                      selected: &[WindowId]| {
             WindowView {
+                selected,
                 text_cache: Some(&cache),
                 configurable_position: true,
                 tabs,
@@ -555,16 +628,16 @@ mod tests {
             }
             .scene(&ctx)
         };
-        render(&inventory, &numbers, &tabs);
+        render(&inventory, &numbers, &tabs, &[]);
         let first = cache.entries.borrow()[&WindowId(1)].clone();
         inventory.get_mut(&WindowId(1)).unwrap().bounds.x += 200.0;
-        render(&inventory, &numbers, &tabs);
+        render(&inventory, &numbers, &tabs, &[]);
         assert!(std::sync::Arc::ptr_eq(
             &first,
             &cache.entries.borrow()[&WindowId(1)]
         ));
         inventory.get_mut(&WindowId(1)).unwrap().title = "Renamed".into();
-        let scene = render(&inventory, &numbers, &tabs);
+        let scene = render(&inventory, &numbers, &tabs, &[]);
         assert!(scene.labels.iter().any(|label| label.text == "Renamed"));
         assert!(!std::sync::Arc::ptr_eq(
             &first,
@@ -575,19 +648,46 @@ mod tests {
             active: WindowId(1),
             members: vec![WindowId(1), WindowId(2)],
         });
-        render(&inventory, &numbers, &tabs);
+        render(&inventory, &numbers, &tabs, &[]);
         let grouped = cache.entries.borrow()[&WindowId(1)].clone();
         assert_eq!(grouped.len(), 3);
         numbers.insert(WindowId(2), 9);
-        render(&inventory, &numbers, &tabs);
+        render(&inventory, &numbers, &tabs, &[]);
         assert!(!std::sync::Arc::ptr_eq(
             &grouped,
             &cache.entries.borrow()[&WindowId(1)]
         ));
         assert!(cache.entries.borrow()[&WindowId(1)][2].contains("9 ·"));
+        let scene = render(&inventory, &numbers, &tabs, &[WindowId(2)]);
+        assert!(
+            scene
+                .labels
+                .iter()
+                .any(|label| label.text == "✓ ~1 · 2 windows")
+        );
+        let selected = cache.entries.borrow()[&WindowId(1)].clone();
+        inventory.get_mut(&WindowId(1)).unwrap().bounds.y += 100.0;
+        render(&inventory, &numbers, &tabs, &[WindowId(2)]);
+        assert!(std::sync::Arc::ptr_eq(
+            &selected,
+            &cache.entries.borrow()[&WindowId(1)]
+        ));
+        let scene = render(&inventory, &numbers, &tabs, &[]);
+        assert!(
+            scene
+                .labels
+                .iter()
+                .any(|label| label.text == "~1 · 2 windows")
+        );
+        assert!(
+            !scene
+                .labels
+                .iter()
+                .any(|label| label.text.starts_with("✓ "))
+        );
         tabs.groups.clear();
         inventory.remove(&WindowId(2));
-        render(&inventory, &numbers, &tabs);
+        render(&inventory, &numbers, &tabs, &[]);
         assert!(!cache.entries.borrow().contains_key(&WindowId(2)));
         assert_eq!(cache.entries.borrow()[&WindowId(1)].len(), 2);
     }
@@ -603,6 +703,9 @@ title_color = "#654321FF"
 number_color = "#112233FF"
 background_color = "#ABCDEFEE"
 border_color = "#FEDCBAFF"
+selected_background_color = "#D5F1E6EE"
+selected_border_color = "#3E978BFF"
+selected_border_width = 2.5
 "##,
         )
         .unwrap();
@@ -639,6 +742,7 @@ border_color = "#FEDCBAFF"
         .into_iter()
         .collect();
         let view = WindowView {
+            selected: &[],
             text_cache: None,
             configurable_position: true,
             tabs: &Default::default(),
@@ -670,6 +774,68 @@ border_color = "#FEDCBAFF"
         assert_eq!(title.style.text_color, Color::rgb(0x65, 0x43, 0x21));
         assert_eq!(number.style.text_color, Color::rgb(0x11, 0x22, 0x33));
         assert_eq!(number.style.border_color, Color::rgb(0xFE, 0xDC, 0xBA));
+        for appearance in [crate::api::Appearance::Light, crate::api::Appearance::Dark] {
+            let palette = config.palette(appearance);
+            for scale in [1.0, 1.5, 2.0] {
+                let screens = [crate::api::Screen {
+                    scale,
+                    ..screens[0].clone()
+                }];
+                let ctx = HostContext {
+                    screens: &screens,
+                    palette: &palette,
+                    ..ctx
+                };
+                let plain = view.scene(&ctx);
+                for selected in [
+                    WindowView {
+                        selected: &[id],
+                        ..view
+                    },
+                    WindowView {
+                        target: inventory.get(&id),
+                        ..view
+                    },
+                ] {
+                    let marked = selected.scene(&ctx);
+                    // Selection uses the same four labels and card footprint.
+                    assert_eq!(marked.labels.len(), plain.labels.len());
+                    for (marked, plain) in marked.labels.iter().zip(&plain.labels) {
+                        let physical_left = |label: &OverlayLabel| {
+                            if label.z_index == 19 {
+                                label.rect.x
+                            } else {
+                                label.rect.center().x - label.rect.width * scale / 2.0
+                            }
+                        };
+                        assert_eq!(physical_left(marked), physical_left(plain));
+                        assert_eq!(marked.rect.y, plain.rect.y);
+                        assert_eq!(marked.rect.height, plain.rect.height);
+                        if plain.text != "Example" {
+                            assert_eq!(marked.rect.width, plain.rect.width);
+                        }
+                    }
+                    let app = marked
+                        .labels
+                        .iter()
+                        .find(|l| l.text == "✓ Example")
+                        .unwrap();
+                    assert_eq!(app.style.text_color, Color::rgb(0x12, 0x34, 0x56));
+                    assert!(marked.labels.iter().any(|l| l.text == "Title"));
+                    let number = marked.labels.iter().find(|l| l.text == "1").unwrap();
+                    let background = marked.labels.iter().find(|l| l.z_index == 19).unwrap();
+                    assert_eq!(number.style.background, background.style.background);
+                    assert_eq!(background.style.background.a, 0xEE);
+                    assert_eq!(
+                        background.style.background,
+                        Color::rgba(0xD5, 0xF1, 0xE6, 0xEE)
+                    );
+                    assert_eq!(background.style.border_color, Color::rgb(0x3E, 0x97, 0x8B));
+                    assert_eq!(background.style.border_width, 2.5);
+                    assert_eq!(number.style.text_color, Color::rgb(0x11, 0x22, 0x33));
+                }
+            }
+        }
         // The actual TOML flag selects a specialized renderer once, including
         // reload from enabled -> disabled -> enabled. Both themes agree.
         for enabled in [true, false, true] {
@@ -691,6 +857,7 @@ border_color = "#FEDCBAFF"
                 );
             }
             let mut rendered = WindowView {
+                selected: &[],
                 text_cache: None,
                 styles: &styles,
                 ..view

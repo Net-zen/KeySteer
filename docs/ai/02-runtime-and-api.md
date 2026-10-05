@@ -17,6 +17,7 @@ Mode → HostContext::present(View) → presentation → OverlayScene
 ## 关键语义
 
 - 同步 Hook 先取得 consume/forward 决定，再执行可能耗时的动作；不得让 Hook 与 Engine 互相等待。
+- 后端可通过 `Backend::run_event_loop` 驱动有界、非阻塞的引擎回合；不支持时使用普通 poll 循环。原生驱动必须在引擎／后端借用之外派发系统事件，回调不能重入或逃逸。输入、帧、异步结果和定时任务共用原有路由，菜单跟踪不暂停模式、不重启或清空选择。退出和错误先退出原生循环，再执行统一清理。
 - Down/Up 保持配对；held release 交给按下时的 owner，不在松键时重新解释绑定。
 - 退出、暂停、捕获丢失及失败恢复都要清理合成保持状态；先尽力完成恢复，再统一记录错误。
 - 成功的合成 click/double-click 只发一次语义 `Clicked`；物理点击和 press/release/toggle 不发。
@@ -28,6 +29,10 @@ Mode → HostContext::present(View) → presentation → OverlayScene
 UI 扫描的 UiScanActivationExpected 按 scan owner 路由，必须在对应原生焦点通知前送到模式，防止一次主动激活触发重复扫描。范围选择与跨平台激活策略见 [UI 扫描](05-ui-scanning.md)。
 
 UIHint live TextPrompt 仅建立共享输入路由，不调用原生 request_text_prompt。runtime 在任何编辑、剪贴板和绘制工作前确认按键处置；TextInserted／TextEdit／TextPasted 交给 Mode，原生备注仍走原有异步协议。
+
+模式自有编辑面板通过 `Mode::keyboard_prompt_supported` 声明稳定能力，Registry 在注册／替换实例时采样并缓存；只有声明支持的实例才逐键查询活动状态与上下文绑定，不能为多选输入给普通模式增加动态面板调用。活动面板优先于借用模式和普通绑定，快捷键帮助仍使用静态路由。
+
+显式面板 Send 绑定可通过 `Mode::keyboard_prompt_edit` 转为 `ModeEvent::TextEdit`，由模式解释光标／选区；不向前台窗口注入这些编辑键。普通模式继续跳过动态面板查询。
 
 输入会话完成（含取消、错误）须先关闭字符捕获，再移除 owner 并派发结果；关闭命令重复执行也要确保捕获关闭。旧请求的迟到结果不得关闭新会话，live 搜索结束不进入原生窗口的焦点恢复流程。
 

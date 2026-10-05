@@ -6,7 +6,7 @@
 
 use crate::api::{Mode, ModeId, Plugin};
 use crate::config::{AppOverride, Bindings, Config, UiHintAppOverride};
-use crate::modes::{self, GridMode, HintMode, IdleMode, NormalMode, RecursiveGridMode};
+use crate::modes::{self, GridMode, HintMode, IdleMode, NormalMode};
 use crate::plugins::BundledSettings;
 
 use super::runtime::{AppRouteOverride, ModeRoute, ModeSpec};
@@ -32,64 +32,6 @@ pub(crate) fn normal_settings(config: &Config) -> modes::normal::Settings {
     }
 }
 
-pub(crate) fn grid_settings(config: &Config) -> modes::grid::Settings {
-    modes::grid::Settings {
-        grid_cols: config.grid.grid_cols,
-        grid_rows: config.grid.grid_rows,
-        keys: config.grid.keys.clone(),
-        max_depth: config.grid.max_depth,
-        cursor_follow_selection: config.grid.cursor_follow_selection,
-        lifecycle: config.grid.lifecycle.clone(),
-        ui: modes::grid::VisualSettings {
-            label: config.grid.ui.label.clone(),
-            matched_background_color: config.grid.ui.matched_background_color.clone(),
-            matched_border_color: config.grid.ui.matched_border_color.clone(),
-        },
-    }
-}
-
-pub(crate) fn recursive_grid_settings(config: &Config) -> modes::recursive_grid::Settings {
-    modes::recursive_grid::Settings {
-        grid_cols: config.recursive_grid.grid_cols,
-        grid_rows: config.recursive_grid.grid_rows,
-        keys: config.recursive_grid.keys.clone(),
-        min_size_width: config.recursive_grid.min_size_width,
-        min_size_height: config.recursive_grid.min_size_height,
-        max_depth: config.recursive_grid.max_depth,
-        cursor_follow_selection: config.recursive_grid.cursor_follow_selection,
-        lifecycle: config.recursive_grid.lifecycle.clone(),
-        layers: config
-            .recursive_grid
-            .layers
-            .iter()
-            .map(|layer| modes::recursive_grid::LayerSettings {
-                depth: layer.depth,
-                grid_cols: layer.grid_cols,
-                grid_rows: layer.grid_rows,
-                keys: layer.keys.clone(),
-            })
-            .collect(),
-        ui: modes::recursive_grid::VisualSettings {
-            label: config.recursive_grid.ui.label.clone(),
-            line_width: config.recursive_grid.ui.line_width,
-            line_color: config.recursive_grid.ui.line_color.clone(),
-            highlight_color: config.recursive_grid.ui.highlight_color.clone(),
-            label_background: config.recursive_grid.ui.label_background,
-            label_background_color: config.recursive_grid.ui.label_background_color.clone(),
-            label_char: config.recursive_grid.ui.label_char.clone(),
-            label_min_font_size: config.recursive_grid.ui.label_min_font_size,
-            label_autohide_multiplier: config.recursive_grid.ui.label_autohide_multiplier,
-            sub_key_preview: config.recursive_grid.ui.sub_key_preview,
-            sub_key_preview_font_size: config.recursive_grid.ui.sub_key_preview_font_size,
-            sub_key_preview_text_color: config.recursive_grid.ui.sub_key_preview_text_color.clone(),
-            sub_key_preview_autohide_multiplier: config
-                .recursive_grid
-                .ui
-                .sub_key_preview_autohide_multiplier,
-        },
-    }
-}
-
 pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
     modes::hint::Settings {
         strategy: config.ui_hint.strategy,
@@ -107,8 +49,8 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
         placement: config.ui_hint.placement,
         label_x_offset: config.ui_hint.label_x_offset,
         label_y_offset: config.ui_hint.label_y_offset,
-        ui: config.ui_hint.ui.clone(),
-        boundary_highlight: config.ui_hint.boundary_highlight.clone(),
+        ui: config.ui_hint.ui.compile(),
+        boundary_highlight: config.ui_hint.boundary_highlight.compile(),
         search_input_ui: crate::api::style::CompiledSearchPanel::new(
             &config.ui_hint.search_input_ui,
             &config.palette(crate::api::Appearance::Light),
@@ -346,12 +288,108 @@ pub(crate) fn compile_normal_targeting(
 
 #[doc(hidden)]
 pub fn grid(config: &Config) -> GridMode {
-    GridMode::new(grid_settings(config))
+    use modes::targeting::{Layout, TargetingController};
+    let settings = &config.grid;
+    GridMode::new(
+        TargetingController::new(
+            Layout {
+                rows: settings.grid_rows.max(1) as usize,
+                cols: settings.grid_cols.max(1) as usize,
+                keys: settings.keys.chars().collect(),
+            },
+            &[],
+            settings.max_depth,
+            None,
+            settings.cursor_follow_selection,
+            settings.lifecycle.clone(),
+        ),
+        modes::grid::Appearance::Grid(crate::api::presentation::GridStyle {
+            label: config.grid.ui.label.compile(),
+            matched_background_color: config
+                .grid
+                .ui
+                .matched_background_color
+                .as_ref()
+                .map(crate::api::theme::CompiledColor::from),
+            matched_border_color: config
+                .grid
+                .ui
+                .matched_border_color
+                .as_ref()
+                .map(crate::api::theme::CompiledColor::from),
+        }),
+    )
 }
 
 #[doc(hidden)]
-pub fn recursive_grid(config: &Config) -> RecursiveGridMode {
-    RecursiveGridMode::new(recursive_grid_settings(config))
+pub fn recursive_grid(config: &Config) -> GridMode {
+    use modes::targeting::{Layout, TargetingController};
+    let settings = &config.recursive_grid;
+    let layers: Vec<_> = settings
+        .layers
+        .iter()
+        .map(|layer| modes::targeting::LayerSettings {
+            depth: layer.depth,
+            grid_cols: layer.grid_cols,
+            grid_rows: layer.grid_rows,
+            keys: layer.keys.clone(),
+        })
+        .collect();
+    GridMode::new(
+        TargetingController::new(
+            Layout {
+                rows: settings.grid_rows.max(1) as usize,
+                cols: settings.grid_cols.max(1) as usize,
+                keys: settings.keys.chars().collect(),
+            },
+            &layers,
+            settings.max_depth,
+            Some((
+                settings.min_size_width as f64,
+                settings.min_size_height as f64,
+            )),
+            settings.cursor_follow_selection,
+            settings.lifecycle.clone(),
+        ),
+        modes::grid::Appearance::Recursive(crate::api::presentation::RecursiveGridStyle {
+            label: config.recursive_grid.ui.label.compile(),
+            line_width: config.recursive_grid.ui.line_width,
+            line_color: config
+                .recursive_grid
+                .ui
+                .line_color
+                .as_ref()
+                .map(crate::api::theme::CompiledColor::from),
+            highlight_color: config
+                .recursive_grid
+                .ui
+                .highlight_color
+                .as_ref()
+                .map(crate::api::theme::CompiledColor::from),
+            label_background: config.recursive_grid.ui.label_background,
+            label_background_color: config
+                .recursive_grid
+                .ui
+                .label_background_color
+                .as_ref()
+                .map(crate::api::theme::CompiledColor::from),
+            label_char: config.recursive_grid.ui.label_char.clone(),
+            label_min_font_size: config.recursive_grid.ui.label_min_font_size,
+            label_autohide_multiplier: config.recursive_grid.ui.label_autohide_multiplier,
+            sub_key_preview: config.recursive_grid.ui.sub_key_preview,
+            sub_key_preview_font_size: config.recursive_grid.ui.sub_key_preview_font_size,
+            sub_key_preview_text_color: config
+                .recursive_grid
+                .ui
+                .sub_key_preview_text_color
+                .as_ref()
+                .map(crate::api::theme::CompiledColor::from),
+            sub_key_preview_autohide_multiplier: config
+                .recursive_grid
+                .ui
+                .sub_key_preview_autohide_multiplier,
+        }),
+    )
 }
 
 #[doc(hidden)]
@@ -399,6 +437,26 @@ fn window_settings(config: &Config, kind: modes::window::WindowKind) -> modes::w
         config.window.card.clone()
     };
     modes::window::Settings {
+        multi_bindings: config
+            .window
+            .multi_select
+            .bindings
+            .iter()
+            .flat_map(|(keys, binding)| {
+                keys.split_whitespace().map(|key| {
+                    (
+                        crate::api::KeyChord::parse_with_aliases(
+                            key,
+                            config.resolved_key_aliases(),
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("window settings require validated configuration: {error}")
+                        }),
+                        std::sync::Arc::new(binding.clone()),
+                    )
+                })
+            })
+            .collect(),
         target: common.target,
         all_screens: common.screens == crate::config::WindowScreens::All,
         include_minimized: common.include_minimized,

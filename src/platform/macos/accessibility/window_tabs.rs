@@ -9,6 +9,16 @@ use core_foundation::runloop::{
 };
 use std::collections::BTreeMap;
 
+type WatchedWindow = (WindowId, i32, AXUIElementRef);
+
+fn ordered_windows(windows: &[WatchedWindow]) -> Vec<&WatchedWindow> {
+    let mut ordered: Vec<_> = windows.iter().collect();
+    // Match the previous PID ordering without changing member order or
+    // removing duplicates within a process.
+    ordered.sort_by_key(|(_, pid, _)| *pid);
+    ordered
+}
+
 type ObserverRef = *const c_void;
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -117,29 +127,26 @@ impl Monitor {
         }
     }
 
-    pub fn watch(&mut self, windows: &[(WindowId, i32, AXUIElementRef)]) -> Result<(), String> {
+    pub fn watch(&mut self, windows: &[WatchedWindow]) -> Result<(), String> {
         if self.wake.is_none() && !windows.is_empty() {
             return Err("Cannot create window notification wake source".into());
         }
-        self.observers
-            .retain(|pid, _| windows.iter().any(|(_, process, _)| pid == process));
-        for pid in windows
-            .iter()
-            .map(|(_, pid, _)| *pid)
-            .collect::<std::collections::BTreeSet<_>>()
-        {
-            let selected: Vec<_> = windows
-                .iter()
-                .filter(|(_, process, _)| *process == pid)
-                .collect();
-            let ids: Vec<_> = selected.iter().map(|(id, _, _)| *id).collect();
+        let ordered = ordered_windows(windows);
+        self.observers.retain(|pid, _| {
+            ordered
+                .binary_search_by_key(pid, |(_, process, _)| *process)
+                .is_ok()
+        });
+        for selected in ordered.chunk_by(|a, b| a.1 == b.1) {
+            let pid = selected[0].1;
             if self
                 .observers
                 .get(&pid)
-                .is_some_and(|owner| owner.ids == ids)
+                .is_some_and(|owner| owner.ids.iter().copied().eq(selected.iter().map(|w| w.0)))
             {
                 continue;
             }
+            let ids: Vec<_> = selected.iter().map(|(id, _, _)| *id).collect();
             let mut raw = ptr::null();
             // SAFETY: exact AX callback ABI and initialized output pointer.
             let error = unsafe { AXObserverCreate(pid, callback, &mut raw) };
@@ -167,7 +174,7 @@ impl Monitor {
                 context,
                 ids,
             };
-            let context = (&mut *owner.context as *mut Context).cast();
+            let context = (&raw mut *owner.context).cast();
             for (_, window) in &owner.context.windows {
                 for name in [
                     "AXMoved",
@@ -228,6 +235,40 @@ impl Monitor {
         // Rearm it before the worker can enter its next blocking wait.
         if let Some(wake) = &self.wake {
             wake.drain();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_order_preserves_process_order_members_and_duplicates() {
+        let windows = [
+            (WindowId(9), 20, ptr::null()),
+            (WindowId(8), 10, ptr::null()),
+            (WindowId(3), 20, ptr::null()),
+            (WindowId(8), 10, ptr::null()),
+            (WindowId(1), 30, ptr::null()),
+        ];
+        let ordered = ordered_windows(&windows);
+        let groups: Vec<_> = ordered
+            .chunk_by(|a, b| a.1 == b.1)
+            .map(|group| (group[0].1, group.iter().map(|w| w.0).collect::<Vec<_>>()))
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                (10, vec![WindowId(8), WindowId(8)]),
+                (20, vec![WindowId(9), WindowId(3)]),
+                (30, vec![WindowId(1)]),
+            ]
+        );
+        assert!(ordered_windows(&[]).is_empty());
+        assert!(ordered.binary_search_by_key(&25, |w| w.1).is_err());
+        for pid in [10, 20, 30] {
+            assert!(ordered.binary_search_by_key(&pid, |w| w.1).is_ok());
         }
     }
 }

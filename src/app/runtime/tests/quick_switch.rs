@@ -242,10 +242,7 @@ fn quick_switch_trigger_delivers_down_repeat_and_up_without_waiting_or_replay() 
         ("arrow_left".to_string(), KeyState::Up),
     ];
     assert_eq!(log.lock().unwrap().sent, expected);
-    let mut repeated = match key_down("q") {
-        BackendEvent::Input(input) => input,
-        _ => unreachable!(),
-    };
+    let BackendEvent::Input(mut repeated) = key_down("q") else { unreachable!() };
     repeated.repeat = true;
     engine
         .handle_backend_event(BackendEvent::Input(repeated), &mut backend)

@@ -158,6 +158,7 @@ struct Fake {
     fail_bar: bool,
     writes: usize,
     snapshot_reads: Cell<usize>,
+    minimum_reads: Cell<usize>,
     hidden: BTreeSet<WindowId>,
     hidden_foreground: usize,
     header: f64,
@@ -682,6 +683,7 @@ fn setup() -> Grouped<Fake> {
         fail_bar: false,
         writes: 0,
         snapshot_reads: Cell::new(0),
+        minimum_reads: Cell::new(0),
         hidden: BTreeSet::new(),
         hidden_foreground: 0,
         header: 0.0,
@@ -692,6 +694,20 @@ fn setup() -> Grouped<Fake> {
     grouped
 }
 impl WindowAccess for Fake {
+    fn audio_process(
+        &self,
+        target: crate::api::audio::AudioTarget,
+    ) -> Result<Option<super::super::audio_worker::AudioProcess>, String> {
+        match target {
+            crate::api::audio::AudioTarget::Application(id) => {
+                Ok(Some(super::super::audio_worker::AudioProcess {
+                    pid: id.0 as u32,
+                    started: 1,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
     fn can_submit_frame(&self, id: WindowId) -> bool {
         self.deferred && !self.hidden.contains(&id)
     }
@@ -820,6 +836,10 @@ impl WindowAccess for Fake {
     }
     fn pointer(&self) -> Result<Point, String> {
         Ok(Point::default())
+    }
+    fn minimum_size(&self, _: WindowId) -> Point {
+        self.minimum_reads.set(self.minimum_reads.get() + 1);
+        Point::new(100.0, 80.0)
     }
     fn reset(&mut self) {
         self.windows.clear();
@@ -1903,6 +1923,29 @@ fn keyboard_geometry_reads_only_active_member_and_preserves_other_groups() {
 }
 
 #[test]
+fn alignment_reads_member_minimums_once_and_rejects_displays_that_do_not_fit() {
+    for (width, height, fits) in [
+        (1200.0, 800.0, true),
+        (90.0, 800.0, false),
+        (1200.0, 70.0, false),
+    ] {
+        let mut access = two_groups();
+        let active = access.groups.state.groups[0].active;
+        let members = access.groups.state.groups[0].members.len();
+        let other = access.native.bars[1].clone();
+        let mut displays = screens();
+        displays[0].work_area.width = width;
+        displays[0].work_area.height = height;
+        let writes = access.native.writes;
+        access.native.minimum_reads.set(0);
+        assert_eq!(access.align(active, &displays, &|| false).is_ok(), fits);
+        assert_eq!(access.native.minimum_reads.get(), members);
+        assert_eq!(access.native.writes - writes, usize::from(fits));
+        assert_eq!(access.native.bars[1], other);
+    }
+}
+
+#[test]
 fn ungrouped_inventory_reuses_native_results() {
     let mut access = setup();
     access.enumerate(&screens(), &|| false).unwrap();
@@ -2350,4 +2393,83 @@ fn cycle_direct_neighbour_uses_no_scratch_allocation() {
             }
         }
     }
+}
+
+#[test]
+fn multi_selection_close_group_requests_each_member_once_and_preserves_dialogs() {
+    let mut access = setup();
+    for id in [1, 2, 3] {
+        choose(&mut access, id);
+    }
+    access.close_group(WindowId(2), &|| false).unwrap();
+    assert_eq!(
+        *access.native.close_requests.borrow(),
+        [WindowId(1), WindowId(2), WindowId(3)]
+    );
+    assert_eq!(access.groups.state.groups[0].members.len(), 3);
+    access.close_group(WindowId(2), &|| true).unwrap();
+    assert_eq!(access.native.close_requests.borrow().len(), 3);
+    let processes = access.audio_selection(&[WindowId(2), WindowId(3)]);
+    assert_eq!(
+        processes
+            .into_iter()
+            .map(|p| p.unwrap().unwrap().pid)
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+}
+
+#[test]
+fn multi_selection_tabs_override_application_grouping_and_undo_as_one_operation() {
+    let mut access = setup();
+    for snapshot in access.native.windows.values_mut() {
+        snapshot.info.app = "same-app".into();
+    }
+    let untouched = access.native.windows[&WindowId(4)].info.bounds;
+    choose(&mut access, 1);
+    choose(&mut access, 2);
+    op(&mut access, TabOperation::EndGroup);
+    let original = access.groups.state.groups.clone();
+    let history = access.history.len();
+    op(
+        &mut access,
+        TabOperation::EnterSelection(vec![WindowId(2), WindowId(3), WindowId(1)]),
+    );
+    assert_eq!(access.groups.state.groups.len(), 1);
+    assert_eq!(
+        access.groups.state.groups[0].members,
+        [1, 2, 3].map(WindowId)
+    );
+    assert!(access.groups.state.containing(WindowId(4)).is_none());
+    assert_eq!(access.native.windows[&WindowId(4)].info.bounds, untouched);
+    assert!(!access.native.hidden.contains(&WindowId(4)));
+    assert_eq!(access.history.len(), history + 1);
+    op(&mut access, TabOperation::Undo);
+    assert_eq!(access.groups.state.groups, original);
+    op(&mut access, TabOperation::Redo);
+    assert_eq!(
+        access.groups.state.groups[0].members,
+        [1, 2, 3].map(WindowId)
+    );
+}
+
+#[test]
+fn multi_selection_tabs_empty_or_stale_selection_never_falls_back_to_auto_grouping() {
+    let mut access = setup();
+    for snapshot in access.native.windows.values_mut() {
+        snapshot.info.app = "same-app".into();
+    }
+    op(&mut access, TabOperation::EnterSelection(vec![]));
+    assert!(access.groups.state.groups.is_empty());
+    assert!(
+        access
+            .tab_operation(
+                TabOperation::EnterSelection(vec![WindowId(1), WindowId(99)]),
+                &screens(),
+                &|| false
+            )
+            .is_err()
+    );
+    assert!(access.groups.state.groups.is_empty());
+    assert!(access.history.is_empty());
 }

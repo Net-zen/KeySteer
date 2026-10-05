@@ -263,6 +263,15 @@ pub(crate) trait WindowAccess {
     fn audio_factory(&self) -> Option<crate::platform::common::audio_worker::AudioFactory> {
         None
     }
+    fn audio_selection(
+        &self,
+        targets: &[WindowId],
+    ) -> Vec<Result<Option<crate::platform::common::audio_worker::AudioProcess>, String>> {
+        targets
+            .iter()
+            .map(|id| self.audio_process(crate::api::audio::AudioTarget::Application(*id)))
+            .collect()
+    }
     fn audio_process(
         &self,
         target: crate::api::audio::AudioTarget,
@@ -281,6 +290,12 @@ pub(crate) trait WindowAccess {
         _change: crate::api::audio::AudioAction,
     ) -> Result<String, String> {
         Err("Application volume control is unavailable on this backend".into())
+    }
+    fn close_group(&self, id: WindowId, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
+        if cancelled() {
+            return Ok(());
+        }
+        self.close(id)
     }
     fn close(&self, _id: WindowId) -> Result<(), String> {
         Err("Closing windows is unavailable on this backend".into())

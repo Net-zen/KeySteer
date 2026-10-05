@@ -5,6 +5,15 @@ outline: false
 
 # Release notes
 
+## 0.10.30
+
+Improved window movement, resizing, and UI Hint search responsiveness, reducing repeated work and temporary allocations.
+
+| CPU processing time (p50) | Before | After | Reduction |
+| --- | ---: | ---: | ---: |
+| Move request handling (40 windows) | 71.85 μs | 0.10 μs | 99.9% |
+| UI Hint search acceptance (2000 targets) | 241.60 μs | 127.65 μs | 47.2% |
+
 ## 0.10.29
 
 - Improved key-state recovery after input timeouts on Windows and macOS, and fixed layout-note editing during macOS input-method switching.

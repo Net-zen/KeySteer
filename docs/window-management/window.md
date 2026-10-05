@@ -52,3 +52,24 @@ Window 的 Move 状态可以在上层激活真正的 Grid 或 Recursive Grid，�
 - **macOS**：系统音频支持 macOS 14+；应用独立音频需要 macOS 14.2+ 和系统音频录制权限，本地处理会增加音频延迟。某些输出设备不支持软件音量调节。
 
 [返回窗口管理总览](/window-management/) · [完整配置参考](/reference/configuration)
+
+## 选择多个窗口
+
+按 `Ctrl` 开始多选，当前窗口会先被选中。输入 `123` 选 1、2、3；要选 12、23 这样的编号，先按空格再输入，比如 `123 12 23`。再次输入同一个编号可取消选择，选中的窗口会显示边框和 `✓`。
+
+按 `Ctrl` 或 `Enter` 完成选择，也可以直接按移动、缩放等操作键。这些操作会一起作用于选中的窗口；`E` 只为它们调整布局，`T` 将它们组成标签组。
+
+输错了用退格修改，`Esc` 撤销这次输入并回到最初的窗口。`Ctrl+X` 清空多选；进入 `A` Quick、`R` Restore 或退出时也会清空多选并先回到最初的窗口。
+
+按键可以在配置中修改；macOS 上的 `ctrl` 是 Control：
+
+```toml
+[window.bindings]
+ctrl = "window_multi_select"
+"ctrl+x" = "window_multi_clear"
+
+[window.multi_select.bindings]
+"ctrl enter" = "window_multi_confirm"
+"primary+h" = "arrow_left"
+"primary+l" = "arrow_right"
+```

@@ -43,6 +43,11 @@ impl WindowSession {
             self.tab_request(TabOperation::EndGroup, out);
             return;
         }
+        if self.multi_anchor.is_some() {
+            self.status = None;
+            self.tab_request(TabOperation::EnterSelection(self.multi.clone()), out);
+            return;
+        }
         self.status = Some("Grouping matching application windows…".into());
         self.tab_request(
             TabOperation::Enter {

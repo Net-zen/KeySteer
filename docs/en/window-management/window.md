@@ -52,3 +52,24 @@ Volume changes by 1% per step. Raising application volume does not automatically
 - **macOS:** system audio works on macOS 14+; independent application audio needs macOS 14.2+ and System Audio Recording permission. Local processing adds audio latency. Some output devices do not support software volume control.
 
 [Window management overview](/en/window-management/) · [Full configuration reference](/en/reference/configuration)
+
+## Select multiple windows
+
+Press `Ctrl` to start selecting. The current window is already selected. Type `123` to select windows 1, 2 and 3. For numbers such as 12 or 23, type a space first, as in `123 12 23`. Type a number again to deselect it. Selected windows show a border and a `✓`.
+
+Press `Ctrl` or `Enter` to finish selecting, or go straight to a move or resize key. These actions apply to all selected windows. `E` arranges just those windows, and `T` combines them into a tab group.
+
+Use Backspace to fix a mistake, or `Esc` to undo this input edit and return to the original window. `Ctrl+X` clears the selection. Entering `A` Quick, `R` Restore or exiting also clears the selection and first returns to the original window.
+
+To change these keys, edit the configuration below. On macOS, `ctrl` means Control:
+
+```toml
+[window.bindings]
+ctrl = "window_multi_select"
+"ctrl+x" = "window_multi_clear"
+
+[window.multi_select.bindings]
+"ctrl enter" = "window_multi_confirm"
+"primary+h" = "arrow_left"
+"primary+l" = "arrow_right"
+```

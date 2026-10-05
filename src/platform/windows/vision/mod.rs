@@ -117,7 +117,6 @@ struct SharedQueue {
     state: Mutex<QueueState>,
     latest_generation: AtomicU64,
     stopping: AtomicBool,
-    vision_disabled: AtomicBool,
     provider_quarantine_nonempty: AtomicBool,
     provider_quarantine: Mutex<Vec<WorkerJoin>>,
 }
@@ -313,7 +312,6 @@ impl ProviderThreads {
             // mailbox Arc. Drop already-published target strings here so the
             // native owner does not also pin unrelated UI results.
             self.cancellation.signal.mailbox.discard();
-            self.shared.vision_disabled.store(true, Ordering::Release);
             let mut retained = self
                 .shared
                 .provider_quarantine
@@ -367,12 +365,20 @@ impl VisionWorker {
         source: ScanSource,
         capture: CaptureLease,
     ) -> Result<(), String> {
+        self.reap_finished();
+        if self
+            .shared
+            .provider_quarantine_nonempty
+            .load(Ordering::Acquire)
+        {
+            // Complete this source without cancelling the other providers in
+            // a hybrid session. Do not start more native work while an old
+            // provider still owns live OCR objects.
+            source.finish(quarantined_scan_status(Some(capture)));
+            return Ok(());
+        }
         if crate::platform::common::contour::sources(request.strategy, &request.vision).0 {
             self.discovery.start();
-        }
-        self.reap_finished();
-        if self.shared.vision_disabled.load(Ordering::Acquire) {
-            return Err("visual OCR was disabled after a provider failed to stop".into());
         }
         let mut state = self
             .shared
@@ -442,10 +448,9 @@ impl VisionWorker {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let pending_request_id = state.pending.as_ref().map(|job| job.request.id);
-        let pending_cancelled = pending_request_id == Some(request_id);
         let clear_generation =
             cancellation_clears_generation(state.active_request_id, pending_request_id, request_id);
-        let pending = pending_cancelled.then(|| state.pending.take()).flatten();
+        let pending = state.pending.take_if(|job| job.request.id == request_id);
         if clear_generation {
             self.shared.latest_generation.store(0, Ordering::Release);
         }
@@ -609,16 +614,12 @@ fn worker_main(shared: Arc<SharedQueue>, discovery: DiscoveryHandle) {
                 state.running = false;
                 return;
             }
-            match state.pending.take() {
-                Some(job) => {
-                    state.active_request_id = Some(job.request.id);
-                    job
-                }
-                None => {
-                    state.running = false;
-                    return;
-                }
-            }
+            let Some(job) = state.pending.take() else {
+                state.running = false;
+                return;
+            };
+            state.active_request_id = Some(job.request.id);
+            job
         };
         let request_id = job.request.id;
         run_scan(job, &shared, &discovery);
@@ -648,6 +649,15 @@ fn finish_cancelled_job(job: ScanJob) {
     } = job;
     drop(capture);
     source.finish(UiScanStatus::ContextChanged);
+}
+
+fn quarantined_scan_status(capture: Option<CaptureLease>) -> UiScanStatus {
+    if let Some(capture) = capture
+        && let Err(error) = capture.release()
+    {
+        return UiScanStatus::Failed(format!("capture gate release: {error}"));
+    }
+    UiScanStatus::Unsupported("visual scan is waiting for a previous provider to stop".into())
 }
 
 fn cancellation_clears_generation(

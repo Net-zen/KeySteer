@@ -84,6 +84,8 @@ struct Recorder {
 }
 
 struct FakeBackend {
+    native_batches: Option<Vec<Result<Vec<BackendEvent>, String>>>,
+    native_loop_running: bool,
     event_sender: Option<std::sync::mpsc::Sender<BackendEvent>>,
     fail_next_disposition: bool,
     window_move_pointer: Option<Point>,
@@ -102,6 +104,8 @@ impl FakeBackend {
         let log = Arc::new(Mutex::new(Recorder::default()));
         (
             Self {
+                native_batches: None,
+                native_loop_running: false,
                 event_sender: None,
                 fail_next_disposition: false,
                 window_move_pointer: None,
@@ -120,6 +124,35 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
+    fn run_event_loop(
+        &mut self,
+        turn: &mut crate::api::backend::EventLoopTurn<'_>,
+    ) -> Option<Result<(), String>> {
+        let batches = self.native_batches.take()?;
+        self.native_loop_running = true;
+        let result = (|| {
+            for batch in batches {
+                self.events = batch?;
+                while !self.events.is_empty() {
+                    if turn(self)?.is_none() {
+                        return Ok(());
+                    }
+                }
+                // AppKit owns control between turns (including a menu's nested
+                // loop). An empty poll must still run due scheduled work.
+                if turn(self)?.is_none() {
+                    return Ok(());
+                }
+                self.log.lock().unwrap().timeline.push("native-yield");
+            }
+            self.events.push(BackendEvent::Quit);
+            assert_eq!(turn(self)?, None);
+            Ok(())
+        })();
+        self.native_loop_running = false;
+        Some(result)
+    }
+
     fn event_sink(&self) -> Option<Arc<dyn Fn(BackendEvent) + Send + Sync>> {
         self.event_sender.clone().map(|sender| {
             Arc::new(move |event| {
@@ -197,6 +230,12 @@ impl Backend for FakeBackend {
     }
 
     fn poll(&mut self, _t: Duration) -> Result<Option<BackendEvent>, String> {
+        if self.native_loop_running {
+            assert_eq!(_t, Duration::ZERO, "native callbacks must never block");
+            if self.events.is_empty() {
+                return Ok(None);
+            }
+        }
         // Quit once the script is exhausted so `run` terminates.
         Ok(Some(if self.events.is_empty() {
             BackendEvent::Quit
@@ -596,6 +635,7 @@ fn engine_with_probes(seen: &Arc<Mutex<Vec<String>>>, extra: &[&str]) -> Engine 
 }
 
 include!("performance.rs");
+include!("native_event_loop.rs");
 include!("input.rs");
 include!("text_input.rs");
 include!("normal_targeting.rs");

@@ -197,9 +197,10 @@ fn log_debug_configuration(config: &Config, config_path: Option<&std::path::Path
         return;
     }
 
-    let config_path = config_path
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "<built-in; writes disabled>".to_string());
+    let config_path = config_path.map_or_else(
+        || "<built-in; writes disabled>".to_string(),
+        |path| path.display().to_string(),
+    );
     crate::support::logging::debug_args(
         "config",
         format_args!(

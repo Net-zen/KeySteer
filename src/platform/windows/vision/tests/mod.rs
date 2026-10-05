@@ -418,6 +418,183 @@ fn provider_group_cancels_and_joins_every_thread() {
     assert!(stopped.load(Ordering::Acquire));
 }
 
+fn quarantine_blocked_provider(worker: &VisionWorker) -> mpsc::Sender<()> {
+    let mailbox = Arc::new(ProviderMailbox::new());
+    let cancellation = ScanCancellation::new(&worker.shared, 1, &mailbox, Weak::new());
+    let (release, wait) = mpsc::channel();
+    let mut providers = ProviderThreads::new(cancellation, &worker.shared);
+    assert!(providers.spawn("keysteer-quarantine-test", move || {
+        let _ = wait.recv_timeout(Duration::from_secs(5));
+    }));
+    assert!(providers.join_all(Instant::now()).is_err());
+    assert!(
+        worker
+            .shared
+            .provider_quarantine_nonempty
+            .load(Ordering::Acquire)
+    );
+    release
+}
+
+fn quarantine_scan_fixture(
+    strategy: crate::api::UiScanStrategy,
+    provider_count: usize,
+    bounds: Rect,
+) -> (
+    Arc<WindowsScanPlan>,
+    u64,
+    Arc<super::super::ui_scan::ScanSession>,
+    Arc<crate::platform::common::scan_mailbox::ScanMailbox>,
+) {
+    use crate::platform::common::scan_mailbox::ScanMailbox;
+    use crate::platform::windows::{EventSender, accessibility, ui_scan::ScanSession};
+    let request = crate::api::UiScanRequest {
+        id: 993,
+        scope: crate::api::UiScanScope::Screen,
+        timeout_ms: 1000,
+        bounds: Some(bounds),
+        roles: Vec::new(),
+        max_depth: 8,
+        visible_only: true,
+        clickable_only: true,
+        strategy,
+        vision: crate::api::VisionOptions::default(),
+        app: None,
+    };
+    let output = Arc::new(ScanMailbox::default());
+    let generation = output.begin(request.id);
+    let (events, _) = crate::platform::common::event_queue::channel();
+    let plan = accessibility::test_scan_plan(request);
+    let session = ScanSession::new(
+        Arc::clone(&plan),
+        generation,
+        provider_count,
+        Arc::clone(&output),
+        EventSender::without_wake(events),
+    );
+    (plan, generation, session, output)
+}
+
+#[test]
+fn quarantined_vision_submit_preserves_hybrid_uia_results_and_deferred_frame() {
+    let mut worker = VisionWorker::start();
+    let release = quarantine_blocked_provider(&worker);
+    for _ in 0..3 {
+        let (plan, generation, session, output) = quarantine_scan_fixture(
+            crate::api::UiScanStrategy::Hybrid,
+            2,
+            Rect::new(0.0, 0.0, 1920.0, 1080.0),
+        );
+        let uia = session.source("UI Automation");
+        uia.push(vec![UiTarget {
+            details: None,
+            rect: Rect::new(10.0, 20.0, 80.0, 30.0),
+            name: "Available button".into(),
+            role: SemanticRole::Button,
+        }]);
+        uia.finish(UiScanStatus::Success);
+        let (capture, frame_restored) =
+            super::super::overlay_worker::deferred_capture_fixture(generation);
+        worker
+            .submit(plan, generation, session.source("visual scan"), capture)
+            .expect("quarantine must not cancel the hybrid session");
+        let result = output.take().expect("both sources must publish a terminal");
+        assert_eq!(result.status, UiScanStatus::Success);
+        assert_eq!(result.targets.len(), 1);
+        assert_eq!(result.targets[0].name, "Available button");
+        assert!(output.take().is_none());
+        assert!(frame_restored());
+        assert!(worker.workers.is_empty());
+        assert!(worker.discovery.worker.is_none());
+    }
+    release.send(()).unwrap();
+    worker.stop().unwrap();
+}
+
+#[test]
+fn scan_queued_before_quarantine_finishes_without_starting_native_work() {
+    let mut worker = VisionWorker::start();
+    let release = quarantine_blocked_provider(&worker);
+    let (plan, generation, session, output) = quarantine_scan_fixture(
+        crate::api::UiScanStrategy::Vision,
+        1,
+        Rect::new(0.0, 0.0, 1920.0, 1080.0),
+    );
+    worker
+        .shared
+        .latest_generation
+        .store(generation, Ordering::Release);
+    let (capture, frame_restored) =
+        super::super::overlay_worker::deferred_capture_fixture(generation);
+    run_scan(
+        ScanJob {
+            request: plan,
+            generation,
+            source: session.source("visual scan"),
+            capture: Some(capture),
+        },
+        &worker.shared,
+        &worker.discovery.handle(),
+    );
+    let result = output.take().expect("queued scan must publish a terminal");
+    assert!(matches!(result.status, UiScanStatus::Unsupported(_)));
+    assert!(frame_restored());
+    assert!(worker.discovery.worker.is_none());
+    release.send(()).unwrap();
+    worker.stop().unwrap();
+}
+
+#[test]
+fn vision_resumes_after_quarantined_provider_exits() {
+    let mut worker = VisionWorker::start();
+    let release = quarantine_blocked_provider(&worker);
+    worker.reap_finished();
+    assert!(
+        worker
+            .shared
+            .provider_quarantine_nonempty
+            .load(Ordering::Acquire)
+    );
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while worker
+        .shared
+        .provider_quarantine_nonempty
+        .load(Ordering::Acquire)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "completed provider must be reaped"
+        );
+        worker.reap_finished();
+        std::thread::yield_now();
+    }
+    // Invalid bounds let us verify submission reaches the normal capture path
+    // after recovery without depending on native OCR or screen contents.
+    let (plan, generation, session, output) = quarantine_scan_fixture(
+        crate::api::UiScanStrategy::Contour,
+        1,
+        Rect::new(0.0, 0.0, 0.0, 0.0),
+    );
+    let (capture, frame_restored) =
+        super::super::overlay_worker::deferred_capture_fixture(generation);
+    worker
+        .submit(plan, generation, session.source("visual scan"), capture)
+        .unwrap();
+    let result = loop {
+        if let Some(result) = output.take() {
+            break result;
+        }
+        assert!(Instant::now() < deadline, "recovered scan must finish");
+        std::thread::yield_now();
+    };
+    assert!(
+        matches!(result.status, UiScanStatus::Failed(error) if error.contains("visual capture bounds are empty"))
+    );
+    assert!(frame_restored());
+    worker.stop().unwrap();
+}
+
 #[test]
 fn scan_cancellation_wakes_system_ocr_without_polling() {
     let shared = Arc::new(SharedQueue::default());
@@ -621,9 +798,10 @@ fn live_system_ocr_tiling_probe() -> Result<(), String> {
     const SAMPLES: usize = 10;
 
     let _apartment = super::super::native::ComApartment::initialise()?;
-    let image_path = std::env::var_os("KEYSTEER_OCR_TILE_IMAGE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser.jpg"));
+    let image_path = std::env::var_os("KEYSTEER_OCR_TILE_IMAGE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser.jpg"),
+        PathBuf::from,
+    );
     let encoded = std::fs::read(&image_path)
         .map_err(|error| format!("cannot read {}: {error}", image_path.display()))?;
     let stream = InMemoryRandomAccessStream::new()

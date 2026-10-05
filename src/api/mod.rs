@@ -47,7 +47,7 @@ pub use lifecycle::{LifecycleAction, TargetingLifecycle};
 pub use overlay::OverlayLabel;
 pub use overlay::{Color, OverlayScene, OverlayShape};
 pub use plugin::Plugin;
-pub use style::{BoundaryHighlight, HintPlacement, LabelUi, ModeIndicator, SearchInputUi};
+pub use style::{BoundaryHighlight, HintPlacement, LabelUi, SearchInputUi};
 pub use theme::{Palette, ThemedColor};
 
 #[cfg(feature = "benchmark-hooks")]

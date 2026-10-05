@@ -7,6 +7,7 @@
 mod accessibility;
 mod autostart;
 mod display_link;
+mod event_loop;
 mod hook;
 mod input;
 pub(crate) mod latest_point_mailbox;
@@ -86,7 +87,7 @@ impl EventSender {
     }
 
     fn wake(&self) {
-        workspace::wake_main_run_loop();
+        event_loop::wake_main_run_loop();
     }
 }
 
@@ -113,6 +114,7 @@ pub struct MacOsBackend {
     keyboard: input::KeyboardInjector,
     shutdown_complete: bool,
     shutdown_attempted: bool,
+    native_loop_running: bool,
 }
 
 impl MacOsBackend {
@@ -125,7 +127,7 @@ impl MacOsBackend {
         // Install the top status item before permissions, Hook startup, screen
         // enumeration, or any other work that can be slow during login.
         let mut status_item = status_item::StatusItem::new(mtm, event_tx.clone());
-        workspace::pump_app_events();
+        event_loop::pump_app_events();
         status_item.maintain_icon_attachment();
 
         let scan_mailbox = Arc::new(ScanMailbox::default());
@@ -189,6 +191,7 @@ impl MacOsBackend {
             keyboard,
             shutdown_complete: false,
             shutdown_attempted: false,
+            native_loop_running: false,
         })
     }
 
@@ -201,18 +204,31 @@ impl MacOsBackend {
         if let Some(item) = self.status_item.as_mut() {
             item.maintain_icon_attachment();
         }
-        if self
+        let _ = self.refresh_screens();
+    }
+
+    fn refresh_screens(&mut self) -> Result<(), String> {
+        let changed = self
             .display_watcher
             .as_ref()
-            .is_some_and(screens::DisplayWatcher::take_changed)
-            && let Ok(current) = screens::list_screens()
-            && !current.is_empty()
-            && current != self.screens
-        {
-            self.screens = current.clone();
-            self.pending
-                .push_back(BackendEvent::ScreensChanged(current));
+            .is_none_or(screens::DisplayWatcher::take_changed);
+        if changed || self.screens.is_empty() {
+            let current = screens::list_screens().inspect_err(|_| {
+                if let Some(watcher) = &self.display_watcher {
+                    watcher.retry_refresh();
+                }
+            })?;
+            if current.is_empty() {
+                if let Some(watcher) = &self.display_watcher {
+                    watcher.retry_refresh();
+                }
+            } else if current != self.screens {
+                self.screens = current.clone();
+                self.pending
+                    .push_back(BackendEvent::ScreensChanged(current));
+            }
         }
+        Ok(())
     }
 
     fn try_event(&mut self) -> Option<BackendEvent> {
@@ -230,10 +246,10 @@ impl MacOsBackend {
         {
             return Some(frame);
         }
-        if self.background_budget.yield_due() {
+        if !self.native_loop_running && self.background_budget.yield_due() {
             // Service ready native sources even while completions keep arriving.
             // Recheck synchronous input after AppKit had an opportunity to run.
-            workspace::pump_ready_sources();
+            event_loop::pump_ready_sources();
             if let Some(event) = self.hook.as_mut().and_then(HookThread::try_next_event) {
                 return Some(event);
             }
@@ -483,6 +499,26 @@ impl Backend for MacOsBackend {
             worker.cancel(session);
         }
     }
+    fn run_event_loop(
+        &mut self,
+        turn: &mut crate::api::backend::EventLoopTurn<'_>,
+    ) -> Option<Result<(), String>> {
+        let menu = self.status_item.as_ref().map(status_item::StatusItem::menu);
+        self.native_loop_running = true;
+        let result = event_loop::run(menu.as_deref(), &mut || {
+            let next = turn(self)?;
+            Ok(next.map(|timeout| {
+                if self.window_move.get_mut().is_some() {
+                    timeout.min(window_move::POLL_INTERVAL)
+                } else {
+                    timeout
+                }
+            }))
+        });
+        self.native_loop_running = false;
+        Some(result)
+    }
+
     fn poll(&mut self, timeout: Duration) -> Result<Option<BackendEvent>, String> {
         self.reap_update_worker();
         let deadline = Instant::now() + timeout;
@@ -491,6 +527,11 @@ impl Backend for MacOsBackend {
                 return Ok(Some(event));
             }
             crate::support::worker::reap_quarantined();
+            // Native dispatch must happen outside the engine/backend borrow.
+            // The owning loop also runs turns inside AppKit menu tracking.
+            if !self.native_loop_running {
+                event_loop::pump_app_events();
+            }
             self.refresh_native_events();
             if let Some(mtm) = MainThreadMarker::new() {
                 window_tabs::refresh(mtm, &self.screens);
@@ -509,7 +550,7 @@ impl Backend for MacOsBackend {
                 return Ok(Some(event));
             }
             let mut remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            if remaining.is_zero() || self.native_loop_running {
                 return Ok(None);
             }
             if self.window_move.get_mut().is_some() {
@@ -520,7 +561,7 @@ impl Backend for MacOsBackend {
                     return Ok(Some(BackendEvent::Frame(elapsed)));
                 }
             } else {
-                workspace::wait_for_app_event(remaining);
+                event_loop::wait_for_app_event(remaining);
             }
         }
     }
@@ -664,7 +705,10 @@ impl Backend for MacOsBackend {
     }
 
     fn present(&mut self, scene: Arc<OverlayScene>) -> Result<(), String> {
-        self.overlay.present(scene)?;
+        // A ready frame can precede the ordinary native-event refresh. Consume
+        // display changes here too, but never enumerate displays per frame.
+        self.refresh_screens()?;
+        self.overlay.present(scene, &self.screens)?;
         if self.frame_clock.is_running() {
             if let Ok(source) = self.overlay.display_link_source() {
                 self.frame_clock.start(source);

@@ -59,9 +59,9 @@ pub(crate) fn create_owned_window(spec: OwnedWindowSpec) -> Result<OwnedWindow, 
     let dimensions = sized
         .then(|| NativeDimensions::from_f64(area.width, area.height))
         .transpose()?;
-    let (width, height) = dimensions
-        .map(|dimensions| (dimensions.width_i32(), dimensions.height_i32()))
-        .unwrap_or((0, 0));
+    let (width, height) = dimensions.map_or((0, 0), |dimensions| {
+        (dimensions.width_i32(), dimensions.height_i32())
+    });
     // SAFETY: every class and title is a process-lifetime static string. The
     // returned HWND transfers directly into `OwnedWindow`; GPU setup failure
     // destroys it before returning, and immediate show does not retain data.

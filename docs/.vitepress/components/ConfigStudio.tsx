@@ -1,4 +1,5 @@
 import { quickSwitchColors } from '../simulator/quick-switch-style'
+import { selectedCardStyle } from '../simulator/window-card-style'
 import { observeSize } from '../config-studio/observe-size'
 import { useStudioI18n } from '../config-studio/i18n'
 import SettingsNavigation from '../config-studio/SettingsNavigation'
@@ -1092,9 +1093,9 @@ export default defineComponent({
                       <div class="ks-demo-window-title">{active.app} · {t(active.title)}</div><div class="ks-demo-window-lines"><i /><i /><i /></div>
                     </div>
                   })}
-                  {isWindowMode(simulator.mode) && !simulator.window.temporary && !simulator.window.library && windowNumberLabels(simulator.window, simulator.mode === 'window' ? effectiveDocument.value?.window?.card ?? {} : simulator.mode === 'window_editor' ? effectiveDocument.value?.window_editor?.card ?? {} : {}).map(label => <button class="ks-window-number"
+                  {isWindowMode(simulator.mode) && !simulator.window.temporary && !simulator.window.library && windowNumberLabels(simulator.window, simulator.mode === 'window' ? effectiveDocument.value?.window?.card ?? {} : simulator.mode === 'window_editor' ? effectiveDocument.value?.window_editor?.card ?? {} : {}).map(label => <button class={{ 'ks-window-number': true, selected: label.selected }}
                     aria-label={t("选择窗口 {0}", [label.number])} style={{ left: `${label.x}%`, top: `${label.y}%`, fontSize: `${numberSetting(targetingSettings.value.ui?.font_size, 28)}px` }}
-                    onMousedown={e => e.preventDefault()} onClick={() => chooseWindowNumber(simulator, label.number, targetingSettings.value)}><b>{label.number}</b><span><strong>{t(label.app)}</strong>{(label.members ?? [label.title]).map(title => <small title={t(title)}>{t(title)}</small>)}</span></button>)}
+                    onMousedown={e => e.preventDefault()} onClick={() => chooseWindowNumber(simulator, label.number, targetingSettings.value)}><b>{label.number}</b><span><strong>{label.selected ? '✓ ' : ''}{t(label.app)}</strong>{(label.members ?? [label.title]).map(title => <small title={t(title)}>{t(title)}</small>)}</span></button>)}
                   {isWindowMode(simulator.mode) && !simulator.window.temporary && !simulator.window.library && simulator.window.tree && treeSlots(simulator.window.tree).map(slot => {
                     const rect = layoutRect(slot.rect, WINDOW_AREA, numberSetting(targetingSettings.value.gap, 0))
                     return <div class={{ 'ks-window-slot': true, selected: simulator.window.tree?.selected === slot.id }}
@@ -1646,6 +1647,7 @@ function targetingAppearance(document: ConfigDocument | null, mode: string, appe
   const configuredBorder = themedColor(borderOverride, accent)
   const border = borderOverride ? configuredBorder : translucent(accent, 60)
   const card = document?.window?.card ?? {}
+  const selection = selectedCardStyle(card, appearance)
   const numberSize = numberSetting(ui.font_size, 28)
   const appSize = numberSetting(card.app_font_size, 0) || Math.max(numberSize * .6, 14)
   const titleSize = numberSetting(card.title_font_size, 0) || Math.max(numberSize * .45, 12)
@@ -1653,6 +1655,9 @@ function targetingAppearance(document: ConfigDocument | null, mode: string, appe
     '--ks-card-app-size': `${appSize}px`,
     '--ks-card-background': themedColor(card.background_color, labelBackground),
     '--ks-card-border': themedColor(card.border_color, configuredBorder),
+    '--ks-card-selected-background': selection.background,
+    '--ks-card-selected-border': selection.border,
+    '--ks-card-selected-border-width': `${selection.borderWidth}px`,
     '--ks-card-number-color': themedColor(card.number_color, themedColor(ui.text_color, text)),
     '--ks-card-title-size': `${titleSize}px`,
     '--ks-card-app-font': String(card.app_font_family || ui.font_family || 'var(--vp-font-family-base)'),
@@ -1973,11 +1978,11 @@ function readable(background: string, text = '#10172DFF', alternate = '#FFFFFFFF
 }
 
 
-function windowNumberLabels(state: WindowState, card: Record<string, any>): Array<{ number: number; x: number; y: number; app: string; title: string; members?: string[] }> {
+function windowNumberLabels(state: WindowState, card: Record<string, any>): Array<{ number: number; x: number; y: number; app: string; title: string; selected: boolean; members?: string[] }> {
   const [top, right, bottom, left] = cardPositionRatios(card.position)
   const anchorX = (left + 1 - right) / 2
   const anchorY = (top + 1 - bottom) / 2
-  const labels: Array<{ number: number; x: number; y: number; app: string; title: string; members?: string[] }> = []
+  const labels: Array<{ number: number; x: number; y: number; app: string; title: string; selected: boolean; members?: string[] }> = []
   for (const window of state.windows.map(w => ({ ...w, ...tabFrame(activeTabWindow(state, w.id) ?? w) })).filter(w => (state.includeMinimized || !w.minimized) && w.screen === state.screen && state.numbers[w.id] !== undefined).sort((a, b) => state.numbers[a.id] - state.numbers[b.id])) {
     const group = containingTab(state, window.id)
     if (group && (state.tree ? group.members[0] : group.active) !== window.id) continue
@@ -1994,6 +1999,7 @@ function windowNumberLabels(state: WindowState, card: Record<string, any>): Arra
       }
     }
     labels.push({ number: state.numbers[window.id], x, y, app: group ? `~${group.id} · ${group.members.length} 个窗口` : window.app, title: window.title,
+      selected: !window.minimized && (group ? group.members.includes(state.target ?? -1) : state.target === window.id),
       members: group?.members.map(id => {
         const member = state.windows.find(window => window.id === id)
         return `${id === group.active ? '●' : '○'} ${state.numbers[id]} · ${member?.app ?? ''} — ${member?.title ?? ''}`

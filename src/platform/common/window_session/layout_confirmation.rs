@@ -443,10 +443,10 @@ impl PendingLayout {
             self.phase = Phase::Recovery;
             return None;
         }
-        let transaction = match self.request.operation {
-            WindowOperation::ApplyLayout { transaction, .. }
-            | WindowOperation::EndEdit { transaction, .. } => transaction,
-            _ => unreachable!(),
+        let (WindowOperation::ApplyLayout { transaction, .. }
+        | WindowOperation::EndEdit { transaction, .. }) = self.request.operation
+        else {
+            unreachable!()
         };
         let ended = self.phase == Phase::Ending || self.phase == Phase::Recovery;
         if self.phase == Phase::Recovery {

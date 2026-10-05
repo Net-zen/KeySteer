@@ -76,12 +76,7 @@ extern "system" fn enum_callback(
     };
 
     // SAFETY: `info` is correctly sized via cbSize.
-    let ok = unsafe {
-        GetMonitorInfoW(
-            monitor,
-            &mut info as *mut MONITORINFOEXW as *mut MONITORINFO,
-        )
-    };
+    let ok = unsafe { GetMonitorInfoW(monitor, (&raw mut info).cast()) };
     if !ok.as_bool() {
         // Skip this monitor but keep enumerating the rest.
         crate::report_warning!(

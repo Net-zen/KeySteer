@@ -44,13 +44,7 @@ pub(super) fn verified_signer(path: &Path) -> Result<[u8; SIGNER_HASH_BYTES], St
 
     // SAFETY: `file`, `data`, the path buffer and action GUID remain valid for
     // the synchronous verification. State is explicitly closed below.
-    let status = unsafe {
-        WinVerifyTrust(
-            HWND::default(),
-            &mut action,
-            (&mut data as *mut WINTRUST_DATA).cast(),
-        )
-    };
+    let status = unsafe { WinVerifyTrust(HWND::default(), &mut action, (&raw mut data).cast()) };
     let result = if status == 0 || status == CERT_E_UNTRUSTEDROOT.0 {
         // SAFETY: successful WTD_STATEACTION_VERIFY owns valid provider state
         // until the matching CLOSE. All pointers are checked before use.
@@ -65,13 +59,7 @@ pub(super) fn verified_signer(path: &Path) -> Result<[u8; SIGNER_HASH_BYTES], St
 
     data.dwStateAction = WTD_STATEACTION_CLOSE;
     // SAFETY: closes exactly the state opened by the verification call above.
-    let _ = unsafe {
-        WinVerifyTrust(
-            HWND::default(),
-            &mut action,
-            (&mut data as *mut WINTRUST_DATA).cast(),
-        )
-    };
+    let _ = unsafe { WinVerifyTrust(HWND::default(), &mut action, (&raw mut data).cast()) };
     result
 }
 

@@ -61,6 +61,10 @@ impl WindowSession {
         ctx: &HostContext<'_>,
         out: &mut CommandBatch,
     ) {
+        if self.kind == WindowKind::Move && self.multi_anchor.is_some() {
+            self.action(action, state, key, ctx, out);
+            return;
+        }
         if state == KeyState::Up {
             if let Some(held) = &mut self.targeted_audio {
                 held.remove(key);
@@ -225,6 +229,8 @@ impl WindowSession {
     }
 
     pub(super) fn retarget_entry(&mut self, source: WindowTarget, out: &mut CommandBatch) {
+        self.restore_multi_focus(out);
+        self.discard_multi();
         self.target = None;
         self.enter_pending = true;
         self.request(WindowOperation::Retarget(source), out);

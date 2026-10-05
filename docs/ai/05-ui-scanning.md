@@ -22,6 +22,8 @@
 
 策略、范围、超时与目标上限查配置和代码；扫描算法可调整，但应覆盖取消、增量顺序、重复目标和跨屏场景。
 
+Windows 视觉 provider 超过退出期限时保留在隔离队列，仍未退出期间不启动新的视觉任务（包括此前已排队的扫描）。视觉来源释放截图隐藏门并返回 Unsupported 终态，Hybrid 的 UIA 来源继续交付结果；隔离线程全部结束并被非阻塞回收后，下一次扫描自动恢复视觉来源，不使用永久禁用标志。
+
 `UiScanScope::resolve_window` 共用惰性优先级：Window 为鼠标窗口／激活窗口，Active 为相反顺序，两者最终以屏幕保底；Screen 不查询窗口。只在范围解析阶段回退，不因空结果或 provider 错误另扫其他范围。共享结果的 activate 标志仅对 Window 首选鼠标窗口置位，原生后端复用现有窗口激活原语，拒绝激活不重选范围。macOS 在 worker 用一次 Quartz 元数据选择窗口，AX 按该窗口的 PID／矩形查找 AXWindows 根，Vision 直接使用同一捕获范围，不独立查询 AXFocusedWindow。
 
 ScanMailbox 在激活前保存当前 generation 的 UiScanActivationExpected；两端在原生焦点通知和结果前交付它。Engine 按 scan owner 转交，Hint 消费匹配进程的预期焦点事件而不启动第二次扫描；其他焦点变化照常重扫。取消／新 generation 清除未交付标记，macOS 扫描上下文允许本轮主动激活的目标 PID。

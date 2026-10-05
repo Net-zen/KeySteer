@@ -60,6 +60,20 @@ impl ConfigFile {
     /// Reject configurations that would misbehave at runtime.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let bad = |m: String| ConfigError::Invalid(m);
+        for (key, binding) in &self.window.multi_select.bindings {
+            KeyChord::parse_with_aliases(key, self.resolved_key_aliases())
+                .map_err(|e| bad(e.to_string()))?;
+            if !matches!(
+                binding,
+                Binding::Window(
+                    crate::api::window::WindowAction::MultiConfirm
+                        | crate::api::window::WindowAction::ClearMulti
+                )
+            ) && !matches!(binding, Binding::Send(chord) if crate::api::text_edit::navigation_action(chord).is_some())
+            {
+                return Err(bad("window.multi_select.bindings accepts window_multi_confirm, window_multi_clear or arrow/home/end/backspace/delete editing keys".into()));
+            }
+        }
         if self.mode_usage.save_after_entries == 0 {
             return Err(bad(
                 "mode_usage.save_after_entries must be at least 1".into()
@@ -141,6 +155,12 @@ impl ConfigFile {
                 .map_err(|error| bad(format!("window.card.position: {error}")))?;
             for (field, value, min, max) in [
                 ("guide_line_width", card.guide_line_width, 0.0, 32.0),
+                (
+                    "selected_border_width",
+                    card.selected_border_width,
+                    0.0,
+                    20.0,
+                ),
                 ("app_font_size", card.app_font_size, 0.0, 256.0),
                 ("title_font_size", card.title_font_size, 0.0, 256.0),
                 ("text_width", card.text_width, 1.0, 4096.0),
@@ -161,6 +181,14 @@ impl ConfigFile {
                 card.background_color.as_ref(),
             )?;
             validate_optional_color("window.card.border_color", card.border_color.as_ref())?;
+            validate_optional_color(
+                "window.card.selected_background_color",
+                card.selected_background_color.as_ref(),
+            )?;
+            validate_optional_color(
+                "window.card.selected_border_color",
+                card.selected_border_color.as_ref(),
+            )?;
             validate_optional_color(
                 "window.card.guide_line_color",
                 card.guide_line_color.as_ref(),
@@ -747,6 +775,10 @@ impl ConfigFile {
     fn binding_tables(&self) -> Vec<(String, &Bindings)> {
         let mut tables: Vec<(String, &Bindings)> = vec![
             ("[hotkeys]".into(), &self.hotkeys),
+            (
+                "[window.multi_select.bindings]".into(),
+                &self.window.multi_select.bindings,
+            ),
             ("[normal.bindings]".into(), &self.normal.bindings),
             ("[text_input.bindings]".into(), &self.text_input.bindings),
             ("[grid.bindings]".into(), &self.grid.bindings),

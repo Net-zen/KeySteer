@@ -67,6 +67,7 @@ impl PendingAdjustment {
             return Ok((None, Some(before)));
         }
         // Preserve the gesture cache if an adapter declines asynchronous geometry.
+        session.select_gesture_target(*target, *group);
         let old_remainder = session.move_remainder;
         let old_minimum = session.resize_minimum;
         let state_change = matches!(

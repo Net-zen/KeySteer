@@ -1,9 +1,9 @@
 [package]
 name = "keysteer"
-version = "0.10.29"
+version = "0.11.0"
 authors = ["dccif"]
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 license = "GPL-3.0-or-later"
 description = "Keyboard-driven mouse control with grid, recursive-grid and accessibility hint modes"
 repository = "https://github.com/dccif/KeySteer"
@@ -13,6 +13,7 @@ default-run = "keysteer"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+raw_borrows_via_references = "warn"
 
 [lints.clippy]
 undocumented_unsafe_blocks = "deny"

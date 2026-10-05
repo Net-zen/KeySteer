@@ -103,7 +103,7 @@ fn macos_top_status_item_stays_inside_the_backend() {
     let backend = include_str!("../../src/platform/macos/mod.rs");
     let bootstrap = include_str!("../../src/app/bootstrap.rs");
     let runtime = include_str!("../../src/app/runtime/mod.rs");
-    let workspace = include_str!("../../src/platform/macos/workspace.rs");
+    let event_loop = include_str!("../../src/platform/macos/event_loop.rs");
     let build = include_str!("../../build.rs");
 
     assert!(bootstrap.contains("platform::backend_for_ui_scan"));
@@ -129,9 +129,9 @@ fn macos_top_status_item_stays_inside_the_backend() {
     assert!(status_item.contains("finishLaunching"));
     assert!(backend.contains("status_item: Some(status_item)"));
     assert!(!backend.contains("fn install_status_item"));
-    assert!(workspace.contains("MAX_APP_EVENTS_PER_POLL"));
-    assert!(workspace.contains("nextEventMatchingMask_untilDate_inMode_dequeue"));
-    assert!(workspace.contains("pump_app_events();"));
+    assert!(event_loop.contains("MAX_APP_EVENTS_PER_POLL"));
+    assert!(event_loop.contains("nextEventMatchingMask_untilDate_inMode_dequeue"));
+    assert!(event_loop.contains("pump_app_events();"));
     assert!(!status_item.contains("button.window()"));
     assert!(!status_item.contains("rebuild_native_item"));
     assert!(!status_item.contains("setAutosaveName"));
@@ -163,7 +163,7 @@ fn macos_top_status_item_stays_inside_the_backend() {
     let create = backend
         .find("status_item::StatusItem::new(mtm, event_tx.clone())")
         .unwrap();
-    let first_pump = backend.find("workspace::pump_app_events()").unwrap();
+    let first_pump = backend.find("event_loop::pump_app_events()").unwrap();
     let permission_check = backend.find("permissions::is_trusted()").unwrap();
     assert!(prepare < create);
     assert!(create < first_pump);

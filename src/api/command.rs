@@ -812,12 +812,11 @@ impl HostContext<'_> {
     /// virtual desktop when the cursor is not on any known screen.
     pub fn active_bounds(&self) -> Rect {
         self.active_screen()
-            .map(|s| s.bounds)
-            .unwrap_or_else(|| Screen::virtual_bounds(self.screens))
+            .map_or_else(|| Screen::virtual_bounds(self.screens), |s| s.bounds)
     }
 
     pub fn scale(&self) -> f64 {
-        self.active_screen().map(|s| s.scale).unwrap_or(1.0)
+        self.active_screen().map_or(1.0, |s| s.scale)
     }
 }
 
@@ -866,9 +865,39 @@ pub trait Mode: Send {
         false
     }
 
-    /// Whether this mode wants exclusive use of the keyboard. When true the
-    /// host swallows keys instead of passing them to the focused app — which
-    /// is what grid and hint modes need, and idle does not.
+    /// Stable capability, sampled when this instance is registered. Modes that
+    /// provide contextual keyboard prompts opt in; other key paths skip their
+    /// dynamic prompt queries entirely.
+    fn keyboard_prompt_supported(&self) -> bool {
+        false
+    }
+
+    /// A mode-owned input panel temporarily takes priority over borrowed modes and hidden help.
+    fn keyboard_prompt_active(&self) -> bool {
+        false
+    }
+
+    /// Contextual bindings for the mode-owned input panel, ahead of ordinary bindings.
+    fn keyboard_prompt_binding(
+        &self,
+        _key: &Key,
+        _pressed: &[Key],
+    ) -> Option<std::sync::Arc<Binding>> {
+        None
+    }
+
+    /// Interpret an explicitly configured send binding as prompt editing.
+    /// The host queries only modes with the cached prompt capability.
+    fn keyboard_prompt_edit(
+        &self,
+        _chord: &super::input::KeyChord,
+        _key: &Key,
+        _pressed: &[Key],
+    ) -> Option<super::text_edit::EditAction> {
+        None
+    }
+
+    /// Whether the host consumes otherwise-unbound keyboard input for this mode.
     fn captures_keyboard(&self) -> bool {
         true
     }

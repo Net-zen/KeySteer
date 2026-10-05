@@ -50,6 +50,7 @@ impl WindowSession {
         self.closing.retain(|id, request| {
             !result.closed.contains(id) && !(full_inventory && result.id > *request)
         });
+        self.retire_multi_windows(&result.closed);
         if let Some(tabs) = result.tabs.take() {
             if self.tabs.state != tabs {
                 self.numbers = tabs.numbers.iter().copied().collect();
@@ -58,6 +59,11 @@ impl WindowSession {
             }
             self.tabs.state = tabs;
         }
+        let previous_anchor = self
+            .target
+            .as_ref()
+            .filter(|w| Some(w.id) == self.multi_anchor)
+            .cloned();
         let had_target = self.target.is_some();
         let had_inventory = result.windows.is_some();
         let mut changed = false;
@@ -140,8 +146,36 @@ impl WindowSession {
                 self.inventory.insert(target.id, target.clone());
                 changed = true;
             }
+            // Group snapshots describe the same outer frame for every member.
+            if let Some(group) = self.tabs.state.containing(target.id) {
+                for id in &group.members {
+                    if let Some(member) = self.inventory.get_mut(id) {
+                        self.inventory_dirty |=
+                            member.screen != target.screen || member.minimized != target.minimized;
+                        member.bounds = target.bounds;
+                        member.screen = target.screen;
+                        member.minimized = target.minimized;
+                        member.maximized = target.maximized;
+                    }
+                }
+            }
             if self.edit.is_none() {
                 self.screen = target.screen;
+            }
+        }
+        if matches!(self.kind, WindowKind::Move | WindowKind::Quick)
+            && self.multi_anchor.is_some()
+            && self.selection.is_none()
+        {
+            // Consume every acknowledgement into inventory before restoring the anchor.
+            // Geometry acknowledgements for peers must not replace the first selection.
+            if let Some(anchor) = self
+                .multi_anchor
+                .and_then(|id| self.inventory.get(&id))
+                .or(previous_anchor.as_ref())
+            {
+                self.target = Some(anchor.clone());
+                self.screen = anchor.screen;
             }
         }
         if let Some(WindowEditResult::Applied {
@@ -169,10 +203,19 @@ impl WindowSession {
         } else if result.id == 1 && self.status.take().is_some() {
             changed = true;
         }
-        if let Some(pointer) = result.pointer
-            && !self.temporary
-        {
-            out.push(Command::warp_to(pointer));
+        if !self.temporary {
+            if self.uses_multi_pointer() {
+                // All peer snapshots are already reconciled above. Do not apply
+                // their per-window relative offsets cumulatively (e.g. Screen).
+                if let Some(pointer) = self.multi_pointer()
+                    && (changed || result.pointer.is_some())
+                    && pointer != ctx.cursor
+                {
+                    out.push(Command::warp_to(pointer));
+                }
+            } else if let Some(pointer) = result.pointer {
+                out.push(Command::warp_to(pointer));
+            }
         }
 
         // A geometry-only acknowledgement never walks/clones the undo trees.
@@ -271,6 +314,15 @@ impl WindowSession {
         // waiting for the periodic inventory timer or retiring identities early.
         if self.closing.values().any(|request| result.id >= *request) {
             self.refresh(&mut out);
+        }
+        if self
+            .multi_exit
+            .as_ref()
+            .is_some_and(|pending| result.id >= pending.0)
+            && let Some(pending) = self.multi_exit.take()
+        {
+            let (_, next) = *pending;
+            out.push(next);
         }
         if changed
             && !out.iter().any(|c| {

@@ -4,6 +4,7 @@ mod mode;
 pub use mode::{WindowKind, WindowMode};
 mod interaction;
 mod inventory;
+mod multi_selection;
 mod numbering;
 mod presets;
 mod tabs;
@@ -30,8 +31,12 @@ use numbering::{NumberIndex, NumberInput};
 const NUMBER_TIMER: &str = "window_number";
 const INVENTORY_TIMER: &str = "window_inventory";
 
+// Keep the single-digit multi-selection range inline; larger selections still grow.
+type OwnedWindowTargets = smallvec::SmallVec<[WindowId; 9]>;
+
 #[derive(Clone, Debug)]
 pub struct Settings {
+    pub multi_bindings: std::sync::Arc<[(crate::api::KeyChord, std::sync::Arc<Binding>)]>,
     pub target: Option<crate::api::window::WindowTarget>,
     pub all_screens: bool,
     pub include_minimized: bool,
@@ -108,6 +113,9 @@ enum DeferredEdit {
 }
 
 pub struct WindowSession {
+    multi: Vec<WindowId>,
+    multi_anchor: Option<WindowId>,
+    multi_input: Option<multi_selection::Input>,
     // Keep optional gesture bookkeeping out of the default session's inline state.
     #[allow(clippy::box_collection)]
     ignored_selections: Option<Box<std::collections::BTreeSet<u64>>>,
@@ -120,6 +128,7 @@ pub struct WindowSession {
     kind: WindowKind,
     pending_transition: Option<ModeId>,
     pending_handoff: bool,
+    multi_exit: Option<Box<(u64, Command)>>,
     preserve_session: bool,
     enter_pending: bool,
     restore_pending: bool,
@@ -167,6 +176,9 @@ pub struct WindowSession {
 impl WindowSession {
     pub fn new(settings: Settings) -> Self {
         Self {
+            multi: Vec::new(),
+            multi_anchor: None,
+            multi_input: None,
             ignored_selections: None,
             targeted_audio: None,
             selection: None,
@@ -176,6 +188,7 @@ impl WindowSession {
             kind: WindowKind::Move,
             pending_transition: None,
             pending_handoff: false,
+            multi_exit: None,
             preserve_session: false,
             enter_pending: false,
             restore_pending: false,
@@ -341,11 +354,30 @@ impl WindowSession {
     }
 
     fn adjust(&mut self, change: WindowChange, out: &mut CommandBatch) {
-        if let Some(target) = &self.target {
+        let targets: OwnedWindowTargets = self.operation_targets().collect();
+        let delta = if targets.len() > 1 {
+            match (&change, &self.target) {
+                (WindowChange::MoveTo(point), Some(anchor)) => Some(Point::new(
+                    point.x - anchor.bounds.center().x,
+                    point.y - anchor.bounds.center().y,
+                )),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        for target in targets.into_iter().rev() {
             self.request(
                 WindowOperation::Adjust {
-                    target: target.id,
-                    change,
+                    target,
+                    change: delta
+                        .and_then(|d| {
+                            self.inventory.get(&target).map(|window| {
+                                let center = window.bounds.center();
+                                WindowChange::MoveTo(Point::new(center.x + d.x, center.y + d.y))
+                            })
+                        })
+                        .unwrap_or_else(|| change.clone()),
                     group: self.group,
                 },
                 out,
@@ -436,7 +468,10 @@ impl WindowKind {
             ),
             WindowKind::Move => matches!(
                 action,
-                W::Tile
+                W::MultiConfirm
+                    | W::MultiSelect
+                    | W::ClearMulti
+                    | W::Tile
                     | W::Left
                     | W::Down
                     | W::Up
@@ -490,6 +525,8 @@ impl WindowSession {
             return false;
         }
         match (self.kind, action) {
+            (_, W::MultiConfirm) => self.multi_input.is_some(),
+            (_, W::MultiSelect) => self.multi_input.is_none(),
             (WindowKind::Editor, W::SaveLayout) => self
                 .edit
                 .as_ref()
@@ -523,6 +560,20 @@ impl WindowSession {
         })
     }
     fn claims_key(&self, key: &Key) -> bool {
+        if self.multi_input.is_some() && self.kind == WindowKind::Move {
+            return key.as_char().is_some_and(|c| c.is_ascii_digit())
+                || matches!(
+                    key.as_str(),
+                    "space"
+                        | "backspace"
+                        | "delete"
+                        | "esc"
+                        | "arrow_left"
+                        | "arrow_right"
+                        | "home"
+                        | "end"
+                );
+        }
         if self.library_open {
             return !self.temporary
                 && (key.as_char().is_some_and(|c| c.is_ascii_digit())
@@ -560,6 +611,47 @@ impl WindowSession {
         }
     }
     pub(crate) fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
+        let continuation = match event {
+            ModeEvent::Restarted => Some(Command::RestartMode),
+            ModeEvent::FinishRequested { cause } => Some(Command::FinishMode { cause: *cause }),
+            _ => None,
+        };
+        if let Some(next) = continuation
+            && (self.multi_anchor.is_some() || self.multi_exit.is_some())
+        {
+            let mut out = CommandBatch::new();
+            if self.restore_multi_before(next, &mut out) {
+                out.push(ctx.present(self.view()));
+                return out;
+            }
+        }
+        let mut input_out = CommandBatch::new();
+        if self.multi_input.is_some()
+            && self.kind == WindowKind::Move
+            && let ModeEvent::TextEdit(action) = event
+        {
+            self.edit_multi_input(*action);
+            let mut out = CommandBatch::new();
+            self.activate_multi_front(&mut out);
+            self.center_multi_pointer(ctx, &mut out);
+            out.push(ctx.present(self.view()));
+            return out;
+        }
+        if self.multi_input.is_some()
+            && self.kind == WindowKind::Move
+            && let ModeEvent::Key {
+                key,
+                state: KeyState::Down,
+                repeat,
+            } = event
+            && self.multi_input_key(key, *repeat, &mut input_out)
+        {
+            let mut out = input_out;
+            self.activate_multi_front(&mut out);
+            self.center_multi_pointer(ctx, &mut out);
+            out.push(ctx.present(self.view()));
+            return out;
+        }
         if let Some(out) = self.library_event(event, ctx) {
             return out;
         }
@@ -580,6 +672,7 @@ impl WindowSession {
                 self.deleting_presets = false;
                 self.pending_transition = None;
                 self.pending_handoff = false;
+                self.multi_exit = None;
                 self.tabs.queue.clear();
                 self.tabs.in_flight = None;
                 if self.session != 0 && !matches!(event, ModeEvent::Restarted) {
@@ -598,6 +691,7 @@ impl WindowSession {
                         delay: Duration::from_millis(500),
                         repeating: true,
                     });
+                    self.center_multi_pointer(ctx, &mut out);
                     out.push(ctx.present(self.view()));
                     return out;
                 }
@@ -617,6 +711,9 @@ impl WindowSession {
                 self.size = false;
                 self.temporary = false;
                 self.held.clear();
+                self.multi.clear();
+                self.multi_anchor = None;
+                self.multi_input = None;
                 self.target = None;
                 self.pending_move_to = None;
                 self.edit = None;
@@ -685,11 +782,15 @@ impl WindowSession {
                 self.reopen_edit = None;
                 self.pending_transition = None;
                 self.pending_handoff = false;
+                self.multi_exit = None;
                 self.enter_pending = false;
                 self.restore_pending = false;
                 self.library_open = false;
                 self.numbers.clear();
                 self.status = None;
+                self.multi.clear();
+                self.multi_anchor = None;
+                self.multi_input = None;
                 self.target = None;
                 self.pending_move_to = None;
                 self.edit = None;
@@ -795,15 +896,24 @@ impl WindowSession {
                     },
                     _ => return out,
                 };
+                let had_status = self.status.is_some();
+                let selecting = source.is_some() || self.selection.is_some();
                 if *state == KeyState::Down {
                     self.status = None;
                 }
-                if source.is_some() || self.selection.is_some() {
+                if selecting {
                     self.targeted_action(action, source, *state, key, ctx, &mut out);
                 } else {
                     self.action(action, *state, key, ctx, &mut out);
                 }
-                redraw = *state == KeyState::Down;
+                // Native move/resize changes no visible geometry until its
+                // acknowledgement. Do not compose the old border/cards again
+                // on the initial press or an ignored keyboard repeat.
+                redraw = *state == KeyState::Down
+                    && (selecting
+                        || had_status
+                        || self.status.is_some()
+                        || !matches!(action, W::Left | W::Down | W::Up | W::Right));
             }
             ModeEvent::Key {
                 key,
@@ -817,6 +927,7 @@ impl WindowSession {
                             self.number.begin_slot();
                         }
                     } else if c.is_ascii_digit() {
+                        self.multi_input = None;
                         if self.kind == WindowKind::Tab {
                             self.tab_input(tabs::Input::Digit(c), ctx, &mut out);
                             out.push(ctx.present(self.view()));

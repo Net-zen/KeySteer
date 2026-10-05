@@ -123,7 +123,7 @@ impl Strip {
                 Some(owner),
                 None,
                 None,
-                Some((&*strip as *const Self).cast()),
+                Some(Rc::as_ptr(&strip).cast()),
             )
         }
         .map_err(|e| format!("Cannot create tab strip: {e}"))?;

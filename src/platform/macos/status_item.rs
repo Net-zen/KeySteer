@@ -169,22 +169,7 @@ define_class!(
 
         #[unsafe(method(showAbout:))]
         fn show_about(&self, _sender: Option<&AnyObject>) {
-            if let Err(error) = show_panel(
-                self.mtm(),
-                self,
-                "About KeySteer",
-                &crate::platform::common::app_info::details(),
-                PanelAction::OpenRepository,
-            ) {
-                crate::support::logging::report_error("macos-about", error);
-            }
-        }
-
-        #[unsafe(method(openRepository:))]
-        fn open_repository(&self, _sender: Option<&AnyObject>) {
-            if let Err(error) = open_https_url(crate::platform::common::app_info::REPOSITORY_URL) {
-                crate::support::logging::report_error("macos-about", error);
-            }
+            show_standard_about(self.mtm());
         }
 
         #[unsafe(method(dismissUpdateAlert:))]
@@ -318,6 +303,9 @@ pub(super) fn prepare_application(mtm: MainThreadMarker) -> Result<(), String> {
 }
 
 impl StatusItem {
+    pub(super) fn menu(&self) -> Retained<NSMenu> {
+        self._menu.clone()
+    }
     pub(super) fn release_text_prompt(&self) {
         self._target.finish_note(false);
         let cached = self._target.ivars().cached_note.borrow_mut().take();
@@ -653,9 +641,7 @@ impl StatusItem {
         let mtm = MainThreadMarker::new().ok_or_else(|| {
             "update result must be presented on the macOS main thread".to_string()
         })?;
-        let action = downloaded_update
-            .map(PanelAction::RevealInFinder)
-            .unwrap_or(PanelAction::None);
+        let action = downloaded_update.map_or(PanelAction::None, PanelAction::RevealInFinder);
         show_panel(mtm, &self._target, title, details, action)
     }
 }
@@ -663,8 +649,63 @@ impl StatusItem {
 #[derive(Clone, Copy)]
 enum PanelAction<'a> {
     None,
-    OpenRepository,
     RevealInFinder(&'a Path),
+}
+
+fn show_standard_about(mtm: MainThreadMarker) {
+    use crate::platform::common::app_info;
+    use objc2_app_kit::{
+        NSAboutPanelOptionApplicationIcon, NSAboutPanelOptionApplicationName,
+        NSAboutPanelOptionApplicationVersion, NSAboutPanelOptionCredits, NSAboutPanelOptionVersion,
+        NSLinkAttributeName,
+    };
+    use objc2_foundation::{NSDictionary, NSMutableAttributedString, NSRange};
+
+    autoreleasepool(|_| {
+        let name = NSString::from_str("KeySteer");
+        let version = NSString::from_str(app_info::VERSION);
+        let build = NSString::from_str(app_info::BUILD_DATE);
+        let details = format!(
+            "Author: {}\nLicense: {}\nCopyright © 2026 dccif\n\n",
+            app_info::AUTHORS,
+            app_info::LICENSE,
+        );
+        let text = NSString::from_str(&format!("{details}{}", app_info::REPOSITORY_URL));
+        let credits =
+            NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &text);
+        let icon = status_icon(128.0);
+        // SAFETY: keys and values use the types documented by AppKit. The
+        // link range counts UTF-16 code units, as required by NSAttributedString.
+        unsafe {
+            if let Some(url) = NSURL::URLWithString(&NSString::from_str(app_info::REPOSITORY_URL)) {
+                credits.addAttribute_value_range(
+                    NSLinkAttributeName,
+                    &url,
+                    NSRange::new(
+                        details.encode_utf16().count(),
+                        app_info::REPOSITORY_URL.encode_utf16().count(),
+                    ),
+                );
+            }
+            let mut keys = vec![
+                NSAboutPanelOptionApplicationName,
+                NSAboutPanelOptionApplicationVersion,
+                NSAboutPanelOptionVersion,
+                NSAboutPanelOptionCredits,
+            ];
+            let mut values: Vec<&AnyObject> = vec![&name, &version, &build, &credits];
+            if let Some(icon) = icon.as_ref() {
+                keys.push(NSAboutPanelOptionApplicationIcon);
+                values.push(icon);
+            }
+            let options = NSDictionary::from_slices(&keys, &values);
+            let application = NSApplication::sharedApplication(mtm);
+            // Nonmodal AppKit-owned panel: normal event pumping continues.
+            application.orderFrontStandardAboutPanelWithOptions(&options);
+            #[allow(deprecated)]
+            application.activateIgnoringOtherApps(true);
+        }
+    });
 }
 
 fn show_panel(
@@ -733,12 +774,6 @@ fn show_panel(
             );
             let secondary_button = match action {
                 PanelAction::None => None,
-                PanelAction::OpenRepository => Some(NSButton::buttonWithTitle_target_action(
-                    &NSString::from_str("KeySteer"),
-                    Some(target),
-                    Some(sel!(openRepository:)),
-                    mtm,
-                )),
                 PanelAction::RevealInFinder(_) => Some(NSButton::buttonWithTitle_target_action(
                     &NSString::from_str("Show in Finder"),
                     Some(target),
@@ -766,7 +801,7 @@ fn show_panel(
         panel.setContentView(Some(&content));
         let downloaded_update = match action {
             PanelAction::RevealInFinder(path) => Some(path.to_path_buf()),
-            PanelAction::None | PanelAction::OpenRepository => None,
+            PanelAction::None => None,
         };
         target.show_update_alert(panel, downloaded_update);
         Ok(())

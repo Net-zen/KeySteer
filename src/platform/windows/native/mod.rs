@@ -328,7 +328,7 @@ pub(crate) fn send_input_failure_context(last_error: u32, input_size: usize) -> 
             GetTokenInformation(
                 token,
                 class,
-                Some((&mut value as *mut u32).cast()),
+                Some((&raw mut value).cast()),
                 std::mem::size_of::<u32>() as u32,
                 &mut returned,
             )
@@ -380,9 +380,10 @@ pub(crate) fn send_input_failure_context(last_error: u32, input_size: usize) -> 
                 return "security=unavailable".into();
             }
             let token = OwnedHandle::new(token);
-            let integrity = token_integrity(token.raw())
-                .map(|rid| format!("{}(0x{rid:04X})", integrity_name(rid)))
-                .unwrap_or_else(|| "unknown".into());
+            let integrity = token_integrity(token.raw()).map_or_else(
+                || "unknown".into(),
+                |rid| format!("{}(0x{rid:04X})", integrity_name(rid)),
+            );
             let elevated = token_u32(token.raw(), TokenElevation)
                 .map(|value| value != 0)
                 .map_or_else(|| "unknown".into(), |value| value.to_string());
@@ -439,7 +440,7 @@ pub(crate) fn apps_use_light_theme() -> bool {
             w!("AppsUseLightTheme"),
             RRF_RT_REG_DWORD,
             None,
-            Some((&mut value as *mut u32).cast()),
+            Some((&raw mut value).cast()),
             Some(&mut size),
         )
     };

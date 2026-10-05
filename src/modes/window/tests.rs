@@ -1,9 +1,102 @@
 #![cfg(test)]
+mod multi_selection;
 mod target_selection;
 
 use super::*;
 use crate::api::Appearance;
 use crate::api::window::WindowResult;
+
+#[test]
+fn movement_draws_confirmed_geometry_and_skips_old_scene_on_key_repeats() {
+    let config = crate::config::Config::default();
+    let palette = config.palette(Appearance::Dark);
+    let screens = [crate::api::Screen {
+        bounds: Rect::new(0.0, 0.0, 1200.0, 900.0),
+        work_area: Rect::new(0.0, 0.0, 1200.0, 860.0),
+        scale: 1.0,
+        is_primary: true,
+        name: None,
+    }];
+    let ctx = HostContext {
+        presenter: &crate::presentation::COMPOSER,
+        screens: &screens,
+        cursor: Point::default(),
+        focused_app: None,
+        palette: &palette,
+    };
+    for size in [false, true] {
+        let mut mode = crate::app::mode_catalog::window(&config);
+        mode.session = 1;
+        mode.size = size;
+        let window = WindowInfo {
+            id: WindowId(1),
+            app: "test".into(),
+            title: "Window".into(),
+            bounds: Rect::new(100.0, 100.0, 400.0, 300.0),
+            screen: 0,
+            resizable: true,
+            maximized: false,
+            minimized: false,
+            fullscreen: false,
+        };
+        mode.target = Some(window.clone());
+        mode.inventory.insert(window.id, window.clone());
+        mode.rebuild_numbers();
+        let key = ModeEvent::Binding {
+            binding: std::sync::Arc::new(Binding::Window(W::Right)),
+            state: KeyState::Down,
+            key: Key::new("l").unwrap(),
+        };
+        let commands = mode.handle(&key, &ctx);
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, Command::WindowRequest(_)))
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|c| matches!(c, Command::ShowOverlay(_)))
+        );
+        assert!(mode.handle(&key, &ctx).is_empty());
+        assert_eq!(mode.target.as_ref().unwrap().bounds, window.bounds);
+        mode.status = Some("Previous error".into());
+        assert!(
+            mode.handle(&key, &ctx)
+                .iter()
+                .any(|c| matches!(c, Command::ShowOverlay(_)))
+        );
+        assert!(mode.status.is_none());
+        let mut moved = window;
+        moved.bounds.x += 20.0;
+        let commands = mode.window_result(
+            WindowResult {
+                session: 1,
+                id: mode.request,
+                target: Some(moved.clone()),
+                windows: None,
+                tabs: None,
+                closed: Vec::new(),
+                pointer: None,
+                changed: 1,
+                skipped: 0,
+                message: None,
+                edit: None,
+            },
+            &ctx,
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, Command::ShowOverlay(_)))
+        );
+        assert_eq!(mode.target.as_ref().unwrap().bounds, moved.bounds);
+        mode.handle(&ModeEvent::Deactivated, &ctx);
+        assert!(mode.held.is_empty());
+        assert!(mode.target.is_none());
+        assert!(mode.inventory.is_empty());
+    }
+}
 
 #[test]
 fn close_feedback_keeps_geometry_until_confirmed_and_refreshes_without_timer() {
@@ -321,6 +414,7 @@ fn window_idle_inventory_and_number_input_do_not_allocate() {
     };
     let w = &config.window;
     let mut mode = WindowSession::new(Settings {
+        multi_bindings: [].into(),
         target: None,
         all_screens: w.screens == crate::config::WindowScreens::All,
         include_minimized: w.include_minimized,
@@ -612,4 +706,101 @@ fn partial_layout_status_identifies_windows_with_bounded_text() {
         mode.skipped_layout_status(&[WindowId(7), WindowId(8), WindowId(9), WindowId(10)]),
         "Not fitted: #5, #8, #?, +1"
     );
+}
+
+#[test]
+fn editor_start_shares_constraints_across_screens_and_reopen_imports_current_geometry() {
+    let config = crate::config::Config::default();
+    let palette = config.palette(Appearance::Dark);
+    let screens: Vec<_> = (0..2)
+        .map(|index| crate::api::Screen {
+            bounds: Rect::new(index as f64 * 1200.0, 0.0, 1200.0, 900.0),
+            work_area: Rect::new(index as f64 * 1200.0, 0.0, 1200.0, 900.0),
+            scale: 1.0,
+            is_primary: index == 0,
+            name: None,
+        })
+        .collect();
+    let ctx = HostContext {
+        presenter: &crate::presentation::COMPOSER,
+        screens: &screens,
+        cursor: Point::default(),
+        focused_app: None,
+        palette: &palette,
+    };
+    for entry_layout in [true, false] {
+        let mut mode = crate::app::mode_catalog::window(&config);
+        mode.kind = WindowKind::Editor;
+        mode.settings.all_screens = true;
+        for id in 1..=4 {
+            let screen = (id as usize - 1) / 2;
+            mode.inventory.insert(
+                WindowId(id),
+                WindowInfo {
+                    id: WindowId(id),
+                    app: "test".into(),
+                    title: format!("Window {id}"),
+                    bounds: Rect::new(
+                        screens[screen].work_area.x + (id % 2) as f64 * 600.0,
+                        0.0,
+                        600.0,
+                        900.0,
+                    ),
+                    screen,
+                    resizable: true,
+                    maximized: false,
+                    minimized: false,
+                    fullscreen: false,
+                },
+            );
+        }
+        mode.target = mode.inventory.get(&WindowId(1)).cloned();
+        let current: Vec<_> = mode
+            .inventory
+            .values()
+            .filter(|w| w.screen == 0)
+            .cloned()
+            .collect();
+        let expected = LayoutTree::import(&current, Some(WindowId(1)), screens[0].work_area);
+        // A cached empty layout must not replace the native geometry on reopen.
+        mode.trees
+            .insert(0, LayoutTree::import(&[], None, screens[0].work_area));
+        let mut out = CommandBatch::new();
+        mode.start_edit(true, &ctx, &mut out);
+        let edit = mode.edit.as_mut().unwrap();
+        edit.entry_layout = entry_layout;
+        let transaction = edit.transaction;
+        let minimums: Vec<_> = (1..=4)
+            .rev()
+            .map(|id| (WindowId(id), Point::new(100.0 + id as f64, 80.0)))
+            .collect();
+        mode.edit_result(
+            &WindowEditResult::Started {
+                transaction,
+                minimums: minimums.clone(),
+                gap_scale: 1.0,
+                screen_scales: vec![1.0, 1.5],
+                full_inventory: true,
+            },
+            &ctx,
+            &mut out,
+        );
+        let edit = mode.edit.as_ref().unwrap();
+        assert!(edit.ready);
+        assert_eq!(edit.minimums, minimums.into_iter().collect());
+        let EditModel::Tree(tree) = &edit.model else {
+            panic!("expected tree")
+        };
+        assert_eq!(tree.slot_count(), 2);
+        if entry_layout {
+            assert_eq!(edit.additional_trees[&1].slot_count(), 2);
+            assert!(out.iter().any(|c| matches!(c, Command::WindowRequest(r)
+                if matches!(&r.operation, WindowOperation::ApplyLayout { additional_screens, placements, .. }
+                    if placements.len() == 2 && additional_screens.len() == 1 && additional_screens[0].placements.len() == 2))));
+        } else {
+            assert_eq!(tree, &expected);
+            assert!(edit.additional_trees.is_empty());
+            assert!(!out.iter().any(|c| matches!(c, Command::WindowRequest(r) if matches!(r.operation, WindowOperation::ApplyLayout { .. }))));
+        }
+    }
 }

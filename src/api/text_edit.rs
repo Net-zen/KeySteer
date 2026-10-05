@@ -22,6 +22,32 @@ pub enum EditAction {
     Delete,
 }
 
+/// Editing keys that a mode-owned prompt may consume instead of injecting.
+pub fn navigation_action(chord: &crate::api::KeyChord) -> Option<EditAction> {
+    use EditAction::*;
+    let keys = chord.keys();
+    let selecting = keys.len() == 2
+        && keys
+            .iter()
+            .any(|key| matches!(key.as_str(), "shift" | "left_shift" | "right_shift"));
+    if keys.len() != 1 && !selecting {
+        return None;
+    }
+    Some(match (chord.activation_key().as_str(), selecting) {
+        ("arrow_left", false) => Left,
+        ("arrow_right", false) => Right,
+        ("home", false) => Home,
+        ("end", false) => End,
+        ("arrow_left", true) => SelectLeft,
+        ("arrow_right", true) => SelectRight,
+        ("home", true) => SelectHome,
+        ("end", true) => SelectEnd,
+        ("backspace", false) => Backspace,
+        ("delete", false) => Delete,
+        _ => return None,
+    })
+}
+
 pub fn default_keys() -> std::collections::BTreeMap<EditAction, String> {
     use EditAction::*;
     [

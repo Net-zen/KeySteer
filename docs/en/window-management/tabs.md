@@ -4,13 +4,15 @@
 import ModeVideo from '../../.vitepress/components/ModeVideo'
 </script>
 
-Enter with T to group compatible windows by application.
+Press T to group the current selection, or group by application when nothing is multi-selected.
 
-<ModeVideo file="tabs.mp4" title="Tabs: group windows" description="Enter with T to group compatible windows by application." />
+<ModeVideo file="tabs.mp4" title="Tabs: group windows" description="Press T to group the current selection, or group by application when nothing is multi-selected." />
+
+If Window has an explicit multi-selection, pressing `T` confirms the pending input and combines only those selected windows into one group. Selected members of existing groups bring their entire groups. Unselected windows remain unchanged, and `Z` undoes the grouping in one step. Without multi-selection, automatic grouping by application remains available.
 
 ## How to use it
 
-Press `T` from Window to group compatible, ungrouped windows from the same application separately on each display, preserving existing groups. Press `Z` to undo this automatic grouping.
+Without multi-selection, press `T` from Window to group compatible, ungrouped windows from the same application separately on each display, preserving existing groups. Press `Z` to undo this automatic grouping.
 
 You can also combine windows from different applications:
 

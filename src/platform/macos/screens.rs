@@ -35,6 +35,10 @@ impl DisplayWatcher {
         DISPLAY_CHANGED.swap(false, Ordering::AcqRel)
     }
 
+    pub fn retry_refresh(&self) {
+        DISPLAY_CHANGED.store(true, Ordering::Release);
+    }
+
     pub fn stop(&mut self) -> Result<(), String> {
         if !self.registered {
             return Ok(());
@@ -71,7 +75,7 @@ pub(super) extern "C" fn display_changed(
 ) {
     let _ = user_info;
     DISPLAY_CHANGED.store(true, Ordering::Release);
-    super::workspace::wake_main_run_loop();
+    super::event_loop::wake_main_run_loop();
 }
 
 pub fn list_screens() -> Result<Vec<Screen>, String> {
@@ -118,10 +122,9 @@ fn list_core_graphics_screens() -> Result<Vec<Screen>, String> {
         .map(|id| {
             let display = CGDisplay::new(id);
             let bounds = display.bounds();
-            let scale = display
-                .display_mode()
-                .map(|mode| mode.pixel_width() as f64 / bounds.size.width.max(1.0))
-                .unwrap_or(1.0);
+            let scale = display.display_mode().map_or(1.0, |mode| {
+                mode.pixel_width() as f64 / bounds.size.width.max(1.0)
+            });
             let bounds = Rect::new(
                 bounds.origin.x,
                 bounds.origin.y,

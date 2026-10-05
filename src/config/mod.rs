@@ -540,6 +540,11 @@ impl ConfigFile {
     fn apply_configured_key_aliases(&mut self) -> Result<(), ConfigError> {
         let aliases = self.resolved_key_aliases.clone();
         normalize_binding_keys(&mut self.hotkeys, "[hotkeys]", &aliases)?;
+        normalize_binding_keys(
+            &mut self.window.multi_select.bindings,
+            "[window.multi_select.bindings]",
+            &aliases,
+        )?;
         normalize_binding_keys(&mut self.normal.bindings, "[normal.bindings]", &aliases)?;
         normalize_binding_keys(
             &mut self.text_input.bindings,

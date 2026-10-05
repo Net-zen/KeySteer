@@ -60,13 +60,18 @@ pub(crate) fn resolved_hint_label_style(config: &HintStyle<'_>, palette: &Palett
     style
 }
 
+fn hint_label_width(style: &LabelStyle, characters: usize) -> f64 {
+    style.font_size * 0.75 * characters as f64 + style.padding_x * 2.0
+}
+
 pub(crate) fn placed_hint_rect(
     config: &HintStyle<'_>,
     hint: &CompactHint<usize>,
     style: &LabelStyle,
+    uniform_width: Option<f64>,
 ) -> Rect {
-    let width =
-        style.font_size * 0.75 * hint.label.as_str().chars().count() as f64 + style.padding_x * 2.0;
+    let width = uniform_width
+        .unwrap_or_else(|| hint_label_width(style, hint.label.as_str().chars().count()));
     let height = style.font_size * 1.4 + style.padding_y * 2.0;
     let placed = config.placement.place(&hint.bounds, width, height);
     Rect::new(
@@ -153,6 +158,9 @@ pub(crate) fn prepare_hints(
     ctx: &HostContext<'_>,
 ) {
     let style = resolved_hint_label_style(&content.style, ctx.palette);
+    let uniform_width = content
+        .uniform_label_chars
+        .map(|chars| hint_label_width(&style, chars));
     let visual_scale = visual_layer_scale(ctx, content.scan_bounds);
     let visual_padding_x = (style.padding_x * visual_scale).round();
     let visual_padding_y = (style.padding_y * visual_scale).round();
@@ -179,11 +187,17 @@ pub(crate) fn prepare_hints(
                 .enumerate()
                 .filter(|(_, hint)| hint.label.as_str().starts_with(content.prefix))
                 .map(|(index, hint)| {
-                    let rect = placed_hint_rect(&content.style, hint, &style);
+                    let rect = placed_hint_rect(&content.style, hint, &style, uniform_width);
                     (index, visual_layer_rect(rect, visual_scale))
                 }),
         );
-        build_visual_layer_plan(&placements, content.hints.len(), stacked, layers);
+        build_visual_layer_plan(
+            &placements,
+            content.hints.len(),
+            uniform_width.is_some(),
+            stacked,
+            layers,
+        );
         *workspace = Some(placements);
     } else {
         let placements: SmallVec<[(usize, Rect); INLINE_LABELS]> = content
@@ -192,11 +206,17 @@ pub(crate) fn prepare_hints(
             .enumerate()
             .filter(|(_, hint)| hint.label.as_str().starts_with(content.prefix))
             .map(|(index, hint)| {
-                let rect = placed_hint_rect(&content.style, hint, &style);
+                let rect = placed_hint_rect(&content.style, hint, &style, uniform_width);
                 (index, visual_layer_rect(rect, visual_scale))
             })
             .collect();
-        build_visual_layer_plan(&placements, content.hints.len(), stacked, layers);
+        build_visual_layer_plan(
+            &placements,
+            content.hints.len(),
+            uniform_width.is_some(),
+            stacked,
+            layers,
+        );
     }
 }
 
@@ -230,6 +250,10 @@ impl HintView<'_> {
         if self.content.style.ui.matched_text_color.is_none() {
             label_style.matched_text_color = Color::rgb(0xE4, 0xB4, 0x00);
         }
+        let uniform_width = self
+            .content
+            .uniform_label_chars
+            .map(|chars| hint_label_width(&label_style, chars));
         let label_style = SharedLabelStyle::from(label_style);
 
         // Optional outlines behind only the currently visible candidates.
@@ -289,7 +313,7 @@ impl HintView<'_> {
                 if z_for(hint_index) != z_index {
                     continue;
                 }
-                let rect = placed_hint_rect(&self.content.style, hint, &label_style);
+                let rect = placed_hint_rect(&self.content.style, hint, &label_style, uniform_width);
                 scene.push_label(
                     OverlayLabel::new(hint.label.as_str(), rect, label_style.clone())
                         .with_matched_prefix(matched_prefix_len)

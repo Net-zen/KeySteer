@@ -10,10 +10,12 @@ pub enum AudioAction {
     DeviceNext,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioTarget {
     /// Resolve the application owning a retained window (or its active tab).
     Application(WindowId),
+    /// All selected logical windows, including every member of selected tab groups.
+    Applications(Vec<WindowId>),
     /// The system default output; no window selection is required.
     System,
 }

@@ -395,8 +395,7 @@ fn stream_ax(
             || scan_id_is_current(job.generation),
             |batch| publisher.push(TargetSource::Accessibility, batch),
         )
-        .map(|_| UiScanStatus::Success)
-        .unwrap_or_else(UiScanStatus::Failed);
+        .map_or_else(UiScanStatus::Failed, |_| UiScanStatus::Success);
     };
     accessibility::scan_process_stream(
         pid,
@@ -405,8 +404,7 @@ fn stream_ax(
         || scan_id_is_current(job.generation),
         |batch| publisher.push(TargetSource::Accessibility, batch),
     )
-    .map(|_| UiScanStatus::Success)
-    .unwrap_or_else(UiScanStatus::Failed)
+    .map_or_else(UiScanStatus::Failed, |_| UiScanStatus::Success)
 }
 
 fn stream_vision(job: &ScanJob, publisher: &PartialPublisher<'_>) -> UiScanStatus {

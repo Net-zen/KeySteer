@@ -1,6 +1,6 @@
 //! Key-help panel composition; effective routing and cache ownership stay in the host.
 use crate::api::overlay::{Color, LabelStyle, OverlayLabel, TextAlignment};
-use crate::api::style::KeyHelp;
+use crate::api::style::compiled::KeyHelp;
 use crate::api::{OverlayScene, Palette, Rect, Screen};
 use std::collections::BTreeMap;
 
@@ -180,7 +180,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             }
         };
     let ui = input.ui;
-    let color = |value: &Option<crate::api::theme::ThemedColor>, fallback| {
+    let color = |value: &Option<crate::api::theme::CompiledColor>, fallback| {
         crate::api::style::resolve(value.as_ref(), palette.appearance, fallback)
     };
     // An anchor affects placement only. Font size must not depend on target size.
@@ -1015,6 +1015,9 @@ fn window_action_label(action: &str) -> Option<&'static str> {
         "window_volume_mute" => "Mute / unmute app",
         "window_system_volume_mute" => "Mute / unmute system",
         "window_close" => "Close window",
+        "window_multi_confirm" => "Confirm multi-selection",
+        "window_multi_clear" => "Clear selection",
+        "window_multi_select" => "Multi-select",
         "window_select" => "Next window",
         "window_select_previous" => "Previous window",
         "window_undo" => "Undo",

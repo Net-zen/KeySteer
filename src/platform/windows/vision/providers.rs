@@ -141,6 +141,14 @@ fn run_scan_inner(
     shared: &Arc<SharedQueue>,
     discovery: &DiscoveryHandle,
 ) -> UiScanStatus {
+    if !generation_is_current(shared, job.generation) {
+        return UiScanStatus::ContextChanged;
+    }
+    // A pending scan may have been submitted before the active scan failed to
+    // stop its providers. Apply the same guard here before starting native work.
+    if shared.provider_quarantine_nonempty.load(Ordering::Acquire) {
+        return quarantined_scan_status(job.capture.take());
+    }
     let _coordinator_ledger = crate::support::perf_probe::ResourceGuard::new(
         crate::support::perf_probe::ResourceKind::Coordinator,
     );

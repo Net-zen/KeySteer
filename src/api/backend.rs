@@ -127,6 +127,17 @@ pub enum KeyDisposition {
 /// A native backend. Implementations live in `src/platform/<os>.rs` and are
 /// selected by `cfg(target_os)` in `src/platform/mod.rs`.
 pub trait Backend {
+    /// Optionally own native event dispatch, including nested menu tracking.
+    /// Invoke `turn` on the engine thread without retaining it after returning,
+    /// without reentering it, and without holding another backend borrow.
+    /// `Some(delay)` schedules the next nonblocking turn; `None` requests exit.
+    /// Wake promptly for queued input/results even before that deadline. Errors
+    /// must unwind native tracking and return so the engine can clean up.
+    /// Return `None` without calling `turn` to use the ordinary polling loop.
+    fn run_event_loop(&mut self, _turn: &mut EventLoopTurn<'_>) -> Option<Result<(), String>> {
+        None
+    }
+
     fn read_clipboard(&mut self) -> Result<String, String> {
         Err("Clipboard is unavailable on this backend".into())
     }
@@ -402,6 +413,9 @@ pub trait Backend {
         Ok(())
     }
 }
+
+/// One bounded engine turn driven by a backend's native event loop.
+pub type EventLoopTurn<'a> = dyn FnMut(&mut dyn Backend) -> Result<Option<Duration>, String> + 'a;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Appearance {

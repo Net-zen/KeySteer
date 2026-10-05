@@ -799,10 +799,8 @@ impl WindowAccess for Windows {
             handles.push(hwnd);
             BOOL::from(true)
         }
-        let enumeration = super::native::enum_windows(
-            Some(collect),
-            LPARAM((&mut self.handles as *mut Vec<HWND>) as isize),
-        );
+        let enumeration =
+            super::native::enum_windows(Some(collect), LPARAM((&raw mut self.handles) as isize));
         enumeration.map_err(|e| format!("cannot enumerate windows: {e}"))?;
         self.prune_closed();
         let mut windows = Vec::with_capacity(self.windows.len().min(256));
@@ -1136,6 +1134,9 @@ impl WindowAccess for Windows {
         &self,
         target: crate::api::audio::AudioTarget,
     ) -> Result<Option<crate::platform::common::audio_worker::AudioProcess>, String> {
+        if matches!(target, crate::api::audio::AudioTarget::Applications(_)) {
+            return Err("Batch audio requires selection resolution".into());
+        }
         let crate::api::audio::AudioTarget::Application(id) = target else {
             return Ok(None);
         };
@@ -1173,7 +1174,7 @@ impl WindowAccess for Windows {
                 hwnd,
                 WM_GETMINMAXINFO,
                 WPARAM(0),
-                LPARAM((&mut info as *mut MINMAXINFO) as isize),
+                LPARAM((&raw mut info) as isize),
                 SMTO_ABORTIFHUNG | SMTO_BLOCK,
                 50,
                 Some(&mut result),
@@ -1200,13 +1201,15 @@ impl WindowAccess for Windows {
             );
             return;
         }
-        for id in self.hidden.iter().copied().collect::<Vec<_>>() {
+        // Each successful restore removes its record. Leave remaining records
+        // in place on failure so a later recovery can resume without a copy.
+        while let Some(id) = self.hidden.first().copied() {
             if let Err(error) = self.tab_set_hidden(id, false) {
                 crate::report_error!("window-tabs", "restore hidden window: {error}");
                 return;
             }
         }
-        for id in self.transparent.iter().copied().collect::<Vec<_>>() {
+        while let Some(id) = self.transparent.first().copied() {
             if let Err(error) = self.restore_opacity(id) {
                 crate::report_error!("window-tabs", "{error}");
                 return;
@@ -1258,6 +1261,27 @@ fn show_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_clears_stale_hidden_and_transparent_identities() {
+        let mut native = Windows::default();
+        // No HWNDs are retained: both overlapping and standalone stale records
+        // must make progress without trying to restore another application's window.
+        native.hidden.extend([WindowId(2), WindowId(4)]);
+        native
+            .transparent
+            .extend([WindowId(1), WindowId(4), WindowId(7)]);
+        native
+            .pending_focus
+            .set(Some((WindowId(2), Instant::now())));
+        native.closed.push(WindowId(9));
+        native.reset();
+        assert!(native.hidden.is_empty());
+        assert!(native.transparent.is_empty());
+        assert!(native.pending_focus.get().is_none());
+        assert!(native.closed.is_empty());
+        native.reset();
+    }
 
     fn await_foreground(hwnd: HWND) {
         let deadline = Instant::now() + Duration::from_secs(2);

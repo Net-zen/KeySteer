@@ -65,6 +65,9 @@ title_font_size = 30.0
 app_font_family = "Example Sans"
 title_bold = true
 app_color = {{ light = "#123456FF", dark = "#FEDCBAFF" }}
+selected_background_color = {{ light = "#E0F2E9FF", dark = "#285245E0" }}
+selected_border_color = "#68BCA3FF"
+selected_border_width = 0.0
 text_width = 320.0
 padding_y = 8.0
 "##
@@ -88,6 +91,11 @@ padding_y = 8.0
             "app_font_size = nan",
             "title_font_size = 257",
             "title_color = 'invalid'",
+            "selected_background_color = 'invalid'",
+            "selected_border_color = { light = '#60B49CFF', dark = 'invalid' }",
+            "selected_border_width = -1",
+            "selected_border_width = 21",
+            "selected_border_width = nan",
         ] {
             let invalid = Config::parse(&format!("[{mode}.card]\n{invalid}")).unwrap();
             assert!(invalid.validate().is_err());
@@ -1129,7 +1137,7 @@ fn per_mode_indicator_entries_parse_alongside_the_shared_ui() {
 
 #[test]
 fn mode_indicator_only_builds_a_display_name_when_needed() {
-    let indicator = ModeIndicator::default();
+    let indicator: ModeIndicator = ModeIndicator::default();
     let calls = std::cell::Cell::new(0);
     let (normal, _) = indicator
         .for_mode_with("normal", || {
@@ -1262,7 +1270,7 @@ fn mode_indicator_merges_per_mode_cursor_and_badge_styles() {
     .unwrap();
     let cursor = config
         .mode_indicator
-        .cursor_for_mode("normal")
+        .cursor_for_mode_ref("normal")
         .expect("cursor");
     assert_eq!(cursor.radius, 18);
     assert_eq!(cursor.stroke_width, 1);
@@ -1344,19 +1352,19 @@ fn cursor_pressed_colors_are_configurable_and_inherit_into_modes() {
 
     let cursor = config
         .mode_indicator
-        .cursor_for_mode("normal")
+        .cursor_for_mode_ref("normal")
         .expect("normal cursor");
     assert_eq!(
         cursor.left_pressed_color,
-        Some(ThemedColor::Both("#123456FF".into()))
+        Some(&ThemedColor::Both("#123456FF".into()))
     );
     assert_eq!(
         cursor.middle_pressed_color,
-        Some(ThemedColor::Both("#BB33CCFF".into()))
+        Some(&ThemedColor::Both("#BB33CCFF".into()))
     );
     assert_eq!(
         cursor.right_pressed_color,
-        Some(ThemedColor::Both("#44DDEEFF".into()))
+        Some(&ThemedColor::Both("#44DDEEFF".into()))
     );
 }
 
@@ -1662,4 +1670,53 @@ fn visual_candidate_limit_accepts_ten_thousand_but_remains_bounded() {
         "NMK_MAX_VISION_REGIONS = {}",
         crate::api::command::MAX_UI_SCAN_TARGETS
     )));
+}
+
+#[test]
+fn window_multi_selection_bindings_expand_space_aliases_and_round_trip() {
+    let config = Config::parse(
+        r#"
+[window]
+target = "active"
+[window.bindings]
+ctrl = "window_multi_select"
+"ctrl+x" = "window_multi_clear"
+[window.multi_select.bindings]
+"ctrl enter" = "window_multi_confirm"
+"f2 f3" = "window_multi_clear"
+"alt+h" = "arrow_left"
+"alt+l" = "arrow_right"
+"#,
+    )
+    .unwrap();
+    config.validate().unwrap();
+    assert_eq!(
+        config.window.target,
+        Some(crate::api::window::WindowTarget::Active)
+    );
+    for key in ["ctrl", "enter"] {
+        assert_eq!(
+            config.window.multi_select.bindings[key],
+            Binding::Window(crate::api::window::WindowAction::MultiConfirm)
+        );
+    }
+    let restored = Config::parse(&config.to_toml().unwrap()).unwrap();
+    assert_eq!(config.window.multi_select, restored.window.multi_select);
+    assert_eq!(
+        config.window.bindings["ctrl"],
+        Binding::Window(crate::api::window::WindowAction::MultiSelect)
+    );
+    let shipped = Config::parse(include_str!("../../../keysteer.default.toml")).unwrap();
+    assert_eq!(
+        shipped.window.multi_select,
+        Config::default().window.multi_select
+    );
+    for value in ["left_click", "move_left", "send ctrl+c"] {
+        let invalid =
+            Config::parse(&format!("[window.multi_select.bindings]\nf8 = '{value}'")).unwrap();
+        assert!(
+            invalid.validate().is_err(),
+            "{value} is not a multi-selection edit"
+        );
+    }
 }

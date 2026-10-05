@@ -112,7 +112,32 @@ macro_rules! window_config {
         impl std::ops::DerefMut for $name { fn deref_mut(&mut self) -> &mut Self::Target { &mut self.common } }
     }
 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MultiSelect {
+    pub bindings: Bindings,
+}
+impl Default for MultiSelect {
+    fn default() -> Self {
+        Self {
+            bindings: Bindings::from([
+                ("ctrl enter".into(), Binding::Window(W::MultiConfirm)),
+                (
+                    "primary+h".into(),
+                    Binding::parse("arrow_left")
+                        .unwrap_or_else(|error| panic!("invalid built-in edit key: {error}")),
+                ),
+                (
+                    "primary+l".into(),
+                    Binding::parse("arrow_right")
+                        .unwrap_or_else(|error| panic!("invalid built-in edit key: {error}")),
+                ),
+            ]),
+        }
+    }
+}
 window_config!(Window {
+    multi_select: MultiSelect,
     card: crate::api::style::WindowCardUi,
     move_step: f64,
     move_speed: f64,
@@ -174,7 +199,8 @@ fn common(back: ModeId, actions: &[(&str, W)], modes: &[(&str, ModeId)]) -> Wind
 }
 impl Default for Window {
     fn default() -> Self {
-        Self {
+        let mut window = Self {
+            multi_select: MultiSelect::default(),
             card: Default::default(),
             common: common(
                 ModeId::idle(),
@@ -218,7 +244,19 @@ impl Default for Window {
             move_speed: 600.0,
             resize_step: 20.0,
             resize_speed: 500.0,
-        }
+        };
+        let modifier = "ctrl";
+        let clear = format!("{modifier}+x");
+        window.common.temporary_mode_passthrough_keys = vec![modifier.into(), clear.clone()];
+        window
+            .common
+            .bindings
+            .insert(modifier.into(), Binding::Window(W::MultiSelect));
+        window
+            .common
+            .bindings
+            .insert(clear, Binding::Window(W::ClearMulti));
+        window
     }
 }
 impl Default for WindowQuick {
