@@ -11,6 +11,20 @@ impl WindowSession {
         ctx: &HostContext<'_>,
         out: &mut CommandBatch,
     ) {
+        if matches!(action, W::MultiSelect | W::MultiConfirm | W::ClearMulti) {
+            if self.kind == WindowKind::Move && state == KeyState::Down {
+                match action {
+                    W::MultiConfirm => self.finish_multi(),
+                    W::MultiSelect => self.begin_multi(out),
+                    W::ClearMulti => self.clear_multi(out),
+                    _ => unreachable!(),
+                }
+            }
+            return;
+        }
+        if state == KeyState::Down {
+            self.finish_multi();
+        }
         if self.kind == WindowKind::Tab {
             if state == KeyState::Down {
                 self.tab_input(tabs::Input::Action(action), ctx, out);
@@ -45,16 +59,25 @@ impl WindowSession {
         ) {
             if state == KeyState::Down {
                 self.stop_movement(out);
-                if let Some(target) = &self.target {
-                    use crate::api::audio::{AudioAction, AudioTarget};
-                    let change = match action {
-                        W::VolumeDown => AudioAction::Down,
-                        W::VolumeUp => AudioAction::Up,
-                        W::AudioPrevious => AudioAction::DevicePrevious,
-                        W::AudioNext => AudioAction::DeviceNext,
-                        _ => AudioAction::ToggleMute,
-                    };
-                    self.request_audio(AudioTarget::Application(target.id), change, out);
+                use crate::api::audio::{AudioAction, AudioTarget};
+                let change = match action {
+                    W::VolumeDown => AudioAction::Down,
+                    W::VolumeUp => AudioAction::Up,
+                    W::AudioPrevious => AudioAction::DevicePrevious,
+                    W::AudioNext => AudioAction::DeviceNext,
+                    _ => AudioAction::ToggleMute,
+                };
+                let targets = self.operation_targets();
+                if self.multi_anchor.is_some() {
+                    if !targets.is_empty() {
+                        self.request_audio(
+                            AudioTarget::Applications(targets.into_vec()),
+                            change,
+                            out,
+                        );
+                    }
+                } else if let Some(id) = targets.first() {
+                    self.request_audio(AudioTarget::Application(*id), change, out);
                 }
             }
             return;
@@ -109,6 +132,8 @@ impl WindowSession {
             W::Split(direction) => self.edit_direction(direction, true, false, ctx, out),
             W::Ratio(direction) => self.edit_direction(direction, false, true, ctx, out),
             W::Select | W::SelectPrevious => {
+                self.multi.clear();
+                self.multi_anchor = None;
                 let backwards = action == W::SelectPrevious;
                 if let Some(edit) = &self.edit
                     && let EditModel::Tree(tree) = &edit.model
@@ -227,15 +252,23 @@ impl WindowSession {
             _ if self.edit.is_some() => {}
             W::Size => self.size = !self.size,
             W::Close if self.kind == WindowKind::Move => {
-                if let Some(id) = self.target.as_ref().map(|w| w.id)
-                    && !self.closing.contains_key(&id)
-                {
-                    // Preserve geometry and numbering until confirmed closure:
-                    // a save dialog must not cause hide/restore flicker.
-                    self.closing.insert(id, self.request + 1);
-                    // Enqueue native work first; the worker runs independently
-                    // while this same input turn presents request feedback.
-                    self.request(WindowOperation::Close(id), out);
+                for id in self.operation_targets() {
+                    if self.closing.contains_key(&id) {
+                        continue;
+                    }
+                    let operation = if self.multi_anchor.is_some()
+                        && let Some(group) = self.tabs.state.containing(id)
+                    {
+                        for member in &group.members {
+                            self.closing.insert(*member, self.request + 1);
+                        }
+                        WindowOperation::CloseGroup(id)
+                    } else {
+                        self.closing.insert(id, self.request + 1);
+                        WindowOperation::Close(id)
+                    };
+                    // Keep geometry until native closure, including save/cancel dialogs.
+                    self.request(operation, out);
                     self.status = Some("Close requested".into());
                 }
             }

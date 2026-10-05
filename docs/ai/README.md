@@ -9,12 +9,12 @@
 | 任务 | 入口 |
 | --- | --- |
 | 找目录、启动入口 | [项目地图](01-project-map.md) |
-| 输入、原生事件循环与菜单、保存备注与焦点、会话清理、事件、命令执行 | [运行时与 API](02-runtime-and-api.md) |
+| 输入与编辑面板能力、原生事件循环与菜单、保存备注与焦点、会话清理、事件、命令执行 | [运行时与 API](02-runtime-and-api.md) |
 | 配置、颜色与快捷键预编译、按键解析、持久化 | [配置](03-configuration.md) |
-| 模式、共享网格生命周期、搜索语法与退出、插件、完成与返回 | [模式生命周期](04-modes-and-lifecycle.md) |
+| 模式、窗口多选、局部平铺与 Tab 分组、共享网格生命周期、搜索语法与退出、插件、完成与返回 | [模式生命周期](04-modes-and-lifecycle.md) |
 | UIA / AX / OCR 来源与融合、范围优先级、自动激活、扫描与取消 | [UI 扫描](05-ui-scanning.md) |
 | 原生能力、线程、状态菜单与 About、资源、平铺容错与尺寸约束、共享搜索输入与原生备注 | [平台后端](06-platform-backends.md) |
-| 非阻塞绘制、窗口几何确认、显示快照复用、重叠层规划与搜索响应 | [性能](07-rendering-and-performance.md) |
+| 非阻塞绘制、窗口几何确认、显示快照复用、目标去重、标签方案与重叠层规划、搜索响应 | [性能](07-rendering-and-performance.md) |
 | 构建与共享工具链、Linux 跨平台编译与签名发布、缓存、测试隔离、打包、网页 | [验证](08-build-docs-and-tests.md) |
 | 跨层改动 | [改动指南](09-change-guide.md)、[架构边界](10-architecture-boundaries.md) |
 

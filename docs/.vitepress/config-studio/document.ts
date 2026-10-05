@@ -23,6 +23,7 @@ const replacementTables = new Set([
   'normal.bindings',
   'text_input.bindings',
   'window.bindings',
+  'window.multi_select.bindings',
   'window_quick.bindings', 'window_editor.bindings', 'window_restore.bindings', 'window_tab.bindings',
   'grid.bindings',
   'recursive_grid.bindings',

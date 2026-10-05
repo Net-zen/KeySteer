@@ -1,4 +1,5 @@
 #![cfg(test)]
+mod multi_selection;
 mod target_selection;
 
 use super::*;
@@ -413,6 +414,7 @@ fn window_idle_inventory_and_number_input_do_not_allocate() {
     };
     let w = &config.window;
     let mut mode = WindowSession::new(Settings {
+        multi_bindings: [].into(),
         target: None,
         all_screens: w.screens == crate::config::WindowScreens::All,
         include_minimized: w.include_minimized,

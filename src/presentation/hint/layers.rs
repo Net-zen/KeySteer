@@ -213,17 +213,146 @@ const CANDIDATE_ORDERS: [CandidateOrder; 5] = [
 pub(crate) fn build_visual_layer_plan(
     placements: &[(usize, Rect)],
     hint_count: usize,
+    uniform_size: bool,
     visually_stacked: impl Fn(Rect, Rect) -> bool,
     plan: &mut VisualLayerPlan,
 ) {
     plan.clear();
-    if placements.len() < 2 {
-        let packed_component_layers: SmallVec<[u32; INLINE_LABELS]> =
-            SmallVec::from_elem(WIDE_UNSTACKED, placements.len());
-        plan.finish(placements, hint_count, &packed_component_layers, 0);
+    if placements.len() < 2 || separated_in_order(placements) {
+        plan.finish_unstacked(hint_count);
         return;
     }
 
+    // The retained label plan tells us whether equal dimensions are possible.
+    // Equal code lengths alone do not imply equal final placement or overlap.
+    let rect = placements[0].1;
+    if uniform_size
+        && placements[1..].iter().all(|(_, other)| *other == rect)
+        && visually_stacked(rect, rect)
+    {
+        plan.finish_stacked(placements, hint_count);
+        return;
+    }
+
+    // Mixed one/two-character plans can still be one complete component.
+    // Alignment rejects ordinary layouts cheaply; every real edge is checked
+    // before skipping the graph, so differing widths retain exact semantics.
+    if !uniform_size && aligned_clique(placements, &visually_stacked) {
+        plan.finish_stacked(placements, hint_count);
+        return;
+    }
+
+    if uniform_size && let Some(depth) = separated_stack_depth(placements, &visually_stacked) {
+        plan.finish_separated_stacks(placements, hint_count, depth);
+        return;
+    }
+
+    build_general_plan(placements, hint_count, visually_stacked, plan);
+}
+
+fn aligned_clique(
+    placements: &[(usize, Rect)],
+    visually_stacked: &impl Fn(Rect, Rect) -> bool,
+) -> bool {
+    let reference = placements[0].1;
+    let mut same_left = true;
+    let mut same_right = true;
+    let mut same_center = true;
+    for (_, rect) in placements {
+        if !(rect.x.is_finite()
+            && rect.right().is_finite()
+            && rect.y.is_finite()
+            && rect.bottom().is_finite()
+            && rect.width > 0.0
+            && rect.height > 0.0
+            && rect.y == reference.y
+            && rect.height == reference.height)
+        {
+            return false;
+        }
+        same_left &= rect.x == reference.x;
+        same_right &= rect.right() == reference.right();
+        same_center &= rect.center().x == reference.center().x;
+        if !(same_left || same_right || same_center) {
+            return false;
+        }
+    }
+    for (right, (_, rect)) in placements.iter().enumerate() {
+        if placements[..right]
+            .iter()
+            .any(|(_, left)| !visually_stacked(*left, *rect))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Identical consecutive rectangles form cliques. Only accept them when their
+/// distinct rectangles pass the same conservative geometric separation proof.
+fn separated_stack_depth(
+    placements: &[(usize, Rect)],
+    visually_stacked: &impl Fn(Rect, Rect) -> bool,
+) -> Option<usize> {
+    let groups = || placements.chunk_by(|left, right| left.1 == right.1);
+    if !separated_rects_in_order(groups().map(|group| group[0].1)) {
+        return None;
+    }
+    let mut depth = 0;
+    for group in groups().filter(|group| group.len() > 1) {
+        if !visually_stacked(group[0].1, group[0].1) {
+            return None;
+        }
+        depth = depth.max(group.len());
+    }
+    Some(depth)
+}
+
+/// Prove separation for rectangles arriving left-to-right in vertical bands.
+/// Each band starts below all earlier bands. Within it, each rectangle starts
+/// right of the preceding ones and cannot reach back into an earlier band.
+/// This works with unequal label sizes and does not depend on a batch count.
+fn separated_in_order(placements: &[(usize, Rect)]) -> bool {
+    separated_rects_in_order(placements.iter().map(|(_, rect)| *rect))
+}
+
+fn separated_rects_in_order(rects: impl Iterator<Item = Rect>) -> bool {
+    let mut previous_bottom = f64::NEG_INFINITY;
+    let mut band_bottom = f64::NEG_INFINITY;
+    let mut band_right = f64::NEG_INFINITY;
+    for rect in rects {
+        let right = rect.right();
+        let bottom = rect.bottom();
+        if !(rect.x.is_finite()
+            && rect.y.is_finite()
+            && right.is_finite()
+            && bottom.is_finite()
+            && rect.width >= 0.0
+            && rect.height >= 0.0)
+        {
+            return false;
+        }
+        if rect.y >= band_bottom {
+            previous_bottom = band_bottom;
+            band_bottom = bottom;
+        } else if rect.y >= previous_bottom && rect.x >= band_right {
+            band_bottom = band_bottom.max(bottom);
+        } else {
+            return false;
+        }
+        band_right = right;
+    }
+    true
+}
+
+// Keep graph/coloring workspaces off the proven-disjoint first-frame path.
+#[inline(never)]
+fn build_general_plan(
+    placements: &[(usize, Rect)],
+    hint_count: usize,
+    visually_stacked: impl Fn(Rect, Rect) -> bool,
+    plan: &mut VisualLayerPlan,
+) {
     if placements.len() > INLINE_LABELS {
         let mut wide = plan.wide.take().unwrap_or_default();
         build_wide_plan(placements, hint_count, &visually_stacked, plan, &mut wide);
@@ -248,8 +377,7 @@ pub(crate) fn build_visual_layer_plan(
         .iter()
         .all(|&degree| degree == 0)
     {
-        let packed = [WIDE_UNSTACKED; INLINE_LABELS];
-        plan.finish(placements, hint_count, &packed[..placements.len()], 0);
+        plan.finish_unstacked(hint_count);
         return;
     }
 
@@ -386,9 +514,7 @@ fn build_wide_plan(
             &mut wide.sweep_active,
         )
     {
-        wide.packed.resize(len, WIDE_UNSTACKED);
-        wide.packed.fill(WIDE_UNSTACKED);
-        plan.finish(placements, hint_count, &wide.packed, 0);
+        plan.finish_unstacked(hint_count);
         return;
     }
     let mut graph = ConflictGraph::new_wide(
@@ -518,17 +644,52 @@ fn wide_sweep_has_edge(
     active: &mut Vec<usize>,
 ) -> bool {
     active.clear();
+    if let [left, right, ..] = order {
+        let left_rect = placements[*left].1;
+        let right_rect = placements[*right].1;
+        if left_rect.intersect(&right_rect).is_some() && visually_stacked(left_rect, right_rect) {
+            return true;
+        }
+    }
+    let mut next_expiry = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_bottom = f64::NEG_INFINITY;
     for &right in order.iter() {
         let right_rect = placements[right].1;
-        active.retain(|left| placements[*left].1.right() >= right_rect.x);
-        for &left in active.iter() {
-            let left_rect = placements[left].1;
-            if left_rect.intersect(&right_rect).is_some() && visually_stacked(left_rect, right_rect)
-            {
-                return true;
+        // Nothing can expire until the sweep passes the earliest right edge.
+        if next_expiry < right_rect.x {
+            next_expiry = f64::INFINITY;
+            min_y = f64::INFINITY;
+            max_bottom = f64::NEG_INFINITY;
+            active.retain(|left| {
+                let rect = placements[*left].1;
+                let end = rect.right();
+                if end < right_rect.x {
+                    false
+                } else {
+                    next_expiry = next_expiry.min(end);
+                    min_y = min_y.min(rect.y);
+                    max_bottom = max_bottom.max(rect.bottom());
+                    true
+                }
+            });
+        }
+        // The union of active vertical intervals is a conservative bound.
+        // Only a rectangle reaching it can conflict with an active label.
+        if right_rect.y < max_bottom && right_rect.bottom() > min_y {
+            for &left in active.iter() {
+                let left_rect = placements[left].1;
+                if left_rect.intersect(&right_rect).is_some()
+                    && visually_stacked(left_rect, right_rect)
+                {
+                    return true;
+                }
             }
         }
         active.push(right);
+        next_expiry = next_expiry.min(right_rect.right());
+        min_y = min_y.min(right_rect.y);
+        max_bottom = max_bottom.max(right_rect.bottom());
     }
     false
 }
@@ -850,6 +1011,15 @@ fn lexicographically_better(component: &[usize], candidate: &[u16], current: &[u
 mod tests {
     use super::*;
 
+    fn build_visual_layer_plan(
+        placements: &[(usize, Rect)],
+        hint_count: usize,
+        visually_stacked: impl Fn(Rect, Rect) -> bool,
+        plan: &mut VisualLayerPlan,
+    ) {
+        super::build_visual_layer_plan(placements, hint_count, true, visually_stacked, plan);
+    }
+
     fn overlap(left: Rect, right: Rect) -> bool {
         left.intersect(&right).is_some_and(|intersection| {
             let area = intersection.width * intersection.height;
@@ -918,6 +1088,190 @@ mod tests {
                     reference.draw_rank(hint_index, selected_layer),
                     "hint {hint_index}, selected layer {selected_layer}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_width_cliques_verify_all_edges_before_direct_layer_assignment() {
+        for align in 0..3 {
+            let placements = (0..10)
+                .map(|i| {
+                    let width = 10.0 + (i % 3) as f64 * 10.0;
+                    let x = match align {
+                        0 => 0.0,
+                        1 => 30.0 - width,
+                        _ => 15.0 - width / 2.0,
+                    };
+                    (i, Rect::new(x, 0.0, width, 20.0))
+                })
+                .collect::<Vec<_>>();
+            assert!(aligned_clique(&placements, &overlap));
+            let mut plan = VisualLayerPlan::default();
+            super::build_visual_layer_plan(&placements, 10, false, overlap, &mut plan);
+            let mut reference = VisualLayerPlan::default();
+            quadratic_reference(&placements, &mut reference);
+            for index in 0..10 {
+                assert_eq!(plan.layer_info(index), reference.layer_info(index));
+                for layer in 0..=10 {
+                    assert_eq!(
+                        plan.draw_rank(index, layer),
+                        reference.draw_rank(index, layer)
+                    );
+                }
+            }
+            // Alignment alone cannot imply the caller's overlap predicate.
+            assert!(!aligned_clique(&placements, &|left, right| {
+                left.width == right.width && overlap(left, right)
+            }));
+        }
+        let mixed_alignment = [
+            (0, Rect::new(0.0, 0.0, 100.0, 20.0)),
+            (1, Rect::new(0.0, 0.0, 10.0, 20.0)),
+            (2, Rect::new(90.0, 0.0, 10.0, 20.0)),
+        ];
+        assert!(!aligned_clique(&mixed_alignment, &overlap));
+    }
+
+    #[test]
+    fn separated_stacks_keep_component_depths_and_canonical_draw_order() {
+        for sizes in [&[1, 2, 3, 4, 9][..], &[1, 2, 254, 255][..]] {
+            let mut placements = Vec::new();
+            for (group, &size) in sizes.iter().enumerate() {
+                let rect = Rect::new(group as f64 * 100.0, 0.0, 20.0, 20.0);
+                for _ in 0..size {
+                    placements.push((placements.len(), rect));
+                }
+            }
+            assert_eq!(
+                separated_stack_depth(&placements, &overlap),
+                sizes.iter().copied().max()
+            );
+            assert_matches_quadratic_reference(&placements);
+            // Moving a distinct run into another one must use the full graph.
+            placements[0].1.x = 95.0;
+            assert!(separated_stack_depth(&placements, &overlap).is_none());
+            assert_matches_quadratic_reference(&placements);
+        }
+
+        for count in [2, 24, 64, 128, 512, 513, 2_000] {
+            let placements = (0..count)
+                .map(|i| {
+                    let group = i / 2;
+                    (
+                        i * 2,
+                        Rect::new(
+                            (group % 37) as f64 * 50.0,
+                            (group / 37) as f64 * 30.0,
+                            20.0,
+                            20.0,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut plan = VisualLayerPlan::default();
+            build_visual_layer_plan(&placements, count * 2, overlap, &mut plan);
+            assert_eq!(plan.layer_count(), 2);
+            assert!(plan.wide.is_none(), "no graph workspace for {count} labels");
+            for i in 0..count {
+                assert_eq!(plan.layer_info(i * 2 + 1), None);
+                assert_eq!(
+                    plan.layer_info(i * 2),
+                    if i + 1 == count && count % 2 == 1 {
+                        None
+                    } else {
+                        Some((1 - i % 2, 2))
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ordered_separation_is_conservative_for_rows_heights_and_input_order() {
+        let rows = [
+            (0, Rect::new(-20.0, -10.0, 10.0, 20.0)),
+            (1, Rect::new(-10.0, -5.0, 30.0, 10.0)),
+            (2, Rect::new(20.0, -8.0, 5.0, 25.0)),
+            (3, Rect::new(-30.0, 17.0, 10.0, 12.0)),
+        ];
+        assert!(separated_in_order(&rows));
+        assert_matches_quadratic_reference(&rows);
+        let mut crossing = rows;
+        // This rightmost rectangle reaches back into the preceding band.
+        crossing[3] = (3, Rect::new(19.0, 16.0, 10.0, 12.0));
+        assert!(!separated_in_order(&crossing));
+        assert_matches_quadratic_reference(&crossing);
+
+        let mut seed = 17u64;
+        for _ in 0..20_000 {
+            let placements: Vec<_> = (0..6)
+                .map(|index| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    (
+                        index,
+                        Rect::new(
+                            ((seed >> 32) % 17) as f64 - 8.0,
+                            ((seed >> 24) % 17) as f64 - 8.0,
+                            ((seed >> 16) % 7) as f64,
+                            ((seed >> 8) % 7) as f64,
+                        ),
+                    )
+                })
+                .collect();
+            if separated_in_order(&placements) {
+                for (right, (_, rect)) in placements.iter().enumerate() {
+                    assert!(
+                        placements[..right]
+                            .iter()
+                            .all(|(_, left)| left.intersect(rect).is_none())
+                    );
+                }
+            }
+        }
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let mut invalid = rows;
+            invalid[1].1.width = bad;
+            assert!(!separated_in_order(&invalid));
+            assert_matches_quadratic_reference(&invalid);
+        }
+    }
+
+    #[test]
+    fn disjoint_plan_resets_dense_layers_and_preserves_filtered_hint_indices() {
+        let dense = (0..300)
+            .map(|i| (i, Rect::new(0.0, 0.0, 20.0, 20.0)))
+            .collect::<Vec<_>>();
+        let mut plan = VisualLayerPlan::default();
+        build_visual_layer_plan(&dense, 300, overlap, &mut plan);
+        assert_eq!(plan.layer_count(), 300);
+        for count in [0, 1, 9, 64, 128, 241, 512, 513, 2_000] {
+            let placements = (0..count)
+                .map(|i| {
+                    (
+                        i * 2,
+                        Rect::new(
+                            (i % 37) as f64 * 50.0,
+                            (i / 37) as f64 * 30.0,
+                            20.0 + (i % 3) as f64,
+                            20.0,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+            super::build_visual_layer_plan(
+                &placements,
+                count * 2,
+                false,
+                |_, _| panic!("disjoint geometry should not build edges"),
+                &mut plan,
+            );
+            assert!(plan.is_ready());
+            assert_eq!(plan.len(), count * 2);
+            assert_eq!(plan.layer_count(), 0);
+            assert!(plan.wide.is_none());
+            for i in 0..count * 2 {
+                assert_eq!(plan.layer_info(i), None);
             }
         }
     }
@@ -1014,6 +1368,13 @@ mod tests {
         assert_eq!(plan.component_layer_count(1), Some(2));
         assert_eq!(plan.component_layer_count(3), Some(2));
         assert_eq!(plan.component_layer_count(4), None);
+
+        // Equal geometry is not sufficient when the conflict predicate rejects it.
+        build_visual_layer_plan(&placements, 5, |_, _| false, &mut plan);
+        assert_eq!(plan.layer_count(), 0);
+        for index in 0..5 {
+            assert_eq!(plan.layer_info(index), None);
+        }
     }
 
     #[test]
@@ -1099,7 +1460,7 @@ mod tests {
         }
         plan.release_retained();
 
-        for count in [3, 256, 513] {
+        for count in [3, 128, 256, 512, 513] {
             let dense = (0..count)
                 .map(|index| (index, Rect::new(0.0, 0.0, 20.0, 20.0)))
                 .collect::<Vec<_>>();
@@ -1118,6 +1479,84 @@ mod tests {
         build_visual_layer_plan(&dynamic, dynamic.len(), overlap, &mut sparse_plan);
         assert_eq!(sparse_plan.layer_count(), 0);
         assert_eq!(sparse_plan.retained_graph_words(), 0);
+    }
+
+    #[test]
+    fn wide_sweep_preserves_varying_heights_and_numeric_boundaries() {
+        fn verify(placements: &[(usize, Rect)], active: &mut Vec<usize>) {
+            let mut order = Vec::new();
+            assert!(prepare_wide_sweep(placements, &mut order));
+            let predicates: [fn(Rect, Rect) -> bool; 2] = [overlap, |left, right| {
+                super::super::visually_stacked(left, right, 4.0, 3.0)
+            }];
+            for predicate in predicates {
+                let expected = (0..placements.len()).any(|right| {
+                    (0..right).any(|left| predicate(placements[left].1, placements[right].1))
+                });
+                assert_eq!(
+                    wide_sweep_has_edge(placements, &predicate, &order, active),
+                    expected,
+                    "{placements:?}"
+                );
+            }
+        }
+
+        // Reuse the workspace across early hits and empty/disjoint results.
+        let mut active = vec![999; 300];
+        let mut state = 3u64;
+        for count in 0..65 {
+            for pattern in 0..64 {
+                let placements = (0..count)
+                    .map(|index| {
+                        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let x = ((state >> 32) % 101) as f64;
+                        let y = if pattern % 2 == 0 {
+                            ((index * 37) % count * 100) as f64
+                        } else {
+                            ((state >> 40) % 101) as f64
+                        };
+                        let width = if pattern % 3 == 0 {
+                            200.0
+                        } else {
+                            ((state >> 20) % 31) as f64
+                        };
+                        let height = if pattern % 5 == 0 {
+                            ((state >> 16) % 300) as f64
+                        } else {
+                            ((state >> 8) % 21) as f64
+                        };
+                        (index, Rect::new(x, y, width, height))
+                    })
+                    .collect::<Vec<_>>();
+                verify(&placements, &mut active);
+            }
+        }
+        let coordinates = [
+            -f64::MAX,
+            -100.0,
+            -f64::MIN_POSITIVE,
+            -0.0,
+            0.0,
+            f64::MIN_POSITIVE,
+            100.0,
+            f64::MAX,
+        ];
+        let heights = [0.0, f64::from_bits(1), 1.0, 100.0, f64::MAX];
+        for y1 in coordinates {
+            for y2 in coordinates {
+                for height1 in heights {
+                    for height2 in heights {
+                        verify(
+                            &[
+                                (0, Rect::new(0.0, y1, 100.0, height1)),
+                                (1, Rect::new(1.0, y2, 100.0, height2)),
+                            ],
+                            &mut active,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1173,12 +1612,16 @@ mod tests {
                     .collect();
                 assert_matches_quadratic_reference(&placements);
             }
-            for bad in [f64::NAN, f64::INFINITY, -1.0] {
+            for bad in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
                 let mut placements: Vec<_> = (0..count)
                     .map(|index| (index, Rect::new(index as f64 * 15.0, 0.0, 20.0, 20.0)))
                     .collect();
                 placements[count / 2].1.width = bad;
                 assert_matches_quadratic_reference(&placements);
+                let identical = (0..count)
+                    .map(|index| (index, Rect::new(0.0, 0.0, bad, 20.0)))
+                    .collect::<Vec<_>>();
+                assert_matches_quadratic_reference(&identical);
             }
         }
     }

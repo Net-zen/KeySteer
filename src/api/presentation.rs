@@ -106,6 +106,7 @@ impl WindowTextCache {
 
 #[derive(Clone, Copy)]
 pub struct WindowView<'a> {
+    pub selected: &'a [WindowId],
     pub text_cache: Option<&'a WindowTextCache>,
     pub configurable_position: bool,
     pub tabs: &'a super::window_tabs::TabState,
@@ -139,6 +140,9 @@ pub struct HintStyle<'a> {
 #[derive(Clone, Copy)]
 pub struct HintContent<'a> {
     pub hints: &'a [CompactHint<usize>],
+    /// Character count shared by the retained label code space, if uniform.
+    /// This is not inferred from the size of a filtered or streamed batch.
+    pub uniform_label_chars: Option<usize>,
     pub prefix: &'a str,
     pub search: Option<&'a str>,
     pub search_selection: crate::api::text_edit::Selection,

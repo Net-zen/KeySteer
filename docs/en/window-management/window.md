@@ -52,3 +52,13 @@ Volume changes by 1% per step. Raising application volume does not automatically
 - **macOS:** system audio works on macOS 14+; independent application audio needs macOS 14.2+ and System Audio Recording permission. Local processing adds audio latency. Some output devices do not support software volume control.
 
 [Window management overview](/en/window-management/) · [Full configuration reference](/en/reference/configuration)
+
+## Select multiple windows
+
+Press `Ctrl` to enter selection input. Selected windows gain borders immediately. The first run selects individual digits (`123` selects 1, 2 and 3); space-separated runs are complete labels (`123 12 23` adds 12 and 23). A label after a space commits only at the next space or confirmation. Repeating a selected label removes it.
+
+Action keys such as `E`, `S` and `H/J/K/L` commit the pending number and immediately perform the action. Explicit confirmation is optional: press `Ctrl` or `Enter` to confirm only, or `Esc` to cancel this input edit. `Ctrl+X` clears the selection and restores the original window without changing the configured target preference.
+
+Movement, held directions, resizing after `S`, centring, display changes, window states, closing and application audio affect every selected window. `E` opens Editor and tiles only the selection; without multi-selection it retains the usual global layout. A selected tab member represents the whole group. Geometry runs once per group; closing and audio cover all members. Audio runs once per process.
+
+Configure entry and clear in `[window.bindings]` with `ctrl = "window_multi_select"` and `"ctrl+x" = "window_multi_clear"`. Configure confirmation in `[window.multi_select.bindings]` with `"ctrl enter" = "window_multi_confirm"`. Spaces separate alternative keys; `+` combines keys. On macOS, `ctrl` means Control.

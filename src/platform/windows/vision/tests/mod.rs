@@ -621,9 +621,10 @@ fn live_system_ocr_tiling_probe() -> Result<(), String> {
     const SAMPLES: usize = 10;
 
     let _apartment = super::super::native::ComApartment::initialise()?;
-    let image_path = std::env::var_os("KEYSTEER_OCR_TILE_IMAGE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser.jpg"));
+    let image_path = std::env::var_os("KEYSTEER_OCR_TILE_IMAGE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser.jpg"),
+        PathBuf::from,
+    );
     let encoded = std::fs::read(&image_path)
         .map_err(|error| format!("cannot read {}: {error}", image_path.display()))?;
     let stream = InMemoryRandomAccessStream::new()

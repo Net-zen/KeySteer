@@ -166,8 +166,7 @@ impl TargetingController {
                 return self
                     .session
                     .current()
-                    .map(|area| Selection::Commit(area.center()))
-                    .unwrap_or(Selection::Cancel);
+                    .map_or(Selection::Cancel, |area| Selection::Commit(area.center()));
             }
             "backspace" | "tab" => {
                 if self.session.stack.len() <= 1 {

@@ -442,10 +442,9 @@ impl VisionWorker {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let pending_request_id = state.pending.as_ref().map(|job| job.request.id);
-        let pending_cancelled = pending_request_id == Some(request_id);
         let clear_generation =
             cancellation_clears_generation(state.active_request_id, pending_request_id, request_id);
-        let pending = pending_cancelled.then(|| state.pending.take()).flatten();
+        let pending = state.pending.take_if(|job| job.request.id == request_id);
         if clear_generation {
             self.shared.latest_generation.store(0, Ordering::Release);
         }
@@ -609,16 +608,12 @@ fn worker_main(shared: Arc<SharedQueue>, discovery: DiscoveryHandle) {
                 state.running = false;
                 return;
             }
-            match state.pending.take() {
-                Some(job) => {
-                    state.active_request_id = Some(job.request.id);
-                    job
-                }
-                None => {
-                    state.running = false;
-                    return;
-                }
-            }
+            let Some(job) = state.pending.take() else {
+                state.running = false;
+                return;
+            };
+            state.active_request_id = Some(job.request.id);
+            job
         };
         let request_id = job.request.id;
         run_scan(job, &shared, &discovery);

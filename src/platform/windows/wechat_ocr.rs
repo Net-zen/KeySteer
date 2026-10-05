@@ -316,9 +316,8 @@ impl Helper {
         // The ignored image-corpus probe is a libtest executable, not the CLI
         // that implements the helper protocol. Never used in production builds.
         #[cfg(test)]
-        let executable = std::env::var_os("KEYSTEER_OCR_PROBE_EXECUTABLE")
-            .map(PathBuf::from)
-            .unwrap_or(executable);
+        let executable =
+            std::env::var_os("KEYSTEER_OCR_PROBE_EXECUTABLE").map_or(executable, PathBuf::from);
         let job = super::native::KillOnCloseJob::create()?;
         let child = Command::new(executable)
             .arg("--internal-wechat-ocr-helper")

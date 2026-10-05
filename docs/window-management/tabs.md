@@ -4,13 +4,15 @@
 import ModeVideo from '../.vitepress/components/ModeVideo'
 </script>
 
-在 Window 按 T，自动整理同应用的兼容窗口，也可自由组合。
+在 Window 按 T，优先组合当前多选窗口；未多选时按应用自动分组。
 
-<ModeVideo file="tabs.mp4" title="Tabs：窗口标签分组" description="在 Window 按 T，自动整理同应用的兼容窗口，也可自由组合。" />
+<ModeVideo file="tabs.mp4" title="Tabs：窗口标签分组" description="在 Window 按 T，优先组合当前多选窗口；未多选时按应用自动分组。" />
 
 ## 操作步骤与默认按键
 
-从 Window 按 `T`，会先把同一应用的兼容、未分组窗口按屏幕分别整理成组，并保留已有组。想撤销这次自动整理，按 `Z`。
+从 Window 按 `T` 时，**当前多选优先**：若已进入多选并选好窗口，会自动确认输入，只把所选窗口合成一组，不再按应用自动组合。所选窗口属于已有 tab 组时，会将整个组一起合并；未选中的窗口保持原状。这次分组可按 `Z` 一步撤销。
+
+没有多选时，仍把同一应用的兼容、未分组窗口按屏幕分别整理成组，并保留已有组。
 
 你也可以组合不同应用的窗口：
 

@@ -182,12 +182,7 @@ impl Engine {
             Ok(engine) => engine,
             Err(error) => panic!("Engine::new requires a valid catalog: {error}"),
         };
-        engine.attach_configuration(Box::new(ConfigRepository::new(
-            config.clone(),
-            source,
-            None,
-            None,
-        )));
+        engine.attach_configuration(Box::new(ConfigRepository::new(config, source, None, None)));
         engine
     }
 

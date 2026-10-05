@@ -2008,3 +2008,92 @@ b = "window_activate_previous mouse"
         assert_eq!(log.lock().unwrap().window_requests.last().unwrap().operation, WindowOperation::CycleFrom { backwards, overlapping, source });
     }
 }
+
+
+#[test]
+fn window_multi_selection_input_bindings_confirm_clear_and_preserve_active_target() {
+    use crate::api::window::{WindowId, WindowInfo, WindowOperation as O, WindowResult, WindowTarget};
+    for (customized, implicit) in [(false, false), (true, false), (false, true)] {
+        let mut config = Config::default();
+        config.window.target = Some(WindowTarget::Active);
+        config.key_help.window_key_help = false;
+        let modifier = "left_ctrl";
+        let (enter, confirm) = if customized {
+            for key in ["ctrl", "enter", "ctrl+x"] { config.window.bindings.remove(key); }
+            for (key, action) in [("f2", "window_multi_select"), ("f4", "window_multi_clear")] {
+                config.window.bindings.insert(key.into(), Binding::parse(action).unwrap());
+            }
+            config.window.multi_select.bindings = crate::config::Bindings::from([("f2 f3".into(), Binding::parse("window_multi_confirm").unwrap())]);
+            ("f2", "f3")
+        } else { (modifier, "enter") };
+        let (mut engine, mut backend, log) = window_test_engine(&config);
+        let initial = enter_window(&mut engine, &mut backend, &log);
+        assert_eq!(initial.operation, O::AcquireFrom(WindowTarget::Active));
+        engine.dispatch_to(&ModeId::window(), ModeEvent::Timer { id: "window_inventory".into(), elapsed: Duration::from_millis(500) }, &mut backend).unwrap();
+        let request = log.lock().unwrap().window_requests.last().unwrap().clone();
+        let windows: Vec<_> = (77..=99).map(|id| WindowInfo {
+            id: WindowId(id), title: format!("Window {id}"), app: "test".into(), bounds: Rect::new((id - 77) as f64 * 20.0, 100.0, 400.0, 300.0), screen: 0,
+            resizable: true, maximized: false, minimized: false, fullscreen: false,
+        }).collect();
+        engine.handle_backend_event(BackendEvent::WindowResult(Box::new(WindowResult { tabs: None, closed: vec![], session: request.session, id: request.id, target: Some(windows[0].clone()), windows: Some(windows), pointer: None, changed: 0, skipped: 0, message: None, edit: None })), &mut backend).unwrap();
+        for event in [key_down(enter), key_up(enter)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        assert!(engine.window_help_visible(), "the input instructions must be visible even with help disabled");
+        assert_eq!(engine.display_mode(), ModeId::window());
+        for key in ["2", "3", "space", "1", "2", "space", "2", "3"] {
+            for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        }
+        assert!(log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|label| label.text.contains("23 12 23")));
+        let confirm = if implicit { "h" } else { confirm };
+        for event in [key_down(confirm), key_up(confirm)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        assert!(!engine.window_help_visible());
+        log.lock().unwrap().window_requests.clear();
+        for event in [key_down("h"), key_up("h")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        let mut ids: Vec<_> = log.lock().unwrap().window_requests.iter().filter_map(|r| match r.operation { O::Adjust { target, .. } => Some(target), _ => None }).collect();
+        ids.sort();
+        assert_eq!(ids, [77, 78, 79, 88, 99].map(WindowId));
+        for (keys, resizing) in [(vec!["s", "h"], true), (vec!["s", "l"], false)] {
+            log.lock().unwrap().window_requests.clear();
+            for key in keys {
+                for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+            }
+            let log = log.lock().unwrap();
+            let mut targets = Vec::new();
+            for request in &log.window_requests {
+                if let O::Adjust { target, change, .. } = &request.operation {
+                    assert!(if resizing { matches!(change, crate::api::window::WindowChange::Resize { .. }) } else { matches!(change, crate::api::window::WindowChange::Move { .. }) });
+                    targets.push(*target);
+                }
+            }
+            targets.sort();
+            assert_eq!(targets, [77, 78, 79, 88, 99].map(WindowId));
+        }
+        for key in [enter, "2", enter] {
+            for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        }
+        assert!(!engine.window_help_visible(), "the entry key also confirms");
+        log.lock().unwrap().window_requests.clear();
+        for event in [key_down("l"), key_up("l")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        assert!(!log.lock().unwrap().window_requests.iter().any(|r| matches!(r.operation, O::Adjust { target: WindowId(78), .. })));
+        let keys = if customized { vec!["f4"] } else { vec![modifier, "x"] };
+        for key in &keys { engine.handle_backend_event(key_down(key), &mut backend).unwrap(); }
+        for key in keys.iter().rev() { engine.handle_backend_event(key_up(key), &mut backend).unwrap(); }
+        assert!(log.lock().unwrap().window_requests.iter().any(|r| r.operation == O::Select(WindowId(77))));
+        assert!(!engine.window_help_visible());
+        for key in [enter, "2", "space", "1", "2", if customized { "t" } else { "e" }] {
+            for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+        }
+        let log = log.lock().unwrap();
+        if customized {
+            assert_eq!(engine.active_mode(), &ModeId::window_tab());
+            assert!(log.window_requests.iter().any(|r| r.operation == O::Tabs(crate::api::window_tabs::TabOperation::EnterSelection([77, 78, 88].map(WindowId).to_vec()))));
+            assert!(!log.window_requests.iter().any(|r| matches!(r.operation, O::Tabs(crate::api::window_tabs::TabOperation::Enter { .. }))));
+        } else {
+            assert_eq!(engine.active_mode(), &ModeId::window_editor());
+            let begin = log.window_requests.iter().rev().find_map(|r| match &r.operation {
+                O::BeginEdit { targets, screen, .. } => Some((targets, screen)), _ => None,
+            }).unwrap();
+            assert_eq!(begin.1, &None);
+            assert_eq!(begin.0, &[77, 78, 88].map(WindowId));
+        }
+    }
+}

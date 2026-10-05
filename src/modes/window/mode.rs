@@ -87,6 +87,7 @@ impl Mode for WindowMode {
             return Some(out);
         }
         session.targeted_audio = None;
+        session.finish_multi();
         session.preserve_session = target.is_window();
         if session.kind == WindowKind::Tab
             && (session.tabs.in_flight.is_some() || !session.tabs.queue.is_empty())
@@ -181,6 +182,37 @@ impl Mode for WindowMode {
     }
     fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
         self.handle_owned(event.clone(), ctx)
+    }
+    fn keyboard_prompt_supported(&self) -> bool {
+        self.kind == WindowKind::Move
+    }
+    fn keyboard_prompt_active(&self) -> bool {
+        self.kind == WindowKind::Move
+            && self
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .multi_input
+                .is_some()
+    }
+    fn keyboard_prompt_binding(&self, key: &Key, pressed: &[Key]) -> Option<Arc<Binding>> {
+        let session = self
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.kind != WindowKind::Move || session.multi_input.is_none() {
+            return None;
+        }
+        session
+            .settings
+            .multi_bindings
+            .iter()
+            .find(|(chord, _)| {
+                chord.activation_matches(key)
+                    && chord.keys().len() == pressed.len()
+                    && chord.matches_pressed(pressed)
+            })
+            .map(|(_, binding)| binding.clone())
     }
     fn claims_key(&self, key: &Key) -> bool {
         self.session

@@ -218,7 +218,7 @@ fn same_rect(a: Rect, b: Rect) -> bool {
 fn observe_write(result: Result<(), WriteError>) -> Result<(), String> {
     match result {
         Ok(()) | Err(WriteError::Unconfirmed(_)) => Ok(()),
-        Err(error) => Err(error.message().to_string()),
+        Err(error) => Err(error.message()),
     }
 }
 
@@ -318,8 +318,7 @@ impl MacWindows {
                     number: None,
                     app: NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
                         .and_then(|app| app.localizedName())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| pid.to_string()),
+                        .map_or_else(|| pid.to_string(), |s| s.to_string()),
                 },
             );
             id
@@ -415,10 +414,7 @@ impl MacWindows {
         // SAFETY: the type tag describes the stack CGSize; AX copies it into a
         // newly owned CF object, which stays live throughout set_attribute.
         let value = unsafe {
-            OwnedCf::from_create_rule(AXValueCreate(
-                AX_VALUE_CGSIZE,
-                (&size as *const CGSize).cast(),
-            ))
+            OwnedCf::from_create_rule(AXValueCreate(AX_VALUE_CGSIZE, (&raw const size).cast()))
         }
         .ok_or("cannot create window size")?;
         observe_write(window.set_attribute(&window.attributes.size, value.as_ptr()))
@@ -1128,6 +1124,9 @@ impl WindowAccess for MacWindows {
         &self,
         target: crate::api::audio::AudioTarget,
     ) -> Result<Option<crate::platform::common::audio_worker::AudioProcess>, String> {
+        if matches!(target, crate::api::audio::AudioTarget::Applications(_)) {
+            return Err("Batch audio requires selection resolution".into());
+        }
         let crate::api::audio::AudioTarget::Application(id) = target else {
             return Ok(None);
         };
@@ -1218,7 +1217,9 @@ impl WindowAccess for MacWindows {
         }
     }
     fn reset(&mut self) {
-        for id in self.hidden.iter().copied().collect::<Vec<_>>() {
+        // Successful restoration removes the first entry; a failure leaves it
+        // and all remaining entries available for the next recovery attempt.
+        while let Some(id) = self.hidden.first().copied() {
             if let Err(error) = self.tab_set_hidden(id, false) {
                 crate::report_error!("window-tabs", "restore hidden window: {error}");
                 return;
@@ -1332,7 +1333,7 @@ mod tests {
             .output()
             .map_err(|e| e.to_string())?;
         if !built.status.success() {
-            return Err(String::from_utf8_lossy(&built.stderr).into_owned());
+            return Err(String::from_utf8_lossy_owned(built.stderr));
         }
         let mut child = Child(
             std::process::Command::new(binary)

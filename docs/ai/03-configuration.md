@@ -25,3 +25,5 @@ UIHint 搜索样式缺省时使用 `UiHint::default()` 的对应面板默认值�
 搜索编辑键支持以空格分隔同一动作的多个快捷键，启动时展开与校验，不在输入热路径解析。默认 accept 为 `enter / primary+q`，自定义值替换该动作全部默认键。
 
 颜色原文只保留在配置模型中，用于校验和序列化。网格、Hint、按键帮助与模式指示器在装配时转换为 `CompiledColor` 和 `style::compiled` 样式，运行时只选择浅／深色数值；未配置值及无效程序化颜色仍保留原有回退语义。搜索面板、窗口卡片和快速切换沿用已有整样式编译。透明度、对比度和场景默认色在绘制时派生，不因提前解析而冻结；主题变化选择另一组数值，配置重载重建整个计划。
+
+Window 多选入口与清空沿用 `window.bindings` 的 `window_multi_select`／`window_multi_clear`；输入期间由 `window.multi_select.bindings` 覆盖确认键，默认 `"ctrl enter" = "window_multi_confirm"`。空格仍表示多个快捷键别名，不引入新按键语义，也不改变 `window.target`。

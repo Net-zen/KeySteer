@@ -60,6 +60,19 @@ impl ConfigFile {
     /// Reject configurations that would misbehave at runtime.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let bad = |m: String| ConfigError::Invalid(m);
+        for (key, binding) in &self.window.multi_select.bindings {
+            KeyChord::parse_with_aliases(key, self.resolved_key_aliases())
+                .map_err(|e| bad(e.to_string()))?;
+            if !matches!(
+                binding,
+                Binding::Window(
+                    crate::api::window::WindowAction::MultiConfirm
+                        | crate::api::window::WindowAction::ClearMulti
+                )
+            ) {
+                return Err(bad("window.multi_select.bindings accepts window_multi_confirm or window_multi_clear".into()));
+            }
+        }
         if self.mode_usage.save_after_entries == 0 {
             return Err(bad(
                 "mode_usage.save_after_entries must be at least 1".into()
@@ -747,6 +760,10 @@ impl ConfigFile {
     fn binding_tables(&self) -> Vec<(String, &Bindings)> {
         let mut tables: Vec<(String, &Bindings)> = vec![
             ("[hotkeys]".into(), &self.hotkeys),
+            (
+                "[window.multi_select.bindings]".into(),
+                &self.window.multi_select.bindings,
+            ),
             ("[normal.bindings]".into(), &self.normal.bindings),
             ("[text_input.bindings]".into(), &self.text_input.bindings),
             ("[grid.bindings]".into(), &self.grid.bindings),

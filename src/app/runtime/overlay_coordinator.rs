@@ -227,8 +227,7 @@ impl Engine {
                 scene
                     .indicator
                     .as_ref()
-                    .map(|item| item.text.as_str())
-                    .unwrap_or("<none>"),
+                    .map_or("<none>", |item| item.text.as_str()),
                 scene.clip
             )
         });

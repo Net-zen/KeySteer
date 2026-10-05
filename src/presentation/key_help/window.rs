@@ -282,6 +282,9 @@ pub(super) fn sections(
         .into();
     }
     let mut common = Vec::new();
+    take(&mut actions, "window_multi_select", &mut common);
+    take(&mut actions, "window_multi_confirm", &mut common);
+    take(&mut actions, "window_multi_clear", &mut common);
     pair(
         &mut actions,
         ["window_select", "window_select_previous"],

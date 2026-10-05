@@ -673,7 +673,7 @@ pub(super) fn window_bounds(hwnd: HWND) -> Option<Rect> {
         DwmGetWindowAttribute(
             hwnd,
             DWMWA_EXTENDED_FRAME_BOUNDS,
-            (&mut rect as *mut RECT).cast(),
+            (&raw mut rect).cast(),
             std::mem::size_of::<RECT>() as u32,
         )
     };
@@ -695,7 +695,7 @@ pub(super) fn is_cloaked(hwnd: HWND) -> bool {
         DwmGetWindowAttribute(
             hwnd,
             DWMWA_CLOAKED,
-            (&mut cloaked as *mut u32).cast(),
+            (&raw mut cloaked).cast(),
             std::mem::size_of::<u32>() as u32,
         )
     }

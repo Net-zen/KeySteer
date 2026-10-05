@@ -43,9 +43,8 @@ pub(super) struct SystemOcrLayout {
 
 impl SystemOcrLayout {
     pub(super) fn new(geometry: CaptureGeometry) -> Self {
-        let parallelism = std::thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(MAX_SYSTEM_OCR_IN_FLIGHT);
+        let parallelism =
+            std::thread::available_parallelism().map_or(MAX_SYSTEM_OCR_IN_FLIGHT, usize::from);
         let grid = system_ocr_grid_for_parallelism(geometry.width, geometry.height, parallelism);
         let tile_count = (grid as usize).saturating_mul(grid as usize);
         let max_in_flight = system_ocr_concurrency_for(tile_count, parallelism);

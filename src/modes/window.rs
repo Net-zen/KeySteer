@@ -4,6 +4,7 @@ mod mode;
 pub use mode::{WindowKind, WindowMode};
 mod interaction;
 mod inventory;
+mod multi_selection;
 mod numbering;
 mod presets;
 mod tabs;
@@ -32,6 +33,7 @@ const INVENTORY_TIMER: &str = "window_inventory";
 
 #[derive(Clone, Debug)]
 pub struct Settings {
+    pub multi_bindings: std::sync::Arc<[(crate::api::KeyChord, std::sync::Arc<Binding>)]>,
     pub target: Option<crate::api::window::WindowTarget>,
     pub all_screens: bool,
     pub include_minimized: bool,
@@ -108,6 +110,9 @@ enum DeferredEdit {
 }
 
 pub struct WindowSession {
+    multi: Vec<WindowId>,
+    multi_anchor: Option<WindowId>,
+    multi_input: Option<multi_selection::Input>,
     // Keep optional gesture bookkeeping out of the default session's inline state.
     #[allow(clippy::box_collection)]
     ignored_selections: Option<Box<std::collections::BTreeSet<u64>>>,
@@ -167,6 +172,9 @@ pub struct WindowSession {
 impl WindowSession {
     pub fn new(settings: Settings) -> Self {
         Self {
+            multi: Vec::new(),
+            multi_anchor: None,
+            multi_input: None,
             ignored_selections: None,
             targeted_audio: None,
             selection: None,
@@ -341,11 +349,30 @@ impl WindowSession {
     }
 
     fn adjust(&mut self, change: WindowChange, out: &mut CommandBatch) {
-        if let Some(target) = &self.target {
+        let targets = self.operation_targets();
+        let delta = if targets.len() > 1 {
+            match (&change, &self.target) {
+                (WindowChange::MoveTo(point), Some(anchor)) => Some(Point::new(
+                    point.x - anchor.bounds.center().x,
+                    point.y - anchor.bounds.center().y,
+                )),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        for target in targets.into_iter().rev() {
             self.request(
                 WindowOperation::Adjust {
-                    target: target.id,
-                    change,
+                    target,
+                    change: delta
+                        .and_then(|d| {
+                            self.inventory.get(&target).map(|window| {
+                                let center = window.bounds.center();
+                                WindowChange::MoveTo(Point::new(center.x + d.x, center.y + d.y))
+                            })
+                        })
+                        .unwrap_or_else(|| change.clone()),
                     group: self.group,
                 },
                 out,
@@ -436,7 +463,10 @@ impl WindowKind {
             ),
             WindowKind::Move => matches!(
                 action,
-                W::Tile
+                W::MultiConfirm
+                    | W::MultiSelect
+                    | W::ClearMulti
+                    | W::Tile
                     | W::Left
                     | W::Down
                     | W::Up
@@ -490,6 +520,8 @@ impl WindowSession {
             return false;
         }
         match (self.kind, action) {
+            (_, W::MultiConfirm) => self.multi_input.is_some(),
+            (_, W::MultiSelect) => self.multi_input.is_none(),
             (WindowKind::Editor, W::SaveLayout) => self
                 .edit
                 .as_ref()
@@ -523,6 +555,10 @@ impl WindowSession {
         })
     }
     fn claims_key(&self, key: &Key) -> bool {
+        if self.multi_input.is_some() && self.kind == WindowKind::Move {
+            return key.as_char().is_some_and(|c| c.is_ascii_digit())
+                || matches!(key.as_str(), "space" | "backspace" | "delete" | "esc");
+        }
         if self.library_open {
             return !self.temporary
                 && (key.as_char().is_some_and(|c| c.is_ascii_digit())
@@ -560,6 +596,19 @@ impl WindowSession {
         }
     }
     pub(crate) fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
+        if self.multi_input.is_some()
+            && self.kind == WindowKind::Move
+            && let ModeEvent::Key {
+                key,
+                state: KeyState::Down,
+                repeat,
+            } = event
+            && self.multi_input_key(key, *repeat)
+        {
+            let mut out = CommandBatch::new();
+            out.push(ctx.present(self.view()));
+            return out;
+        }
         if let Some(out) = self.library_event(event, ctx) {
             return out;
         }
@@ -617,6 +666,9 @@ impl WindowSession {
                 self.size = false;
                 self.temporary = false;
                 self.held.clear();
+                self.multi.clear();
+                self.multi_anchor = None;
+                self.multi_input = None;
                 self.target = None;
                 self.pending_move_to = None;
                 self.edit = None;
@@ -690,6 +742,9 @@ impl WindowSession {
                 self.library_open = false;
                 self.numbers.clear();
                 self.status = None;
+                self.multi.clear();
+                self.multi_anchor = None;
+                self.multi_input = None;
                 self.target = None;
                 self.pending_move_to = None;
                 self.edit = None;
@@ -826,6 +881,7 @@ impl WindowSession {
                             self.number.begin_slot();
                         }
                     } else if c.is_ascii_digit() {
+                        self.multi_input = None;
                         if self.kind == WindowKind::Tab {
                             self.tab_input(tabs::Input::Digit(c), ctx, &mut out);
                             out.push(ctx.present(self.view()));

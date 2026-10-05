@@ -441,10 +441,13 @@ impl HintMode {
                     {
                         self.session.search_seen[hint.value] = true;
                         if let Some(previous) = self.session.search_matches.get_mut(matched) {
-                            matches_changed |= previous.value != hint.value
+                            if previous.value != hint.value
                                 || previous.label != hint.label
-                                || previous.bounds != hint.bounds;
-                            previous.clone_from(hint);
+                                || previous.bounds != hint.bounds
+                            {
+                                matches_changed = true;
+                                previous.clone_from(hint);
+                            }
                         } else {
                             self.session.search_matches.push(hint.clone());
                         }
@@ -499,6 +502,15 @@ impl HintMode {
         matches_changed
     }
 
+    fn uniform_label_chars(&self) -> Option<usize> {
+        labeling::LabelPlan::for_stream(
+            self.session.label_plan_count,
+            self.alphabet.len(),
+            self.config.label_direction,
+        )
+        .and_then(|plan| plan.uniform_chars(self.alphabet.len()))
+    }
+
     fn rebuild_overlap_plan(&mut self, ctx: &HostContext<'_>) -> bool {
         let content = hint_content(
             &self.config,
@@ -506,6 +518,7 @@ impl HintMode {
             &self.input,
             self.session.scan_bounds,
             self.session.search_selection,
+            self.uniform_label_chars(),
         );
         ctx.presenter.prepare_hints(
             content,
@@ -618,6 +631,7 @@ impl HintMode {
                     &self.input,
                     self.session.scan_bounds,
                     self.session.search_selection,
+                    self.uniform_label_chars(),
                 ),
                 layers: &self.overlap_plan,
                 active_layer: self.active_overlap_layer(),
@@ -949,6 +963,7 @@ fn hint_content<'a>(
     input: &'a Input,
     scan_bounds: Option<Rect>,
     search_selection: crate::api::text_edit::Selection,
+    uniform_label_chars: Option<usize>,
 ) -> HintContent<'a> {
     let (prefix, search) = match input {
         Input::Labels(prefix) => (prefix.as_str(), None),
@@ -956,6 +971,7 @@ fn hint_content<'a>(
     };
     HintContent {
         hints,
+        uniform_label_chars,
         prefix,
         search,
         search_selection,
@@ -1868,7 +1884,7 @@ mod tests {
         }
     }
     fn placed_hint_rect(config: &Settings, hint: &CompactHint<usize>, style: &LabelStyle) -> Rect {
-        crate::presentation::hint::placed_hint_rect(&hint_style(config), hint, style)
+        crate::presentation::hint::placed_hint_rect(&hint_style(config), hint, style, None)
     }
     #[cfg(test)]
     fn rotate_overlapping_labels(labels: &mut [OverlayLabel], cycle: usize) {
@@ -1882,6 +1898,7 @@ mod tests {
         build_visual_layer_plan(
             &placements,
             labels.len(),
+            true,
             |left, right| visually_stacked(left, right, style.padding_x, style.padding_y),
             &mut plan,
         );
@@ -1933,6 +1950,59 @@ mod tests {
                 focused_app: None,
                 palette: &self.palette,
             }
+        }
+    }
+
+    #[test]
+    fn uniform_label_geometry_uses_retained_plan_after_stream_retirement_and_search() {
+        let mut config = Config::default();
+        config.ui_hint.hint_characters = "asdfghjkl".into();
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        let values: Vec<_> = (0..74)
+            .map(|i| target(&format!("Control {i}"), i as f64 * 10.0))
+            .collect();
+        let retired: Vec<_> = values[9..].iter().map(|v| v.rect).collect();
+        mode.handle_owned(
+            ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired: vec![],
+                id: mode.session.scan_id,
+                targets: values,
+                status: UiScanStatus::Partial,
+            }),
+            &env.ctx(),
+        );
+        assert_eq!(mode.uniform_label_chars(), Some(2));
+        mode.handle_owned(
+            ModeEvent::UiScanned(crate::api::UiScanResult {
+                retired,
+                id: mode.session.scan_id,
+                targets: vec![],
+                status: UiScanStatus::Partial,
+            }),
+            &env.ctx(),
+        );
+        assert_eq!(mode.session.hints.len(), 9);
+        assert_eq!(
+            mode.uniform_label_chars(),
+            Some(2),
+            "retired labels do not regenerate the code space"
+        );
+        press(&mut mode, &env, "/");
+        mode.handle(&ModeEvent::TextChanged("Control 0".into()), &env.ctx());
+        assert_eq!(mode.uniform_label_chars(), Some(2));
+        let View::Hints(mut view) = mode.view() else {
+            panic!()
+        };
+        let optimized = view.scene(&env.ctx());
+        view.content.uniform_label_chars = None;
+        let reference = view.scene(&env.ctx());
+        assert_eq!(optimized.labels.len(), reference.labels.len());
+        for (actual, expected) in optimized.labels.iter().zip(&reference.labels) {
+            assert_eq!(actual.rect, expected.rect);
+            assert_eq!(actual.text, expected.text);
+            assert_eq!(actual.z_index, expected.z_index);
         }
     }
 

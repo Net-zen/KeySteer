@@ -20,6 +20,7 @@ struct ModeSlot {
     id: ModeId,
     mode: Box<dyn Mode>,
     pointer_events: bool,
+    keyboard_prompt_supported: bool,
     table: Option<CompiledKeymap>,
     temporary_chords: Vec<TemporaryChord>,
 }
@@ -80,9 +81,11 @@ impl ModeRegistry {
         mode: Box<dyn Mode>,
         pointer_events: bool,
     ) -> usize {
+        let keyboard_prompt_supported = mode.keyboard_prompt_supported();
         if let Some(&index) = self.indices.get(&id) {
             self.slots[index].mode = mode;
             self.slots[index].pointer_events = pointer_events;
+            self.slots[index].keyboard_prompt_supported = keyboard_prompt_supported;
             return index;
         }
         let index = self.slots.len();
@@ -90,6 +93,7 @@ impl ModeRegistry {
             id: id.clone(),
             mode,
             pointer_events,
+            keyboard_prompt_supported,
             table: None,
             temporary_chords: Vec::new(),
         });
@@ -120,6 +124,12 @@ impl ModeRegistry {
     pub(super) fn get(&self, id: &ModeId) -> Option<&dyn Mode> {
         let index = self.index_of(id)?;
         self.slots.get(index).map(|slot| slot.mode.as_ref())
+    }
+
+    pub(super) fn keyboard_prompt_mode(&self, id: &ModeId) -> Option<&dyn Mode> {
+        let index = self.index_of(id)?;
+        let slot = self.slots.get(index)?;
+        slot.keyboard_prompt_supported.then_some(slot.mode.as_ref())
     }
 
     pub(super) fn get_mut(&mut self, id: &ModeId) -> Option<&mut Box<dyn Mode>> {

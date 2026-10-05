@@ -88,6 +88,9 @@ pub enum WindowAction {
     SystemAudioNext,
     Select,
     SelectPrevious,
+    MultiSelect,
+    MultiConfirm,
+    ClearMulti,
     Undo,
     Redo,
     ResetInitial,
@@ -111,7 +114,10 @@ impl WindowAction {
     pub fn accepts_target(self) -> bool {
         !matches!(
             self,
-            Self::Undo
+            Self::MultiSelect
+                | Self::MultiConfirm
+                | Self::ClearMulti
+                | Self::Undo
                 | Self::Redo
                 | Self::ResetInitial
                 | Self::SaveLayout
@@ -180,6 +186,9 @@ impl WindowAction {
             Self::SystemVolumeMute => "window_system_volume_mute",
             Self::SystemAudioPrevious => "window_system_audio_previous",
             Self::SystemAudioNext => "window_system_audio_next",
+            Self::MultiConfirm => "window_multi_confirm",
+            Self::MultiSelect => "window_multi_select",
+            Self::ClearMulti => "window_multi_clear",
             Self::Select => "window_select",
             Self::SelectPrevious => "window_select_previous",
             Self::Undo => "window_undo",
@@ -203,6 +212,9 @@ impl WindowAction {
 
     pub fn parse(value: &str) -> Option<Self> {
         [
+            Self::MultiConfirm,
+            Self::MultiSelect,
+            Self::ClearMulti,
             Self::Left,
             Self::Down,
             Self::Up,
@@ -356,6 +368,8 @@ pub enum WindowOperation {
     Select(WindowId),
     /// Ask the application to close this window, preserving save/cancel dialogs.
     Close(WindowId),
+    /// Close a selected tab group as one unit, preserving application confirmation dialogs.
+    CloseGroup(WindowId),
     /// Query eligible windows and immediately lock/activate the next one.
     Cycle,
     CyclePrevious,
@@ -394,6 +408,11 @@ pub enum WindowOperation {
         gap: f64,
         group: u64,
     },
+    TileSelection {
+        targets: Vec<WindowId>,
+        gap: f64,
+        group: u64,
+    },
     Undo,
     Redo,
     /// Restore windows changed in this session to their first observed native state.
@@ -427,9 +446,11 @@ impl WindowOperation {
                 | Self::EndEdit { .. }
                 | Self::Select(_)
                 | Self::Close(_)
+                | Self::CloseGroup(_)
                 | Self::Cycle
                 | Self::CyclePrevious
                 | Self::Tile { .. }
+                | Self::TileSelection { .. }
                 | Self::Undo
                 | Self::Redo
                 | Self::ResetInitial { .. }

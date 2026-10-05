@@ -204,6 +204,99 @@ impl VisualLayerPlan {
         ))
     }
 
+    /// No visible rectangles overlap; filtered hints also remain unstacked.
+    pub(crate) fn finish_unstacked(&mut self, hint_count: usize) {
+        if !matches!(self.layers, LayerStorage::Compact(_)) {
+            self.layers = LayerStorage::default();
+        }
+        let LayerStorage::Compact(layers) = &mut self.layers else {
+            return;
+        };
+        layers.resize(hint_count, COMPACT_UNSTACKED);
+        layers.fill(COMPACT_UNSTACKED);
+        self.layer_count = 0;
+        self.ready = true;
+    }
+
+    /// A single complete overlap component in canonical front-to-back order.
+    /// Write final storage directly, without a graph or a temporary packed array.
+    pub(crate) fn finish_stacked(&mut self, placements: &[(usize, Rect)], hint_count: usize) {
+        let count = placements.len();
+        self.layer_count = count;
+        self.ready = true;
+        if count < usize::from(u8::MAX) {
+            if !matches!(self.layers, LayerStorage::Compact(_)) {
+                self.layers = LayerStorage::default();
+            }
+            let LayerStorage::Compact(layers) = &mut self.layers else {
+                return;
+            };
+            layers.resize(hint_count, COMPACT_UNSTACKED);
+            layers.fill(COMPACT_UNSTACKED);
+            for (rank, (index, _)) in placements.iter().rev().enumerate() {
+                layers[*index] = ((count as u16) << u8::BITS) | rank as u16;
+            }
+        } else {
+            if !matches!(self.layers, LayerStorage::Wide(_)) {
+                self.layers = LayerStorage::Wide(SmallVec::new());
+            }
+            let LayerStorage::Wide(layers) = &mut self.layers else {
+                return;
+            };
+            layers.resize(hint_count, WIDE_UNSTACKED);
+            layers.fill(WIDE_UNSTACKED);
+            for (rank, (index, _)) in placements.iter().rev().enumerate() {
+                layers[*index] = ((count as u32) << u16::BITS) | rank as u32;
+            }
+        }
+    }
+
+    /// Disjoint identical-rectangle runs have independent canonical layer
+    /// orders. Their verified depth selects storage, never a target-count gate.
+    pub(crate) fn finish_separated_stacks(
+        &mut self,
+        placements: &[(usize, Rect)],
+        hint_count: usize,
+        depth: usize,
+    ) {
+        if depth == 0 {
+            self.finish_unstacked(hint_count);
+            return;
+        }
+        self.layer_count = depth;
+        self.ready = true;
+        let groups = || placements.chunk_by(|left, right| left.1 == right.1);
+        if depth < usize::from(u8::MAX) {
+            if !matches!(self.layers, LayerStorage::Compact(_)) {
+                self.layers = LayerStorage::default();
+            }
+            let LayerStorage::Compact(layers) = &mut self.layers else {
+                return;
+            };
+            layers.resize(hint_count, COMPACT_UNSTACKED);
+            layers.fill(COMPACT_UNSTACKED);
+            for group in groups().filter(|group| group.len() > 1) {
+                for (rank, (index, _)) in group.iter().rev().enumerate() {
+                    layers[*index] = ((group.len() as u16) << u8::BITS) | rank as u16;
+                }
+            }
+        } else {
+            if !matches!(self.layers, LayerStorage::Wide(_)) {
+                self.layers = LayerStorage::Wide(SmallVec::new());
+            }
+            let LayerStorage::Wide(layers) = &mut self.layers else {
+                return;
+            };
+            layers.resize(hint_count, WIDE_UNSTACKED);
+            layers.fill(WIDE_UNSTACKED);
+            for group in groups().filter(|group| group.len() > 1) {
+                for (rank, (index, _)) in group.iter().rev().enumerate() {
+                    layers[*index] = ((group.len() as u32) << u16::BITS) | rank as u32;
+                }
+            }
+        }
+    }
+
     pub(crate) fn finish(
         &mut self,
         placements: &[(usize, Rect)],

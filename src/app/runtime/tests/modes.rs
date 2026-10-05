@@ -1,4 +1,61 @@
 #[test]
+fn keyboard_prompt_capability_is_generic_and_replaced_with_the_mode_instance() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct PromptMode {
+        supported: bool,
+        capability_reads: Arc<AtomicUsize>,
+        binding: Arc<Binding>,
+    }
+    impl Mode for PromptMode {
+        fn id(&self) -> ModeId {
+            ModeId::new("custom_panel").unwrap()
+        }
+        fn handle(&mut self, _: &ModeEvent, _: &HostContext<'_>) -> CommandBatch {
+            CommandBatch::new()
+        }
+        fn keyboard_prompt_supported(&self) -> bool {
+            self.capability_reads.fetch_add(1, Ordering::Relaxed);
+            self.supported
+        }
+        fn keyboard_prompt_active(&self) -> bool {
+            assert!(self.supported, "unsupported modes must skip dynamic queries");
+            true
+        }
+        fn keyboard_prompt_binding(&self, _: &Key, _: &[Key]) -> Option<Arc<Binding>> {
+            assert!(self.supported, "unsupported modes must skip dynamic queries");
+            Some(self.binding.clone())
+        }
+    }
+    let mut engine = Engine::new(Config::default(), Appearance::Dark);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let binding = Arc::new(Binding::Move(Direction::Left));
+    let id = ModeId::new("custom_panel").unwrap();
+    let key = Key::new("x").unwrap();
+    let pressed = [key.clone()];
+    for supported in [true, false, true] {
+        engine.register(Box::new(PromptMode {
+            supported,
+            capability_reads: reads.clone(),
+            binding: binding.clone(),
+        }));
+        engine.registry.active = id.clone();
+        let registered_reads = reads.load(Ordering::Relaxed);
+        for _ in 0..32 {
+            let resolved = engine.lookup_for_pressed(&key, &pressed);
+            if supported {
+                let resolved = resolved.unwrap();
+                assert_eq!(resolved.owner, id);
+                assert!(Arc::ptr_eq(&resolved.binding, &binding));
+            } else {
+                assert!(resolved.is_none());
+            }
+        }
+        assert_eq!(reads.load(Ordering::Relaxed), registered_reads);
+    }
+    assert_eq!(reads.load(Ordering::Relaxed), 3);
+}
+
+#[test]
 fn finish_click_chain_is_idempotent_and_does_not_click_recursively() {
     let mut config = Config::default();
     config.grid.max_depth = 1;

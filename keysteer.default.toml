@@ -355,7 +355,7 @@ inherits = ["hotkeys"]
 temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
 # Skip the temporary layer for these full or trigger-stripped chords.
-temporary_mode_passthrough_keys = []
+temporary_mode_passthrough_keys = ["ctrl", "ctrl+x"]
 number_timeout_ms = 250
 move_step = 20.0
 move_speed = 600.0
@@ -364,6 +364,13 @@ resize_speed = 500.0
 border_width = 3.0
 
 [window.bindings]
+# Ctrl means Control on every platform, including macOS.
+# First run: single-digit labels. After a space: complete labels (e.g. 1234567 12 23).
+# Spaced labels apply only at the next Space or confirmation, never while partially typed.
+# Action keys confirm and execute immediately; Ctrl/Enter can confirm without an action.
+# Backspace edits; Ctrl+X keeps only the original target.
+"ctrl" = "window_multi_select"
+"ctrl+x" = "window_multi_clear"
 "?" = "key_help"
 # Independent targeting entrances; changes to normal.bindings do not affect these.
 g = "grid"
@@ -399,6 +406,10 @@ z = "window_undo"
 "shift+c" = "window_reset_initial"
 q = "idle"
 "primary+q" = "idle"
+# These bindings override window.bindings only while entering selection numbers.
+[window.multi_select.bindings]
+"ctrl enter" = "window_multi_confirm" # Either key confirms; + means a combination.
+
 [window.card]
 # Guide from the window center to a displaced card, including collision avoidance.
 guide_line_enabled = true

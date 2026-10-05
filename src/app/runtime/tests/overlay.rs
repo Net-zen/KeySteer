@@ -356,10 +356,7 @@ fn toggle_performance_probe() {
     let mut repeated = engine_with_normal_binding("n", "toggle");
     repeated.registry.active = ModeId::normal();
     let (mut repeated_backend, repeated_log) = FakeBackend::new(Vec::new());
-    let mut repeat_down = match key_down("n") {
-        BackendEvent::Input(input) => input,
-        _ => unreachable!(),
-    };
+    let BackendEvent::Input(mut repeat_down) = key_down("n") else { unreachable!() };
     repeat_down.repeat = true;
     let repeat_result = measure(|| {
         repeated
@@ -579,7 +576,7 @@ fn key_help_toggle_pairs_release_and_ignores_repeat() {
     assert!(engine.overlay.key_help_visible);
     assert!(engine.overlay.last_scene.as_ref().unwrap().labels.iter()
         .any(|label| label.text.contains("Available keys")));
-    let mut repeated = match key_down("/") { BackendEvent::Input(input) => input, _ => unreachable!() };
+    let BackendEvent::Input(mut repeated) = key_down("/") else { unreachable!() };
     repeated.repeat = true;
     engine.handle_key(repeated, &mut backend).unwrap();
     assert!(engine.overlay.key_help_visible);

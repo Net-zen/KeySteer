@@ -20,16 +20,16 @@ impl LabelPlan {
     fn new(count: usize, alphabet_len: usize, direction: LabelDirection) -> Self {
         match direction {
             LabelDirection::Normal => {
-                let mut reserved = 0usize;
-                while alphabet_len - reserved + reserved * alphabet_len < count {
-                    reserved += 1;
-                    if reserved == alphabet_len {
-                        let width = fixed_width_for(count, alphabet_len);
-                        return Self::FixedForward {
-                            width,
-                            divisor: alphabet_len.saturating_pow(width.saturating_sub(1) as u32),
-                        };
-                    }
+                // Replacing one single with a pair prefix adds radix - 1 codes.
+                let reserved = count
+                    .saturating_sub(alphabet_len)
+                    .div_ceil(alphabet_len - 1);
+                if reserved >= alphabet_len {
+                    let width = fixed_width_for(count, alphabet_len);
+                    return Self::FixedForward {
+                        width,
+                        divisor: alphabet_len.saturating_pow(width.saturating_sub(1) as u32),
+                    };
                 }
                 Self::NormalPairs {
                     singles: alphabet_len - reserved,
@@ -49,6 +49,18 @@ impl LabelPlan {
             Self::FixedForward { width, .. } | Self::FixedReverse { width } => {
                 radix.saturating_pow(width as u32)
             }
+        }
+    }
+
+    /// Covers the entire retained code space, including later streamed labels.
+    /// Filtering and reusing retired codes cannot invalidate a uniform width.
+    pub(super) fn uniform_chars(self, radix: usize) -> Option<usize> {
+        match self {
+            Self::Direct => Some(1),
+            Self::NormalPairs { singles } if singles == radix => Some(1),
+            Self::NormalPairs { singles: 0 } => Some(2),
+            Self::NormalPairs { .. } => None,
+            Self::FixedForward { width, .. } | Self::FixedReverse { width } => Some(width),
         }
     }
 }
@@ -344,6 +356,34 @@ mod tests {
                     );
                     assert_eq!(hint.value, index);
                     assert_eq!(hint.bounds, Rect::new(index as f64, 0.0, 1.0, 1.0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn uniform_width_follows_the_retained_alphabet_plan_including_stream_capacity() {
+        for text in ["ab", "asdfghjkl", "arstneioqwfpjluy", "甲乙丙丁戊"] {
+            let alphabet = chars(text);
+            let radix = alphabet.len();
+            for direction in [LabelDirection::Normal, LabelDirection::Reverse] {
+                for count in 1..=radix * radix + 2 {
+                    let plan = LabelPlan::for_stream(count, radix, direction).unwrap();
+                    let widths: Vec<_> = (0..plan.capacity(radix))
+                        .map(|index| plan.code(index, &alphabet).as_str().chars().count())
+                        .collect();
+                    let expected = widths.iter().all(|w| *w == widths[0]).then_some(widths[0]);
+                    assert_eq!(
+                        plan.uniform_chars(radix),
+                        expected,
+                        "{text}, {count}, {direction:?}"
+                    );
+                    for index in 0..count {
+                        assert_eq!(
+                            plan.code(index, &alphabet).as_str(),
+                            reference_label(index, count, &alphabet, direction)
+                        );
+                    }
                 }
             }
         }

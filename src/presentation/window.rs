@@ -139,6 +139,7 @@ impl WindowView<'_> {
                     && self
                         .visible
                         .iter()
+                        .chain(self.selected)
                         .any(|id| self.inventory.get(id).is_some_and(|w| w.screen == screen))
                 {
                     let other = Self {
@@ -210,6 +211,30 @@ impl WindowView<'_> {
                 style.border_color,
                 self.border_width,
             ));
+        }
+        for (index, id) in self.selected.iter().enumerate() {
+            if self.selected[..index].iter().any(|previous| {
+                self.tabs.representative(*previous) == self.tabs.representative(*id)
+            }) {
+                continue;
+            }
+            let id = self.tabs.containing(*id).map_or(*id, |group| group.active);
+            if self.target.is_some_and(|target| {
+                self.tabs.representative(target.id) == self.tabs.representative(id)
+            }) {
+                continue;
+            }
+            if let Some(window) = self
+                .inventory
+                .get(&id)
+                .filter(|w| !w.minimized && w.screen == self.screen)
+            {
+                scene.push_shape(OverlayShape::outline(
+                    window.bounds,
+                    style.border_color,
+                    self.border_width,
+                ));
+            }
         }
         let style = &resolved.number;
         let small = &resolved.app;
@@ -539,6 +564,7 @@ mod tests {
                       numbers: &std::collections::BTreeMap<_, _>,
                       tabs: &TabState| {
             WindowView {
+                selected: &[],
                 text_cache: Some(&cache),
                 configurable_position: true,
                 tabs,
@@ -639,6 +665,7 @@ border_color = "#FEDCBAFF"
         .into_iter()
         .collect();
         let view = WindowView {
+            selected: &[],
             text_cache: None,
             configurable_position: true,
             tabs: &Default::default(),
@@ -691,6 +718,7 @@ border_color = "#FEDCBAFF"
                 );
             }
             let mut rendered = WindowView {
+                selected: &[],
                 text_cache: None,
                 styles: &styles,
                 ..view

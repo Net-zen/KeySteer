@@ -689,14 +689,11 @@ fn event_tap_thread(handshake: HookHandshake, context: HookThreadContext) {
         }
     };
 
-    let source = match tap.mach_port().create_runloop_source(0) {
-        Ok(source) => source,
-        Err(_) => {
-            let _ = ready.send(Err(
-                "cannot create a run-loop source for the macOS event tap".into(),
-            ));
-            return;
-        }
+    let Ok(source) = tap.mach_port().create_runloop_source(0) else {
+        let _ = ready.send(Err(
+            "cannot create a run-loop source for the macOS event tap".into(),
+        ));
+        return;
     };
     let run_loop = CFRunLoop::get_current();
     if let Ok(mut shared) = shared_run_loop.lock() {

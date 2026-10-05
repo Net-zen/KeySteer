@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AudioProcess {
     pub pid: u32,
     /// Native process creation identity, checked again on the audio thread.
@@ -60,7 +60,7 @@ pub(super) fn publish_result(emit: &EventSink, result: AudioResult) {
 
 struct Job {
     request: AudioRequest,
-    process: Option<AudioProcess>,
+    processes: Vec<Result<Option<AudioProcess>, String>>,
     cancelled: Arc<AtomicBool>,
 }
 pub(crate) struct AudioWorker {
@@ -100,7 +100,27 @@ impl AudioWorker {
                     if job.cancelled.load(Ordering::Acquire) {
                         continue;
                     }
-                    let outcome = backend.execute(job.process, job.request.action);
+                    let mut seen = Vec::new();
+                    let mut outcome = Ok(String::new());
+                    for process in job.processes {
+                        if job.cancelled.load(Ordering::Acquire) || stopped.load(Ordering::Acquire)
+                        {
+                            break;
+                        }
+                        let result = match process {
+                            Ok(process) => {
+                                if seen.contains(&process) {
+                                    continue;
+                                }
+                                seen.push(process);
+                                backend.execute(process, job.request.action)
+                            }
+                            Err(error) => Err(error),
+                        };
+                        if outcome.is_ok() {
+                            outcome = result;
+                        }
+                    }
                     if !job.cancelled.load(Ordering::Acquire) && !stopped.load(Ordering::Acquire) {
                         publish_result(
                             &emit,
@@ -123,7 +143,7 @@ impl AudioWorker {
     pub fn submit(
         &self,
         request: AudioRequest,
-        process: Option<AudioProcess>,
+        processes: Vec<Result<Option<AudioProcess>, String>>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<(), SubmitError> {
         self.sender
@@ -131,7 +151,7 @@ impl AudioWorker {
             .ok_or(SubmitError::Stopped)?
             .try_send(Job {
                 request,
-                process,
+                processes,
                 cancelled,
             })
             .map_err(|error| match error {
@@ -155,6 +175,54 @@ mod tests {
     use super::*;
     use crate::api::audio::AudioTarget;
     use std::sync::Mutex;
+
+    #[test]
+    fn multi_selection_audio_deduplicates_processes_and_continues_after_failure() {
+        static CALLS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+        struct RecordingAudio;
+        impl AudioBackend for RecordingAudio {
+            fn execute(
+                &mut self,
+                process: Option<AudioProcess>,
+                _: AudioAction,
+            ) -> Result<String, String> {
+                let pid = process.unwrap().pid;
+                CALLS.lock().unwrap().push(pid);
+                if pid == 1 {
+                    Err("injected failure".into())
+                } else {
+                    Ok("done".into())
+                }
+            }
+        }
+        fn create() -> Box<dyn AudioBackend> {
+            Box::new(RecordingAudio)
+        }
+        let (events, received) = mpsc::channel();
+        let worker = AudioWorker::start(
+            create,
+            Arc::new(move |event| {
+                events.send(event).unwrap();
+            }),
+        )
+        .unwrap();
+        worker
+            .submit(
+                request(1),
+                [1, 1, 2, 3, 2]
+                    .map(|pid| Ok(Some(AudioProcess { pid, started: 10 })))
+                    .to_vec(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        let BackendEvent::AudioResult(result) =
+            received.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!()
+        };
+        assert!(result.outcome.is_err());
+        assert_eq!(*CALLS.lock().unwrap(), [1, 2, 3]);
+    }
 
     #[test]
     fn failed_audio_returns_error_and_worker_can_process_next_request() {
@@ -181,7 +249,11 @@ mod tests {
         .unwrap();
         for id in [1, 2] {
             worker
-                .submit(request(id), None, Arc::new(AtomicBool::new(false)))
+                .submit(
+                    request(id),
+                    vec![Ok(None)],
+                    Arc::new(AtomicBool::new(false)),
+                )
                 .unwrap();
             let BackendEvent::AudioResult(result) =
                 received.recv_timeout(Duration::from_secs(5)).unwrap()
@@ -233,17 +305,25 @@ mod tests {
         )
         .unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
-        worker.submit(request(0), None, cancelled.clone()).unwrap();
+        worker
+            .submit(request(0), vec![Ok(None)], cancelled.clone())
+            .unwrap();
         wait.recv_timeout(Duration::from_secs(5)).unwrap();
         // Native execution is still blocked, but all submissions return immediately.
         for id in 1..=63 {
-            worker.submit(request(id), None, cancelled.clone()).unwrap();
+            worker
+                .submit(request(id), vec![Ok(None)], cancelled.clone())
+                .unwrap();
         }
         worker
-            .submit(request(64), None, Arc::new(AtomicBool::new(false)))
+            .submit(
+                request(64),
+                vec![Ok(None)],
+                Arc::new(AtomicBool::new(false)),
+            )
             .unwrap();
         assert_eq!(
-            worker.submit(request(65), None, cancelled.clone()),
+            worker.submit(request(65), vec![Ok(None)], cancelled.clone()),
             Err(SubmitError::Full)
         );
         cancelled.store(true, Ordering::Release);

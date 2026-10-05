@@ -24,10 +24,15 @@ impl WindowSession {
             return;
         }
         // Build once, from the worker's fresh inventory and constraints.
-        let targets = if tree {
+        let targets = if tree && self.multi_anchor.is_none() {
             Vec::new()
+        } else if tree {
+            self.operation_targets()
+                .iter()
+                .map(|id| self.tabs.state.representative(*id))
+                .collect()
         } else {
-            target.map(|target| vec![target.id]).unwrap_or_default()
+            self.operation_targets().into_vec()
         };
         let model = if tree {
             EditModel::Tree(LayoutTree::import(&[], None, screen.work_area))
@@ -69,7 +74,7 @@ impl WindowSession {
             WindowOperation::BeginEdit {
                 transaction,
                 targets,
-                screen: tree.then_some(self.screen),
+                screen: (tree && self.multi_anchor.is_none()).then_some(self.screen),
                 group: self.group,
             },
             out,
@@ -78,17 +83,17 @@ impl WindowSession {
     }
 
     pub(super) fn flush_edit(&mut self, out: &mut CommandBatch) {
+        let targets = self.operation_targets();
         let Some(edit) = &mut self.edit else { return };
         if !edit.ready || edit.in_flight.is_some() || edit.ending || self.temporary {
             return;
         }
         if edit.dirty {
             let placements = match &edit.model {
-                EditModel::Quick(quick) => self
-                    .target
-                    .as_ref()
-                    .map(|w| vec![(w.id, quick.rect_with(&self.settings.split_ratios))])
-                    .unwrap_or_default(),
+                EditModel::Quick(quick) => targets
+                    .iter()
+                    .map(|id| (*id, quick.rect_with(&self.settings.split_ratios)))
+                    .collect(),
                 EditModel::Tree(tree) => tree
                     .slots()
                     .into_iter()
@@ -192,6 +197,17 @@ impl WindowSession {
     pub(super) fn tile(&mut self, out: &mut CommandBatch) {
         self.trees.remove(&self.screen);
         self.group += 1;
+        if self.multi_anchor.is_some() {
+            self.request(
+                WindowOperation::TileSelection {
+                    targets: self.operation_targets().into_vec(),
+                    gap: self.settings.gap,
+                    group: self.group,
+                },
+                out,
+            );
+            return;
+        }
         if let Some(target) = &self.target {
             self.request(
                 WindowOperation::Tile {
@@ -484,6 +500,8 @@ impl WindowSession {
                 self.flush_edit(out);
             }
         } else if !slot && let Some(id) = id {
+            self.multi.clear();
+            self.multi_anchor = None;
             if self.edit.is_some() {
                 self.finish_edit(Finish::Select(id), out);
             } else {

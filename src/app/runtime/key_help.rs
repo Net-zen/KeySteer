@@ -43,10 +43,14 @@ impl KeyHelpCache {
 impl Engine {
     pub(super) fn window_help_visible(&self) -> bool {
         self.display_mode().is_window()
-            && self
-                .overlay
-                .window_help_override
-                .unwrap_or(self.settings.key_help.window_key_help)
+            && (self
+                .registry
+                .keyboard_prompt_mode(&self.registry.active)
+                .is_some_and(|mode| mode.keyboard_prompt_active())
+                || self
+                    .overlay
+                    .window_help_override
+                    .unwrap_or(self.settings.key_help.window_key_help))
     }
 
     fn help_visible(&self) -> bool {

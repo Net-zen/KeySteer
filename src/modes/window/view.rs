@@ -47,6 +47,21 @@ impl WindowSession {
             }
             return detail;
         }
+        if let Some(input) = &self.multi_input {
+            let confirm = self
+                .settings
+                .multi_bindings
+                .iter()
+                .filter(|(_, binding)| matches!(binding.as_ref(), Binding::Window(W::MultiConfirm)))
+                .map(|(chord, _)| chord.to_string())
+                .collect::<Vec<_>>()
+                .join(" / ");
+            return format!(
+                "Multi-select · {} selected\nInput: {}▏\nFirst run: single digits; after a space: label + Space/confirm\nExample: 1234567 12 23 · selected numbers toggle off\nAction keys confirm · {confirm}: confirm only · Esc: cancel · Backspace: edit",
+                self.operation_targets().len(),
+                input.text
+            );
+        }
         let state = match self.edit.as_ref().map(|e| &e.model) {
             Some(EditModel::Quick(quick)) => format!(
                 "Quick · {}",
@@ -62,6 +77,9 @@ impl WindowSession {
             .into(),
         };
         let mut detail = state;
+        if self.kind == WindowKind::Move && self.multi_anchor.is_some() {
+            detail.push_str(&format!(" · {} selected", self.operation_targets().len()));
+        }
         if let Some(window) = &self.target {
             let app = window
                 .app
@@ -107,13 +125,26 @@ impl WindowSession {
                 _ => None,
             });
         View::Window(WindowView {
+            selected: if matches!(self.kind, WindowKind::Move | WindowKind::Quick) {
+                &self.multi
+            } else {
+                &[]
+            },
             text_cache: Some(&self.text_cache),
             configurable_position: matches!(self.kind, WindowKind::Move | WindowKind::Editor),
             tabs: &self.tabs.state,
             group_input: self.kind == WindowKind::Tab && self.number.slot,
             styles: &self.settings.styles,
             border_width: self.settings.border_width,
-            target: self.target.as_ref().filter(|w| !w.minimized),
+            target: self.target.as_ref().filter(|w| {
+                !w.minimized
+                    && (!matches!(self.kind, WindowKind::Move | WindowKind::Quick)
+                        || self.multi_anchor.is_none()
+                        || self.multi.iter().any(|id| {
+                            self.tabs.state.representative(*id)
+                                == self.tabs.state.representative(w.id)
+                        }))
+            }),
             screen: self.screen,
             inventory: &self.inventory,
             visible: &self.visible,

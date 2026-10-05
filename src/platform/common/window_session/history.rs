@@ -95,9 +95,7 @@ impl Session {
         self.changed_windows.insert(before.info.id);
         self.redo.clear();
         if self.history.back().is_none_or(|(g, _)| *g != group) {
-            if self.history.len() == 32 {
-                self.history.pop_front();
-            }
+            self.history.retain_back(31);
             self.history.push_back((group, Vec::new()));
         }
         if let Some((_, snapshots)) = self.history.back_mut()
@@ -128,9 +126,7 @@ impl Session {
         if snapshots.is_empty() {
             return;
         }
-        if stack.len() == 32 {
-            stack.pop_front();
-        }
+        stack.retain_back(31);
         stack.push_back((group, snapshots));
     }
 

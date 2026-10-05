@@ -11,8 +11,9 @@ impl SearchTerms {
     pub(super) fn prepare(&mut self, query: &str) {
         self.0.clear();
         for term in query.split_whitespace().filter(|term| *term != "@") {
-            let start = term.as_ptr() as usize - query.as_ptr() as usize;
-            self.0.push(start..start + term.len());
+            if let Some(range) = query.substr_range(term) {
+                self.0.push(range.into());
+            }
         }
         if self.0.len() > 1 {
             self.0.sort_unstable_by(|a, b| {
@@ -38,18 +39,24 @@ pub(super) struct SearchText {
 
 impl SearchText {
     pub(super) fn target(target: &crate::api::UiTarget) -> Self {
-        if target.details.is_none() {
+        let Some(details) = target.details.as_deref() else {
             return Self::new(&target.name, target.role);
+        };
+        let name = target.name.as_str();
+        let ocr = details.ocr.as_str();
+        let ocr = if ocr == name { "" } else { ocr };
+        let accessibility = details.accessibility.as_str();
+        let accessibility = if accessibility == name || accessibility == ocr {
+            ""
+        } else {
+            accessibility
+        };
+        // Fusion commonly repeats the name in OCR or accessibility metadata.
+        // Terms cannot cross these space-separated fields, so index each once.
+        if ocr.is_empty() && accessibility.is_empty() {
+            return Self::new(name, target.role);
         }
-        Self::new(
-            &format!(
-                "{} {} {}",
-                target.name,
-                target.ocr_text(),
-                target.accessibility_text()
-            ),
-            target.role,
-        )
+        Self::new(&format!("{name} {ocr} {accessibility}"), target.role)
     }
     pub(super) fn new(name: &str, role: SemanticRole) -> Self {
         let text = format!(
@@ -167,6 +174,46 @@ mod tests {
         }
         assert!(!text.matches("粘贴", "aj"));
         assert!(!text.matches("fzwj checkbox", "aj"));
+    }
+
+    #[test]
+    fn fused_fields_are_indexed_once_and_keep_unicode_and_search_semantics() {
+        for (name, ocr, accessibility, distinct) in [
+            ("SAVE 复制", "SAVE 复制", "", "SAVE 复制"),
+            ("SAVE 复制", "", "SAVE 复制", "SAVE 复制"),
+            ("SAVE 复制", "SAVE 复制", "SAVE 复制", "SAVE 复制"),
+            ("SAVE 复制", "设置", "设置", "SAVE 复制 设置 "),
+            ("SAVE 复制", "设置", "Cancel", "SAVE 复制 设置 Cancel"),
+            ("", "设置", "设置", " 设置 "),
+            ("", "", "", ""),
+            ("ΟΣ İ ǅ", "ΟΣ İ ǅ", "设置", "ος i\u{307} ǆ  设置"),
+        ] {
+            let target = crate::api::UiTarget {
+                name: name.into(),
+                rect: crate::api::Rect::default(),
+                role: SemanticRole::Button,
+                details: Some(Box::new(crate::api::geometry::UiTargetDetails {
+                    ocr: ocr.into(),
+                    accessibility: accessibility.into(),
+                    ..Default::default()
+                })),
+            };
+            let indexed = SearchText::target(&target);
+            let expected = SearchText::new(distinct, target.role);
+            assert_eq!(indexed.text, expected.text);
+            assert_eq!(indexed.initials, expected.initials);
+            let previous = SearchText::new(&format!("{name} {ocr} {accessibility}"), target.role);
+            for query in [
+                "save", "复制", "fz", "设置", "sz", "cancel", "ο", "ος", "i\u{307}", "ǆ", "button",
+                "按钮", "an", "save sz", "missing", "@ka", "ka@",
+            ] {
+                assert_eq!(
+                    indexed.matches(query, "ka"),
+                    previous.matches(query, "ka"),
+                    "name={name:?} ocr={ocr:?} accessibility={accessibility:?} query={query:?}"
+                );
+            }
+        }
     }
 
     #[test]

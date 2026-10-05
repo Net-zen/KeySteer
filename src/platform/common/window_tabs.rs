@@ -362,9 +362,7 @@ impl<A: WindowAccess> Grouped<A> {
         }
     }
     fn push(stack: &mut VecDeque<Checkpoint>, checkpoint: Checkpoint) {
-        if stack.len() == 32 {
-            stack.pop_front();
-        }
+        stack.retain_back(31);
         stack.push_back(checkpoint);
     }
     fn remember(&mut self, before: Checkpoint) {
@@ -897,7 +895,7 @@ impl<A: WindowAccess> Grouped<A> {
                     .map(|id| self.groups.state.containing(id).map_or(id, |g| g.active));
                 // The first chosen window may still be ungrouped, so the
                 // group's existing membership does not yet include the anchor.
-                let mut affected = incoming.clone();
+                let mut affected = incoming;
                 affected.extend(anchor);
                 let before = self.checkpoint(&affected, screens);
                 let mut candidate = self.groups.clone();
@@ -964,6 +962,65 @@ impl<A: WindowAccess> Grouped<A> {
                 {
                     self.groups = before;
                     return Err(error);
+                }
+            }
+            TabOperation::EnterSelection(ids) => {
+                let mut targets = Vec::new();
+                let mut affected = Vec::new();
+                for id in ids {
+                    let target = self
+                        .groups
+                        .state
+                        .containing(id)
+                        .map_or(WindowTarget::Window(id), |group| {
+                            WindowTarget::Group(group.id)
+                        });
+                    if targets.contains(&target) {
+                        continue;
+                    }
+                    let members = self.groups.members(target)?;
+                    for member in &members {
+                        if cancelled() {
+                            return Err("Window grouping cancelled".into());
+                        }
+                        self.native.tab_eligible(*member, screens)?;
+                    }
+                    affected.extend(members);
+                    targets.push(target);
+                }
+                let before = self.checkpoint(&affected, screens);
+                let mut candidate = self.groups.clone();
+                candidate.state.target = None;
+                for id in &affected {
+                    candidate.number(*id);
+                }
+                let anchor = targets.first().and_then(|target| match target {
+                    WindowTarget::Window(id) => Some(*id),
+                    WindowTarget::Group(id) => self.groups.state.group(*id).map(|g| g.active),
+                });
+                for target in targets {
+                    candidate.choose(target)?;
+                }
+                let changed = !candidate.same_membership(&self.groups);
+                self.groups = candidate;
+                let outcome = (|| {
+                    if changed && let Some(anchor) = anchor {
+                        self.align(anchor, screens, cancelled)?;
+                    }
+                    if let Some(active) = anchor {
+                        self.activate_tab(active, screens, cancelled)?;
+                    }
+                    self.publish(screens)
+                })();
+                if let Err(error) = outcome {
+                    let recovery = self.rollback(&before, screens);
+                    self.groups.restore(before.groups);
+                    return Err(recovery
+                        .err()
+                        .map_or(error.clone(), |r| format!("{error}; recovery: {r}")));
+                }
+                if changed {
+                    self.remember(before);
                 }
             }
             TabOperation::Enter { screen } => {
@@ -1289,18 +1346,14 @@ impl<A: WindowAccess> Grouped<A> {
     fn event_windows(&self, event: TabNativeEvent) -> Vec<WindowId> {
         let mut ids = Vec::new();
         let mut target = |target| match target {
-            WindowTarget::Window(id) => {
-                if let Some(group) = self.groups.state.containing(id) {
-                    ids.extend_from_slice(&group.members);
-                } else {
-                    ids.push(id);
-                }
+            WindowTarget::Window(id) if let Some(group) = self.groups.state.containing(id) => {
+                ids.extend_from_slice(&group.members);
             }
-            WindowTarget::Group(id) => {
-                if let Some(group) = self.groups.state.group(id) {
-                    ids.extend_from_slice(&group.members);
-                }
+            WindowTarget::Window(id) => ids.push(id),
+            WindowTarget::Group(id) if let Some(group) = self.groups.state.group(id) => {
+                ids.extend_from_slice(&group.members);
             }
+            WindowTarget::Group(_) => {}
         };
         match event {
             TabNativeEvent::Focused(id)
@@ -1968,6 +2021,22 @@ impl<A: WindowAccess> WindowAccess for Grouped<A> {
     fn audio_factory(&self) -> Option<super::audio_worker::AudioFactory> {
         self.native.audio_factory()
     }
+    fn audio_selection(
+        &self,
+        targets: &[WindowId],
+    ) -> Vec<Result<Option<super::audio_worker::AudioProcess>, String>> {
+        let mut members = Vec::new();
+        for id in targets {
+            if let Some(group) = self.groups.state.containing(*id) {
+                members.extend(group.members.iter().copied());
+            } else {
+                members.push(*id);
+            }
+        }
+        members.sort_unstable();
+        members.dedup();
+        self.native.audio_selection(&members)
+    }
     fn audio_process(
         &self,
         target: crate::api::audio::AudioTarget,
@@ -1978,6 +2047,9 @@ impl<A: WindowAccess> WindowAccess for Grouped<A> {
                 AudioTarget::Application(self.groups.state.containing(id).map_or(id, |g| g.active))
             }
             AudioTarget::System => AudioTarget::System,
+            AudioTarget::Applications(_) => {
+                return Err("Batch audio requires selection resolution".into());
+            }
         };
         self.native.audio_process(target)
     }
@@ -1998,6 +2070,26 @@ impl<A: WindowAccess> WindowAccess for Grouped<A> {
             .containing(id)
             .map_or(id, |group| group.active);
         self.native.volume(active, change)
+    }
+    fn close_group(&self, id: WindowId, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
+        let Some(group) = self.groups.state.containing(id) else {
+            return self.close(id);
+        };
+        let mut failure = None;
+        for member in &group.members {
+            if cancelled() {
+                break;
+            }
+            match self.native.close(*member) {
+                Ok(()) => {
+                    self.closing.borrow_mut().insert(*member);
+                }
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        failure.map_or(Ok(()), Err)
     }
     fn close(&self, id: WindowId) -> Result<(), String> {
         let active = self

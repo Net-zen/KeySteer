@@ -73,6 +73,14 @@ struct Session {
     pending_closed: Vec<WindowId>,
     resize_minimum: Option<(WindowId, u64, usize, f64, Point)>,
     move_remainder: Option<(WindowId, u64, f64, Rect, Point)>,
+    gesture_target: Option<(WindowId, u64)>,
+    gesture_peers: std::collections::BTreeMap<WindowId, GestureCache>,
+}
+
+#[derive(Default)]
+struct GestureCache {
+    movement: Option<(WindowId, u64, f64, Rect, Point)>,
+    minimum: Option<(WindowId, u64, usize, f64, Point)>,
 }
 
 struct EditTransaction {
@@ -294,6 +302,7 @@ impl Session {
     ) {
         if self.screens != screens {
             self.resize_minimum = None;
+            self.gesture_peers.clear();
             self.screens.clear();
             self.screens.extend_from_slice(screens);
         }
@@ -420,6 +429,29 @@ impl Session {
         result
     }
 
+    fn select_gesture_target(&mut self, target: WindowId, group: u64) {
+        if let Some((previous, old_group)) = self.gesture_target {
+            if old_group != group {
+                self.gesture_peers.clear();
+                self.move_remainder = None;
+                self.resize_minimum = None;
+            } else if previous != target {
+                self.gesture_peers.insert(
+                    previous,
+                    GestureCache {
+                        movement: self.move_remainder.take(),
+                        minimum: self.resize_minimum.take(),
+                    },
+                );
+                if let Some(cache) = self.gesture_peers.get(&target) {
+                    self.move_remainder = cache.movement;
+                    self.resize_minimum = cache.minimum;
+                }
+            }
+        }
+        self.gesture_target = Some((target, group));
+    }
+
     fn adjustment_rect(
         &mut self,
         access: &impl WindowAccess,
@@ -429,6 +461,7 @@ impl Session {
         before: &Snapshot,
         screens: &[Screen],
     ) -> Result<Option<Rect>, String> {
+        self.select_gesture_target(target, group);
         let screen = screens
             .get(before.info.screen)
             .ok_or("display is unavailable")?;
@@ -705,6 +738,10 @@ impl Session {
                     access.close(id)?;
                     result.message = Some("Close requested".into());
                 }
+            }
+            WindowOperation::CloseGroup(id) => {
+                access.close_group(id, cancelled)?;
+                result.message = Some("Close requested".into());
             }
             WindowOperation::Enumerate => {
                 let windows = self.enumerate(access, screens, cancelled)?;
@@ -1333,10 +1370,32 @@ impl Session {
                 change_result?;
                 self.target = Some(target);
             }
-            WindowOperation::Tile { target, gap, group } => {
+            operation @ (WindowOperation::Tile { .. } | WindowOperation::TileSelection { .. }) => {
+                let (target, selected, gap, group) = match operation {
+                    WindowOperation::Tile { target, gap, group } => (target, None, gap, group),
+                    WindowOperation::TileSelection {
+                        targets,
+                        gap,
+                        group,
+                    } => {
+                        let Some(target) = targets.first().copied() else {
+                            return Ok(());
+                        };
+                        let selected = targets
+                            .into_iter()
+                            .map(|id| access.layout_representative(id))
+                            .collect::<std::collections::BTreeSet<_>>();
+                        (target, Some(selected), gap, group)
+                    }
+                    _ => unreachable!(),
+                };
                 let target_screen = access.snapshot(target, screens)?.info.screen;
                 let mut windows = self.enumerate(access, screens, cancelled)?;
-                if self.scope.is_none_or(|scope| scope.screen.is_some()) {
+                if let Some(selected) = &selected {
+                    windows.retain(|window| {
+                        selected.contains(&access.layout_representative(window.id))
+                    });
+                } else if self.scope.is_none_or(|scope| scope.screen.is_some()) {
                     windows.retain(|w| w.screen == target_screen);
                 }
                 result.skipped = windows
@@ -1798,6 +1857,66 @@ mod tests {
                 let _ = tx.send(());
             }
         }
+    }
+
+    #[test]
+    fn multi_selection_fractional_motion_and_history_include_every_target() {
+        let mut access = Fake::new(3);
+        let initial = access.windows.clone();
+        let mut session = Session::default();
+        for _ in 0..20 {
+            for id in [1, 2] {
+                let result = run(
+                    &mut session,
+                    &mut access,
+                    WindowOperation::Adjust {
+                        target: WindowId(id),
+                        change: WindowChange::Move { dx: 0.1, dy: 0.0 },
+                        group: 5,
+                    },
+                );
+                assert!(result.message.is_none(), "{:?}", result.message);
+            }
+        }
+        for id in [WindowId(1), WindowId(2)] {
+            assert!(
+                (access.windows[&id].info.bounds.x - initial[&id].info.bounds.x - 4.0).abs() < 0.01
+            );
+        }
+        assert_eq!(session.history.len(), 1);
+        assert_eq!(session.history[0].1.len(), 2);
+        run(&mut session, &mut access, WindowOperation::Undo);
+        for id in [WindowId(1), WindowId(2), WindowId(3)] {
+            assert_eq!(access.windows[&id].info.bounds, initial[&id].info.bounds);
+        }
+        run(&mut session, &mut access, WindowOperation::Redo);
+        assert_ne!(
+            access.windows[&WindowId(1)].info.bounds,
+            initial[&WindowId(1)].info.bounds
+        );
+        assert_eq!(
+            access.windows[&WindowId(3)].info.bounds,
+            initial[&WindowId(3)].info.bounds
+        );
+    }
+
+    #[test]
+    fn multi_selection_tile_leaves_unselected_windows_untouched() {
+        let mut access = Fake::new(3);
+        let unselected = access.windows[&WindowId(2)].info.bounds;
+        let mut session = Session::default();
+        let result = run(
+            &mut session,
+            &mut access,
+            WindowOperation::TileSelection {
+                targets: vec![WindowId(1), WindowId(3)],
+                gap: 0.0,
+                group: 1,
+            },
+        );
+        assert_eq!(result.changed, 2);
+        assert_eq!(access.windows[&WindowId(2)].info.bounds, unselected);
+        assert_eq!(session.history[0].1.len(), 2);
     }
 
     fn run(session: &mut Session, access: &mut Fake, operation: WindowOperation) -> WindowResult {

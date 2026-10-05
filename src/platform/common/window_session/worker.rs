@@ -14,6 +14,203 @@ enum Pending {
     },
     Audio(crate::api::audio::AudioRequest, Arc<AtomicBool>),
 }
+
+// A multi-window gesture shares one history group. Keep one queued motion per
+// target, in request-id order, even when successive frames interleave targets.
+fn coalesce_gesture(
+    queue: &mut VecDeque<Pending>,
+    request: &WindowRequest,
+    screens: &[Screen],
+) -> bool {
+    let WindowOperation::Adjust {
+        target,
+        change,
+        group,
+    } = &request.operation
+    else {
+        return false;
+    };
+    for index in (0..queue.len()).rev() {
+        let Pending::Window {
+            request: previous,
+            screens: previous_screens,
+            ..
+        } = &mut queue[index]
+        else {
+            break;
+        };
+        let WindowOperation::Adjust {
+            target: old_target,
+            change: old_change,
+            group: old_group,
+        } = &mut previous.operation
+        else {
+            break;
+        };
+        if previous.session != request.session
+            || old_group != group
+            || previous_screens.as_ref() != screens
+            || previous.scope != request.scope
+        {
+            break;
+        }
+        if old_target != target {
+            continue;
+        }
+        let merged = match (old_change, change) {
+            (WindowChange::MoveTo(a), WindowChange::MoveTo(b)) => {
+                *a = *b;
+                true
+            }
+            (WindowChange::Move { dx: ax, dy: ay }, WindowChange::Move { dx: bx, dy: by }) => {
+                *ax += bx;
+                *ay += by;
+                true
+            }
+            (WindowChange::Resize { dw: ax, dh: ay }, WindowChange::Resize { dw: bx, dh: by }) => {
+                *ax += bx;
+                *ay += by;
+                true
+            }
+            _ => false,
+        };
+        if merged {
+            previous.id = request.id;
+            if let Some(pending) = queue.remove(index) {
+                queue.push_back(pending);
+            }
+        }
+        return merged;
+    }
+    false
+}
+
+// The queue budget counts unrelated operations. A single selection may contain
+// more than 64 windows; its distinct targets are bounded by the selection itself.
+fn extends_gesture(queue: &VecDeque<Pending>, request: &WindowRequest) -> bool {
+    if let WindowOperation::Close(target) | WindowOperation::CloseGroup(target) = &request.operation
+    {
+        let mut peers = 0;
+        for pending in queue.iter().rev() {
+            let Pending::Window {
+                request: previous, ..
+            } = pending
+            else {
+                break;
+            };
+            let (WindowOperation::Close(old_target) | WindowOperation::CloseGroup(old_target)) =
+                &previous.operation
+            else {
+                break;
+            };
+            if previous.session != request.session {
+                break;
+            }
+            if old_target == target {
+                return false;
+            }
+            peers += 1;
+        }
+        return peers > 0;
+    }
+    let WindowOperation::Adjust { target, group, .. } = &request.operation else {
+        return false;
+    };
+    let mut peers = 0;
+    for pending in queue.iter().rev() {
+        let Pending::Window {
+            request: previous, ..
+        } = pending
+        else {
+            break;
+        };
+        let WindowOperation::Adjust {
+            target: old_target,
+            group: old_group,
+            ..
+        } = &previous.operation
+        else {
+            break;
+        };
+        if previous.session != request.session || old_group != group {
+            break;
+        }
+        if old_target == target {
+            return false;
+        }
+        peers += 1;
+    }
+    peers > 0
+}
+
+#[cfg(test)]
+mod multi_selection_tests {
+    use super::*;
+
+    #[test]
+    fn multi_selection_coalesces_interleaved_targets_without_request_reordering() {
+        let mut queue = VecDeque::new();
+        for frame in 0..3 {
+            for target in 1..=128 {
+                let request = WindowRequest {
+                    session: 1,
+                    id: frame * 128 + target,
+                    scope: None,
+                    operation: WindowOperation::Adjust {
+                        target: WindowId(target),
+                        group: 7,
+                        change: WindowChange::Move { dx: 0.5, dy: 1.0 },
+                    },
+                };
+                if !coalesce_gesture(&mut queue, &request, &[]) {
+                    assert!(queue.len() < 64 || extends_gesture(&queue, &request));
+                    queue.push_back(Pending::Window {
+                        request,
+                        screens: Arc::from([]),
+                        requires_barrier: false,
+                    });
+                }
+            }
+        }
+        assert_eq!(queue.len(), 128);
+        for (index, pending) in queue.iter().enumerate() {
+            let Pending::Window { request, .. } = pending else {
+                panic!()
+            };
+            assert_eq!(request.id, 257 + index as u64);
+            assert!(matches!(
+                request.operation,
+                WindowOperation::Adjust {
+                    change: WindowChange::Move { dx: 1.5, dy: 3.0 },
+                    ..
+                }
+            ));
+        }
+        let barrier = WindowRequest {
+            session: 1,
+            id: 385,
+            scope: None,
+            operation: WindowOperation::Undo,
+        };
+        queue.push_back(Pending::Window {
+            request: barrier,
+            screens: Arc::from([]),
+            requires_barrier: false,
+        });
+        let next = WindowRequest {
+            session: 1,
+            id: 386,
+            scope: None,
+            operation: WindowOperation::Adjust {
+                target: WindowId(1),
+                group: 7,
+                change: WindowChange::Move { dx: 1.0, dy: 0.0 },
+            },
+        };
+        assert!(!coalesce_gesture(&mut queue, &next, &[]));
+        assert!(!extends_gesture(&queue, &next));
+    }
+}
 fn runnable(queue: &VecDeque<Pending>, frames: &VecDeque<PendingAdjustment>) -> Option<usize> {
     if frames.is_empty() {
         return (!queue.is_empty()).then_some(0);
@@ -76,6 +273,16 @@ pub(super) fn execute_audio(
     let outcome = match request.target {
         AudioTarget::Application(id) => access.volume(id, request.action),
         AudioTarget::System => access.system_audio(request.action),
+        AudioTarget::Applications(ids) => {
+            let mut outcome = Ok(String::new());
+            for id in ids {
+                let result = access.volume(id, request.action);
+                if outcome.is_ok() {
+                    outcome = result;
+                }
+            }
+            outcome
+        }
     };
     crate::api::audio::AudioResult {
         session: request.session,
@@ -348,7 +555,12 @@ impl WindowWorker {
                                 if let Some(factory) = access.audio_factory() {
                                     let (session, id) = (request.session, request.id);
                                     let submitted = (|| {
-                                        let process = access.audio_process(request.target)?;
+                                        let processes = match &request.target {
+                                            crate::api::audio::AudioTarget::Applications(ids) => {
+                                                access.audio_selection(ids)
+                                            }
+                                            target => vec![access.audio_process(target.clone())],
+                                        };
                                         if audio.is_none() {
                                             audio = Some(crate::platform::common::audio_worker::AudioWorker::start(
                                                 factory,
@@ -358,7 +570,7 @@ impl WindowWorker {
                                         audio
                                             .as_ref()
                                             .ok_or("audio worker unavailable")?
-                                            .submit(request, process, cancelled.clone())
+                                            .submit(request, processes, cancelled.clone())
                                             .map_err(|error| error.to_string())
                                     })();
                                     if let Err(error) = submitted
@@ -620,7 +832,7 @@ impl WindowWorker {
             }
             queue.push_back(Pending::Window {
                 request,
-                screens: screens.clone(),
+                screens,
                 requires_barrier: false,
             });
             drop(queue);
@@ -706,58 +918,18 @@ impl WindowWorker {
             && a == b
         {
             *last = request;
-            *last_screens = screens.clone();
+            *last_screens = screens;
             return Ok(());
         }
-        // Coalesce relative changes only within the same uninterrupted gesture.
-        if let Some(Pending::Window { request: last, .. }) = queue.back_mut()
-            && last.session == request.session
-            && let (
-                WindowOperation::Adjust {
-                    target: a,
-                    change: ca,
-                    group: ga,
-                },
-                WindowOperation::Adjust {
-                    target: b,
-                    change: cb,
-                    group: gb,
-                },
-            ) = (&mut last.operation, &request.operation)
-            && a == b
-            && ga == gb
-        {
-            let merged = match (ca, cb) {
-                (WindowChange::MoveTo(a), WindowChange::MoveTo(b)) => {
-                    *a = *b;
-                    true
-                }
-                (WindowChange::Move { dx: ax, dy: ay }, WindowChange::Move { dx: bx, dy: by }) => {
-                    *ax += bx;
-                    *ay += by;
-                    true
-                }
-                (
-                    WindowChange::Resize { dw: ax, dh: ay },
-                    WindowChange::Resize { dw: bx, dh: by },
-                ) => {
-                    *ax += bx;
-                    *ay += by;
-                    true
-                }
-                _ => false,
-            };
-            if merged {
-                last.id = request.id;
-                return Ok(());
-            }
+        if coalesce_gesture(&mut queue, &request, &screens) {
+            return Ok(());
         }
-        if queue.len() >= 64 {
+        if queue.len() >= 64 && !extends_gesture(&queue, &request) {
             return Err("window operation queue is full".into());
         }
         queue.push_back(Pending::Window {
             request,
-            screens: screens.clone(),
+            screens,
             requires_barrier: false,
         });
         drop(queue);

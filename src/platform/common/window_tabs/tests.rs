@@ -694,6 +694,20 @@ fn setup() -> Grouped<Fake> {
     grouped
 }
 impl WindowAccess for Fake {
+    fn audio_process(
+        &self,
+        target: crate::api::audio::AudioTarget,
+    ) -> Result<Option<super::super::audio_worker::AudioProcess>, String> {
+        match target {
+            crate::api::audio::AudioTarget::Application(id) => {
+                Ok(Some(super::super::audio_worker::AudioProcess {
+                    pid: id.0 as u32,
+                    started: 1,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
     fn can_submit_frame(&self, id: WindowId) -> bool {
         self.deferred && !self.hidden.contains(&id)
     }
@@ -2379,4 +2393,83 @@ fn cycle_direct_neighbour_uses_no_scratch_allocation() {
             }
         }
     }
+}
+
+#[test]
+fn multi_selection_close_group_requests_each_member_once_and_preserves_dialogs() {
+    let mut access = setup();
+    for id in [1, 2, 3] {
+        choose(&mut access, id);
+    }
+    access.close_group(WindowId(2), &|| false).unwrap();
+    assert_eq!(
+        *access.native.close_requests.borrow(),
+        [WindowId(1), WindowId(2), WindowId(3)]
+    );
+    assert_eq!(access.groups.state.groups[0].members.len(), 3);
+    access.close_group(WindowId(2), &|| true).unwrap();
+    assert_eq!(access.native.close_requests.borrow().len(), 3);
+    let processes = access.audio_selection(&[WindowId(2), WindowId(3)]);
+    assert_eq!(
+        processes
+            .into_iter()
+            .map(|p| p.unwrap().unwrap().pid)
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+}
+
+#[test]
+fn multi_selection_tabs_override_application_grouping_and_undo_as_one_operation() {
+    let mut access = setup();
+    for snapshot in access.native.windows.values_mut() {
+        snapshot.info.app = "same-app".into();
+    }
+    let untouched = access.native.windows[&WindowId(4)].info.bounds;
+    choose(&mut access, 1);
+    choose(&mut access, 2);
+    op(&mut access, TabOperation::EndGroup);
+    let original = access.groups.state.groups.clone();
+    let history = access.history.len();
+    op(
+        &mut access,
+        TabOperation::EnterSelection(vec![WindowId(2), WindowId(3), WindowId(1)]),
+    );
+    assert_eq!(access.groups.state.groups.len(), 1);
+    assert_eq!(
+        access.groups.state.groups[0].members,
+        [1, 2, 3].map(WindowId)
+    );
+    assert!(access.groups.state.containing(WindowId(4)).is_none());
+    assert_eq!(access.native.windows[&WindowId(4)].info.bounds, untouched);
+    assert!(!access.native.hidden.contains(&WindowId(4)));
+    assert_eq!(access.history.len(), history + 1);
+    op(&mut access, TabOperation::Undo);
+    assert_eq!(access.groups.state.groups, original);
+    op(&mut access, TabOperation::Redo);
+    assert_eq!(
+        access.groups.state.groups[0].members,
+        [1, 2, 3].map(WindowId)
+    );
+}
+
+#[test]
+fn multi_selection_tabs_empty_or_stale_selection_never_falls_back_to_auto_grouping() {
+    let mut access = setup();
+    for snapshot in access.native.windows.values_mut() {
+        snapshot.info.app = "same-app".into();
+    }
+    op(&mut access, TabOperation::EnterSelection(vec![]));
+    assert!(access.groups.state.groups.is_empty());
+    assert!(
+        access
+            .tab_operation(
+                TabOperation::EnterSelection(vec![WindowId(1), WindowId(99)]),
+                &screens(),
+                &|| false
+            )
+            .is_err()
+    );
+    assert!(access.groups.state.groups.is_empty());
+    assert!(access.history.is_empty());
 }

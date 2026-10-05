@@ -1663,3 +1663,42 @@ fn visual_candidate_limit_accepts_ten_thousand_but_remains_bounded() {
         crate::api::command::MAX_UI_SCAN_TARGETS
     )));
 }
+
+#[test]
+fn window_multi_selection_bindings_expand_space_aliases_and_round_trip() {
+    let config = Config::parse(
+        r#"
+[window]
+target = "active"
+[window.bindings]
+ctrl = "window_multi_select"
+"ctrl+x" = "window_multi_clear"
+[window.multi_select.bindings]
+"ctrl enter" = "window_multi_confirm"
+"f2 f3" = "window_multi_clear"
+"#,
+    )
+    .unwrap();
+    config.validate().unwrap();
+    assert_eq!(
+        config.window.target,
+        Some(crate::api::window::WindowTarget::Active)
+    );
+    for key in ["ctrl", "enter"] {
+        assert_eq!(
+            config.window.multi_select.bindings[key],
+            Binding::Window(crate::api::window::WindowAction::MultiConfirm)
+        );
+    }
+    let restored = Config::parse(&config.to_toml().unwrap()).unwrap();
+    assert_eq!(config.window.multi_select, restored.window.multi_select);
+    assert_eq!(
+        config.window.bindings["ctrl"],
+        Binding::Window(crate::api::window::WindowAction::MultiSelect)
+    );
+    let shipped = Config::parse(include_str!("../../../keysteer.default.toml")).unwrap();
+    assert_eq!(
+        shipped.window.multi_select,
+        Config::default().window.multi_select
+    );
+}

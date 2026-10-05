@@ -641,9 +641,7 @@ impl StatusItem {
         let mtm = MainThreadMarker::new().ok_or_else(|| {
             "update result must be presented on the macOS main thread".to_string()
         })?;
-        let action = downloaded_update
-            .map(PanelAction::RevealInFinder)
-            .unwrap_or(PanelAction::None);
+        let action = downloaded_update.map_or(PanelAction::None, PanelAction::RevealInFinder);
         show_panel(mtm, &self._target, title, details, action)
     }
 }

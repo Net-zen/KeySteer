@@ -74,9 +74,7 @@ impl<C: ColorValue> ModeIndicator<C> {
         let text = entry
             .and_then(|entry| entry.text.clone())
             .unwrap_or_else(display_name);
-        let ui = entry
-            .map(|entry| entry.ui.apply(&self.ui))
-            .unwrap_or_else(|| self.ui.clone());
+        let ui = entry.map_or_else(|| self.ui.clone(), |entry| entry.ui.apply(&self.ui));
         Some((text, ui))
     }
 
@@ -605,7 +603,7 @@ mod search_panel_tests {
         .unwrap();
         let mut input = defaults.ui_hint.search_input_ui.clone();
         input.width = 320;
-        let mut info = defaults.ui_hint.search_info_ui.clone();
+        let mut info = defaults.ui_hint.search_info_ui;
         info.label.font_size = 18;
         assert_eq!(parsed.ui_hint.search_input_ui, input);
         assert_eq!(parsed.ui_hint.search_info_ui, info);

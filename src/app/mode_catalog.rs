@@ -437,6 +437,26 @@ fn window_settings(config: &Config, kind: modes::window::WindowKind) -> modes::w
         config.window.card.clone()
     };
     modes::window::Settings {
+        multi_bindings: config
+            .window
+            .multi_select
+            .bindings
+            .iter()
+            .flat_map(|(keys, binding)| {
+                keys.split_whitespace().map(|key| {
+                    (
+                        crate::api::KeyChord::parse_with_aliases(
+                            key,
+                            config.resolved_key_aliases(),
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("window settings require validated configuration: {error}")
+                        }),
+                        std::sync::Arc::new(binding.clone()),
+                    )
+                })
+            })
+            .collect(),
         target: common.target,
         all_screens: common.screens == crate::config::WindowScreens::All,
         include_minimized: common.include_minimized,

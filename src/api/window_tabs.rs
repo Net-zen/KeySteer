@@ -51,6 +51,8 @@ pub enum TabOperation {
     Enter {
         screen: usize,
     },
+    /// Compose only the explicit selection, expanding existing groups as units.
+    EnterSelection(Vec<WindowId>),
     Choose(WindowTarget),
     EndGroup,
     Activate(WindowId),

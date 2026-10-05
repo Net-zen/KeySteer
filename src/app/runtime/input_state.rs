@@ -999,8 +999,7 @@ impl Engine {
                 && self
                     .registry
                     .get(&self.registry.active)
-                    .map(|m| m.captures_keyboard())
-                    .unwrap_or(false));
+                    .is_some_and(|m| m.captures_keyboard()));
 
         if !captures
             && input.state == KeyState::Down
@@ -1811,6 +1810,14 @@ impl Engine {
     }
 
     fn temporary_trigger_active<const HELP: bool>(&self, mode: &ModeId, pressed: &[Key]) -> bool {
+        if !HELP
+            && self
+                .registry
+                .keyboard_prompt_mode(mode)
+                .is_some_and(|mode| mode.keyboard_prompt_active())
+        {
+            return false;
+        }
         self.registry.temporary_chords(mode).is_some_and(|chords| {
             chords.iter().any(|entry| {
                 let reserved_for_overlap =
@@ -1964,6 +1971,17 @@ impl Engine {
         key: &Key,
         pressed: &[Key],
     ) -> Option<ResolvedBinding> {
+        if !HELP
+            && let Some(binding) = self
+                .registry
+                .keyboard_prompt_mode(active)
+                .and_then(|mode| mode.keyboard_prompt_binding(key, pressed))
+        {
+            return Some(ResolvedBinding {
+                binding,
+                owner: active.clone(),
+            });
+        }
         let available = |binding: &Binding| {
             if HELP {
                 match binding.window_action() {

@@ -122,10 +122,9 @@ fn list_core_graphics_screens() -> Result<Vec<Screen>, String> {
         .map(|id| {
             let display = CGDisplay::new(id);
             let bounds = display.bounds();
-            let scale = display
-                .display_mode()
-                .map(|mode| mode.pixel_width() as f64 / bounds.size.width.max(1.0))
-                .unwrap_or(1.0);
+            let scale = display.display_mode().map_or(1.0, |mode| {
+                mode.pixel_width() as f64 / bounds.size.width.max(1.0)
+            });
             let bounds = Rect::new(
                 bounds.origin.x,
                 bounds.origin.y,
