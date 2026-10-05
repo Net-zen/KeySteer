@@ -5,6 +5,16 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.11.0
+
+- 新增窗口多选，可批量移动、缩放、最大化／最小化和关闭窗口，选中窗口会高亮显示。
+- 默认按 `Alt+W` 进入窗口模式，再按 `Ctrl` 开始多选（macOS 同样使用 Control，当前窗口默认选中）；输入 `234` 切换选择窗口 2、3、4，多位编号先按空格再输入，按 `Enter` 或再次按 `Ctrl` 确认。
+- 确认后沿用原有操作键，按 `E` 只平铺选中窗口，按 `T` 将它们组成标签组；`Ctrl+X` 清除多选并回到最初窗口。
+
+- Added window multi-selection for moving, resizing, maximizing/minimizing, and closing multiple windows together, with highlighted selections.
+- With default bindings, press `Alt+W`, then `Ctrl` to start selecting (Control on macOS too; the current window starts selected). Type `234` to toggle windows 2, 3, and 4; press Space before entering multi-digit labels. Press `Enter` or `Ctrl` again to confirm.
+- Use the usual action keys after confirming: `E` tiles only selected windows, `T` combines them into a tab group, and `Ctrl+X` clears the selection and returns to the original window.
+
 ## 0.10.30
 
 优化窗口移动、缩放和 UI Hint 搜索响应，减少重复计算与临时内存分配。

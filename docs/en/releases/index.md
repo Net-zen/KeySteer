@@ -5,6 +5,12 @@ outline: false
 
 # Release notes
 
+## 0.11.0
+
+- Added window multi-selection for moving, resizing, maximizing/minimizing, and closing multiple windows together, with highlighted selections.
+- With default bindings, press `Alt+W`, then `Ctrl` to start selecting (Control on macOS too; the current window starts selected). Type `234` to toggle windows 2, 3, and 4; press Space before entering multi-digit labels. Press `Enter` or `Ctrl` again to confirm.
+- Use the usual action keys after confirming: `E` tiles only selected windows, `T` combines them into a tab group, and `Ctrl+X` clears the selection and returns to the original window.
+
 ## 0.10.30
 
 Improved window movement, resizing, and UI Hint search responsiveness, reducing repeated work and temporary allocations.
