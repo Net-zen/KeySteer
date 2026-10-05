@@ -359,7 +359,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   pages:
-    name: Request documentation deployment after build
+    name: deploy documentation
     needs: [windows, macos, release]
     # Partial build-only runs may skip one platform and the release job.
     # Failed or cancelled builds/publications must never deploy the website.
