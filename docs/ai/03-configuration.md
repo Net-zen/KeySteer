@@ -18,6 +18,8 @@
 
 字段、默认键位和格式细节直接查 `keysteer.default.toml`、解析代码及测试。修改用户配置语义时同步用户参考和网页编辑器适用部分。
 
+窗口卡片共用 `[window.card]`；选中底色、边框颜色与线宽可由 `selected_background_color`、`selected_border_color`、`selected_border_width` 覆盖。明暗主题薄荷绿及 1.5 线宽为内置默认值，默认配置和原生导出不写入这些默认字段；网页控件显示默认值，但只在编辑后生成对应覆盖，重置删除覆盖。颜色支持 `#RRGGBBAA` 和完整的浅深主题表，线宽为 0–20，0 隐藏卡片选中边框；勾选标记仍保留。原生在装配时预编译样式，网页编辑器、普通／选中对照与交互预览使用同一配置。
+
 UIHint 搜索样式缺省时使用 `UiHint::default()` 的对应面板默认值。部分 `search_input_ui`／`search_info_ui` 表也在配置反序列化阶段补齐各自默认字段；信息面板不能退回输入框的通用宽度和屏幕锚点。补齐后沿用共享校验和启动样式编译，运行时不解析配置。
 
 `ui_hint.search_edit_keys` 按动作配置搜索编辑快捷键，稀疏表覆盖默认值；与信息复制键一起校验冲突，并在启动阶段解析为 KeyChord。`primary` 自动适配 Cmd／Ctrl，也允许显式 cmd、ctrl 等修饰键。
@@ -26,4 +28,4 @@ UIHint 搜索样式缺省时使用 `UiHint::default()` 的对应面板默认值�
 
 颜色原文只保留在配置模型中，用于校验和序列化。网格、Hint、按键帮助与模式指示器在装配时转换为 `CompiledColor` 和 `style::compiled` 样式，运行时只选择浅／深色数值；未配置值及无效程序化颜色仍保留原有回退语义。搜索面板、窗口卡片和快速切换沿用已有整样式编译。透明度、对比度和场景默认色在绘制时派生，不因提前解析而冻结；主题变化选择另一组数值，配置重载重建整个计划。
 
-Window 多选入口与清空沿用 `window.bindings` 的 `window_multi_select`／`window_multi_clear`；输入期间由 `window.multi_select.bindings` 覆盖确认键，默认 `"ctrl enter" = "window_multi_confirm"`。空格仍表示多个快捷键别名，不引入新按键语义，也不改变 `window.target`。
+Window 多选入口与清空沿用 `window.bindings` 的 `window_multi_select`／`window_multi_clear`；输入期间由 `window.multi_select.bindings` 覆盖确认及编辑键，默认 Ctrl／Enter 确认、primary+h/l 移动输入光标。编辑键显式写在该表，支持 arrow_left/right、home/end、backspace/delete 及 Shift 方向选区，不从 Normal 复制配置。空格仍表示多个快捷键别名，也不改变 `window.target`。

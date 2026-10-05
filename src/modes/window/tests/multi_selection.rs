@@ -37,6 +37,226 @@ fn type_input(mode: &mut WindowSession, text: &str) {
     }
 }
 
+fn with_context(test: impl FnOnce(&HostContext<'_>)) {
+    let config = crate::config::Config::default();
+    let palette = config.palette(Appearance::Dark);
+    let screens = [crate::api::Screen {
+        bounds: Rect::new(-1200.0, -900.0, 2400.0, 1800.0),
+        work_area: Rect::new(-1200.0, -900.0, 2400.0, 1800.0),
+        scale: 1.0,
+        is_primary: true,
+        name: None,
+    }];
+    test(&HostContext {
+        presenter: &crate::presentation::COMPOSER,
+        screens: &screens,
+        cursor: Point::new(25.0, 40.0),
+        focused_app: None,
+        palette: &palette,
+    });
+}
+
+#[test]
+fn multi_selection_caret_edits_activate_the_preceding_number_without_changing_the_anchor() {
+    with_context(|ctx| {
+        let mut mode = session(4);
+        mode.begin_multi(&mut CommandBatch::new());
+        let mut activated = Vec::new();
+        for (key, expected_text, caret) in [
+            ("1", "1", 1),
+            ("2", "12", 2),
+            ("3", "123", 3),
+            ("4", "1234", 4),
+            ("backspace", "123", 3),
+            ("left", "123", 2),
+            ("4", "1243", 3),
+            ("delete", "124", 3),
+            ("home", "124", 0),
+            ("right", "124", 1),
+        ] {
+            let out = mode.handle(
+                &ModeEvent::Key {
+                    key: Key::new(key).unwrap(),
+                    state: KeyState::Down,
+                    repeat: false,
+                },
+                ctx,
+            );
+            activated.extend(out.iter().filter_map(|command| match command {
+                Command::WindowRequest(request) => match request.operation {
+                    WindowOperation::Activate(id) => Some(id),
+                    _ => None,
+                },
+                _ => None,
+            }));
+            let input = mode.multi_input.as_ref().unwrap();
+            assert_eq!(input.text, expected_text);
+            assert_eq!(input.selection.cursor, caret);
+            assert_eq!(mode.target.as_ref().unwrap().id, WindowId(1));
+            assert!(!mode.detail().contains("Example"));
+            assert!(!mode.detail().contains("First run"));
+            assert_eq!(mode.detail().lines().count(), 3);
+        }
+        assert_eq!(activated, [1, 2, 3, 4, 3, 2, 4, 1].map(WindowId));
+        assert_eq!(mode.multi, [1, 2, 4].map(WindowId));
+        for key in ["4", "space"] {
+            let out = mode.handle(
+                &ModeEvent::Key {
+                    key: Key::new(key).unwrap(),
+                    state: KeyState::Down,
+                    repeat: true,
+                },
+                ctx,
+            );
+            assert_eq!(mode.multi_input.as_ref().unwrap().text, "124");
+            assert_eq!(mode.multi_input.as_ref().unwrap().selection.cursor, 1);
+            assert!(
+                !out.iter()
+                    .any(|command| matches!(command, Command::WindowRequest(_))),
+                "input repeats must not enter ordinary number selection"
+            );
+        }
+    });
+}
+
+#[test]
+fn deleting_all_multi_input_reactivates_the_captured_window_once() {
+    use crate::api::text_edit::EditAction as E;
+    with_context(|ctx| {
+        for actions in [
+            vec![E::Backspace, E::Backspace],
+            vec![E::Home, E::Delete, E::Delete],
+            vec![E::SelectAll, E::Backspace],
+        ] {
+            let mut mode = session(4);
+            mode.target = Some(window(4));
+            mode.settings.target = Some(crate::api::window::WindowTarget::Active);
+            mode.begin_multi(&mut CommandBatch::new());
+            let mut previews = Vec::new();
+            for key in ["2", "3"] {
+                let out = mode.handle(
+                    &ModeEvent::Key {
+                        key: Key::new(key).unwrap(),
+                        state: KeyState::Down,
+                        repeat: false,
+                    },
+                    ctx,
+                );
+                previews.extend(out.iter().filter_map(|command| match command {
+                    Command::WindowRequest(request) => match request.operation {
+                        WindowOperation::Activate(id) => Some(id),
+                        _ => None,
+                    },
+                    _ => None,
+                }));
+            }
+            assert_eq!(mode.multi, [4, 2, 3].map(WindowId));
+            assert_eq!(previews, [2, 3].map(WindowId));
+            let mut restored = Vec::new();
+            for action in actions {
+                let out = mode.handle(&ModeEvent::TextEdit(action), ctx);
+                restored.extend(out.iter().filter_map(|command| match command {
+                    Command::WindowRequest(request)
+                        if request.operation == WindowOperation::Activate(WindowId(4)) =>
+                    {
+                        Some(request.id)
+                    }
+                    _ => None,
+                }));
+                assert!(!out.iter().any(|command| matches!(command, Command::WindowRequest(request) if matches!(request.operation, WindowOperation::Select(_) | WindowOperation::Retarget(_)))));
+            }
+            assert_eq!(
+                restored.len(),
+                1,
+                "empty input must restore native focus exactly once"
+            );
+            assert_eq!(mode.multi_input.as_ref().unwrap().text, "");
+            assert_eq!(mode.multi, [WindowId(4)]);
+            assert_eq!(mode.multi_anchor, Some(WindowId(4)));
+            assert_eq!(mode.target.as_ref().unwrap().id, WindowId(4));
+            let repeated = mode.handle(&ModeEvent::TextEdit(E::Backspace), ctx);
+            assert!(
+                !repeated
+                    .iter()
+                    .any(|command| matches!(command, Command::WindowRequest(_)))
+            );
+        }
+    });
+}
+
+#[test]
+fn multi_selection_pointer_averages_confirmed_centers_after_cross_screen_results() {
+    with_context(|ctx| {
+        let mut mode = session(2);
+        mode.inventory.get_mut(&WindowId(1)).unwrap().bounds =
+            Rect::new(-1100.0, -700.0, 200.0, 300.0);
+        mode.target = mode.inventory.get(&WindowId(1)).cloned();
+        mode.inventory.get_mut(&WindowId(2)).unwrap().bounds =
+            Rect::new(200.0, 100.0, 600.0, 500.0);
+        mode.begin_multi(&mut CommandBatch::new());
+        assert_eq!(
+            mode.multi_pointer(),
+            None,
+            "initial/single selection keeps its relative pointer"
+        );
+        type_input(&mut mode, "2");
+        assert_eq!(mode.multi_pointer(), Some(Point::new(-250.0, -100.0)));
+        let mut peer = mode.inventory[&WindowId(2)].clone();
+        peer.bounds.x = -600.0;
+        peer.bounds.y = -400.0;
+        let expected = Point::new(-650.0, -350.0);
+        for (id, pointer) in [(1, Some(Point::new(7000.0, -6000.0))), (2, None)] {
+            // The first is a screen transfer; the second a resize acknowledgement.
+            peer.bounds.width += if id == 2 { 100.0 } else { 0.0 };
+            let out = mode.window_result(
+                WindowResult {
+                    session: 1,
+                    id,
+                    target: Some(peer.clone()),
+                    windows: None,
+                    closed: vec![],
+                    tabs: None,
+                    pointer,
+                    changed: 1,
+                    skipped: 0,
+                    message: None,
+                    edit: None,
+                },
+                ctx,
+            );
+            let expected = Point::new(expected.x + if id == 2 { 25.0 } else { 0.0 }, expected.y);
+            assert!(out.iter().any(|command| matches!(command, Command::WarpPointer { x, y } if Point::new(*x, *y) == expected)));
+            assert_eq!(mode.target.as_ref().unwrap().id, WindowId(1));
+        }
+    });
+}
+
+#[test]
+fn multi_selection_pointer_counts_tab_groups_once_and_skips_minimized_windows() {
+    use crate::api::window_tabs::{TabGroup, TabGroupId};
+    let mut mode = session(4);
+    mode.tabs.state.groups.push(TabGroup {
+        id: TabGroupId(1),
+        members: vec![WindowId(2), WindowId(3)],
+        active: WindowId(3),
+    });
+    mode.begin_multi(&mut CommandBatch::new());
+    type_input(&mut mode, "24");
+    assert_eq!(
+        mode.multi_pointer(),
+        Some(Point::new((160.0 + 180.0 + 190.0) / 3.0, 100.0))
+    );
+    mode.inventory.get_mut(&WindowId(4)).unwrap().minimized = true;
+    assert_eq!(mode.multi_pointer(), Some(Point::new(170.0, 100.0)));
+    mode.inventory.get_mut(&WindowId(1)).unwrap().minimized = true;
+    mode.inventory.get_mut(&WindowId(3)).unwrap().minimized = true;
+    assert_eq!(mode.multi_pointer(), None);
+    assert!(
+        mode.uses_multi_pointer(),
+        "no arbitrary per-window offset when all selected windows are minimized"
+    );
+}
+
 #[test]
 fn multi_selection_input_is_immediate_and_uses_spaces_for_complete_labels() {
     let mut mode = session(123);

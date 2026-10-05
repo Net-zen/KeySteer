@@ -886,6 +886,17 @@ pub trait Mode: Send {
         None
     }
 
+    /// Interpret an explicitly configured send binding as prompt editing.
+    /// The host queries only modes with the cached prompt capability.
+    fn keyboard_prompt_edit(
+        &self,
+        _chord: &super::input::KeyChord,
+        _key: &Key,
+        _pressed: &[Key],
+    ) -> Option<super::text_edit::EditAction> {
+        None
+    }
+
     /// Whether the host consumes otherwise-unbound keyboard input for this mode.
     fn captures_keyboard(&self) -> bool {
         true

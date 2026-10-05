@@ -24,6 +24,12 @@ impl WindowKind {
     pub fn is_library(self) -> bool {
         matches!(self, Self::Restore)
     }
+    fn clears_multi_on_handoff(self, target: &ModeId) -> bool {
+        target != &self.id()
+            && (matches!(self, Self::Quick | Self::Restore)
+                || target == &ModeId::window_quick()
+                || target == &ModeId::window_restore())
+    }
 }
 
 pub struct WindowMode {
@@ -80,6 +86,9 @@ impl Mode for WindowMode {
             .session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if session.kind.clears_multi_on_handoff(target) {
+            session.discard_multi();
+        }
         if session.selection.is_some() {
             let mut out = CommandBatch::new();
             session.cancel_target_selection(&mut out);
@@ -147,6 +156,11 @@ impl Mode for WindowMode {
         ) {
             scope_changed = session.settings.all_screens != self.settings.all_screens
                 || session.settings.include_minimized != self.settings.include_minimized;
+            if session.kind.clears_multi_on_handoff(&self.kind.id())
+                || matches!(self.kind, WindowKind::Quick | WindowKind::Restore)
+            {
+                session.discard_multi();
+            }
             session.entry_target = std::mem::replace(&mut self.entry_target, self.settings.target);
             session.kind = self.kind;
             session.settings = self.settings.clone();
@@ -213,6 +227,45 @@ impl Mode for WindowMode {
                     && chord.matches_pressed(pressed)
             })
             .map(|(_, binding)| binding.clone())
+            .or_else(|| {
+                // A configured letter chord must not confirm the input and
+                // execute its ordinary Window action while waiting for its tail.
+                // Bare modifiers retain their existing confirm-on-release routing.
+                if !key.is_modifier()
+                    && session.settings.multi_bindings.iter().any(|(chord, _)| {
+                        !chord.activation_matches(key)
+                            && chord.keys().len() > pressed.len()
+                            && pressed.iter().all(|key| chord.keys().contains(key))
+                    })
+                {
+                    static PREFIX: std::sync::OnceLock<Arc<Binding>> = std::sync::OnceLock::new();
+                    Some(PREFIX.get_or_init(|| Arc::new(Binding::Disabled)).clone())
+                } else {
+                    None
+                }
+            })
+    }
+    fn keyboard_prompt_edit(
+        &self,
+        chord: &crate::api::KeyChord,
+        key: &Key,
+        pressed: &[Key],
+    ) -> Option<crate::api::text_edit::EditAction> {
+        let session = self
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.kind != WindowKind::Move || session.multi_input.is_none()
+            || !session.settings.multi_bindings.iter().any(|(source, binding)| {
+                source.activation_matches(key)
+                    && source.keys().len() == pressed.len()
+                    && source.matches_pressed(pressed)
+                    && matches!(binding.as_ref(), Binding::Send(configured) if configured == chord)
+            })
+        {
+            return None;
+        }
+        crate::api::text_edit::navigation_action(chord)
     }
     fn claims_key(&self, key: &Key) -> bool {
         self.session

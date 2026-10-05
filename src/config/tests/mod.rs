@@ -65,6 +65,9 @@ title_font_size = 30.0
 app_font_family = "Example Sans"
 title_bold = true
 app_color = {{ light = "#123456FF", dark = "#FEDCBAFF" }}
+selected_background_color = {{ light = "#E0F2E9FF", dark = "#285245E0" }}
+selected_border_color = "#68BCA3FF"
+selected_border_width = 0.0
 text_width = 320.0
 padding_y = 8.0
 "##
@@ -88,6 +91,11 @@ padding_y = 8.0
             "app_font_size = nan",
             "title_font_size = 257",
             "title_color = 'invalid'",
+            "selected_background_color = 'invalid'",
+            "selected_border_color = { light = '#60B49CFF', dark = 'invalid' }",
+            "selected_border_width = -1",
+            "selected_border_width = 21",
+            "selected_border_width = nan",
         ] {
             let invalid = Config::parse(&format!("[{mode}.card]\n{invalid}")).unwrap();
             assert!(invalid.validate().is_err());
@@ -1676,6 +1684,8 @@ ctrl = "window_multi_select"
 [window.multi_select.bindings]
 "ctrl enter" = "window_multi_confirm"
 "f2 f3" = "window_multi_clear"
+"alt+h" = "arrow_left"
+"alt+l" = "arrow_right"
 "#,
     )
     .unwrap();
@@ -1701,4 +1711,12 @@ ctrl = "window_multi_select"
         shipped.window.multi_select,
         Config::default().window.multi_select
     );
+    for value in ["left_click", "move_left", "send ctrl+c"] {
+        let invalid =
+            Config::parse(&format!("[window.multi_select.bindings]\nf8 = '{value}'")).unwrap();
+        assert!(
+            invalid.validate().is_err(),
+            "{value} is not a multi-selection edit"
+        );
+    }
 }

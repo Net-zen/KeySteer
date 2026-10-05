@@ -3,6 +3,7 @@ import { fieldLocation, type SettingsTab } from './navigation'
 import { cardPositionRatios } from '../simulator/window-card-position.ts'
 import CardPositionEditor from './CardPositionEditor'
 import CardStylePreview from './CardStylePreview'
+import { selectedCardStyle } from '../simulator/window-card-style'
 import { parseSplitRatios } from '../simulator/window-ratios.ts'
 import { computed, defineComponent } from 'vue'
 import {
@@ -39,7 +40,12 @@ export default defineComponent({
       if (field.path.includes('.lifecycle.')) return configured ?? 'keep'
       if (configured !== undefined || !isCardField(field)) return configured
       if (field.path.endsWith('.ui.border_width')) return 1
+      if (field.path === 'window.card.selected_border_width') return 1.5
       if (field.kind !== 'color') return undefined
+      if (field.path === 'window.card.selected_background_color' || field.path === 'window.card.selected_border_color') {
+        const key = field.path.endsWith('background_color') ? 'background' : 'border'
+        return Object.fromEntries(['light', 'dark'].map(appearance => [appearance, selectedCardStyle({}, appearance)[key]]))
+      }
       const ui = props.effectiveDocument[props.mode]?.ui ?? {}
       const key = field.path.split('.').at(-1)
       const source = key === 'background_color' ? 'surface' : key === 'border_color' ? 'accent' : 'text'
@@ -100,11 +106,12 @@ export default defineComponent({
             <div class="ks-card-editor-controls">
               <strong>{t("颜色、透明度与边框")}</strong>
               {renderFields(modeFields.value.colors.filter(isCardField))}
+              {renderFields(modeFields.value.layout.filter(field => field.path === 'window.card.selected_border_width'))}
               <details class="ks-style-advanced"><summary>{t("高级设置 · 字体、尺寸与间距")}</summary>
               {renderFields(modeFields.value.advanced.filter(isCardField))}</details>
             </div>
             <strong>{t("位置与排列")}</strong>
-            {renderFields(modeFields.value.layout.filter(isCardField))}
+            {renderFields(modeFields.value.layout.filter(field => isCardField(field) && field.path !== 'window.card.selected_border_width'))}
             {(props.page === 'window_card' || props.page === 'window_editor') && <CardPositionEditor
               position={getConfigPath(props.effectiveDocument, positionRoot.value + '.position') as string[] ?? ['50%', '50%', '50%', '50%']}
               reference={String(getConfigPath(props.effectiveDocument, positionRoot.value + '.position_mode') ?? 'window')}

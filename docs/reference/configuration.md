@@ -517,7 +517,13 @@ guide_line_enabled = true
 guide_line_width = 3.0 # 0–32；0 也隐藏线条
 # 默认继承卡片边框颜色；末两位是透明度，也支持浅深主题颜色。
 # guide_line_color = "#6E82D680"
+# 内置选中样式为柔和薄荷绿；以下为可选覆盖，默认无需配置。
+# selected_background_color = { light = "#E8F6F0FF", dark = "#284D44FF" }
+# selected_border_color = { light = "#60B49CFF", dark = "#85CDB8FF" }
+# selected_border_width = 1.5 # 0–20；0 隐藏选中卡片边框
 ```
+
+选中颜色也可使用单个 `#RRGGBBAA` 值，末两位控制透明度。配置工作室的「窗口管理 → 共用外观」提供颜色与线宽编辑，并展示普通／选中卡片对照；交互模拟器同步显示当前选中的卡片。未修改时不生成选中样式字段，修改后下载配置会包含对应覆盖，重置则移除覆盖并恢复内置样式。
 
 ## 临时模式按键优先级
 

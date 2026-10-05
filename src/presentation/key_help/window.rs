@@ -282,9 +282,13 @@ pub(super) fn sections(
         .into();
     }
     let mut common = Vec::new();
-    take(&mut actions, "window_multi_select", &mut common);
+    pair(
+        &mut actions,
+        ["window_multi_select", "window_multi_clear"],
+        "Multi-select / clear",
+        &mut common,
+    );
     take(&mut actions, "window_multi_confirm", &mut common);
-    take(&mut actions, "window_multi_clear", &mut common);
     pair(
         &mut actions,
         ["window_select", "window_select_previous"],
@@ -366,6 +370,28 @@ pub(super) fn sections(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merges_configured_multi_select_and_clear_in_one_row() {
+        for (entry, clear) in [("CTRL", "CTRL+X"), ("F2", "ALT+F4")] {
+            let actions = BTreeMap::from([
+                ("window_multi_select".into(), vec![entry.into()]),
+                ("window_multi_clear".into(), vec![clear.into()]),
+            ]);
+            let plan = sections(actions, "window", None, false);
+            let rows: Vec<_> = plan
+                .left
+                .iter()
+                .chain(&plan.right)
+                .filter(|(_, caption)| caption.contains("Multi-select"))
+                .collect();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(
+                rows[0],
+                &(format!("{entry} / {clear}"), "Multi-select / clear".into())
+            );
+        }
+    }
 
     #[test]
     fn pairs_navigation_even_with_different_modifiers_and_multiple_bindings() {

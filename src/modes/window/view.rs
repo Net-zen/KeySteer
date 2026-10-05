@@ -48,18 +48,38 @@ impl WindowSession {
             return detail;
         }
         if let Some(input) = &self.multi_input {
-            let confirm = self
+            let mappings = self
                 .settings
                 .multi_bindings
                 .iter()
-                .filter(|(_, binding)| matches!(binding.as_ref(), Binding::Window(W::MultiConfirm)))
-                .map(|(chord, _)| chord.to_string())
+                .map(|(chord, binding)| {
+                    format!(
+                        "{}: {}",
+                        crate::api::input::display_key_chord(&chord.canonical()),
+                        match binding.as_ref() {
+                            Binding::Window(W::MultiConfirm) => "Confirm",
+                            Binding::Window(W::ClearMulti) => "Clear",
+                            Binding::Send(chord) =>
+                                match crate::api::text_edit::navigation_action(chord) {
+                                    Some(crate::api::text_edit::EditAction::Left) => "←",
+                                    Some(crate::api::text_edit::EditAction::Right) => "→",
+                                    Some(crate::api::text_edit::EditAction::Home) => "Home",
+                                    Some(crate::api::text_edit::EditAction::End) => "End",
+                                    Some(crate::api::text_edit::EditAction::Backspace) =>
+                                        "Backspace",
+                                    Some(crate::api::text_edit::EditAction::Delete) => "Delete",
+                                    _ => "Select",
+                                },
+                            _ => "",
+                        }
+                    )
+                })
                 .collect::<Vec<_>>()
-                .join(" / ");
+                .join(" · ");
+            let (before, after) = input.text.split_at(input.selection.cursor);
             return format!(
-                "Multi-select · {} selected\nInput: {}▏\nFirst run: single digits; after a space: label + Space/confirm\nExample: 1234567 12 23 · selected numbers toggle off\nAction keys confirm · {confirm}: confirm only · Esc: cancel · Backspace: edit",
+                "Multi-select · {} selected\nInput: {before}▏{after}\n{mappings}",
                 self.operation_targets().len(),
-                input.text
             );
         }
         let state = match self.edit.as_ref().map(|e| &e.model) {

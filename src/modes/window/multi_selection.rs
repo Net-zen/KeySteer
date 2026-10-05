@@ -3,6 +3,8 @@ use super::*;
 
 pub(super) struct Input {
     pub text: String,
+    pub selection: crate::api::text_edit::Selection,
+    last_activation: Option<WindowId>,
     before: Vec<WindowId>,
     implicit_anchor: Option<WindowId>,
     // Numbering is frozen for this edit, so inventory changes cannot retarget typed labels.
@@ -69,6 +71,8 @@ impl WindowSession {
         }
         self.multi_input = Some(Input {
             text: String::new(),
+            selection: crate::api::text_edit::Selection::default(),
+            last_activation: None,
             before: self.multi.clone(),
             implicit_anchor,
             labels: self
@@ -90,14 +94,29 @@ impl WindowSession {
                 self.multi_input = None;
                 return true;
             }
-            "backspace" => {
-                input.text.pop();
+            "backspace" | "delete" | "arrow_left" | "arrow_right" | "home" | "end" => {
+                use crate::api::text_edit::EditAction as E;
+                let action = match key.as_str() {
+                    "backspace" => E::Backspace,
+                    "delete" => E::Delete,
+                    "arrow_left" => E::Left,
+                    "arrow_right" => E::Right,
+                    "home" => E::Home,
+                    _ => E::End,
+                };
+                input.selection.edit(&mut input.text, action);
             }
-            "delete" => input.text.clear(),
-            "space" if !repeat => input.text.push(' '),
-            _ if !repeat && key.as_char().is_some_and(|c| c.is_ascii_digit()) => {
-                if let Some(c) = key.as_char() {
-                    input.text.push(c);
+            "space" => {
+                if !repeat {
+                    input.selection.insert(&mut input.text, " ");
+                }
+            }
+            _ if key.as_char().is_some_and(|c| c.is_ascii_digit()) => {
+                if !repeat && let Some(c) = key.as_char() {
+                    let mut byte = [0];
+                    input
+                        .selection
+                        .insert(&mut input.text, c.encode_utf8(&mut byte));
                 }
             }
             _ if key.as_char().is_some_and(|c| c.is_ascii_alphabetic()) => {
@@ -110,9 +129,53 @@ impl WindowSession {
         true
     }
 
+    pub(super) fn edit_multi_input(&mut self, action: crate::api::text_edit::EditAction) {
+        if let Some(input) = &mut self.multi_input {
+            input.selection.edit(&mut input.text, action);
+            self.recompute_multi_input(false);
+        }
+    }
+
+    pub(super) fn activate_multi_front(&mut self, out: &mut CommandBatch) {
+        let Some(input) = &mut self.multi_input else {
+            return;
+        };
+        let prefix = input.text[..input.selection.cursor].trim_end();
+        let number = if let Some((_, part)) = prefix.rsplit_once(' ') {
+            part.parse::<u32>().ok()
+        } else {
+            prefix
+                .bytes()
+                .next_back()
+                .map(|digit| u32::from(digit - b'0'))
+        };
+        // Deleting the complete edit restores its selection snapshot. Restore
+        // foreground focus as well, rather than leaving only the anchor border.
+        let target = if input.text.is_empty() {
+            self.multi_anchor
+        } else {
+            number.and_then(|number| input.labels.get(&number).copied())
+        }
+        .filter(|id| self.inventory.contains_key(id));
+        if target == input.last_activation {
+            return;
+        }
+        input.last_activation = target;
+        if let Some(id) = target {
+            self.request(WindowOperation::Activate(id), out);
+        }
+    }
+
     pub(super) fn finish_multi(&mut self) {
         self.recompute_multi_input(true);
         self.multi_input = None;
+    }
+
+    pub(super) fn discard_multi(&mut self) {
+        // Mode handoffs keep their existing target. Explicit clear still restores the anchor.
+        self.multi_input = None;
+        self.multi_anchor = None;
+        self.multi.clear();
     }
 
     fn recompute_multi_input(&mut self, commit_last: bool) {
@@ -175,20 +238,70 @@ impl WindowSession {
         ) && self.selection.is_none()
             && self.multi_anchor.is_some()
         {
-            for id in &self.multi {
-                let id = self
-                    .tabs
-                    .state
-                    .containing(*id)
-                    .map_or(*id, |group| group.active);
-                if !targets.contains(&id) {
-                    targets.push(id);
-                }
-            }
+            targets.extend(self.logical_multi_targets());
         } else if let Some(target) = &self.target {
             targets.push(target.id);
         }
         targets
+    }
+
+    fn logical_multi_targets(&self) -> impl Iterator<Item = WindowId> + '_ {
+        let active = |id| {
+            self.tabs
+                .state
+                .containing(id)
+                .map_or(id, |group| group.active)
+        };
+        self.multi
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, id)| {
+                let target = active(*id);
+                (!self.multi[..index].iter().any(|id| active(*id) == target)).then_some(target)
+            })
+    }
+
+    /// Follow the confirmed geometry of the selected logical windows, not
+    /// each worker result's independently captured relative pointer offset.
+    /// A tab group contributes one center; minimized windows contribute none.
+    pub(super) fn uses_multi_pointer(&self) -> bool {
+        !self.temporary
+            && self.multi_anchor.is_some()
+            && self.selection.is_none()
+            && matches!(
+                self.kind,
+                WindowKind::Move | WindowKind::Quick | WindowKind::Editor
+            )
+            && self.logical_multi_targets().nth(1).is_some()
+    }
+
+    pub(super) fn multi_pointer(&self) -> Option<Point> {
+        if !self.uses_multi_pointer() {
+            return None;
+        }
+        let mut center = Point::default();
+        let mut count = 0;
+        for id in self.logical_multi_targets() {
+            let Some(window) = self.inventory.get(&id).filter(|w| !w.minimized) else {
+                continue;
+            };
+            let point = window.bounds.center();
+            if !point.x.is_finite() || !point.y.is_finite() {
+                continue;
+            }
+            count += 1;
+            center.x += (point.x - center.x) / f64::from(count);
+            center.y += (point.y - center.y) / f64::from(count);
+        }
+        (count > 0).then_some(center)
+    }
+
+    pub(super) fn center_multi_pointer(&self, ctx: &HostContext<'_>, out: &mut CommandBatch) {
+        if let Some(point) = self.multi_pointer()
+            && point != ctx.cursor
+        {
+            out.push(Command::warp_to(point));
+        }
     }
 
     pub(super) fn clear_multi(&mut self, out: &mut CommandBatch) {

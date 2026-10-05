@@ -183,6 +183,12 @@ pub struct WindowCardUi {
     pub background_color: Option<ThemedColor>,
     pub border_color: Option<ThemedColor>,
     pub number_color: Option<ThemedColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_background_color: Option<ThemedColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_border_color: Option<ThemedColor>,
+    #[serde(skip_serializing_if = "is_default_selected_border_width")]
+    pub selected_border_width: f64,
     pub text_width: f64,
     pub padding_x: f64,
     pub padding_y: f64,
@@ -210,6 +216,9 @@ impl Default for WindowCardUi {
             background_color: None,
             border_color: None,
             number_color: None,
+            selected_background_color: None,
+            selected_border_color: None,
+            selected_border_width: 1.5,
             text_width: 260.0,
             padding_x: 9.0,
             padding_y: 4.0,
@@ -218,6 +227,10 @@ impl Default for WindowCardUi {
             number_min_width: 38.0,
         }
     }
+}
+
+fn is_default_selected_border_width(width: &f64) -> bool {
+    *width == 1.5
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1043,6 +1056,8 @@ pub struct ResolvedWindowStyle {
     pub base: SharedLabelStyle,
     pub number: SharedLabelStyle,
     pub background: SharedLabelStyle,
+    pub selected_number: SharedLabelStyle,
+    pub selected_background: SharedLabelStyle,
     pub app: SharedLabelStyle,
     pub title: SharedLabelStyle,
     pub row_height: f64,
@@ -1119,12 +1134,103 @@ mod window_styles_tests {
                 resolved.title.clone(),
                 resolved.number.clone(),
                 resolved.background.clone(),
+                resolved.selected_number.clone(),
+                resolved.selected_background.clone(),
             ));
             std::hint::black_box((styles.anchor, styles.card));
         }
         let stats = region.change();
         assert_eq!(stats.allocations, 0);
         assert_eq!(stats.reallocations, 0);
+    }
+
+    #[test]
+    fn selected_card_defaults_are_built_in_and_omitted_from_exports() {
+        for config in [
+            crate::config::Config::default(),
+            crate::config::Config::parse(include_str!("../../keysteer.default.toml")).unwrap(),
+        ] {
+            let exported = config.to_toml().unwrap();
+            let document: toml::Value = toml::from_str(&exported).unwrap();
+            let card = document["window"]["card"].as_table().unwrap();
+            for field in [
+                "selected_background_color",
+                "selected_border_color",
+                "selected_border_width",
+            ] {
+                assert!(
+                    !card.contains_key(field),
+                    "{field} must remain an optional override"
+                );
+            }
+            assert_eq!(
+                crate::config::Config::parse(&exported).unwrap().window.card,
+                config.window.card
+            );
+            let styles = WindowStyles::new(
+                &config.window.ui,
+                &config.window.card,
+                &config.palette(Appearance::Light),
+                &config.palette(Appearance::Dark),
+                crate::presentation::window::RENDERERS,
+            );
+            for (appearance, background, border) in [
+                (
+                    Appearance::Light,
+                    Color::rgb(0xE8, 0xF6, 0xF0),
+                    Color::rgb(0x60, 0xB4, 0x9C),
+                ),
+                (
+                    Appearance::Dark,
+                    Color::rgb(0x28, 0x4D, 0x44),
+                    Color::rgb(0x85, 0xCD, 0xB8),
+                ),
+            ] {
+                let style = styles.for_appearance(appearance);
+                assert_eq!(style.selected_number.background, background);
+                assert_eq!(style.selected_background.background, background);
+                assert_eq!(style.selected_number.border_color, border);
+                assert_eq!(style.selected_background.border_color, border);
+                assert_eq!(style.selected_number.border_width, 1.5);
+                assert_eq!(style.selected_background.border_width, 1.5);
+            }
+        }
+    }
+
+    #[test]
+    fn selected_card_style_compiles_themed_colors_and_can_hide_the_border() {
+        let config = crate::config::Config::parse(
+            r##"
+[window.card]
+selected_background_color = { light = "#E0F2E9FF", dark = "#285245E0" }
+selected_border_color = "#68BCA3FF"
+selected_border_width = 0.0
+"##,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        let styles = WindowStyles::new(
+            &config.window.ui,
+            &config.window.card,
+            &config.palette(Appearance::Light),
+            &config.palette(Appearance::Dark),
+            crate::presentation::window::RENDERERS,
+        );
+        for (appearance, background) in [
+            (Appearance::Light, Color::rgb(0xE0, 0xF2, 0xE9)),
+            (Appearance::Dark, Color::rgba(0x28, 0x52, 0x45, 0xE0)),
+        ] {
+            let style = styles.for_appearance(appearance);
+            assert_eq!(style.selected_background.background, background);
+            assert_eq!(style.selected_number.background, background);
+            assert_eq!(
+                style.selected_background.border_color,
+                Color::rgb(0x68, 0xBC, 0xA3)
+            );
+            assert_eq!(style.selected_background.border_width, 0.0);
+            assert_eq!(style.selected_number.border_width, 0.0);
+            assert_eq!(style.selected_number.font_size, style.number.font_size);
+        }
     }
 
     #[test]
@@ -1267,6 +1373,29 @@ impl ResolvedWindowStyle {
             ..(*style).clone()
         }
         .into();
+        // Compile selection colors once per theme; drawing only shares these styles.
+        let mut selected = (*style).clone();
+        let (selected_background_color, selected_border_color) = match palette.appearance {
+            Appearance::Light => (Color::rgb(0xE8, 0xF6, 0xF0), Color::rgb(0x60, 0xB4, 0x9C)),
+            Appearance::Dark => (Color::rgb(0x28, 0x4D, 0x44), Color::rgb(0x85, 0xCD, 0xB8)),
+        };
+        selected.background = resolve(
+            card.selected_background_color.as_ref(),
+            palette.appearance,
+            selected_background_color,
+        );
+        selected.border_color = resolve(
+            card.selected_border_color.as_ref(),
+            palette.appearance,
+            selected_border_color,
+        );
+        selected.border_width = card.selected_border_width;
+        let selected_background = LabelStyle {
+            font_size: 1.0,
+            ..selected.clone()
+        }
+        .into();
+        let selected_number = selected.into();
         Self {
             guide_line: (card.guide_line_enabled && card.guide_line_width > 0.0).then(|| {
                 crate::api::overlay::LabelConnectorStyle {
@@ -1281,6 +1410,8 @@ impl ResolvedWindowStyle {
             base,
             number: style,
             background,
+            selected_number,
+            selected_background,
             app: small,
             title: title_style,
             row_height,

@@ -19,6 +19,7 @@ impl WindowSession {
                     W::ClearMulti => self.clear_multi(out),
                     _ => unreachable!(),
                 }
+                self.center_multi_pointer(ctx, out);
             }
             return;
         }

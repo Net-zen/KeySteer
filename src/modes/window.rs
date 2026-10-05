@@ -557,7 +557,17 @@ impl WindowSession {
     fn claims_key(&self, key: &Key) -> bool {
         if self.multi_input.is_some() && self.kind == WindowKind::Move {
             return key.as_char().is_some_and(|c| c.is_ascii_digit())
-                || matches!(key.as_str(), "space" | "backspace" | "delete" | "esc");
+                || matches!(
+                    key.as_str(),
+                    "space"
+                        | "backspace"
+                        | "delete"
+                        | "esc"
+                        | "arrow_left"
+                        | "arrow_right"
+                        | "home"
+                        | "end"
+                );
         }
         if self.library_open {
             return !self.temporary
@@ -598,6 +608,17 @@ impl WindowSession {
     pub(crate) fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
         if self.multi_input.is_some()
             && self.kind == WindowKind::Move
+            && let ModeEvent::TextEdit(action) = event
+        {
+            self.edit_multi_input(*action);
+            let mut out = CommandBatch::new();
+            self.activate_multi_front(&mut out);
+            self.center_multi_pointer(ctx, &mut out);
+            out.push(ctx.present(self.view()));
+            return out;
+        }
+        if self.multi_input.is_some()
+            && self.kind == WindowKind::Move
             && let ModeEvent::Key {
                 key,
                 state: KeyState::Down,
@@ -606,6 +627,8 @@ impl WindowSession {
             && self.multi_input_key(key, *repeat)
         {
             let mut out = CommandBatch::new();
+            self.activate_multi_front(&mut out);
+            self.center_multi_pointer(ctx, &mut out);
             out.push(ctx.present(self.view()));
             return out;
         }
@@ -647,6 +670,7 @@ impl WindowSession {
                         delay: Duration::from_millis(500),
                         repeating: true,
                     });
+                    self.center_multi_pointer(ctx, &mut out);
                     out.push(ctx.present(self.view()));
                     return out;
                 }

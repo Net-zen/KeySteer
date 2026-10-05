@@ -86,6 +86,7 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
       app_font_size: [0, 256], title_font_size: [0, 256], text_width: [1, 4096],
       padding_x: [0, 256], padding_y: [0, 256], line_height: [1, 4],
       min_height: [0, 4096], number_min_width: [0, 4096],
+      selected_border_width: [0, 20],
     }
     for (const [key, value] of Object.entries(card)) {
       const range = ranges[key]
@@ -99,7 +100,7 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
         : key === 'guide_line_width' ? typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 32
         : ['app_bold', 'title_bold', 'guide_line_enabled'].includes(key) ? typeof value === 'boolean'
           : ['app_font_family', 'title_font_family'].includes(key) ? typeof value === 'string'
-            : ['app_color', 'title_color', 'background_color', 'border_color', 'number_color', 'guide_line_color'].includes(key) ? (typeof value === 'string' ? /^#[\da-f]{8}$/i.test(value)
+            : ['app_color', 'title_color', 'background_color', 'border_color', 'number_color', 'guide_line_color', 'selected_background_color', 'selected_border_color'].includes(key) ? (typeof value === 'string' ? /^#[\da-f]{8}$/i.test(value)
               : isRecord(value) && Object.entries(value).every(([appearance, color]) => ['light', 'dark'].includes(appearance) && typeof color === 'string' && /^#[\da-f]{8}$/i.test(color))) : false
       if (!valid) throw new Error(`${mode}.card.${key} 配置无效`)
     }

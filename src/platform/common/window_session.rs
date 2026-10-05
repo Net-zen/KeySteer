@@ -340,6 +340,8 @@ impl Session {
             _ => None,
         };
         let standalone = request.operation.is_standalone_cycle();
+        let preview = matches!(request.operation, WindowOperation::Activate(_));
+        let anchor = self.target;
         let outcome = self.apply(
             access,
             request.operation,
@@ -368,7 +370,12 @@ impl Session {
                 }));
             }
         }
-        self.complete_result(access, result, screens)
+        let result = self.complete_result(access, result, screens);
+        if preview {
+            // Foreground previews do not replace the session's captured target.
+            self.target = anchor.filter(|id| !result.closed.contains(id));
+        }
+        result
     }
 
     fn complete_result(
@@ -753,14 +760,15 @@ impl Session {
                 }
                 result.windows = Some(windows);
             }
-            WindowOperation::Select(id) => {
+            WindowOperation::Select(id) | WindowOperation::Activate(id) => {
+                let move_pointer = matches!(operation, WindowOperation::Select(_));
                 self.capture_initial(access, id, screens);
                 access.snapshot(id, screens)?;
                 result.message = access.activate_window(id, screens, cancelled).err();
                 self.error.clone_from(&result.message);
                 let after = access.snapshot(id, screens)?;
                 self.target = Some(id);
-                result.pointer = Some(after.info.bounds.center());
+                result.pointer = move_pointer.then(|| after.info.bounds.center());
                 result.target = Some(after.info);
             }
             WindowOperation::Cycle
@@ -1931,6 +1939,48 @@ mod tests {
             &screens(),
             &|| false,
         )
+    }
+
+    #[test]
+    fn input_activation_updates_foreground_and_tab_selection_without_warping_or_retargeting() {
+        use crate::api::window_tabs::{TabGroup, TabGroupId, TabState};
+        let mut access = Fake::new(3);
+        access.tabs = Some(TabState {
+            groups: vec![TabGroup {
+                id: TabGroupId(1),
+                members: vec![WindowId(2), WindowId(3)],
+                active: WindowId(2),
+            }],
+            ..TabState::default()
+        });
+        let mut session = Session::default();
+        run(
+            &mut session,
+            &mut access,
+            WindowOperation::Select(WindowId(1)),
+        );
+        let result = run(
+            &mut session,
+            &mut access,
+            WindowOperation::Activate(WindowId(3)),
+        );
+        assert_eq!(access.selected.get(), Some(WindowId(3)));
+        assert_eq!(result.target.unwrap().id, WindowId(3));
+        assert_eq!(result.tabs.unwrap().groups[0].active, WindowId(3));
+        assert!(result.pointer.is_none());
+        assert_eq!(session.target, Some(WindowId(1)));
+        assert!(session.initial.contains_key(&WindowId(3)));
+        access.closed.push(WindowId(1));
+        let result = run(
+            &mut session,
+            &mut access,
+            WindowOperation::Activate(WindowId(2)),
+        );
+        assert_eq!(result.closed, [WindowId(1)]);
+        assert_eq!(
+            session.target, None,
+            "a foreground preview cannot restore a closed anchor"
+        );
     }
 
     #[test]

@@ -120,7 +120,19 @@ pub struct MultiSelect {
 impl Default for MultiSelect {
     fn default() -> Self {
         Self {
-            bindings: Bindings::from([("ctrl enter".into(), Binding::Window(W::MultiConfirm))]),
+            bindings: Bindings::from([
+                ("ctrl enter".into(), Binding::Window(W::MultiConfirm)),
+                (
+                    "primary+h".into(),
+                    Binding::parse("arrow_left")
+                        .unwrap_or_else(|error| panic!("invalid built-in edit key: {error}")),
+                ),
+                (
+                    "primary+l".into(),
+                    Binding::parse("arrow_right")
+                        .unwrap_or_else(|error| panic!("invalid built-in edit key: {error}")),
+                ),
+            ]),
         }
     }
 }

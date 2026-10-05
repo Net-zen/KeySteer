@@ -1804,6 +1804,22 @@ impl Engine {
             }
 
             Binding::Send(chord) => {
+                if let Some(action) = self
+                    .registry
+                    .keyboard_prompt_mode(&self.registry.active)
+                    .and_then(|mode| {
+                        mode.keyboard_prompt_edit(chord, &input.key, &self.input.pressed)
+                    })
+                {
+                    if is_press {
+                        self.dispatch_to(
+                            &self.registry.active.clone(),
+                            ModeEvent::TextEdit(action),
+                            backend,
+                        )?;
+                    }
+                    return Ok(true);
+                }
                 self.send_chord(chord, backend)?;
                 Ok(true)
             }

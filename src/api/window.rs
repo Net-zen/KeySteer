@@ -366,6 +366,8 @@ pub enum WindowOperation {
     CancelPending,
     Enumerate,
     Select(WindowId),
+    /// Bring an input preview to the foreground without moving the pointer.
+    Activate(WindowId),
     /// Ask the application to close this window, preserving save/cancel dialogs.
     Close(WindowId),
     /// Close a selected tab group as one unit, preserving application confirmation dialogs.
@@ -445,6 +447,7 @@ impl WindowOperation {
                 | Self::ApplyLayout { .. }
                 | Self::EndEdit { .. }
                 | Self::Select(_)
+                | Self::Activate(_)
                 | Self::Close(_)
                 | Self::CloseGroup(_)
                 | Self::Cycle

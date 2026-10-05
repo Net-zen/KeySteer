@@ -203,10 +203,19 @@ impl WindowSession {
         } else if result.id == 1 && self.status.take().is_some() {
             changed = true;
         }
-        if let Some(pointer) = result.pointer
-            && !self.temporary
-        {
-            out.push(Command::warp_to(pointer));
+        if !self.temporary {
+            if self.uses_multi_pointer() {
+                // All peer snapshots are already reconciled above. Do not apply
+                // their per-window relative offsets cumulatively (e.g. Screen).
+                if let Some(pointer) = self.multi_pointer()
+                    && (changed || result.pointer.is_some())
+                    && pointer != ctx.cursor
+                {
+                    out.push(Command::warp_to(pointer));
+                }
+            } else if let Some(pointer) = result.pointer {
+                out.push(Command::warp_to(pointer));
+            }
         }
 
         // A geometry-only acknowledgement never walks/clones the undo trees.
