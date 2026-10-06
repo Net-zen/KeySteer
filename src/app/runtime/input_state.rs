@@ -561,6 +561,144 @@ impl Engine {
         Ok(())
     }
 
+    pub(super) fn clear_point_input(&mut self, backend: &mut dyn Backend) {
+        self.scheduler.point_input = PointInput::default();
+        self.scheduler.point_sample = None;
+        backend.cancel_point_sample();
+    }
+
+    fn prompt_pressed(&self, activation: &Key) -> SmallVec<[Key; 8]> {
+        self.input
+            .pressed
+            .iter()
+            .filter(|key| {
+                *key == activation
+                    || key.is_modifier()
+                    || !self
+                        .scheduler
+                        .point_input
+                        .held
+                        .iter()
+                        .any(|(held, _)| held == *key)
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn point_input_event(&mut self, input: &crate::api::input::InputEvent) -> Option<ModeEvent> {
+        if !self.scheduler.point_input.available {
+            return None;
+        }
+        let pressed = self.prompt_pressed(&input.key);
+        let (_, prompt) = self.scheduler.text_prompt.as_ref()?;
+        let keys = prompt.point_keys.as_ref()?;
+        let state = &mut self.scheduler.point_input;
+        let matches = |chord: &KeyChord| {
+            chord.activation_matches(&input.key)
+                && chord.keys().len() == pressed.len()
+                && chord.matches_pressed(&pressed)
+        };
+        match input.state {
+            KeyState::Down if !input.repeat => {
+                state.tap = if keys.iter().any(|(key, action)| {
+                    *action == crate::api::point_sample::Action::PointToggle && matches(key)
+                }) {
+                    Some(input.key.clone())
+                } else {
+                    None
+                };
+                // Field-copy and editing chords retain precedence over movement.
+                if prompt.copy_keys.iter().any(matches)
+                    || prompt.edit_keys.iter().any(|(key, _)| matches(key))
+                {
+                    return None;
+                }
+                if keys.iter().any(|(key, action)| {
+                    *action == crate::api::point_sample::Action::PointNext && matches(key)
+                }) && state.adjusting
+                {
+                    return Some(ModeEvent::CyclePointTarget);
+                }
+                if keys.iter().any(|(key, action)| {
+                    *action == crate::api::point_sample::Action::ColorNext && matches(key)
+                }) {
+                    return Some(ModeEvent::CyclePointColor);
+                }
+            }
+            KeyState::Up => {
+                if state.tap.take().as_ref() == Some(&input.key) {
+                    return Some(ModeEvent::TogglePointAdjustment);
+                }
+                if let Some(index) = state.held.iter().position(|(key, _)| key == &input.key) {
+                    let (key, binding) = state.held.remove(index);
+                    return Some(ModeEvent::Binding {
+                        key,
+                        binding,
+                        state: KeyState::Up,
+                    });
+                }
+            }
+            _ => {}
+        }
+        if self.scheduler.point_input.adjusting
+            && self.scheduler.point_input.tap.is_none()
+            && input.state == KeyState::Down
+            && !input.repeat
+            && let Some(binding) = self.lookup_in(&ModeId::normal(), &input.key)
+            && matches!(
+                binding.as_ref(),
+                Binding::Move(_) | Binding::Speed(_) | Binding::SpeedToggle(_)
+            )
+        {
+            self.scheduler
+                .point_input
+                .held
+                .push((input.key.clone(), binding.clone()));
+            return Some(ModeEvent::Binding {
+                key: input.key.clone(),
+                binding,
+                state: input.state,
+            });
+        }
+        None
+    }
+
+    fn point_operation_binding(
+        &self,
+        input: &crate::api::input::InputEvent,
+    ) -> Option<(ModeId, ResolvedBinding)> {
+        if !self.scheduler.point_input.adjusting
+            || self.scheduler.point_input.tap.is_some()
+            || input.state != KeyState::Down
+            || input.repeat
+            || input.key.is_modifier()
+        {
+            return None;
+        }
+        let (owner, prompt) = self.scheduler.text_prompt.as_ref()?;
+        let pressed = self.prompt_pressed(&input.key);
+        let matches = |chord: &KeyChord| {
+            chord.activation_matches(&input.key)
+                && chord.keys().len() == pressed.len()
+                && chord.matches_pressed(&pressed)
+        };
+        // Copy must keep its source alive until the normal clipboard success
+        // event clears search. Editing and cancellation keep their own paths.
+        if prompt.copy_keys.iter().any(matches)
+            || prompt.edit_keys.iter().any(|(key, _)| matches(key))
+        {
+            return None;
+        }
+        let resolved = self
+            .lookup_character(input)
+            .or_else(|| self.lookup_for_pressed(&input.key, &pressed))?;
+        (!matches!(
+            resolved.binding.as_ref(),
+            Binding::Move(_) | Binding::Speed(_) | Binding::SpeedToggle(_) | Binding::Disabled
+        ))
+        .then(|| (owner.clone(), resolved))
+    }
+
     fn handle_key_inner(
         &mut self,
         input: crate::api::input::InputEvent,
@@ -637,22 +775,37 @@ impl Engine {
             return Ok(());
         }
 
-        if let Some((owner, prompt)) = &self.scheduler.text_prompt {
+        let point_event = self.point_input_event(&input);
+        let point_operation = if point_event.is_none() {
+            self.point_operation_binding(&input)
+        } else {
+            None
+        };
+        if point_operation.is_none()
+            && let Some((owner, prompt)) = &self.scheduler.text_prompt
+        {
             if prompt.live_style.is_some() {
                 let owner = owner.clone();
+                let pressed = self.prompt_pressed(&input.key);
                 let matches = |chord: &crate::api::KeyChord| {
                     chord.activation_matches(&input.key)
-                        && chord.keys().len() == self.input.pressed.len()
-                        && chord.matches_pressed(&self.input.pressed)
+                        && chord.keys().len() == pressed.len()
+                        && chord.matches_pressed(&pressed)
                 };
                 let event = if input.state != KeyState::Down {
-                    None
+                    point_event
                 } else if let Some(index) = prompt.copy_keys.iter().position(matches) {
                     (!input.repeat).then_some(ModeEvent::CopyTextField(index))
+                } else if point_event.is_some() {
+                    point_event
                 } else if let Some((_, action)) =
                     prompt.edit_keys.iter().find(|(key, _)| matches(key))
                 {
                     Some(ModeEvent::TextEdit(*action))
+                } else if self.scheduler.point_input.tap.as_ref() == Some(&input.key)
+                    || self.scheduler.point_input.adjusting
+                {
+                    None
                 } else {
                     let alt = self
                         .input
@@ -709,7 +862,7 @@ impl Engine {
         if !self.enabled
             || self.is_excluded_app()
             || self.window_presets.pending.is_some()
-            || self.scheduler.text_prompt.is_some()
+            || (self.scheduler.text_prompt.is_some() && point_operation.is_none())
         {
             self.input.pending_chords.clear();
             if let Some(pending) = completed_long_press
@@ -794,55 +947,59 @@ impl Engine {
         // Resolve the key. On press we consult the active mode's table; on
         // release we use the gesture that press started, because the chord no
         // longer matches once the keys are up.
-        let mut bound = match input.state {
-            KeyState::Down if input.repeat => self
-                .input
-                .active_gestures
-                .get(&input.key)
-                // Volume repeats require the complete configured chord to stay
-                // pressed. Releasing V must not continue changing app audio.
-                .filter(|gesture| {
-                    if matches!(gesture.binding.as_ref(), Binding::Send(_)) {
-                        // The same compiled source binding must still match.
-                        // Never fall back to bare H after C+H loses its prefix,
-                        // even if both bindings happen to send the same key.
-                        return self
-                            .lookup_character(&input)
-                            .or_else(|| self.lookup(&input.key))
-                            .is_some_and(|resolved| {
-                                resolved.owner == gesture.owner
-                                    && Arc::ptr_eq(&resolved.binding, &gesture.binding)
-                            });
-                    }
-                    !matches!(
-                        gesture.binding.window_action(),
-                        Some(
-                            crate::api::window::WindowAction::VolumeDown
-                                | crate::api::window::WindowAction::VolumeUp
-                                | crate::api::window::WindowAction::SystemVolumeDown
-                                | crate::api::window::WindowAction::SystemVolumeUp
-                        )
-                    ) || self
-                        .lookup(&input.key)
-                        .is_some_and(|resolved| resolved.binding == gesture.binding)
-                })
-                .cloned()
-                .map(|gesture| ResolvedBinding {
-                    binding: gesture.binding,
-                    owner: gesture.owner,
-                }),
-            KeyState::Down if input.character.is_some() => self
-                .lookup_character(&input)
-                .or_else(|| self.lookup(&input.key)),
-            KeyState::Down => self.lookup(&input.key),
-            KeyState::Up => self
-                .input
-                .active_gestures
-                .remove(&input.key)
-                .map(|gesture| ResolvedBinding {
-                    binding: gesture.binding,
-                    owner: gesture.owner,
-                }),
+        let mut bound = if let Some((_, binding)) = &point_operation {
+            Some(binding.clone())
+        } else {
+            match input.state {
+                KeyState::Down if input.repeat => self
+                    .input
+                    .active_gestures
+                    .get(&input.key)
+                    // Volume repeats require the complete configured chord to stay
+                    // pressed. Releasing V must not continue changing app audio.
+                    .filter(|gesture| {
+                        if matches!(gesture.binding.as_ref(), Binding::Send(_)) {
+                            // The same compiled source binding must still match.
+                            // Never fall back to bare H after C+H loses its prefix,
+                            // even if both bindings happen to send the same key.
+                            return self
+                                .lookup_character(&input)
+                                .or_else(|| self.lookup(&input.key))
+                                .is_some_and(|resolved| {
+                                    resolved.owner == gesture.owner
+                                        && Arc::ptr_eq(&resolved.binding, &gesture.binding)
+                                });
+                        }
+                        !matches!(
+                            gesture.binding.window_action(),
+                            Some(
+                                crate::api::window::WindowAction::VolumeDown
+                                    | crate::api::window::WindowAction::VolumeUp
+                                    | crate::api::window::WindowAction::SystemVolumeDown
+                                    | crate::api::window::WindowAction::SystemVolumeUp
+                            )
+                        ) || self
+                            .lookup(&input.key)
+                            .is_some_and(|resolved| resolved.binding == gesture.binding)
+                    })
+                    .cloned()
+                    .map(|gesture| ResolvedBinding {
+                        binding: gesture.binding,
+                        owner: gesture.owner,
+                    }),
+                KeyState::Down if input.character.is_some() => self
+                    .lookup_character(&input)
+                    .or_else(|| self.lookup(&input.key)),
+                KeyState::Down => self.lookup(&input.key),
+                KeyState::Up => self
+                    .input
+                    .active_gestures
+                    .remove(&input.key)
+                    .map(|gesture| ResolvedBinding {
+                        binding: gesture.binding,
+                        owner: gesture.owner,
+                    }),
+            }
         };
 
         // A key pressed after a parameterless toggle activation becomes that
@@ -893,7 +1050,8 @@ impl Engine {
             if input.state == KeyState::Down && !input.repeat {
                 self.cancel_completed_prefixes(&resolved);
                 // A modifier-based prefix needs at least two pressed keys.
-                if (!self.registry.prefixes_require_modifier || self.input.pressed.len() > 1)
+                if point_operation.is_none()
+                    && (!self.registry.prefixes_require_modifier || self.input.pressed.len() > 1)
                     && self.defer_prefix_chord(&resolved, &input.key)
                 {
                     let outcome = self.complete_key_disposition(&input, KeyOutcome::Consumed);
@@ -921,6 +1079,15 @@ impl Engine {
             let outcome = self.complete_key_disposition(&input, KeyOutcome::Consumed);
             self.dispose_input(&input, outcome, trace_key, backend)?;
             self.trace_key_resolution(&input, Some(&resolved), trace_key);
+            if let Some((owner, _)) = &point_operation {
+                // Confirm after acknowledging the hook, before running the
+                // original operation through the regular gesture/action path.
+                self.dispatch_to(
+                    owner,
+                    ModeEvent::TextEdit(crate::api::text_edit::EditAction::Accept),
+                    backend,
+                )?;
+            }
             if let Err(error) = self.finish_default_toggle(completed_default_toggle, backend) {
                 self.report_action_error(error, backend);
             }

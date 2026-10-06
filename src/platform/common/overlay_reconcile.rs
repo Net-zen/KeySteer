@@ -17,12 +17,12 @@ pub(crate) fn label_identity(label: &OverlayLabel) -> LabelIdentity<'_> {
     LabelIdentity {
         // Query changes must retain the editor slot, not borrow the bitmap
         // of a hint removed by the same filtering update.
-        text: if label.edit.is_some() {
+        text: if label.edit.is_some() || label.scroll_to_cursor {
             ""
         } else {
             &label.text
         },
-        editing: label.edit.is_some(),
+        editing: label.edit.is_some() || label.scroll_to_cursor,
         x: label.rect.x.to_bits(),
         y: label.rect.y.to_bits(),
         width: label.rect.width.to_bits(),
@@ -116,6 +116,10 @@ mod tests {
         );
         assert_ne!(previous[1].text, typed.text);
         assert_ne!(label_identity(&previous[0]), label_identity(&typed));
+        let mut point = typed.clone();
+        point.edit = None;
+        point.scroll_to_cursor = true;
+        assert_eq!(label_identity(&typed), label_identity(&point));
     }
 
     #[test]

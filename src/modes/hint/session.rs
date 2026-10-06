@@ -20,6 +20,8 @@ pub(super) struct ScanSession {
     pub(super) search_text: Vec<super::search::SearchText>,
     pub(super) search_hints: Vec<CompactHint<usize>>,
     pub(super) search_matches: Vec<CompactHint<usize>>,
+    /// Resolved input items, distinct from the broader search preview.
+    pub(super) search_selected: Vec<CompactHint<usize>>,
     pub(super) search_seen: Vec<bool>,
     pub(super) search_preview: crate::api::presentation::HintInfoPreview,
     pub(super) search_query: String,
@@ -66,6 +68,7 @@ impl ScanSession {
         self.search_text = Vec::new();
         self.search_hints = Vec::new();
         self.search_matches = Vec::new();
+        self.search_selected = Vec::new();
         self.search_seen = Vec::new();
         self.search_preview = Default::default();
         self.search_query = String::new();

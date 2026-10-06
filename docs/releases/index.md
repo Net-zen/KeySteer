@@ -5,6 +5,18 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.11.2
+
+- UI Hint 搜索新增点位检查与微调：轻触 `Ctrl` 切换输入／调整，沿用 Normal 的移动键；多点从所选点的平均中心开始，调整时按 `Tab` 逐个切换。
+- 新增实时取色和色块预览，按 `Ctrl+Shift+4` 切换 HEX／RGB／HSL；调整时复制信息或点击会确认当前点并退出搜索。macOS 取色需要屏幕录制权限。
+- 多点的 OCR、辅助功能、坐标和颜色可分别选择拼接全部结果或跟随当前点。两平台默认复制键统一为 `Ctrl+1/2/3/4`，支持分别自定义。
+- 网页模拟器补齐点位与多点信息配置，统一输入状态和色块预览样式，将相关控件集中到预览下方，方便调整。
+
+- UI Hint search adds point inspection and fine adjustment: tap `Ctrl` to switch between typing and adjustment, using your Normal movement keys. Multiple points start at their average center; press `Tab` while adjusting to cycle through them.
+- Added live color sampling and swatch previews. Press `Ctrl+Shift+4` to cycle through HEX, RGB, and HSL. Copying information or clicking while adjusting confirms the current point and exits search. Color sampling on macOS requires Screen Recording permission.
+- For multiple points, each OCR, accessibility, coordinates, and color field can combine all results or follow the current point. Default copy shortcuts are now `Ctrl+1/2/3/4` on both platforms, with each shortcut independently configurable.
+- The web simulator adds point and multi-point information settings, consistent input-state and swatch previews, and related controls grouped directly below each preview.
+
 ## 0.11.0
 
 - 新增窗口多选，可批量移动、缩放、最大化／最小化和关闭窗口，选中窗口会高亮显示。

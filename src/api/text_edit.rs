@@ -141,6 +141,21 @@ impl Selection {
     }
 }
 
+/// Horizontal viewport offset, using an already measured insertion position.
+pub fn scroll_offset(width: f64, font_size: f64, cursor_x: f64) -> f64 {
+    let caret_width = (font_size / 14.0).max(1.0);
+    (cursor_x - (width - caret_width).max(0.0)).max(0.0)
+}
+
+/// Space for the query after reserving an already measured trailing counter.
+pub fn query_width(width: f64, font_size: f64, trailing_width: f64) -> f64 {
+    if trailing_width > 0.0 {
+        (width - trailing_width - font_size * 0.2).max(0.0)
+    } else {
+        width
+    }
+}
+
 /// Shared physical geometry; native text engines supply measured insertion offsets.
 pub fn decoration_rects(
     area: crate::api::Rect,
@@ -182,6 +197,15 @@ mod tests {
             assert_eq!(selected.width, 14.0);
             let (clipped, _) = decoration_rects(area, 14.0 * scale, 900.0, -20.0);
             assert!(clipped.right() <= area.right());
+            assert_eq!(scroll_offset(area.width, 14.0 * scale, 21.0), 0.0);
+            let scroll = scroll_offset(area.width, 14.0 * scale, 900.0);
+            let (visible, _) = decoration_rects(area, 14.0 * scale, 900.0 - scroll, -scroll);
+            assert!((visible.right() - area.right()).abs() < 0.001);
+            assert_eq!(query_width(area.width, 14.0 * scale, 0.0), area.width);
+            assert_eq!(
+                query_width(area.width, 14.0 * scale, 42.0),
+                area.width - 42.0 - 2.8 * scale
+            );
         }
     }
 
@@ -230,10 +254,9 @@ mod tests {
         assert_eq!(config.ui_hint.search_edit_keys[&EditAction::Paste], "alt+v");
         assert_eq!(config.ui_hint.search_edit_keys[&EditAction::Cancel], "esc");
         let invalid =
-            crate::config::Config::parse("[ui_hint.search_edit_keys]\npaste = 'primary+1'")
-                .unwrap();
+            crate::config::Config::parse("[ui_hint.search_edit_keys]\npaste = 'ctrl+1'").unwrap();
         assert!(invalid.validate().is_err());
-        for value in ["enter primary+1", "enter enter", "enter primary+v"] {
+        for value in ["enter ctrl+1", "enter enter", "enter primary+v"] {
             let invalid = crate::config::Config::parse(&format!(
                 "[ui_hint.search_edit_keys]\naccept = '{value}'"
             ))

@@ -17,6 +17,53 @@ pub(crate) enum OwnedWindowSpec {
     Status,
 }
 
+impl OwnedWindow {
+    /// Clip a three-pixel sampling aperture out of our own overlay. Windows
+    /// owns the final region after success; temporary regions are always freed.
+    pub(crate) fn sample_aperture(&self, point: Option<crate::api::Point>) -> Result<(), String> {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::Graphics::Gdi::{
+            CombineRgn, CreateRectRgn, DeleteObject, RGN_DIFF, SetWindowRgn,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+        // SAFETY: the HWND is owned on this thread. RECT is writable stack
+        // storage; each created HRGN is either deleted here or transferred once
+        // to SetWindowRgn. No foreign window or borrowed region is modified.
+        unsafe {
+            let Some(point) = point else {
+                return if SetWindowRgn(self.raw, None, true) != 0 {
+                    Ok(())
+                } else {
+                    Err("cannot clear sample aperture".into())
+                };
+            };
+            let mut bounds = RECT::default();
+            GetWindowRect(self.raw, &mut bounds).map_err(|e| e.to_string())?;
+            let x = point.x.round() as i32 - bounds.left;
+            let y = point.y.round() as i32 - bounds.top;
+            let region =
+                CreateRectRgn(0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top);
+            let hole = CreateRectRgn(x - 1, y - 1, x + 2, y + 2);
+            if region.is_invalid() || hole.is_invalid() {
+                if !region.is_invalid() {
+                    let _ = DeleteObject(region.into());
+                }
+                if !hole.is_invalid() {
+                    let _ = DeleteObject(hole.into());
+                }
+                return Err("cannot allocate sample aperture".into());
+            }
+            let combined = CombineRgn(Some(region), Some(region), Some(hole), RGN_DIFF);
+            let _ = DeleteObject(hole.into());
+            if combined.0 == 0 || SetWindowRgn(self.raw, Some(region), true) == 0 {
+                let _ = DeleteObject(region.into());
+                return Err("cannot apply sample aperture".into());
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Create and immediately own one of KeySteer's fixed native window kinds.
 /// Keeping class names, styles and failure cleanup here prevents a safe caller
 /// from accidentally adopting an arbitrary borrowed HWND.

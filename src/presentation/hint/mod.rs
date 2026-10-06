@@ -17,6 +17,22 @@ const MIN_TEXT_OCCLUSION_EXTENT: f64 = 0.5;
 const HINT_LAYER_Z_BASE: i32 = 1;
 const SEARCH_INPUT_Z_INDEX: i32 = 10_000;
 
+fn push_number(text: &mut crate::api::overlay::OverlayText, mut value: usize) {
+    let mut digits = [0_u8; 20];
+    let mut start = digits.len();
+    loop {
+        start -= 1;
+        digits[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    for digit in &digits[start..] {
+        text.push(char::from(*digit));
+    }
+}
+
 pub(super) fn input_panel(
     cfg: &crate::api::style::CompiledSearchPanel,
     window: Option<Rect>,
@@ -328,10 +344,10 @@ impl HintView<'_> {
         if self.content.search.is_some() {
             scene.clip = Some(ctx.active_bounds());
             let cfg = &self.content.style.search_input_ui;
-            let (rect, style) = input_panel(cfg, self.window_bounds, ctx);
+            let (rect, style) = input_panel(cfg, *self.window_bounds, ctx);
             if let Some(info) = &self.info {
                 let scale = super::label_scale(ctx.scale());
-                let (mut panel, base) = input_panel(info.ui, self.window_bounds, ctx);
+                let (mut panel, base) = input_panel(info.ui, *self.window_bounds, ctx);
                 let line = base.font_size * 1.8 * scale;
                 let gap = base.font_size * 0.8 * scale;
                 let padding = (base.padding_x.max(10.0) * scale, base.padding_y * scale);
@@ -392,20 +408,52 @@ impl HintView<'_> {
                     let column_width = ((panel.width - padding.0 * 2.0 - gap) / 2.0).max(1.0);
                     let x = panel.x
                         + padding.0
-                        + if !(info.multiple && index == 2) {
+                        + if !(info.multiple && info.point.is_none() && index == 2) {
                             (index % 2) as f64 * (column_width + gap)
                         } else {
                             0.0
                         };
                     let y =
                         panel.y + padding.1 + (index / 2) as f64 * (line * 2.0 + text_gap + gap);
-                    let width = if !(info.multiple && index == 2) {
+                    let width = if !(info.multiple && info.point.is_none() && index == 2) {
                         column_width
                     } else {
                         (panel.width - padding.0 * 2.0).max(1.0)
                     };
                     let number_width = base.font_size * 1.3 * scale;
                     let header_gap = 6.0 * scale;
+                    if index == 3
+                        && let Some(point) = &info.point
+                        && info.ui.color_preview.enabled
+                        && let Some(color) = point.color
+                        && (!info.multiple
+                            || info.field_modes[3] == crate::api::point_sample::FieldMode::Switch)
+                    {
+                        let preview = info.ui.color_preview;
+                        let chip_width = f64::from(preview.width) * scale;
+                        let chip_height = f64::from(preview.height) * scale;
+                        // The short proportional caption is narrower than the
+                        // conservative text budget used for truncation.
+                        let title_width =
+                            super::text_units(title) * base.font_size * (2.0 / 3.0) * scale;
+                        scene.push_shape(OverlayShape::Rect {
+                            rect: Rect::new(
+                                x + number_width
+                                    + header_gap
+                                    + title_width
+                                    + f64::from(preview.x_offset) * scale,
+                                y + (line - chip_height) / 2.0
+                                    + f64::from(preview.y_offset) * scale,
+                                chip_width,
+                                chip_height,
+                            ),
+                            fill: color,
+                            stroke: base.text_color,
+                            stroke_width: f64::from(preview.border_width) * scale,
+                            corner_radius: 0.0,
+                            z_index: SEARCH_INPUT_Z_INDEX + 2,
+                        });
+                    }
                     for (text, bounds, style) in [
                         (
                             ["1", "2", "3", "4"][index],
@@ -432,7 +480,7 @@ impl HintView<'_> {
                     {
                         let text = super::single_line_elide_width(
                             if value.is_empty() { "—" } else { value },
-                            (width - 4.0 * scale).max(0.0) / (base.font_size * scale),
+                            width / (base.font_size * scale),
                         );
                         scene.push_label(
                             OverlayLabel::new(
@@ -448,62 +496,113 @@ impl HintView<'_> {
             }
             // Text, selection and caret are shared across native renderers.
             let scale = super::label_scale(ctx.scale());
+            let adjusting = self.point.as_ref().is_some_and(|point| point.adjusting);
+            let (background, border) = if adjusting {
+                cfg.point_input_colors(ctx.palette.appearance, &style)
+            } else {
+                (style.background, style.border_color)
+            };
             scene.push_shape(OverlayShape::Rect {
                 rect,
-                fill: style.background,
-                stroke: style.border_color,
+                fill: background,
+                stroke: border,
                 stroke_width: style.border_width * scale,
                 corner_radius: style.border_radius * scale,
                 z_index: SEARCH_INPUT_Z_INDEX,
             });
             let text = self.content.search.unwrap_or_default();
-            let cursor = self.content.search_selection.cursor.min(text.len());
+            // Point editing suspends text editing. Hide its caret/selection,
+            // preserving them so toggling back resumes at the same position.
             let font = style.font_size * scale;
             let area = rect.inset(
                 (style.padding_x + style.border_width) * scale,
                 (style.padding_y + style.border_width) * scale,
             );
-            let budget = (area.width / font - 1.0).max(0.0);
-            let mut start = cursor;
-            let mut used = 0.0;
-            for (i, c) in text[..cursor].char_indices().rev() {
-                let width = if c.is_ascii() { 0.75 } else { 1.0 };
-                if used + width > budget {
-                    break;
+            let mut text_area = area;
+            let mut counter = crate::api::overlay::OverlayText::default();
+            if adjusting {
+                let radius = (2.5 * scale).min(area.width / 2.0);
+                let dot = Rect::new(
+                    area.right() - radius * 2.0,
+                    area.center().y - radius,
+                    radius * 2.0,
+                    radius * 2.0,
+                );
+                scene.push_shape(OverlayShape::Rect {
+                    rect: dot,
+                    fill: match ctx.palette.appearance {
+                        crate::api::Appearance::Light => Color::rgb(0x16, 0x85, 0x6B),
+                        crate::api::Appearance::Dark => Color::rgb(0x68, 0xD9, 0xB1),
+                    },
+                    stroke: Color::TRANSPARENT,
+                    stroke_width: 0.0,
+                    corner_radius: radius,
+                    z_index: SEARCH_INPUT_Z_INDEX + 4,
+                });
+                let reserved = radius * 2.0 + font * 0.3;
+                if let Some(point) = self.point.as_ref().filter(|p| p.count > 1) {
+                    push_number(&mut counter, point.position);
+                    counter.push('/');
+                    push_number(&mut counter, point.count);
                 }
-                used += width;
-                start = i;
+                text_area.width = (area.width - reserved).max(0.0);
             }
             let mut visible = crate::api::overlay::OverlayText::default();
             let mut edit = crate::api::text_edit::Selection::default();
-            let mut units = 0.0;
-            for (offset, character) in text[start..].char_indices() {
+            for (offset, character) in text.char_indices() {
                 let character = if character.is_control() {
                     ' '
                 } else {
                     character
                 };
-                let width = if character.is_ascii() { 0.75 } else { 1.0 };
-                if units + width > budget {
-                    break;
-                }
-                units += width;
                 visible.push(character);
-                if start + offset < cursor {
+                if offset < self.content.search_selection.cursor {
                     edit.cursor = visible.len();
                 }
-                if start + offset < self.content.search_selection.anchor {
+                if offset < self.content.search_selection.anchor {
                     edit.anchor = visible.len();
                 }
             }
-            let ink = cfg.for_appearance(ctx.palette.appearance).caption.clone();
-            let mut input = OverlayLabel::new(visible, area, ink)
-                .with_fixed_bounds()
-                .with_z_index(SEARCH_INPUT_Z_INDEX + 2);
-            input.edit = crate::api::overlay::LabelEdit::try_from(edit).ok();
+            visible.push_str(counter.as_str());
+            let mut input = OverlayLabel::new(
+                visible,
+                text_area,
+                if counter.is_empty() {
+                    cfg.input_style(ctx.palette.appearance)
+                } else {
+                    cfg.point_input_style(ctx.palette.appearance)
+                }
+                .clone(),
+            )
+            .with_fixed_bounds()
+            .with_z_index(SEARCH_INPUT_Z_INDEX + 2);
+            input.scroll_to_cursor = true;
+            input.trailing_text_len = counter.len() as u8;
+            if !adjusting {
+                input.edit = crate::api::overlay::LabelEdit::try_from(edit).ok();
+            }
             scene.push_label(input);
         }
 
+        if let Some(point) = &self.point {
+            let radius = f64::from(point.radius) * super::label_scale(ctx.scale());
+            scene.push_shape(OverlayShape::Rect {
+                rect: Rect::new(
+                    point.point.x - radius,
+                    point.point.y - radius,
+                    radius * 2.0,
+                    radius * 2.0,
+                ),
+                fill: Color::TRANSPARENT,
+                stroke: point
+                    .color
+                    .and_then(|c| c.resolve(ctx.palette.appearance))
+                    .unwrap_or(ctx.palette.accent),
+                stroke_width: f64::from(point.width),
+                corner_radius: radius,
+                z_index: SEARCH_INPUT_Z_INDEX + 3,
+            });
+        }
         scene
     }
 }

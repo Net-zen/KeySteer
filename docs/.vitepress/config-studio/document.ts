@@ -28,6 +28,7 @@ const replacementTables = new Set([
   'grid.bindings',
   'recursive_grid.bindings',
   'ui_hint.bindings',
+  'ui_hint.search_bindings',
   'plugin_modes',
 ])
 
@@ -105,6 +106,28 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
       if (!valid) throw new Error(`${mode}.card.${key} 配置无效`)
     }
   }
+  const point = (parsed.ui_hint as ConfigDocument | undefined)?.search_point
+  if (point !== undefined) {
+    if (!isRecord(point)) throw new Error('ui_hint.search_point must be a table')
+    for (const [key, value] of Object.entries(point)) {
+      if (key === 'field_modes') {
+        if (!Array.isArray(value) || value.length !== 4 || value.some(v => !['concat', 'switch'].includes(v))) throw new Error('ui_hint.search_point.field_modes requires four concat/switch values')
+        continue
+      }
+      if (key === 'color_preview') {
+        const ranges: Record<string, [number, number]> = { width: [1, 64], height: [1, 64], x_offset: [-200, 200], y_offset: [-200, 200], border_width: [0, 10] }
+        if (!isRecord(value) || Object.entries(value).some(([field, v]) => field === 'enabled' ? typeof v !== 'boolean' : !ranges[field] || !Number.isInteger(v) || Number(v) < ranges[field][0] || Number(v) > ranges[field][1])) throw new Error('ui_hint.search_point.color_preview is invalid')
+        continue
+      }
+      const valid = key === 'color_formats' ? Array.isArray(value) && value.length > 0 && value.length <= 3 && new Set(value).size === value.length && value.every(v => ['hex', 'rgb', 'hsl'].includes(v))
+        : key === 'marker_radius' ? Number.isInteger(value) && Number(value) >= 2 && Number(value) <= 40
+          : key === 'marker_width' ? Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 10
+            : ['marker_color', 'input_background_color', 'input_border_color'].includes(key) ? (typeof value === 'string' ? /^#[\da-f]{8}$/i.test(value) : isRecord(value) && Object.keys(value).length === 2 && ['light', 'dark'].every(k => typeof value[k] === 'string' && /^#[\da-f]{8}$/i.test(value[k]))) : false
+      if (!valid) throw new Error(`ui_hint.search_point.${key} is invalid`)
+    }
+  }
+  const searchBindings = (parsed.ui_hint as ConfigDocument | undefined)?.search_bindings
+  if (searchBindings !== undefined && (!isRecord(searchBindings) || Object.values(searchBindings).some(value => !['point_toggle', 'point_next', 'color_next'].includes(String(value))))) throw new Error('ui_hint.search_bindings requires point_toggle, point_next or color_next')
   parseSplitRatios((parsed.window_quick as Record<string, unknown> | undefined)?.split_ratios)
 
   // Stringifying once catches values that the editor would be unable to save.

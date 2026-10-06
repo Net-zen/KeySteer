@@ -27,7 +27,9 @@ use crate::api::style::compiled::{BoundaryHighlight, LabelUi};
 use crate::api::style::{CompiledSearchPanel, HintPlacement};
 use crate::api::theme::Palette;
 pub(crate) mod labeling;
+mod point;
 mod search;
+pub use point::PointSettings;
 mod session;
 
 use crate::api::presentation::{
@@ -81,6 +83,7 @@ pub struct Settings {
     pub search_copy_keys: std::sync::Arc<[KeyChord]>,
     pub search_edit_keys: std::sync::Arc<[(KeyChord, crate::api::text_edit::EditAction)]>,
     pub search_titles: [String; 4],
+    pub search_point: PointSettings,
     pub lifecycle: TargetingLifecycle,
     pub overlap_cycle_key: String,
     pub app_overrides: Vec<AppStrategyOverride>,
@@ -118,6 +121,9 @@ impl Input {
 }
 
 pub struct HintMode {
+    inspection: Option<point::Inspection>,
+    movement: crate::modes::NormalMode,
+    sample_serial: u64,
     config: Settings,
     alphabet: Vec<char>,
     overlap_cycle_chord: Option<KeyChord>,
@@ -136,6 +142,9 @@ pub struct HintMode {
 impl HintMode {
     pub fn new(config: Settings) -> Self {
         Self {
+            inspection: None,
+            movement: crate::modes::NormalMode::new(config.search_point.movement.clone()),
+            sample_serial: 0,
             alphabet: config
                 .hint_characters
                 .chars()
@@ -419,7 +428,9 @@ impl HintMode {
             };
             let multiple = query.chars().any(char::is_whitespace);
             let previous_len = self.session.search_matches.len();
+            let previous_selected = self.session.search_selected.len();
             let mut matched = 0;
+            let mut selected = 0;
             self.session.search_seen.clear();
             self.session
                 .search_seen
@@ -428,17 +439,29 @@ impl HintMode {
             // Union in item order; the first occurrence owns each target's position.
             self.session.search_terms.prepare(&query);
             for term in self.session.search_terms.iter(&query) {
-                if matched == self.session.search_hints.len() {
-                    break;
-                }
+                let code = term
+                    .strip_prefix('@')
+                    .or_else(|| term.strip_suffix('@'))
+                    .unwrap_or(term);
+                let (mut exact, mut unique, mut ambiguous) = (None, None, false);
                 for hint in &self.session.search_hints {
-                    if !self.session.search_seen[hint.value]
-                        && self
-                            .session
-                            .search_text
-                            .get(hint.value)
-                            .is_some_and(|text| text.matches_term(term, hint.label.as_str()))
+                    if self
+                        .session
+                        .search_text
+                        .get(hint.value)
+                        .is_some_and(|text| text.matches_term(term, hint.label.as_str()))
                     {
+                        if hint.label.as_str() == code {
+                            exact = Some(hint);
+                        }
+                        if unique.is_some() {
+                            ambiguous = true;
+                        } else {
+                            unique = Some(hint);
+                        }
+                        if self.session.search_seen[hint.value] {
+                            continue;
+                        }
                         self.session.search_seen[hint.value] = true;
                         if let Some(previous) = self.session.search_matches.get_mut(matched) {
                             if previous.value != hint.value
@@ -454,9 +477,35 @@ impl HintMode {
                         matched += 1;
                     }
                 }
+                // A completed label takes priority over semantic collisions.
+                // Other search terms select a point only after disambiguation.
+                let resolved = exact.or_else(|| {
+                    unique.filter(|hint| {
+                        !ambiguous
+                            && term == code
+                            && self.session.search_text[hint.value].matches_text(term)
+                    })
+                });
+                if let Some(hint) = resolved
+                    && !self.session.search_selected[..selected]
+                        .iter()
+                        .any(|previous| previous.value == hint.value)
+                {
+                    if let Some(previous) = self.session.search_selected.get_mut(selected) {
+                        matches_changed |= previous.value != hint.value
+                            || previous.label != hint.label
+                            || previous.bounds != hint.bounds;
+                        previous.clone_from(hint);
+                    } else {
+                        self.session.search_selected.push(hint.clone());
+                    }
+                    selected += 1;
+                }
             }
             matches_changed |= matched != previous_len;
+            matches_changed |= selected != previous_selected;
             self.session.search_matches.truncate(matched);
+            self.session.search_selected.truncate(selected);
             self.session.hints.clear();
             if query.is_empty()
                 || multiple && query.ends_with(char::is_whitespace)
@@ -623,8 +672,20 @@ impl HintMode {
             })
         } else {
             View::Hints(HintView {
+                point: self
+                    .inspection
+                    .as_ref()
+                    .map(|p| crate::api::presentation::HintPointView {
+                        adjusting: p.adjusting,
+                        position: p.position,
+                        count: p.members.len(),
+                        point: &p.point,
+                        color: self.config.search_point.marker_color,
+                        radius: self.config.search_point.marker_radius,
+                        width: self.config.search_point.marker_width,
+                    }),
                 info: self.search_info(),
-                window_bounds: self.window_bounds,
+                window_bounds: &self.window_bounds,
                 content: hint_content(
                     &self.config,
                     &self.session.hints,
@@ -662,16 +723,23 @@ impl HintMode {
             return None;
         };
         let multiple = query.chars().any(char::is_whitespace);
-        let hints = if multiple {
-            &self.session.search_matches
-        } else {
-            &self.session.hints
-        };
+        let hints = &self.session.search_selected;
         if hints.is_empty() || query.trim().is_empty() && multiple || !multiple && hints.len() != 1
         {
             return None;
         }
         Some(crate::api::presentation::HintInfoView {
+            field_modes: &self.config.search_point.field_modes,
+            point: self
+                .inspection
+                .as_ref()
+                .map(|p| crate::api::presentation::HintPointInfo {
+                    point: &p.point,
+                    target: p.target,
+                    color: p.color,
+                    format: self.config.search_point.formats[p.format],
+                    colors: &p.colors,
+                }),
             preview: &self.session.search_preview,
             targets: &self.session.scanned,
             hints,
@@ -686,6 +754,7 @@ impl HintMode {
             ctx.presenter
                 .input_panel(&self.config.search_input_ui, self.window_bounds, ctx);
         Command::OpenTextPrompt(Box::new(crate::api::window_presets::TextPrompt {
+            point_keys: Some(self.config.search_point.keys.clone()),
             bounds,
             id: self.session.scan_id | (1 << 63),
             title: String::new(),
@@ -701,6 +770,7 @@ impl HintMode {
     fn release_search(&mut self) {
         self.session.search_hints.clear();
         self.session.search_matches.clear();
+        self.session.search_selected.clear();
         self.session.search_seen.clear();
         if let Input::Search(mut text) =
             std::mem::replace(&mut self.input, Input::Labels(OverlayText::default()))
@@ -714,16 +784,22 @@ impl HintMode {
         if accept && self.session.pending_relabel {
             self.relabel_with_refresh(ctx, false);
         }
-        let selected = if accept {
-            let candidates = if self.input.text().chars().any(char::is_whitespace) {
-                &self.session.search_matches
-            } else {
-                &self.session.hints
-            };
-            (candidates.len() == 1).then(|| candidates[0].value)
-        } else {
-            None
-        };
+        let destination = accept
+            .then(|| {
+                let candidates = self.point_candidates();
+                if candidates.is_empty() {
+                    None
+                } else if let Some(point) = self
+                    .inspection
+                    .as_ref()
+                    .filter(|p| self.point_members_match(p))
+                {
+                    Some(point.point)
+                } else {
+                    Some(self.point_center(candidates))
+                }
+            })
+            .flatten();
         std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
         self.release_search();
         self.refresh_overlap_plan(ctx);
@@ -731,8 +807,8 @@ impl HintMode {
         if accept {
             commands.push(Command::CloseTextPrompt);
         }
-        if let Some(index) = selected {
-            commands.push(Command::warp_to(self.session.scanned[index].rect.center()));
+        if let Some(point) = destination {
+            commands.push(Command::warp_to(point));
         }
         commands.extend(self.redraw(ctx));
         if !accept {
@@ -755,11 +831,16 @@ impl HintMode {
         )
     }
 
+    /// One destination for label selection, search acceptance and initial Point inspection.
+    fn target_point(&self, index: usize) -> crate::api::Point {
+        self.session.scanned[index].rect.center()
+    }
+
     fn select(&mut self, index: usize) -> CommandBatch {
-        let Some(target) = self.session.scanned.get(index) else {
+        if index >= self.session.scanned.len() {
             return self.cancel();
-        };
-        let point = target.rect.center();
+        }
+        let point = self.target_point(index);
         self.session.selected = Some(index);
         CommandBatch::two(
             Command::warp_to(point),
@@ -990,6 +1071,13 @@ impl Mode for HintMode {
     }
 
     fn claims_key(&self, key: &Key) -> bool {
+        if self
+            .inspection
+            .as_ref()
+            .is_some_and(|point| point.adjusting)
+        {
+            return false;
+        }
         self.overlap_cycle_chord
             .as_ref()
             .is_some_and(|chord| chord.activation_matches(key))
@@ -1047,6 +1135,35 @@ impl Mode for HintMode {
     }
 
     fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
+        let mut out = if let Some(out) = self.point_event(event, ctx) {
+            out
+        } else {
+            let mut out = self.handle_event(event, ctx);
+            self.sync_point(ctx, &mut out);
+            out
+        };
+        if matches!(event, ModeEvent::UiScanned(_)) && self.refresh_point_hit() {
+            out.push(ctx.present(self.view()));
+        }
+        out
+    }
+
+    fn handle_owned(&mut self, event: ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
+        if let ModeEvent::UiScanned(result) = event {
+            let mut out = self.handle_scan_result(result, ctx);
+            self.sync_point(ctx, &mut out);
+            if self.refresh_point_hit() {
+                out.push(ctx.present(self.view()));
+            }
+            out
+        } else {
+            self.handle(&event, ctx)
+        }
+    }
+}
+
+impl HintMode {
+    fn handle_event(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
         if matches!(self.input, Input::Search(_)) {
             use crate::api::text_edit::EditAction;
             let mut encoded = [0; 4];
@@ -1160,7 +1277,13 @@ impl Mode for HintMode {
                 self.finish_search(text.is_some(), ctx)
             }
             ModeEvent::TextCopied if matches!(self.input, Input::Search(_)) => {
-                self.finish_search(false, ctx)
+                // Copying from point adjustment also accepts that point. The
+                // clipboard acknowledgement replaces a separate Enter press.
+                let accept = self
+                    .inspection
+                    .as_ref()
+                    .is_some_and(|point| point.adjusting);
+                self.finish_search(accept, ctx)
             }
             ModeEvent::CopyTextField(index) => {
                 let value = self
@@ -1306,18 +1429,566 @@ impl Mode for HintMode {
             _ => CommandBatch::new(),
         }
     }
-
-    fn handle_owned(&mut self, event: ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
-        match event {
-            ModeEvent::UiScanned(result) => self.handle_scan_result(result, ctx),
-            event => self.handle(&event, ctx),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn point_field_modes_mix_joined_and_current_text_and_coordinates() {
+        use crate::api::point_sample::FieldMode::{Concat, Switch};
+        let mut config = Config::default();
+        config.ui_hint.search_point.field_modes = [Switch, Concat, Concat, Switch];
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(&mut mode, &env, point_text_targets());
+        press(&mut mode, &env, "/");
+        mode.handle(&ModeEvent::TextChanged("alpha bravo".into()), &env.ctx());
+        assert_eq!(mode.search_info().unwrap().values()[0], "");
+        mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+        for (text, accessibility) in [
+            ("alpha", "alpha · button\nbravo · button"),
+            ("bravo", "alpha · button\nbravo · button"),
+        ] {
+            mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+            let values = mode.search_info().unwrap().values();
+            assert_eq!(values[0], text);
+            assert_eq!(values[1], accessibility);
+            assert_eq!(values[2], "40, 112\n240, 112");
+            assert_eq!(values[3], "");
+        }
+        mode.config.search_point.field_modes = [Concat, Switch, Switch, Concat];
+        let values = mode.search_info().unwrap().values();
+        assert_eq!(values[0], "alpha\nbravo");
+        assert_eq!(values[1], "bravo · button");
+        assert_eq!(values[2], "240, 112");
+    }
+
+    fn point_text_targets() -> Vec<UiTarget> {
+        ["alpha", "bravo"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let mut item = target(name, i as f64 * 200.0);
+                item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                    ocr: name.into(),
+                    accessibility: name.into(),
+                    color: None,
+                }));
+                item
+            })
+            .collect()
+    }
+
+    fn sample_request(out: &CommandBatch) -> crate::api::point_sample::Request {
+        out.iter()
+            .find_map(|command| match command {
+                Command::SamplePoint(request) => Some(*request),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn point_joined_colors_sample_sequentially_resume_after_cycle_and_copy_once_ready() {
+        use crate::api::point_sample::{FieldMode, Sample};
+        let mut config = Config::default();
+        config.ui_hint.search_point.field_modes[3] = FieldMode::Concat;
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(&mut mode, &env, point_text_targets());
+        press(&mut mode, &env, "/");
+        let center =
+            sample_request(&mode.handle(&ModeEvent::TextChanged("bravo alpha".into()), &env.ctx()));
+        let timer = ModeEvent::Timer {
+            id: point::TIMER.into(),
+            elapsed: Duration::from_millis(100),
+        };
+        assert!(mode.handle(&timer, &env.ctx()).is_empty());
+        let first = sample_request(&mode.handle(
+            &ModeEvent::PointSampled(Sample {
+                request: center,
+                color: Some(Color::rgb(99, 99, 99)),
+            }),
+            &env.ctx(),
+        ));
+        assert_eq!(first.point, mode.target_point(1));
+        assert_eq!(mode.search_info().unwrap().values()[3], "");
+        mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+        let selected = sample_request(&mode.handle(&ModeEvent::CyclePointTarget, &env.ctx()));
+        assert!(
+            mode.handle(
+                &ModeEvent::PointSampled(Sample {
+                    request: first,
+                    color: Some(Color::rgb(255, 0, 0))
+                }),
+                &env.ctx()
+            )
+            .is_empty()
+        );
+        let second = sample_request(&mode.handle(
+            &ModeEvent::PointSampled(Sample {
+                request: selected,
+                color: Some(Color::rgb(1, 2, 3)),
+            }),
+            &env.ctx(),
+        ));
+        assert_eq!(second.point, mode.target_point(0));
+        assert_eq!(mode.search_info().unwrap().values()[3], "#010203\n");
+        let pending = mode.handle(&ModeEvent::CopyTextField(3), &env.ctx());
+        assert!(
+            !pending
+                .iter()
+                .any(|command| matches!(command, Command::CopyText(_) | Command::SamplePoint(_)))
+        );
+        assert!(mode.handle(&timer, &env.ctx()).is_empty());
+        assert!(
+            mode.handle(&ModeEvent::CyclePointTarget, &env.ctx())
+                .is_empty()
+        );
+        let out = mode.handle(
+            &ModeEvent::PointSampled(Sample {
+                request: second,
+                color: Some(Color::rgb(4, 5, 6)),
+            }),
+            &env.ctx(),
+        );
+        assert!(out.contains(&Command::CopyText("#010203\n#040506".into())));
+        assert!(
+            !out.iter()
+                .any(|command| matches!(command, Command::SamplePoint(_)))
+        );
+        assert_eq!(
+            mode.inspection.as_ref().unwrap().point,
+            mode.target_point(1)
+        );
+        mode.handle(&ModeEvent::CyclePointColor, &env.ctx());
+        assert_eq!(
+            mode.search_info().unwrap().values()[3],
+            "rgb(1, 2, 3)\nrgb(4, 5, 6)"
+        );
+        let refresh = sample_request(&mode.handle(&timer, &env.ctx()));
+        assert_eq!(refresh.point, mode.target_point(1));
+        let out = mode.handle(
+            &ModeEvent::PointSampled(Sample {
+                request: refresh,
+                color: None,
+            }),
+            &env.ctx(),
+        );
+        assert!(
+            !out.iter()
+                .any(|command| matches!(command, Command::CopyText(_)))
+        );
+        assert_eq!(
+            mode.search_info().unwrap().values()[3],
+            "\nrgb(4, 5, 6)",
+            "failed refresh cannot retain the previous member color"
+        );
+    }
+
+    #[test]
+    fn point_joined_color_failures_finish_without_copying_an_empty_field() {
+        use crate::api::point_sample::{FieldMode, Sample};
+        let mut config = Config::default();
+        config.ui_hint.search_point.field_modes[3] = FieldMode::Concat;
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(&mut mode, &env, point_text_targets());
+        press(&mut mode, &env, "/");
+        let mut request =
+            sample_request(&mode.handle(&ModeEvent::TextChanged("alpha bravo".into()), &env.ctx()));
+        mode.handle(&ModeEvent::CopyTextField(3), &env.ctx());
+        for _ in 0..2 {
+            request = sample_request(&mode.handle(
+                &ModeEvent::PointSampled(Sample {
+                    request,
+                    color: None,
+                }),
+                &env.ctx(),
+            ));
+        }
+        let out = mode.handle(
+            &ModeEvent::PointSampled(Sample {
+                request,
+                color: None,
+            }),
+            &env.ctx(),
+        );
+        assert!(
+            !out.iter()
+                .any(|command| matches!(command, Command::CopyText(_) | Command::SamplePoint(_)))
+        );
+        assert_eq!(mode.search_info().unwrap().values()[3], "");
+        assert!(!mode.inspection.as_ref().unwrap().copy_pending);
+    }
+
+    #[test]
+    #[ignore = "allocation measurement; run alone with --test-threads=1"]
+    fn point_warmed_idle_frames_and_pending_samples_reuse_collection_storage() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(
+            &mut mode,
+            &env,
+            (0..320)
+                .map(|i| {
+                    let mut item = target(&format!("item{i}"), 0.0);
+                    item.rect =
+                        Rect::new((i % 20) as f64 * 45.0, (i / 20) as f64 * 40.0, 20.0, 20.0);
+                    item
+                })
+                .collect(),
+        );
+        let query = mode
+            .session
+            .hints
+            .iter()
+            .map(|hint| format!("@{}", hint.label.as_str()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        press(&mut mode, &env, "/");
+        mode.handle(&ModeEvent::TextChanged(query), &env.ctx());
+        mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+        let members = mode.inspection.as_ref().unwrap().members.as_ptr();
+        assert_eq!(mode.inspection.as_ref().unwrap().members.len(), 320);
+        let events = [
+            ModeEvent::Frame {
+                elapsed: Duration::from_millis(16),
+            },
+            ModeEvent::Timer {
+                id: point::TIMER.into(),
+                elapsed: Duration::from_millis(100),
+            },
+            ModeEvent::PointSampled(crate::api::point_sample::Sample {
+                request: crate::api::point_sample::Request {
+                    id: 0,
+                    point: Point::default(),
+                },
+                color: None,
+            }),
+        ];
+        for event in &events {
+            mode.handle(event, &env.ctx());
+        }
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        for _ in 0..1000 {
+            for event in &events {
+                mode.handle(event, &env.ctx());
+            }
+        }
+        let stats = region.change();
+        assert_eq!(mode.inspection.as_ref().unwrap().members.as_ptr(), members);
+        assert_eq!(stats.allocations + stats.reallocations, 0, "{stats:?}");
+        println!("320 selected targets, 3000 idle/pending events: {stats:?}");
+    }
+
+    #[test]
+    fn point_counter_counts_resolved_labels_instead_of_search_candidates() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(
+            &mut mode,
+            &env,
+            (0..155)
+                .map(|i| {
+                    let mut target = target(&format!("shared item{i}"), (i % 15) as f64 * 40.0);
+                    target.rect.y = (i / 15) as f64 * 35.0 + 100.0;
+                    target
+                })
+                .collect(),
+        );
+        let labels: Vec<_> = [2, 0]
+            .into_iter()
+            .map(|index| {
+                mode.session
+                    .hints
+                    .iter()
+                    .find(|hint| hint.value == index)
+                    .unwrap()
+                    .label
+                    .clone()
+            })
+            .collect();
+        press(&mut mode, &env, "/");
+        mode.handle(
+            &ModeEvent::TextChanged(format!(
+                "{} s {} {} @ missing",
+                labels[0].as_str(),
+                labels[1].as_str(),
+                labels[0].as_str()
+            )),
+            &env.ctx(),
+        );
+        assert_eq!(
+            mode.session.search_matches.len(),
+            155,
+            "s still previews all possible matches"
+        );
+        assert_eq!(
+            mode.session
+                .search_selected
+                .iter()
+                .map(|hint| hint.value)
+                .collect::<Vec<_>>(),
+            [2, 0]
+        );
+        assert_eq!(mode.inspection.as_ref().unwrap().members.len(), 2);
+        mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+        assert!(mode.scene(&env.ctx()).labels.iter().any(|label| {
+            crate::api::overlay::split_trailing_text(&label.text, label.trailing_text_len).1
+                == "0/2"
+        }));
+        for (position, target) in [(1, 2), (2, 0), (1, 2)] {
+            mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+            assert_eq!(mode.inspection.as_ref().unwrap().position, position);
+            assert_eq!(
+                mode.inspection.as_ref().unwrap().point,
+                mode.target_point(target)
+            );
+        }
+        mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+        mode.handle(&ModeEvent::TextChanged("s missing".into()), &env.ctx());
+        assert_eq!(mode.session.search_matches.len(), 155);
+        assert!(mode.session.search_selected.is_empty());
+        assert!(mode.inspection.is_none());
+        assert!(mode.search_info().is_none());
+    }
+
+    #[test]
+    fn point_collection_uses_mean_destinations_and_cycles_in_query_order() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        let rectangles = [
+            Rect::new(0.0, 100.0, 100.0, 20.0),
+            Rect::new(300.0, 200.0, 400.0, 20.0),
+            Rect::new(800.0, 500.0, 20.0, 20.0),
+        ];
+        let targets = rectangles
+            .iter()
+            .enumerate()
+            .map(|(i, rect)| UiTarget {
+                rect: *rect,
+                name: format!("item{i}"),
+                role: SemanticRole::Button,
+                details: Some(Box::new(crate::api::geometry::UiTargetDetails {
+                    ocr: format!("text{i}"),
+                    accessibility: format!("item{i}"),
+                    color: None,
+                })),
+            })
+            .collect();
+        deliver(&mut mode, &env, targets);
+        let labels: Vec<_> = (0..3)
+            .map(|i| {
+                mode.session
+                    .hints
+                    .iter()
+                    .find(|h| h.value == i)
+                    .unwrap()
+                    .label
+                    .clone()
+            })
+            .collect();
+        let query = format!(
+            "@{} @{} @{} @{}",
+            labels[2].as_str(),
+            labels[0].as_str(),
+            labels[1].as_str(),
+            labels[2].as_str()
+        );
+        press(&mut mode, &env, "/");
+        mode.handle(&ModeEvent::TextChanged(query.clone()), &env.ctx());
+        let point = mode.inspection.as_ref().unwrap();
+        assert_eq!(
+            point.members.len(),
+            3,
+            "duplicates do not weight the center twice"
+        );
+        assert!((point.point.x - (50.0 + 500.0 + 810.0) / 3.0).abs() < 0.001);
+        assert!((point.point.y - (110.0 + 210.0 + 510.0) / 3.0).abs() < 0.001);
+        assert_eq!(
+            mode.search_info().unwrap().values()[0],
+            "text2\ntext0\ntext1"
+        );
+        mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+        let old_request = crate::api::point_sample::Request {
+            id: mode.sample_serial,
+            point: mode.inspection.as_ref().unwrap().point,
+        };
+        for (position, index) in [(1, 2), (2, 0), (3, 1), (1, 2)] {
+            let out = mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+            let point = mode.inspection.as_ref().unwrap();
+            assert_eq!(point.position, position);
+            assert_eq!(point.point, mode.target_point(index));
+            let destination = mode.target_point(index);
+            assert_eq!(
+                mode.search_info().unwrap().values()[2],
+                format!("{:.0}, {:.0}", destination.x, destination.y)
+            );
+            assert_eq!(point.color, None);
+            assert!(out.iter().any(
+                |c| matches!(c, Command::SamplePoint(r) if r.point == mode.target_point(index))
+            ));
+            assert_eq!(
+                mode.search_info().unwrap().values()[0],
+                "text2\ntext0\ntext1"
+            );
+            assert!(mode.scene(&env.ctx()).labels.iter().any(|l| {
+                crate::api::overlay::split_trailing_text(&l.text, l.trailing_text_len).1
+                    == format!("{position}/3")
+            }));
+        }
+        mode.handle(
+            &ModeEvent::PointSampled(crate::api::point_sample::Sample {
+                request: old_request,
+                color: Some(Color::rgb(255, 0, 0)),
+            }),
+            &env.ctx(),
+        );
+        assert_eq!(
+            mode.inspection.as_ref().unwrap().color,
+            None,
+            "old center samples cannot color a member"
+        );
+        let selected = mode.inspection.as_ref().unwrap().point;
+        let out = mode.handle(&ModeEvent::TextCopied, &env.ctx());
+        assert!(out.contains(&Command::warp_to(selected)));
+        assert!(mode.inspection.is_none());
+        assert!(matches!(mode.input, Input::Labels(_)));
+    }
+
+    #[test]
+    fn long_point_input_stays_left_aligned_with_a_bounded_dot_and_tail() {
+        for scale in [1.0, 1.5, 2.0] {
+            let mut config = Config::default();
+            config.ui_hint.search_input_ui.width = 180;
+            let mut env = Env::with(config);
+            env.screens[0].scale = scale;
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            let targets = ["alpha", "bravo"]
+                .into_iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    let mut item = target(name, i as f64 * 200.0);
+                    item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                        ocr: name.into(),
+                        accessibility: name.into(),
+                        color: None,
+                    }));
+                    item
+                })
+                .collect();
+            deliver(&mut mode, &env, targets);
+            press(&mut mode, &env, "/");
+            let query = "alpha ".repeat(250) + "bravo";
+            mode.handle(&ModeEvent::TextChanged(query.clone()), &env.ctx());
+            let before = mode.scene(&env.ctx());
+            let input = before.labels.iter().find(|l| l.edit.is_some()).unwrap();
+            mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+            let scene = mode.scene(&env.ctx());
+            let adjusted = scene.labels.iter().find(|l| l.z_index == 10_002).unwrap();
+            assert_eq!(
+                adjusted.style.text_alignment,
+                crate::api::overlay::TextAlignment::Left
+            );
+            assert_eq!(
+                (adjusted.rect.x, adjusted.rect.y),
+                (input.rect.x, input.rect.y)
+            );
+            assert_eq!(input.text.as_str(), query);
+            let (visible_query, counter) = crate::api::overlay::split_trailing_text(
+                &adjusted.text,
+                adjusted.trailing_text_len,
+            );
+            assert_eq!(visible_query, query);
+            assert_eq!(counter, "0/2");
+            assert!(input.scroll_to_cursor);
+            assert!(adjusted.scroll_to_cursor);
+            assert!(adjusted.edit.is_none());
+            assert!(
+                !scene
+                    .labels
+                    .iter()
+                    .any(|l| l.text.as_str().contains("Point"))
+            );
+            let dot = scene
+                .shapes
+                .iter()
+                .find_map(|shape| match shape {
+                    OverlayShape::Rect {
+                        rect,
+                        z_index: 10_004,
+                        ..
+                    } => Some(*rect),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(adjusted.rect.right() < dot.x);
+            assert!(dot.x - adjusted.rect.right() <= adjusted.style.font_size * scale * 0.31);
+            let panel = scene
+                .shapes
+                .iter()
+                .find_map(|shape| match shape {
+                    OverlayShape::Rect {
+                        rect,
+                        z_index: 10_000,
+                        ..
+                    } => Some(*rect),
+                    _ => None,
+                })
+                .unwrap();
+            assert!((dot.x + dot.width - panel.right() + adjusted.rect.x - panel.x).abs() < 0.001);
+            assert_eq!(mode.search_info().unwrap().values()[0], "alpha\nbravo");
+            assert_eq!(mode.inspection.as_ref().unwrap().members.len(), 2);
+        }
+    }
+
+    #[test]
+    fn point_starts_at_label_jump_destination_independent_of_label_appearance() {
+        for (font, scale, offset) in [(12, 1.0, 0), (28, 1.5, 40), (48, 2.0, -30)] {
+            let mut config = Config::default();
+            config.ui_hint.ui.font_size = font;
+            config.ui_hint.label_x_offset = offset;
+            config.ui_hint.label_y_offset = -offset;
+            let mut env = Env::with(config);
+            env.screens[0].scale = scale;
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            let mut row = target("Unique", 20.0);
+            row.rect.width = 900.0;
+            deliver(&mut mode, &env, vec![row, target("Other", 950.0)]);
+            let label = mode
+                .session
+                .hints
+                .iter()
+                .find(|h| h.value == 0)
+                .unwrap()
+                .label
+                .clone();
+            press(&mut mode, &env, "/");
+            mode.handle(
+                &ModeEvent::TextChanged(format!("@{}", label.as_str())),
+                &env.ctx(),
+            );
+            let point = mode.inspection.as_ref().unwrap().point;
+            assert_eq!(point, Point::new(470.0, 112.0));
+            press(&mut mode, &env, "esc");
+            let mut commands = Vec::new();
+            for key in label.as_str().chars() {
+                commands.extend(press(&mut mode, &env, &key.to_string()));
+            }
+            assert!(commands.contains(&Command::warp_to(point)));
+        }
+    }
+
     #[test]
     fn expected_scan_activation_does_not_restart_but_external_focus_does() {
         let env = Env::new();
@@ -1463,6 +2134,8 @@ mod tests {
         for c in ['@', 'l', 'a'] {
             mode.handle(&ModeEvent::TextInserted(c), &env.ctx());
             assert_eq!(mode.session.hints.len(), if c == '@' { 2 } else { 1 });
+            assert_eq!(mode.session.search_selected.len(), usize::from(c == 'a'));
+            assert_eq!(mode.inspection.is_some(), c == 'a');
             assert!(mode.overlap_plan.is_ready());
             assert_eq!(mode.overlap_plan.layer_count(), 0);
         }
@@ -1474,8 +2147,14 @@ mod tests {
         }
         assert_eq!(mode.session.hints.len(), 2);
         assert!(mode.session.search_matches.is_empty());
+        mode.handle(&ModeEvent::TextChanged("k".into()), &env.ctx());
+        assert_eq!(mode.session.hints.len(), 1);
+        assert!(mode.session.search_selected.is_empty());
+        assert!(mode.inspection.is_none());
         mode.handle(&ModeEvent::TextChanged("la".into()), &env.ctx());
         assert_eq!(mode.session.hints.len(), 2);
+        assert_eq!(mode.session.search_selected.len(), 1);
+        assert_eq!(mode.session.search_selected[0].label.as_str(), "la");
         mode.handle(&ModeEvent::TextInserted('@'), &env.ctx());
         assert_eq!(mode.session.hints.len(), 1);
         assert_eq!(mode.session.hints[0].label.as_str(), "la");
@@ -1509,6 +2188,10 @@ mod tests {
             "bare @ must not select all"
         );
         assert_eq!(mode.session.search_matches[0].label.as_str(), "ka");
+        mode.handle(&ModeEvent::TextChanged("l@ @ka".into()), &env.ctx());
+        assert_eq!(mode.session.search_matches.len(), 2);
+        assert_eq!(mode.session.search_selected.len(), 1);
+        assert_eq!(mode.session.search_selected[0].label.as_str(), "ka");
         mode.handle(
             &ModeEvent::TextChanged("ka@ @la la@ language".into()),
             &env.ctx(),
@@ -1521,6 +2204,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["ka", "la"]
         );
+        mode.handle(&ModeEvent::TextChanged("la missing".into()), &env.ctx());
+        assert_eq!(
+            mode.session.search_matches.len(),
+            2,
+            "semantic collisions remain preview candidates"
+        );
+        assert_eq!(
+            mode.session
+                .search_selected
+                .iter()
+                .map(|hint| hint.value)
+                .collect::<Vec<_>>(),
+            [0]
+        );
+        assert_eq!(mode.inspection.as_ref().unwrap().members.len(), 1);
     }
 
     #[test]
@@ -1605,9 +2303,12 @@ mod tests {
             mode.handle(&ModeEvent::CopyTextField(0), &env.ctx())
                 .contains(&Command::CopyText("复制文本".into()))
         );
+        let sample = mode.handle(&ModeEvent::CopyTextField(3), &env.ctx());
+        assert!(mode.inspection.as_ref().unwrap().copy_pending);
         assert!(
-            mode.handle(&ModeEvent::CopyTextField(3), &env.ctx())
-                .is_empty()
+            !sample
+                .iter()
+                .any(|command| matches!(command, Command::CopyText(_)))
         );
         assert!(
             mode.handle(&ModeEvent::CopyTextField(4), &env.ctx())
@@ -1635,6 +2336,7 @@ mod tests {
             }));
             deliver(&mut mode, &env, vec![item]);
             press(&mut mode, &env, "/");
+            mode.handle(&ModeEvent::TextChanged("复制".into()), &env.ctx());
             let scene = mode.scene(&env.ctx());
             let labels: Vec<_> = scene
                 .labels
@@ -1676,22 +2378,23 @@ mod tests {
         }
     }
     #[test]
-    fn search_shortcuts_follow_platform_and_preserve_custom_bindings() {
+    fn search_shortcuts_default_to_ctrl_and_preserve_explicit_legacy_bindings() {
         let mut config = Config::default();
         let compiled = crate::app::mode_catalog::hint_settings(&config);
         assert_eq!(
             crate::api::input::display_key_chord(&compiled.search_copy_keys[0].to_string()),
-            if cfg!(target_os = "macos") {
-                "CMD+1"
-            } else {
-                "CTRL+1"
-            }
+            "CTRL+1"
         );
         assert_eq!(
             compiled.search_copy_keys[0],
-            KeyChord::parse("primary+1").unwrap()
+            KeyChord::parse("ctrl+1").unwrap()
         );
-        config.ui_hint.search_copy_keys[0] = "ctrl+shift+9".into();
+        config.ui_hint.search_copy_keys = vec![
+            "ctrl+shift+9".into(),
+            "ctrl+2".into(),
+            "ctrl+3".into(),
+            "ctrl+4".into(),
+        ];
         let compiled = crate::app::mode_catalog::hint_settings(&config);
         assert_eq!(
             compiled.search_copy_keys[0],
@@ -1834,12 +2537,14 @@ mod tests {
             [1, 0]
         );
         let info = mode.search_info().unwrap();
-        assert_eq!(info.field_count(), 3);
+        assert_eq!(info.field_count(), 4);
         assert_eq!(info.values()[0], "蓝香蕉\n红苹果");
-        assert_eq!(info.values()[2], "240, 112\n40, 112");
+        assert_eq!(info.values()[2], "140, 112");
         assert!(
-            mode.handle(&ModeEvent::CopyTextField(3), &env.ctx())
-                .is_empty()
+            !mode
+                .handle(&ModeEvent::CopyTextField(3), &env.ctx())
+                .iter()
+                .any(|c| matches!(c, Command::CopyText(_)))
         );
         assert!(
             mode.handle(&ModeEvent::CopyTextField(0), &env.ctx())
@@ -1852,9 +2557,10 @@ mod tests {
                 .iter()
                 .filter(|label| label.fixed_bounds && label.z_index == 10_001)
                 .count(),
-            9
+            12
         );
         let capacity = mode.session.search_matches.capacity();
+        let selected_capacity = mode.session.search_selected.capacity();
         let out = mode.handle(&ModeEvent::TextCopied, &env.ctx());
         assert!(out.contains(&Command::CloseTextPrompt));
         assert!(
@@ -1864,6 +2570,7 @@ mod tests {
         assert_eq!(mode.session.hints.len(), 3);
         assert!(matches!(mode.input, Input::Labels(_)));
         assert_eq!(mode.session.search_matches.capacity(), capacity);
+        assert_eq!(mode.session.search_selected.capacity(), selected_capacity);
         press(&mut mode, &env, "/");
         mode.handle(&ModeEvent::TextChanged("hpg lxj".into()), &env.ctx());
         assert_eq!(mode.search_info().unwrap().values()[0], "红苹果\n蓝香蕉");
@@ -1871,6 +2578,7 @@ mod tests {
         assert_eq!(mode.search_info().unwrap().field_count(), 4);
         mode.handle(&ModeEvent::Deactivated, &env.ctx());
         assert_eq!(mode.session.search_matches.capacity(), 0);
+        assert_eq!(mode.session.search_selected.capacity(), 0);
         assert_eq!(mode.session.search_seen.capacity(), 0);
         assert_eq!(mode.session.search_query.capacity(), 0);
     }
@@ -2254,6 +2962,17 @@ mod tests {
                 mode.session.hints[1].bounds,
                 if highlight { row.rect } else { anchor }
             );
+            press(&mut mode, &env, "/");
+            mode.handle(
+                &ModeEvent::TextChanged(format!("@{}", code.as_str())),
+                &env.ctx(),
+            );
+            assert_eq!(
+                mode.inspection.as_ref().unwrap().point,
+                center,
+                "Point uses the same authoritative row destination after refinement"
+            );
+            press(&mut mode, &env, "esc");
             let commands = press(&mut mode, &env, code.as_str());
             assert!(commands.iter().any(|command| matches!(command, Command::WarpPointer { x, y } if *x == center.x && *y == center.y)));
         }
@@ -3933,8 +4652,25 @@ mod tests {
         let filtered = press(&mut mode, &env, "a");
         assert_eq!(mode.session.hints.len(), 2);
         assert_eq!(mode.overlap_plan.len(), 2);
-        // Two target labels and the shared input text.
-        assert_eq!(scene_of(&filtered).labels.len(), 3);
+        let scene = scene_of(&filtered);
+        assert_eq!(
+            scene
+                .labels
+                .iter()
+                .filter(|label| label.z_index < 10_000)
+                .count(),
+            2
+        );
+        assert_eq!(
+            scene
+                .labels
+                .iter()
+                .filter(|label| label.z_index == 10_002)
+                .count(),
+            1
+        );
+        assert_eq!(mode.session.search_selected.len(), 1);
+        assert_eq!(mode.session.search_selected[0].label.as_str(), "a");
 
         let cycled = press(&mut mode, &env, "left_shift");
         assert_eq!(

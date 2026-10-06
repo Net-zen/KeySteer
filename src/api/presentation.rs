@@ -151,14 +151,17 @@ pub struct HintContent<'a> {
 }
 
 pub struct HintView<'a> {
+    pub point: Option<HintPointView<'a>>,
     pub info: Option<HintInfoView<'a>>,
-    pub window_bounds: Option<Rect>,
+    pub window_bounds: &'a Option<Rect>,
     pub content: HintContent<'a>,
     pub layers: &'a VisualLayerPlan,
     pub active_layer: Option<usize>,
 }
 
 pub struct HintInfoView<'a> {
+    pub point: Option<HintPointInfo<'a>>,
+    pub field_modes: &'a [crate::api::point_sample::FieldMode; 4],
     pub preview: &'a HintInfoPreview,
     pub targets: &'a [crate::api::UiTarget],
     pub hints: &'a [CompactHint<usize>],
@@ -167,13 +170,36 @@ pub struct HintInfoView<'a> {
     pub titles: &'a [String; 4],
 }
 
+pub struct HintPointView<'a> {
+    pub adjusting: bool,
+    /// Zero means the initial collection center; 1..=count selects a member.
+    pub position: usize,
+    pub count: usize,
+    pub point: &'a crate::api::Point,
+    pub color: Option<crate::api::theme::CompiledColor>,
+    pub radius: u16,
+    pub width: u16,
+}
+
+pub struct HintPointInfo<'a> {
+    pub point: &'a crate::api::Point,
+    pub target: Option<usize>,
+    pub color: Option<crate::api::Color>,
+    pub format: crate::api::point_sample::ColorFormat,
+    pub colors: &'a [crate::api::point_sample::SampledColor],
+}
+
 /// Session-owned preview storage; closing the editor does not discard capacity.
 #[derive(Default)]
 pub struct HintInfoPreview(std::cell::RefCell<[String; 4]>);
 
 impl HintInfoView<'_> {
     pub fn field_count(&self) -> usize {
-        if self.multiple { 3 } else { 4 }
+        if self.multiple && self.point.is_none() {
+            3
+        } else {
+            4
+        }
     }
 
     #[cfg(test)]
@@ -203,6 +229,42 @@ impl HintInfoView<'_> {
 
     fn write_field(&self, field: usize, limit: usize, text: &mut String) {
         use std::fmt::Write;
+        if let Some(point) = &self.point
+            && (!self.multiple
+                || self.field_modes.get(field)
+                    == Some(&crate::api::point_sample::FieldMode::Switch))
+        {
+            text.clear();
+            match field {
+                0 | 1 => {
+                    if let Some(target) = point.target.and_then(|i| self.targets.get(i)) {
+                        let mut out = InfoText {
+                            text,
+                            position: 0,
+                            remaining: limit,
+                        };
+                        if field == 0 {
+                            let _ = write_ocr_text(&mut out, target.ocr_text());
+                        } else if target.details.is_none()
+                            || !target.accessibility_text().is_empty()
+                        {
+                            let _ =
+                                write!(out, "{} · {}", target.accessibility_text(), target.role);
+                        }
+                    }
+                }
+                2 => {
+                    let _ = write!(text, "{:.0}, {:.0}", point.point.x, point.point.y);
+                }
+                3 => {
+                    if let Some(color) = point.color {
+                        let _ = point.format.write(text, color);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if field >= self.field_count() {
             text.clear();
             return;
@@ -233,7 +295,15 @@ impl HintInfoView<'_> {
                     write!(out, "{:.0}, {:.0}", center.x, center.y)
                 }
                 3 => {
-                    if let Some(color) = target.details.as_ref().and_then(|d| d.color) {
+                    if let Some(point) = &self.point {
+                        if let Some(color) = point.colors.get(index).and_then(|sample| sample.color)
+                        {
+                            present = true;
+                            point.format.write(&mut out, color)
+                        } else {
+                            Ok(())
+                        }
+                    } else if let Some(color) = target.details.as_ref().and_then(|d| d.color) {
                         present = true;
                         write!(
                             out,
@@ -407,6 +477,8 @@ mod info_preview_tests {
             .collect();
         let preview = HintInfoPreview::default();
         let mut view = HintInfoView {
+            point: None,
+            field_modes: &crate::api::point_sample::DEFAULT_FIELD_MODES,
             preview: &preview,
             targets: &targets,
             hints: &hints,
@@ -469,6 +541,8 @@ mod info_preview_tests {
         {
             targets[0].details.as_mut().unwrap().ocr = text;
             let view = HintInfoView {
+                point: None,
+                field_modes: &crate::api::point_sample::DEFAULT_FIELD_MODES,
                 preview: &preview,
                 targets: &targets,
                 hints: &hints,

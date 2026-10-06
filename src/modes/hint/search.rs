@@ -85,8 +85,12 @@ impl SearchText {
             // is unfinished input, not a select-all term.
             !prefix.is_empty() && label.starts_with(prefix)
         } else {
-            label.starts_with(word) || self.text.contains(word) || self.initials.contains(word)
+            label.starts_with(word) || self.matches_text(word)
         }
+    }
+
+    pub(super) fn matches_text(&self, word: &str) -> bool {
+        self.text.contains(word) || self.initials.contains(word)
     }
 
     #[cfg(test)]

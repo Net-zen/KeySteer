@@ -92,6 +92,7 @@ impl EventSender {
 }
 
 pub struct MacOsBackend {
+    point_sampler: Option<crate::platform::common::point_sample::Worker>,
     hook: Option<HookThread>,
     async_rx: Receiver,
     background_budget: event_queue::BackgroundBudget,
@@ -169,6 +170,7 @@ impl MacOsBackend {
             }
         };
         Ok(Self {
+            point_sampler: None,
             hook,
             async_rx,
             background_budget: event_queue::BackgroundBudget::default(),
@@ -367,6 +369,9 @@ impl MacOsBackend {
             }
         }
         errors.record("UI scan worker", self.scan_worker.shutdown_until(deadline));
+        if let Some(mut worker) = self.point_sampler.take() {
+            errors.record("point sampler", worker.stop());
+        }
         if let Some(worker) = self.update_worker.as_mut() {
             match worker.cancel_and_wait_until(deadline) {
                 Ok(()) => {
@@ -397,6 +402,32 @@ impl Drop for MacOsBackend {
 }
 
 impl Backend for MacOsBackend {
+    fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
+        if self.point_sampler.is_none() {
+            let tx = self.event_tx.clone();
+            self.point_sampler = crate::platform::common::point_sample::Worker::new(
+                || {
+                    let mut sampler = vision::PointSampler::default();
+                    move |request| sampler.sample(request)
+                },
+                move |sample| {
+                    let _ = tx.send(BackendEvent::PointSampled(sample));
+                },
+            )
+            .ok();
+        }
+        if let Some(worker) = &self.point_sampler {
+            worker.submit(Some(request));
+            true
+        } else {
+            false
+        }
+    }
+    fn cancel_point_sample(&mut self) {
+        if let Some(worker) = &self.point_sampler {
+            worker.submit(None);
+        }
+    }
     fn read_clipboard(&mut self) -> Result<String, String> {
         arboard::Clipboard::new()
             .and_then(|mut clipboard| clipboard.get_text())

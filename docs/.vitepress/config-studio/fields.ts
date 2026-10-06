@@ -1,7 +1,7 @@
 import { fieldLocation } from './navigation.ts'
 export type TargetingMode = 'grid' | 'recursive_grid' | 'ui_hint' | 'key_help' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
 export type Appearance = 'dark' | 'light'
-export type ControlKind = 'color' | 'number' | 'text' | 'boolean' | 'select' | 'ratios' | 'percentages' | 'offset'
+export type ControlKind = 'color' | 'number' | 'text' | 'boolean' | 'select' | 'ratios' | 'percentages' | 'offset' | 'choices' | 'binding' | 'chords' | 'field-modes'
 
 export interface StyleField {
   path: string
@@ -11,6 +11,8 @@ export interface StyleField {
   max?: number
   step?: number
   options?: string[]
+  default?: unknown
+  action?: string
 }
 
 export interface ModeFields {
@@ -133,6 +135,30 @@ export const fields = {
     ],
   },
 } as Record<TargetingMode, ModeFields>
+
+fields.ui_hint.advanced.push(
+  { path: 'ui_hint.search_copy_keys', label: '四个条目的复制键（按顺序，逗号分隔）', kind: 'chords', default: ['ctrl+1', 'ctrl+2', 'ctrl+3', 'ctrl+4'] },
+  { path: 'ui_hint.search_bindings', label: '点位调整切换键（单击）', kind: 'binding', action: 'point_toggle', default: 'ctrl' },
+  { path: 'ui_hint.search_bindings', label: '多点位置切换键（调整时）', kind: 'binding', action: 'point_next', default: 'tab' },
+  { path: 'ui_hint.search_point.field_modes', label: '多点信息栏展示方式（1–4）', kind: 'field-modes', default: ['concat', 'concat', 'switch', 'switch'] },
+  { path: 'ui_hint.search_bindings', label: '颜色格式切换键（自动进入调整）', kind: 'binding', action: 'color_next', default: 'ctrl+shift+4' },
+  { path: 'ui_hint.search_point.color_formats', label: '颜色格式顺序（首项为默认）', kind: 'choices', options: ['hex', 'rgb', 'hsl'], default: ['hex', 'rgb', 'hsl'] },
+)
+fields.ui_hint.colors.push(
+  { path: 'ui_hint.search_point.marker_color', label: '点位标记颜色', kind: 'color' },
+  { path: 'ui_hint.search_point.input_background_color', label: 'Point 输入框背景色', kind: 'color' },
+  { path: 'ui_hint.search_point.input_border_color', label: 'Point 输入框边框色（默认沿用搜索框）', kind: 'color' },
+)
+fields.ui_hint.layout.push(
+  { path: 'ui_hint.search_point.color_preview.enabled', label: '显示颜色预览色块', kind: 'boolean', default: true },
+  { path: 'ui_hint.search_point.color_preview.width', label: '色块宽度', kind: 'number', min: 1, max: 64, step: 1, default: 16 },
+  { path: 'ui_hint.search_point.color_preview.height', label: '色块高度', kind: 'number', min: 1, max: 64, step: 1, default: 16 },
+  { path: 'ui_hint.search_point.color_preview.x_offset', label: '色块水平偏移', kind: 'number', min: -200, max: 200, step: 1, default: 4 },
+  { path: 'ui_hint.search_point.color_preview.y_offset', label: '色块垂直偏移', kind: 'number', min: -200, max: 200, step: 1, default: 0 },
+  { path: 'ui_hint.search_point.color_preview.border_width', label: '色块边框线宽', kind: 'number', min: 0, max: 10, step: 1, default: 1 },
+  { path: 'ui_hint.search_point.marker_radius', label: '点位标记半径', kind: 'number', min: 2, max: 40, step: 1, default: 6 },
+  { path: 'ui_hint.search_point.marker_width', label: '点位标记线宽', kind: 'number', min: 0, max: 10, step: 1, default: 2 },
+)
 
 for (const [action, label] of [
   ['paste', '搜索粘贴快捷键'], ['copy', '搜索复制选区快捷键'], ['cut', '搜索剪切快捷键'],

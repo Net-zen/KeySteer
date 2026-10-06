@@ -61,6 +61,43 @@ impl Engine {
                 )
             });
             match command {
+                Command::SetPointAdjustment {
+                    available,
+                    adjusting,
+                } => {
+                    if self.scheduler.point_input.available != available
+                        || self.scheduler.point_input.adjusting != adjusting
+                    {
+                        self.scheduler.point_input = PointInput {
+                            available,
+                            adjusting,
+                            ..PointInput::default()
+                        };
+                    }
+                }
+                Command::SamplePoint(request) => {
+                    self.flush_pending_overlay(backend)?;
+                    self.scheduler.point_sample_serial =
+                        self.scheduler.point_sample_serial.wrapping_add(1);
+                    let id = self.scheduler.point_sample_serial;
+                    self.scheduler.point_sample = Some((owner.clone(), id, request));
+                    if !backend
+                        .request_point_sample(crate::api::point_sample::Request { id, ..request })
+                    {
+                        self.dispatch_to(
+                            owner,
+                            ModeEvent::PointSampled(crate::api::point_sample::Sample {
+                                request,
+                                color: None,
+                            }),
+                            backend,
+                        )?;
+                    }
+                }
+                Command::CancelPointSample => {
+                    self.scheduler.point_sample = None;
+                    backend.cancel_point_sample();
+                }
                 Command::RequestPanelWindowBounds(id) => {
                     if let Some(process) = self.focused_app.as_ref().map(|app| app.process_id) {
                         self.scheduler.panel_geometry.insert(id, owner.clone());
@@ -70,6 +107,7 @@ impl Engine {
                     }
                 }
                 Command::OpenTextPrompt(mut prompt) => {
+                    self.clear_point_input(backend);
                     self.scheduler.text_prompt_serial =
                         self.scheduler.text_prompt_serial.wrapping_add(1);
                     prompt.id = self.scheduler.text_prompt_serial | (1 << 63);
@@ -90,6 +128,7 @@ impl Engine {
                     }
                 }
                 Command::CloseTextPrompt => {
+                    self.clear_point_input(backend);
                     backend.set_text_capture(false);
                     if let Some((_, prompt)) = self.scheduler.text_prompt.take() {
                         self.scheduler.text_prompt_returning_focus = prompt.live_style.is_none();
@@ -97,6 +136,7 @@ impl Engine {
                     }
                 }
                 Command::ReleaseTextPrompt => {
+                    self.clear_point_input(backend);
                     self.scheduler.text_prompt = None;
                     backend.set_text_capture(false);
                     backend.release_text_prompt();

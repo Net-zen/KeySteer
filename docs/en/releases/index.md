@@ -5,6 +5,13 @@ outline: false
 
 # Release notes
 
+## 0.11.2
+
+- UI Hint search adds point inspection and fine adjustment: tap `Ctrl` to switch between typing and adjustment, using your Normal movement keys. Multiple points start at their average center; press `Tab` while adjusting to cycle through them.
+- Added live color sampling and swatch previews. Press `Ctrl+Shift+4` to cycle through HEX, RGB, and HSL. Copying information or clicking while adjusting confirms the current point and exits search. Color sampling on macOS requires Screen Recording permission.
+- For multiple points, each OCR, accessibility, coordinates, and color field can combine all results or follow the current point. Default copy shortcuts are now `Ctrl+1/2/3/4` on both platforms, with each shortcut independently configurable.
+- The web simulator adds point and multi-point information settings, consistent input-state and swatch previews, and related controls grouped directly below each preview.
+
 ## 0.11.0
 
 - Added window multi-selection for moving, resizing, maximizing/minimizing, and closing multiple windows together, with highlighted selections.

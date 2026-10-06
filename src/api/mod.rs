@@ -19,6 +19,7 @@ pub mod input;
 pub mod lifecycle;
 pub mod overlay;
 pub mod plugin;
+pub mod point_sample;
 pub mod presentation;
 pub mod style;
 pub mod text_edit;

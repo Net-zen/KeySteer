@@ -42,6 +42,8 @@ fn active_config(engine: &Engine) -> Config {
 /// Records what the engine asked of the platform.
 #[derive(Default)]
 struct Recorder {
+    point_requests: Vec<crate::api::point_sample::Request>,
+    point_cancels: usize,
     copied_text: Vec<String>,
     clipboard_input: String,
     text_capture: bool,
@@ -124,6 +126,13 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
+    fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
+        self.log.lock().unwrap().point_requests.push(request);
+        true
+    }
+    fn cancel_point_sample(&mut self) {
+        self.log.lock().unwrap().point_cancels += 1;
+    }
     fn run_event_loop(
         &mut self,
         turn: &mut crate::api::backend::EventLoopTurn<'_>,
@@ -412,6 +421,10 @@ impl Mode for ProbeMode {
     }
     fn handle(&mut self, event: &ModeEvent, _ctx: &HostContext<'_>) -> CommandBatch {
         let label = match event {
+            ModeEvent::TogglePointAdjustment
+            | ModeEvent::CyclePointTarget
+            | ModeEvent::CyclePointColor
+            | ModeEvent::PointSampled(_) => "point",
             ModeEvent::PanelWindowBounds { .. } => "panel_bounds",
             ModeEvent::TextChanged(_) => "text_changed",
             ModeEvent::TextSubmitted(_) => "text_submitted",

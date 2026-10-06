@@ -1720,3 +1720,270 @@ ctrl = "window_multi_select"
         );
     }
 }
+
+#[test]
+fn search_keys_expand_platform_aliases_before_validation_and_compilation() {
+    let platform = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    let config = Config::parse(&format!(
+        r#"[key_aliases.{platform}]
+Primary = "left_alt"
+Point = "right_ctrl"
+[ui_hint.search_bindings]
+Point = "point_toggle"
+"Point+shift+4" = "color_next"
+[ui_hint.search_edit_keys]
+accept = "enter / Primary+q"
+"#
+    ))
+    .unwrap();
+    config.validate().unwrap();
+    let compiled = crate::app::mode_catalog::hint_settings(&config);
+    assert_eq!(
+        compiled.search_copy_keys[2],
+        KeyChord::parse("ctrl+3").unwrap()
+    );
+    assert!(compiled.search_edit_keys.iter().any(|(key, action)| *action
+        == crate::api::text_edit::EditAction::Accept
+        && *key == KeyChord::parse("left_alt+q").unwrap()));
+    assert!(compiled.search_point.keys.iter().any(|(key, action)| *key
+        == KeyChord::parse("right_ctrl").unwrap()
+        && *action == crate::api::point_sample::Action::PointToggle));
+    let exported = config.to_toml().unwrap();
+    assert!(!exported.contains("marker_radius"));
+    assert!(!exported.contains("color_formats"));
+}
+
+#[test]
+fn search_copy_keys_preserve_independent_chords() {
+    let config =
+        Config::parse("[ui_hint]\nsearch_copy_keys = ['ctrl+9', 'cmd+2', 'alt+3', 'ctrl+alt+4']")
+            .unwrap();
+    config.validate().unwrap();
+    let compiled = crate::app::mode_catalog::hint_settings(&config);
+    for (actual, expected) in
+        compiled
+            .search_copy_keys
+            .iter()
+            .zip(["ctrl+9", "cmd+2", "alt+3", "ctrl+alt+4"])
+    {
+        assert_eq!(*actual, KeyChord::parse(expected).unwrap());
+    }
+    let exported = config.to_toml().unwrap();
+    assert_eq!(
+        Config::parse(&exported).unwrap().ui_hint.search_copy_keys,
+        config.ui_hint.search_copy_keys
+    );
+}
+
+#[test]
+fn search_point_field_modes_compile_and_round_trip_with_implicit_defaults() {
+    use crate::api::point_sample::{Action, DEFAULT_FIELD_MODES, FieldMode};
+    let defaults = Config::default();
+    assert_eq!(
+        defaults.ui_hint.search_point.field_modes,
+        DEFAULT_FIELD_MODES
+    );
+    assert!(!defaults.to_toml().unwrap().contains("field_modes"));
+    let config = Config::parse("[ui_hint.search_point]\nfield_modes = ['switch', 'concat', 'concat', 'switch']\n[ui_hint.search_bindings]\nctrl = 'point_toggle'\n'Primary+f9' = 'point_next'").unwrap();
+    config.validate().unwrap();
+    let compiled = crate::app::mode_catalog::hint_settings(&config);
+    assert_eq!(
+        compiled.search_point.field_modes,
+        [
+            FieldMode::Switch,
+            FieldMode::Concat,
+            FieldMode::Concat,
+            FieldMode::Switch
+        ]
+    );
+    assert!(
+        compiled
+            .search_point
+            .keys
+            .iter()
+            .any(|(key, action)| *action == Action::PointNext && key.canonical().ends_with("f9"))
+    );
+    let exported = config.to_toml().unwrap();
+    assert_eq!(
+        Config::parse(&exported)
+            .unwrap()
+            .ui_hint
+            .search_point
+            .field_modes,
+        config.ui_hint.search_point.field_modes
+    );
+    for values in [
+        "[]",
+        "['concat']",
+        "['concat', 'switch', 'concat', 'switch', 'concat']",
+        "['concat', 'switch', 'all', 'switch']",
+    ] {
+        assert!(
+            Config::parse(&format!("[ui_hint.search_point]\nfield_modes = {values}")).is_err(),
+            "{values}"
+        );
+    }
+}
+
+#[test]
+fn search_point_rejects_duplicate_formats_and_conflicting_or_invalid_keys() {
+    for entry in [
+        "color_formats = []",
+        "color_formats = [\"hex\", \"hex\"]",
+        "color_formats = [\"cmyk\"]",
+        "marker_radius = 0",
+        "marker_width = 11",
+        "marker_color = \"bad\"",
+    ] {
+        let source = format!("[ui_hint.search_point]\n{entry}");
+        assert!(
+            Config::parse(&source).and_then(|c| c.validate()).is_err(),
+            "{entry}"
+        );
+    }
+}
+
+#[test]
+fn search_bindings_reject_conflicts_and_support_replacement_and_aliases() {
+    for entry in [
+        "\"ctrl+k\" = \"point_toggle\"",
+        "\"ctrl+4\" = \"color_next\"",
+        "enter = \"point_toggle\"",
+        "ctrl = \"bad\"",
+    ] {
+        let source = format!("[ui_hint.search_bindings]\n{entry}");
+        assert!(
+            Config::parse(&source).and_then(|c| c.validate()).is_err(),
+            "{entry}"
+        );
+    }
+    let config =
+        Config::parse("[ui_hint.search_bindings]\nf8 = \"point_toggle\"\nf9 = \"color_next\"")
+            .unwrap();
+    config.validate().unwrap();
+    assert_eq!(config.ui_hint.search_bindings.len(), 2);
+    assert!(!config.ui_hint.search_bindings.contains_key("ctrl"));
+    assert!(
+        Config::parse("[ui_hint.search_bindings]")
+            .unwrap()
+            .ui_hint
+            .search_bindings
+            .is_empty()
+    );
+}
+
+#[test]
+fn search_point_color_preview_defaults_stay_implicit() {
+    assert!(
+        !Config::default()
+            .to_toml()
+            .unwrap()
+            .contains("color_preview")
+    );
+    let config = Config::parse("[ui_hint.search_point.color_preview]\nwidth = 24").unwrap();
+    config.validate().unwrap();
+    let style = config.ui_hint.search_point.color_preview;
+    assert_eq!(
+        (
+            style.width,
+            style.height,
+            style.x_offset,
+            style.y_offset,
+            style.border_width
+        ),
+        (24, 16, 4, 0, 1)
+    );
+    let exported = config.to_toml().unwrap();
+    let tree: toml::Value = toml::from_str(&exported).unwrap();
+    assert_eq!(
+        tree["ui_hint"]["search_point"]["color_preview"]
+            .as_table()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        Config::parse(&exported)
+            .unwrap()
+            .ui_hint
+            .search_point
+            .color_preview,
+        style
+    );
+    for entry in [
+        "width = 0",
+        "height = 65",
+        "x_offset = -201",
+        "y_offset = 201",
+        "border_width = 11",
+        "enabled = 1",
+        "unknown = 1",
+    ] {
+        assert!(
+            Config::parse(&format!("[ui_hint.search_point.color_preview]\n{entry}"))
+                .and_then(|c| c.validate())
+                .is_err(),
+            "{entry}"
+        );
+    }
+}
+
+#[test]
+fn point_input_colors_inherit_border_and_compile_optional_theme_overrides() {
+    use crate::api::Appearance;
+    let compiled_defaults = crate::app::mode_catalog::hint_settings(&Config::default());
+    for (appearance, expected) in [
+        (Appearance::Light, "#E8F6F0FF"),
+        (Appearance::Dark, "#284D44FF"),
+    ] {
+        let panel = &compiled_defaults.search_input_ui;
+        let normal = &panel.for_appearance(appearance).panel;
+        assert_eq!(
+            panel.point_input_colors(appearance, normal),
+            (
+                crate::api::Color::parse(expected).unwrap(),
+                normal.border_color
+            )
+        );
+    }
+    let defaults = Config::default().to_toml().unwrap();
+    assert!(!defaults.contains("input_background_color"));
+    assert!(!defaults.contains("input_border_color"));
+    let config = Config::parse(
+        r##"[ui_hint.search_point]
+input_background_color = { light = "#11223344", dark = "#55667788" }
+input_border_color = { light = "#99AABBCC", dark = "#DDEEFFAA" }
+"##,
+    )
+    .unwrap();
+    config.validate().unwrap();
+    let compiled = crate::app::mode_catalog::hint_settings(&config);
+    for (appearance, bg, border) in [
+        (Appearance::Light, "#11223344", "#99AABBCC"),
+        (Appearance::Dark, "#55667788", "#DDEEFFAA"),
+    ] {
+        let panel = &compiled.search_input_ui;
+        let (background, stroke) =
+            panel.point_input_colors(appearance, &panel.for_appearance(appearance).panel);
+        assert_eq!(background, crate::api::Color::parse(bg).unwrap());
+        assert_eq!(stroke, crate::api::Color::parse(border).unwrap());
+    }
+    let exported = config.to_toml().unwrap();
+    assert_eq!(
+        Config::parse(&exported).unwrap().ui_hint.search_point,
+        config.ui_hint.search_point
+    );
+    for field in ["input_background_color", "input_border_color"] {
+        assert!(
+            Config::parse(&format!("[ui_hint.search_point]\n{field} = 'invalid'"))
+                .and_then(|c| c.validate())
+                .is_err()
+        );
+    }
+}

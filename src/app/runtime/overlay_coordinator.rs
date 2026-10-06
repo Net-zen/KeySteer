@@ -172,10 +172,13 @@ impl Engine {
                 && scene.shapes.is_empty(),
             ..DynamicOverlayState::default()
         };
-        if let Some(cursor) = self
-            .settings
-            .mode_indicator
-            .cursor_for_mode_ref(display_mode.as_str())
+        // Search inspection draws its own point. The native cursor stays at
+        // the last accepted position, so its ring would look like a stale point.
+        if !self.scheduler.point_input.available
+            && let Some(cursor) = self
+                .settings
+                .mode_indicator
+                .cursor_for_mode_ref(display_mode.as_str())
         {
             dynamic.cursor = true;
             let pressed_button = [

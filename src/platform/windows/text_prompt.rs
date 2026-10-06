@@ -497,6 +497,7 @@ mod tests {
         }
         let _cleanup = Cleanup;
         let prompt = TextPrompt {
+            point_keys: None,
             edit_keys: Default::default(),
             live_style: None,
             copy_keys: Default::default(),
@@ -556,6 +557,7 @@ mod tests {
         let mut window = None;
         for id in 10..20 {
             show(TextPrompt {
+                point_keys: None,
                 edit_keys: Default::default(),
                 id,
                 bounds: crate::api::Rect::new(80.0, 600.0, 420.0, 48.0),

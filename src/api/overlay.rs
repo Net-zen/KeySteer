@@ -500,6 +500,25 @@ pub struct OverlayLabel {
     /// UTF-8 insertion offsets in this label; native renderers measure glyph advances.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edit: Option<LabelEdit>,
+    /// Keep the caret (or the end of non-editable text) inside a left-aligned
+    /// viewport using the renderer's existing glyph advances.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scroll_to_cursor: bool,
+    /// UTF-8 length of a right-anchored suffix, painted with matched_text_color.
+    /// Its measured width shares the viewport's existing native text layout.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub trailing_text_len: u8,
+}
+
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
+}
+
+pub(crate) fn split_trailing_text(text: &str, length: u8) -> (&str, &str) {
+    text.len()
+        .checked_sub(usize::from(length))
+        .and_then(|offset| text.get(..offset).zip(text.get(offset..)))
+        .unwrap_or((text, ""))
 }
 
 impl OverlayLabel {
@@ -517,6 +536,8 @@ impl OverlayLabel {
             fit_to_text: false,
             fixed_bounds: false,
             edit: None,
+            scroll_to_cursor: false,
+            trailing_text_len: 0,
         }
     }
 

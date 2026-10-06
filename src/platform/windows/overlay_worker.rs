@@ -55,6 +55,7 @@ enum OverlayPhase {
 }
 
 struct State {
+    sample: Option<Option<crate::api::point_sample::Request>>,
     latest: Option<Frame>,
     positions: Option<Positions>,
     control: Option<Control>,
@@ -72,6 +73,7 @@ struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            sample: None,
             latest: None,
             positions: None,
             control: None,
@@ -94,7 +96,10 @@ fn mark_wake_pending(state: &mut State) -> Result<bool, String> {
         return Err("Windows overlay renderer has already stopped".into());
     }
     if state.wake_pending
-        || (state.control.is_none() && state.latest.is_none() && state.positions.is_none())
+        || (state.control.is_none()
+            && state.latest.is_none()
+            && state.positions.is_none()
+            && state.sample.is_none())
     {
         return Ok(false);
     }
@@ -247,6 +252,17 @@ pub(super) fn deferred_capture_fixture(generation: u64) -> (CaptureLease, impl F
 }
 
 impl OverlayWorker {
+    pub(super) fn sample(
+        &self,
+        request: Option<crate::api::point_sample::Request>,
+    ) -> Result<(), String> {
+        let wake = {
+            let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.sample = Some(request);
+            mark_wake_pending(&mut state)?
+        };
+        self.post_wake(wake)
+    }
     pub(super) fn start(events: EventSender) -> Result<Self, String> {
         let shared = Arc::new(Shared::default());
         let thread_shared = Arc::clone(&shared);
@@ -513,6 +529,7 @@ fn render_loop(shared: &Shared, events: &EventSender, ready: SyncSender<u32>) {
         warn(events, notice);
     }
     let mut scale = 1.0;
+    let mut pixel: Option<native::PreparedCapture> = None;
     loop {
         if overlay::take_deferred_callback_error() {
             crate::support::logging::report_error(
@@ -520,7 +537,7 @@ fn render_loop(shared: &Shared, events: &EventSender, ready: SyncSender<u32>) {
                 "ValidateRect failed for an overlay window",
             );
         }
-        let (control, frame, positions) = {
+        let (control, frame, positions, sample) = {
             let mut state = shared
                 .state
                 .lock()
@@ -530,10 +547,11 @@ fn render_loop(shared: &Shared, events: &EventSender, ready: SyncSender<u32>) {
                 state.control.take(),
                 state.latest.take(),
                 state.positions.take(),
+                state.sample.take(),
             )
         };
 
-        if control.is_none() && frame.is_none() && positions.is_none() {
+        if control.is_none() && frame.is_none() && positions.is_none() && sample.is_none() {
             match native::wait_and_dispatch_window_message() {
                 Ok(true) => continue,
                 Ok(false) => {
@@ -639,6 +657,40 @@ fn render_loop(shared: &Shared, events: &EventSender, ready: SyncSender<u32>) {
                 }
             }
         }
+        if let Some(sample) = sample {
+            let color = (|| -> Result<Option<crate::api::Color>, String> {
+                renderer.sample_aperture(sample.map(|s| s.point))?;
+                let Some(request) = sample else {
+                    pixel = None;
+                    return Ok(None);
+                };
+                native::wait_for_dwm_frame().map_err(|e| e.to_string())?;
+                if pixel.is_none() {
+                    pixel = Some(native::PreparedCapture::new(1, 1)?);
+                }
+                let Some(pixel) = pixel.as_mut() else {
+                    return Err("cannot prepare pixel sampler".into());
+                };
+                pixel.capture_with(
+                    request.point.x.round() as i32,
+                    request.point.y.round() as i32,
+                    1,
+                    1,
+                    |data, _, _| {
+                        Ok(data
+                            .get(..4)
+                            .map(|b| crate::api::Color::rgb(b[2], b[1], b[0])))
+                    },
+                )
+            })()
+            .ok()
+            .flatten();
+            if let Some(request) = sample {
+                let _ = events.send(crate::api::BackendEvent::PointSampled(
+                    crate::api::point_sample::Sample { request, color },
+                ));
+            }
+        }
         // Window messages (especially WM_NCHITTEST) must be serviced between
         // frames. Leaving the full-screen HWND on a Condvar makes Windows mark
         // it hung and blocks every click beneath it while normal mode is idle.
@@ -697,6 +749,12 @@ impl CaptureState {
 }
 
 impl AdaptiveRenderer {
+    fn sample_aperture(&self, point: Option<Point>) -> Result<(), String> {
+        match &self.renderer {
+            Renderer::Gpu(renderer) => renderer.sample_aperture(point),
+            Renderer::Cpu(renderer) => renderer.sample_aperture(point),
+        }
+    }
     fn new() -> (Self, Option<String>) {
         match GpuOverlay::new() {
             Ok(gpu) => (
@@ -835,6 +893,75 @@ impl AdaptiveRenderer {
             .map_err(|error| format!("DWM did not confirm the hidden overlay frame: {error}"))?;
         self.capture_state.confirm_hidden();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod point_sample_tests {
+    use super::*;
+    use crate::api::{Color, OverlayShape};
+
+    #[test]
+    #[ignore = "native pixel probe; briefly creates two disposable overlay patches"]
+    fn sampling_aperture_reads_underlying_pixels_and_restores_the_overlay() {
+        super::super::screens::enable_dpi_awareness().unwrap();
+        let screen = super::super::screens::list_screens().unwrap().remove(0);
+        let area = Rect::new(screen.bounds.x + 20.0, screen.bounds.y + 20.0, 64.0, 64.0);
+        let point = area.center();
+        let scene = |color| {
+            let mut scene = OverlayScene::new();
+            scene.push_shape(OverlayShape::fill(area, color));
+            Arc::new(scene)
+        };
+        let mut background = overlay::Overlay::new();
+        background
+            .present(scene(Color::rgb(0, 255, 0)), area)
+            .unwrap();
+        native::wait_for_dwm_frame().unwrap();
+        let mut pixel = native::PreparedCapture::new(1, 1).unwrap();
+        let mut read = || {
+            pixel
+                .capture_with(point.x as i32, point.y as i32, 1, 1, |bytes, _, _| {
+                    Ok(Color::rgb(bytes[2], bytes[1], bytes[0]))
+                })
+                .unwrap()
+        };
+        let baseline = read();
+        for gpu in [false, true] {
+            let mut foreground = if gpu {
+                AdaptiveRenderer::new().0
+            } else {
+                AdaptiveRenderer {
+                    renderer: Renderer::Cpu(overlay::Overlay::new()),
+                    last_gpu_rebuild: None,
+                    last_scene: None,
+                    last_area: None,
+                    capture_state: CaptureState::new(),
+                }
+            };
+            foreground
+                .present(scene(Color::rgb(255, 0, 0)), area)
+                .unwrap();
+            native::wait_for_dwm_frame().unwrap();
+            let covered = read();
+            assert_ne!(covered, baseline, "test patch must cover the baseline");
+            foreground.sample_aperture(Some(point)).unwrap();
+            native::wait_for_dwm_frame().unwrap();
+            assert_eq!(
+                read(),
+                baseline,
+                "gpu={gpu}: sample must exclude our overlay"
+            );
+            foreground.sample_aperture(None).unwrap();
+            native::wait_for_dwm_frame().unwrap();
+            assert_eq!(
+                read(),
+                covered,
+                "gpu={gpu}: cancellation restores the region"
+            );
+            foreground.dismiss().unwrap();
+        }
+        background.dismiss().unwrap();
     }
 }
 

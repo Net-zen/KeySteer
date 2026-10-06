@@ -191,8 +191,8 @@ pub(super) fn compile_key_aliases(
     Ok(resolved)
 }
 
-pub(super) fn normalize_binding_keys(
-    table: &mut Bindings,
+pub(super) fn normalize_binding_keys<T: Clone>(
+    table: &mut BTreeMap<String, T>,
     label: &str,
     aliases: &BTreeMap<String, String>,
 ) -> Result<(), ConfigError> {
@@ -255,10 +255,13 @@ pub(super) fn normalize_key_if_aliased(
     key: &mut String,
     aliases: &BTreeMap<String, String>,
 ) -> Result<(), ConfigError> {
-    if aliases.contains_key(&normalize_alias_name(key)) {
-        *key = Key::new_with_aliases(&*key, aliases)
+    if key
+        .split('+')
+        .any(|part| aliases.contains_key(&normalize_alias_name(part)))
+    {
+        *key = KeyChord::parse_with_aliases(key, aliases)
             .map_err(ConfigError::Parse)?
-            .to_string();
+            .canonical();
     }
     Ok(())
 }

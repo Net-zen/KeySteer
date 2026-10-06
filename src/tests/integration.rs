@@ -555,11 +555,27 @@ fn windows_visual_capture_keeps_one_barrier_and_an_unscaled_copy_path() {
         !gpu.contains("WaitForCommitCompletion"),
         "ordinary overlay dismiss must not wait for the compositor"
     );
-    assert_eq!(
-        worker.matches("native::wait_for_dwm_frame()").count(),
-        1,
-        "capture must have exactly one explicit DWM barrier"
-    );
+    let render_loop = worker
+        .split("fn render_loop(")
+        .nth(1)
+        .unwrap()
+        .split("enum Renderer")
+        .next()
+        .unwrap();
+    let hidden_capture = worker
+        .split("fn dismiss_for_capture(")
+        .nth(1)
+        .unwrap()
+        .split("mod point_sample_tests")
+        .next()
+        .unwrap();
+    for path in [render_loop, hidden_capture] {
+        assert_eq!(
+            path.matches("native::wait_for_dwm_frame()").count(),
+            1,
+            "point sampling and hidden OCR capture each have one compositor barrier"
+        );
+    }
     assert!(
         native.contains("BitBlt(") && native.contains("StretchBlt("),
         "capture must retain separate unscaled and scaled GDI paths"

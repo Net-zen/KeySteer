@@ -55,21 +55,23 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
             &config.ui_hint.search_input_ui,
             &config.palette(crate::api::Appearance::Light),
             &config.palette(crate::api::Appearance::Dark),
+        )
+        .with_point_input_colors(
+            config.ui_hint.search_point.input_background_color.as_ref(),
+            config.ui_hint.search_point.input_border_color.as_ref(),
         ),
         search_info_ui: crate::api::style::CompiledSearchPanel::new(
             &config.ui_hint.search_info_ui,
             &config.palette(crate::api::Appearance::Light),
             &config.palette(crate::api::Appearance::Dark),
-        ),
+        )
+        .with_color_preview(config.ui_hint.search_point.color_preview),
         search_copy_keys: config
             .ui_hint
-            .search_copy_keys
-            .iter()
+            .copy_chords()
+            .unwrap_or_else(|error| panic!("search requires validated copy keys: {error}"))
+            .into_iter()
             .take(4)
-            .map(|key| {
-                crate::api::KeyChord::parse(key)
-                    .unwrap_or_else(|error| panic!("search requires validated copy key: {error}"))
-            })
             .collect(),
         search_edit_keys: config
             .ui_hint
@@ -86,6 +88,32 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
             })
             .collect(),
         search_titles: ["OCR", "Accessibility", "Coordinates", "Color"].map(String::from),
+        search_point: modes::hint::PointSettings {
+            field_modes: config.ui_hint.search_point.field_modes,
+            keys: config
+                .ui_hint
+                .search_bindings
+                .iter()
+                .map(|(key, action)| {
+                    (
+                        crate::api::KeyChord::parse(key).unwrap_or_else(|error| {
+                            panic!("search requires validated point binding: {error}")
+                        }),
+                        *action,
+                    )
+                })
+                .collect(),
+            formats: config.ui_hint.search_point.color_formats.clone(),
+            marker_color: config
+                .ui_hint
+                .search_point
+                .marker_color
+                .as_ref()
+                .map(crate::api::theme::CompiledColor::from),
+            marker_radius: config.ui_hint.search_point.marker_radius,
+            marker_width: config.ui_hint.search_point.marker_width,
+            movement: normal_settings(config),
+        },
         lifecycle: config.ui_hint.lifecycle.clone(),
         overlap_cycle_key: config.ui_hint.overlap_cycle_key.clone(),
         app_overrides: config
