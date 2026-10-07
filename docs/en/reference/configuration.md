@@ -335,6 +335,7 @@ precision_multiplier = 0.12
 fast_multiplier = 2.0
 
 [scroll]
+steps_per_second = 10.0
 scroll_step = 50
 scroll_step_half = 500
 scroll_step_full = 1000000
@@ -346,7 +347,9 @@ invert_vertical = true
 
 Speed is pixels/second and acceleration is pixels/second², independent of display refresh rate. `smooth_acceleration = true` uses a gentler S curve; `false` uses linear acceleration.
 
-Pressing a scroll key immediately scrolls one configured step. Holding continues from the next display frame without the system keyboard-repeat delay; releasing stops it. Held speed is 30 configured steps per second, scaled by `precision`, `slow`, or `fast`; the default `scroll_step = 50` gives 1500 pixels/second. Refresh rate does not change total distance, though the target application's wheel handling and animation affect the visual result.
+Pressing a scroll key immediately scrolls one configured step. Holding continues from the next display frame without the system keyboard-repeat delay; releasing stops it. Held speed equals the selected step distance × `steps_per_second`, scaled by `precision`, `slow`, or `fast`. With the defaults of 50 pixels and 10 steps/second, a tap travels 50 pixels and holding travels 500 pixels/second. Rates of 30 or 50 give 1500 or 2500 pixels/second without changing the tap distance.
+
+`steps_per_second` accepts fractional values from 0 to 120; 0 enables tap-only scrolling. It is a speed coefficient: held distance is integrated over elapsed display-frame time without a fixed-interval scroll timer. At the default speed, each frame travels about 8.3 pixels at 60 Hz or 3.5 at 144 Hz, with the same total distance. The target application's wheel handling and animation still affect the visual result. Under **Normal → Behavior**, the web simulator lets you configure distances and held speed, then preview taps, holds and speed modifiers.
 
 Theme colours use `#RRGGBBAA` and can differ for light and dark appearance:
 

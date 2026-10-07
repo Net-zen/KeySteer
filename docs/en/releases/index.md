@@ -5,6 +5,12 @@ outline: false
 
 # Release notes
 
+## 0.11.2
+
+- Fixed the pause between the first scroll step and continuous scrolling when holding a key. A press scrolls immediately.
+- Added a setting to adjust continuous scrolling speed.
+- Added the corresponding scroll speed setting to the web configuration simulator.
+
 ## 0.11.0
 
 - Added window multi-selection for moving, resizing, maximizing/minimizing, and closing multiple windows together, with highlighted selections.

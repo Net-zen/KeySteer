@@ -3,6 +3,26 @@ import test from 'node:test'
 import { reactive } from 'vue'
 import { readFile } from 'node:fs/promises'
 
+test('held scroll rate validates, exports and resets to shipped defaults', async () => {
+  const { setConfigPath, deleteConfigPath } = await import('../config-studio/document.ts')
+  const { stringify } = await import('smol-toml')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  assert.equal(defaults.scroll.steps_per_second, 10)
+  for (const rate of [0, .5, 10, 30, 50, 120]) {
+    const document = parseConfigDocument('[scroll]\nscroll_step = 25').document
+    assert.equal(resolveConfigDocument(defaults, document).scroll.steps_per_second, 10)
+    setConfigPath(document, 'scroll.steps_per_second', rate)
+    const exported = parseConfigDocument(stringify(document)).document
+    assert.equal(exported.scroll.steps_per_second, rate)
+    deleteConfigPath(exported, 'scroll.steps_per_second')
+    assert.equal(resolveConfigDocument(defaults, exported).scroll.steps_per_second, 10)
+    assert.equal(exported.scroll.scroll_step, 25)
+  }
+  for (const rate of ['-1', '120.1', 'nan', 'inf', '-inf', '"10"']) {
+    assert.throws(() => parseConfigDocument(`[scroll]\nsteps_per_second = ${rate}`), /scroll.steps_per_second/)
+  }
+})
+
 test('macOS scroll edits export at platform scope and reset to shipped defaults', async () => {
   const { setConfigPath, deleteConfigPath } = await import('../config-studio/document.ts')
   const { stringify } = await import('smol-toml')

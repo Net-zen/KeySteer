@@ -43,6 +43,9 @@ export default defineComponent({
             field={field}
             value={getConfigPath(props.effectiveDocument, field.path)}
             inherited={getConfigPath(props.document, field.path) === undefined}
+            summary={field.path === 'scroll.steps_per_second'
+              ? t('普通滚动：{0} 像素/秒', [Number(getConfigPath(props.effectiveDocument, 'scroll.scroll_step') ?? 50) * Number(getConfigPath(props.effectiveDocument, field.path) ?? 10)])
+              : ''}
             onUpdate={(value) => update(field.path, value)}
             onReset={() => reset(field.path)}
           />
@@ -76,6 +79,7 @@ const ConfigControl = defineComponent({
     field: { type: Object as () => ConfigField, required: true },
     value: { required: false },
     inherited: { type: Boolean, required: true },
+    summary: { type: String, default: '' },
     onUpdate: { type: Function as unknown as () => (value: unknown) => void, required: true },
     onReset: { type: Function as unknown as () => () => void, required: true },
   },
@@ -108,6 +112,7 @@ const ConfigControl = defineComponent({
           <span class="ks-common-copy">
             <strong>{t(field.label)}</strong>
             <small>{t(field.description)}</small>
+            {props.summary && <small>{props.summary}</small>}
           </span>
           <span class="ks-common-input">{control}</span>
           <button

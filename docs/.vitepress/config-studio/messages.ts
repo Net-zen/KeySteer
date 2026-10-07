@@ -18,6 +18,11 @@ export const englishMessages: Record<string, string> = {
   '仅 macOS 生效；反转垂直滚轮方向，默认开启': 'macOS only; reverse vertical wheel direction. On by default.',
   '整页滚动': 'Full-page scrolling',
   'scroll_full_* 的像素距离': 'Pixel distance for scroll_full_* actions',
+  '滚动步长（像素）': 'Scroll tap distance (pixels)',
+  '普通滚动短按一次的距离；持续速度 = 此值 × 步/秒': 'Distance for one ordinary scroll tap; held speed = this distance × steps/second',
+  '持续滚动速度（步/秒）': 'Held scroll speed (steps/second)',
+  '普通滚动：{0} 像素/秒': 'Standard scrolling: {0} pixels/second',
+  '按住时每秒经过的配置步长；0 仅短按，支持小数，速度修饰键继续生效': 'Configured steps travelled per second while held; 0 is tap-only. Fractions and speed modifiers are supported.',
 
   '搜索粘贴快捷键': 'Search paste shortcut', '搜索复制选区快捷键': 'Search copy selection shortcut',
   '搜索剪切快捷键': 'Search cut shortcut', '搜索全选快捷键': 'Search select all shortcut',

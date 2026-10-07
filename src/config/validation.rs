@@ -747,6 +747,14 @@ impl ConfigFile {
 
         validate_inheritance(self).map_err(bad)?;
 
+        if !self.scroll.steps_per_second.is_finite()
+            || !(0.0..=120.0).contains(&self.scroll.steps_per_second)
+        {
+            return Err(bad(
+                "scroll.steps_per_second must be finite and 0..=120".into()
+            ));
+        }
+
         if self.pointer.max_speed <= 0.0 {
             return Err(bad("pointer.max_speed must be positive".into()));
         }

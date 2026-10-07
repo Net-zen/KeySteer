@@ -23,11 +23,12 @@ pub(crate) fn normal_settings(config: &Config) -> modes::normal::Settings {
             precision_multiplier: config.pointer.precision_multiplier,
             fast_multiplier: config.pointer.fast_multiplier,
         },
-        scroll: modes::normal::ScrollSettings {
-            scroll_step: config.scroll.scroll_step,
-            scroll_step_half: config.scroll.scroll_step_half,
-            scroll_step_full: config.scroll.scroll_step_full,
-        },
+        scroll: modes::normal::ScrollSettings::new(
+            config.scroll.scroll_step,
+            config.scroll.scroll_step_half,
+            config.scroll.scroll_step_full,
+            config.scroll.steps_per_second,
+        ),
         passthrough_unbound_keys: config.normal.passthrough_unbound_keys,
     }
 }

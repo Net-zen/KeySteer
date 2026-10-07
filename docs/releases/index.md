@@ -5,6 +5,16 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.11.2
+
+- 修复长按滚动时先滚一下、停顿后才连续滚动的问题。按下立即执行。
+- 新增持续滚动速度配置，可按需要调整滚动速度。
+- 网页配置模拟器增加相应的滚动速度设置。
+
+- Fixed the pause between the first scroll step and continuous scrolling when holding a key. A press scrolls immediately.
+- Added a setting to adjust continuous scrolling speed.
+- Added the corresponding scroll speed setting to the web configuration simulator.
+
 ## 0.11.0
 
 - 新增窗口多选，可批量移动、缩放、最大化／最小化和关闭窗口，选中窗口会高亮显示。

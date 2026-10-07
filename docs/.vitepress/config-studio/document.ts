@@ -52,6 +52,11 @@ function cloneConfigValue<T>(value: T): T {
 export function parseConfigDocument(source: string): ParsedConfigDocument {
   const parsed = parse(source)
   if (!isRecord(parsed)) throw new Error('TOML 顶层必须是配置表')
+  const scrollSettings: unknown = parsed.scroll
+  const scrollRate = isRecord(scrollSettings) ? scrollSettings.steps_per_second : undefined
+  if (scrollRate !== undefined && (typeof scrollRate !== 'number' || !Number.isFinite(scrollRate) || scrollRate < 0 || scrollRate > 120)) {
+    throw new Error('scroll.steps_per_second must be finite and 0..=120')
+  }
   const oldWindow = parsed.window as Record<string, unknown> | undefined
   for (const key of ['exit_mode', 'gap', 'split_ratios', 'layout_keys', 'double_tap_ms']) {
     if (oldWindow && key in oldWindow) throw new Error(`window.${key} 已移除，请迁移至独立窗口模式配置；返回目标使用 bindings`)

@@ -919,8 +919,11 @@ sub_key_preview_autohide_multiplier = 1.5
 
 [scroll]
 # Cross-platform distances for scroll bindings.
-# A press scrolls one configured step immediately. Holding scrolls at 30 steps
-# per second, scaled by precision/slow/fast and independent of refresh rate.
+# A press scrolls one configured step immediately. Holding travels this many
+# configured steps per second, scaled by precision/slow/fast. This is a speed,
+# not a timer or frame rate. Range: 0..120 (fractions allowed); 0 means tap-only.
+# Default: 50 pixels per tap, 50 * 10 = 500 pixels/second while held.
+steps_per_second = 10.0
 # Pixels for scroll_up / scroll_down / scroll_left / scroll_right.
 scroll_step = 50
 # Pixels for scroll_half_*.

@@ -38,22 +38,36 @@ pub struct PointerSettings {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScrollSettings {
-    pub scroll_step: i32,
-    pub scroll_step_half: i32,
-    pub scroll_step_full: i32,
+    pixels: [f64; 3],
+    speeds: [f64; 3],
+    continuous: bool,
 }
 
 impl ScrollSettings {
-    /// Held scrolling travels thirty configured steps per second. Integrate
-    /// that distance over display time instead of waiting for OS autorepeat.
-    const STEPS_PER_SECOND: f64 = 30.0;
+    /// Compile tap distances and held velocities once during mode assembly.
+    pub fn new(step: i32, half: i32, full: i32, steps_per_second: f64) -> Self {
+        let pixels = [step as f64, half as f64, full as f64];
+        Self {
+            pixels,
+            speeds: pixels.map(|distance| distance * steps_per_second),
+            continuous: steps_per_second > 0.0,
+        }
+    }
+
+    fn index(amount: ScrollAmount) -> usize {
+        match amount {
+            ScrollAmount::Step => 0,
+            ScrollAmount::Half => 1,
+            ScrollAmount::Full => 2,
+        }
+    }
 
     fn pixels(&self, amount: ScrollAmount) -> f64 {
-        match amount {
-            ScrollAmount::Step => self.scroll_step as f64,
-            ScrollAmount::Half => self.scroll_step_half as f64,
-            ScrollAmount::Full => self.scroll_step_full as f64,
-        }
+        self.pixels[Self::index(amount)]
+    }
+
+    fn speed(&self, amount: ScrollAmount) -> f64 {
+        self.speeds[Self::index(amount)]
     }
 }
 
@@ -399,7 +413,7 @@ impl NormalMode {
                 .iter()
                 .fold((0.0, 0.0), |(x, y), (_, direction, amount)| {
                     let (dx, dy) = direction.delta();
-                    let speed = self.scroll.pixels(*amount) * ScrollSettings::STEPS_PER_SECOND;
+                    let speed = self.scroll.speed(*amount);
                     (x + dx * speed, y + dy * speed)
                 });
         // A changed gesture must not inherit a fraction in the old direction.
@@ -407,7 +421,7 @@ impl NormalMode {
     }
 
     fn is_animating(&self) -> bool {
-        !self.moving.is_empty() || !self.scrolling.is_empty()
+        !self.moving.is_empty() || self.scroll.continuous && !self.scrolling.is_empty()
     }
 
     fn binding(&mut self, binding: &Binding, state: KeyState, key: &Key) -> CommandBatch {
@@ -475,13 +489,13 @@ impl NormalMode {
                     if index.is_none() {
                         self.scrolling.push((key.clone(), *direction, *amount));
                         self.refresh_scroll_velocity();
-                    } else if self.frame_driven {
+                    } else if self.frame_driven || !self.scroll.continuous {
                         return CommandBatch::new();
                     }
                     // Taps take effect immediately. Native frames own the hold;
                     // OS repeats remain a fallback if no display clock exists.
                     let scroll = self.scroll_command(*direction, *amount);
-                    return if was_still {
+                    return if was_still && self.scroll.continuous {
                         self.frame_driven = false;
                         CommandBatch::two(scroll, Command::SetFrameClock(true))
                     } else {
@@ -1073,8 +1087,8 @@ mod tests {
                 assert_eq!(
                     out,
                     vec![Command::Scroll {
-                        dx: (x * pixels * 0.48).trunc(),
-                        dy: (y * pixels * 0.48).trunc(),
+                        dx: (x * pixels * 0.16).trunc(),
+                        dy: (y * pixels * 0.16).trunc(),
                     }]
                 );
                 assert!(down(&mut mode, &env, binding, "e").is_empty());
@@ -1110,7 +1124,7 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(distance, 3.0, "refresh rate: {updates}");
+            assert_eq!(distance, 1.0, "refresh rate: {updates}");
         }
     }
 
@@ -1179,12 +1193,12 @@ mod tests {
         assert!(up(&mut mode, &env, downwards, "m").is_empty());
         assert_eq!(
             mode.frame(Duration::from_millis(20)),
-            vec![Command::Scroll { dx: 0.0, dy: -30.0 }]
+            vec![Command::Scroll { dx: 0.0, dy: -10.0 }]
         );
         down(&mut mode, &env, Binding::Speed(Speed::Fast), "v");
         assert_eq!(
             mode.frame(Duration::from_millis(20)),
-            vec![Command::Scroll { dx: 0.0, dy: -60.0 }]
+            vec![Command::Scroll { dx: 0.0, dy: -20.0 }]
         );
     }
 
@@ -1206,8 +1220,8 @@ mod tests {
         assert_eq!(
             mode.frame(Duration::from_millis(20)),
             vec![Command::Scroll {
-                dx: 300.0,
-                dy: 30.0
+                dx: 100.0,
+                dy: 10.0
             }]
         );
         assert!(down(&mut mode, &env, vertical.clone(), "e").is_empty());
@@ -1215,10 +1229,61 @@ mod tests {
         assert!(up(&mut mode, &env, vertical, "e").is_empty());
         assert_eq!(
             mode.frame(Duration::from_millis(20)),
-            vec![Command::Scroll { dx: 300.0, dy: 0.0 }]
+            vec![Command::Scroll { dx: 100.0, dy: 0.0 }]
         );
         assert_eq!(
             up(&mut mode, &env, horizontal, "e"),
+            vec![Command::SetFrameClock(false)]
+        );
+    }
+
+    #[test]
+    fn configured_scroll_rate_is_compiled_for_all_amounts_and_does_not_change_taps() {
+        let mut config = Config::default();
+        config.scroll.scroll_step = 20;
+        config.scroll.scroll_step_half = 100;
+        config.scroll.scroll_step_full = 400;
+        config.scroll.steps_per_second = 2.5;
+        let env = Env::with(config);
+        let settings = crate::app::mode_catalog::normal_settings(&env.config);
+        assert_eq!(settings.scroll.speeds, [50.0, 250.0, 1000.0]);
+        for (amount, tap, frame) in [
+            (ScrollAmount::Step, 20.0, 10.0),
+            (ScrollAmount::Half, 100.0, 50.0),
+            (ScrollAmount::Full, 400.0, 200.0),
+        ] {
+            let mut mode = NormalMode::new(settings.clone());
+            assert!(
+                down(
+                    &mut mode,
+                    &env,
+                    Binding::Scroll(Direction::Down, amount),
+                    "e"
+                )
+                .contains(&Command::Scroll { dx: 0.0, dy: tap })
+            );
+            assert_eq!(
+                mode.frame(Duration::from_millis(200)),
+                vec![Command::Scroll { dx: 0.0, dy: frame }]
+            );
+        }
+    }
+
+    #[test]
+    fn zero_scroll_rate_is_tap_only_without_display_frames_or_os_repeat() {
+        let mut config = Config::default();
+        config.scroll.steps_per_second = 0.0;
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::normal(&env.config);
+        let binding = Binding::Scroll(Direction::Down, ScrollAmount::Step);
+        assert_eq!(
+            down(&mut mode, &env, binding.clone(), "e"),
+            vec![Command::Scroll { dx: 0.0, dy: 50.0 }]
+        );
+        assert!(!mode.is_animating());
+        assert!(down(&mut mode, &env, binding, "e").is_empty());
+        assert_eq!(
+            mode.frame(Duration::from_millis(200)),
             vec![Command::SetFrameClock(false)]
         );
     }
