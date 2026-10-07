@@ -110,6 +110,12 @@ enum Input {
     Search(String),
 }
 
+#[derive(Clone, Copy)]
+enum PendingView {
+    Hints,
+    Status,
+}
+
 impl Input {
     /// Text typed so far, whether that is a label prefix or a search query.
     fn text(&self) -> &str {
@@ -121,8 +127,8 @@ impl Input {
 }
 
 pub struct HintMode {
-    inspection: Option<point::Inspection>,
-    movement: crate::modes::NormalMode,
+    pending_view: Option<PendingView>,
+    inspection: Option<Box<point::Inspection>>,
     sample_serial: u64,
     config: Settings,
     alphabet: Vec<char>,
@@ -142,8 +148,8 @@ pub struct HintMode {
 impl HintMode {
     pub fn new(config: Settings) -> Self {
         Self {
+            pending_view: None,
             inspection: None,
-            movement: crate::modes::NormalMode::new(config.search_point.movement.clone()),
             sample_serial: 0,
             alphabet: config
                 .hint_characters
@@ -325,7 +331,7 @@ impl HintMode {
         if status == UiScanStatus::Partial {
             self.session.status = None;
             return if labels_changed {
-                self.redraw(ctx)
+                self.redraw()
             } else {
                 CommandBatch::new()
             };
@@ -343,9 +349,9 @@ impl HintMode {
                 self.config.scan_retry_count
             ));
             let mut commands = if searching {
-                self.redraw(ctx)
+                self.redraw()
             } else {
-                self.show_status(ctx)
+                self.show_status()
             };
             commands.push(Command::SetTimer {
                 id: SCAN_RETRY_TIMER_ID.into(),
@@ -371,7 +377,7 @@ impl HintMode {
                 false
             };
             return if needs_redraw {
-                self.redraw(ctx)
+                self.redraw()
             } else {
                 CommandBatch::new()
             };
@@ -397,9 +403,9 @@ impl HintMode {
             UiScanStatus::ContextChanged => None,
         };
         if self.session.hints.is_empty() && !searching {
-            return self.show_status(ctx);
+            return self.show_status();
         }
-        self.redraw(ctx)
+        self.redraw()
     }
 
     /// Assign labels to the targets matching the current search query.
@@ -641,7 +647,7 @@ impl HintMode {
             }
         };
         if active_layer_changed && !self.session.hints.is_empty() {
-            self.redraw(ctx)
+            self.redraw()
         } else {
             CommandBatch::new()
         }
@@ -700,9 +706,33 @@ impl HintMode {
         }
     }
 
-    fn redraw(&self, ctx: &HostContext<'_>) -> CommandBatch {
-        let mut commands = CommandBatch::one(ctx.present(self.view()));
-        if self.session.active
+    fn redraw(&mut self) -> CommandBatch {
+        self.pending_view = Some(PendingView::Hints);
+        CommandBatch::new()
+    }
+
+    /// Compose once, after selection, point state and scan hit testing agree.
+    fn finish_redraw(&mut self, ctx: &HostContext<'_>, commands: &mut CommandBatch) {
+        let Some(pending) = self.pending_view.take() else {
+            return;
+        };
+        let view = match pending {
+            PendingView::Hints => self.view(),
+            PendingView::Status => View::Status(StatusView {
+                text: self
+                    .session
+                    .status
+                    .as_deref()
+                    .unwrap_or("No accessible targets — Esc to exit"),
+                ui: &self.config.ui,
+                clip: self.session.scan_bounds,
+            }),
+        };
+        // Keep close/warp effects ahead of the restored view so backend cursor
+        // decoration uses the confirmed position and the current prompt owner.
+        commands.push(ctx.present(view));
+        if matches!(pending, PendingView::Hints)
+            && self.session.active
             && !self.session.finished
             && !self.session.scanned.is_empty()
             && !self.session.search_names_initialized
@@ -715,10 +745,12 @@ impl HintMode {
                 repeating: false,
             });
         }
-        commands
     }
 
-    fn search_info(&self) -> Option<crate::api::presentation::HintInfoView<'_>> {
+    fn search_result_hints(&self) -> Option<(bool, &[CompactHint<usize>])> {
+        if !self.session.active || self.session.finished {
+            return None;
+        }
         let Input::Search(query) = &self.input else {
             return None;
         };
@@ -728,6 +760,11 @@ impl HintMode {
         {
             return None;
         }
+        Some((multiple, hints))
+    }
+
+    fn search_info(&self) -> Option<crate::api::presentation::HintInfoView<'_>> {
+        let (multiple, hints) = self.search_result_hints()?;
         Some(crate::api::presentation::HintInfoView {
             field_modes: &self.config.search_point.field_modes,
             point: self
@@ -810,25 +847,16 @@ impl HintMode {
         if let Some(point) = destination {
             commands.push(Command::warp_to(point));
         }
-        commands.extend(self.redraw(ctx));
+        commands.extend(self.redraw());
         if !accept {
             commands.push(Command::CloseTextPrompt);
         }
         commands
     }
 
-    fn show_status(&self, ctx: &HostContext<'_>) -> CommandBatch {
-        CommandBatch::one(
-            ctx.present(View::Status(StatusView {
-                text: self
-                    .session
-                    .status
-                    .as_deref()
-                    .unwrap_or("No accessible targets — Esc to exit"),
-                ui: &self.config.ui,
-                clip: self.session.scan_bounds,
-            })),
-        )
+    fn show_status(&mut self) -> CommandBatch {
+        self.pending_view = Some(PendingView::Status);
+        CommandBatch::new()
     }
 
     /// One destination for label selection, search acceptance and initial Point inspection.
@@ -875,7 +903,7 @@ impl HintMode {
                     if let Input::Labels(typed) = &mut self.input {
                         typed.pop();
                     }
-                    self.redraw(ctx)
+                    self.redraw()
                 }
                 _ => CommandBatch::new(),
             };
@@ -901,7 +929,7 @@ impl HintMode {
                     Input::Search(_) => {
                         self.input = Input::Labels(OverlayText::default());
                         self.relabel(ctx);
-                        self.redraw(ctx)
+                        self.redraw()
                     }
                     Input::Labels(_) => self.cancel(),
                 };
@@ -915,7 +943,7 @@ impl HintMode {
                 self.input = Input::Search(std::mem::take(&mut self.session.search_query));
                 self.session.search_selection = Default::default();
                 self.relabel(ctx);
-                let mut commands = self.redraw(ctx);
+                let mut commands = self.redraw();
                 commands.push(self.open_search(ctx));
                 return commands;
             }
@@ -927,7 +955,7 @@ impl HintMode {
                         Input::Search(_) => {
                             self.input = Input::Labels(OverlayText::default());
                             self.relabel(ctx);
-                            self.redraw(ctx)
+                            self.redraw()
                         }
                         Input::Labels(_) => self.cancel(),
                     };
@@ -947,7 +975,7 @@ impl HintMode {
                 } else {
                     self.refresh_overlap_plan(ctx);
                 }
-                return self.redraw(ctx);
+                return self.redraw();
             }
             "enter" => {
                 // Accept the first visible candidate, never one filtered out by
@@ -974,7 +1002,7 @@ impl HintMode {
                 if !ch.is_control() {
                     query.push(ch);
                     self.relabel(ctx);
-                    return self.redraw(ctx);
+                    return self.redraw();
                 }
                 CommandBatch::new()
             }
@@ -987,7 +1015,7 @@ impl HintMode {
                     Match::Complete(index) => self.select(index),
                     Match::Partial { .. } => {
                         self.refresh_overlap_plan(ctx);
-                        self.redraw(ctx)
+                        self.redraw()
                     }
                     // Dead end: drop the character and keep the hints up.
                     Match::None => {
@@ -996,7 +1024,7 @@ impl HintMode {
                         }
                         if self.input.text().is_empty() && self.session.pending_relabel {
                             self.relabel(ctx);
-                            self.redraw(ctx)
+                            self.redraw()
                         } else {
                             CommandBatch::new()
                         }
@@ -1135,15 +1163,31 @@ impl Mode for HintMode {
     }
 
     fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
-        let mut out = if let Some(out) = self.point_event(event, ctx) {
+        let finishing =
+            matches!(event, ModeEvent::FinishRequested { .. }) && !self.session.finished;
+        let mut out = if let Some(out) = self
+            .inspection
+            .is_some()
+            .then(|| self.point_event(event, ctx))
+            .flatten()
+        {
             out
         } else {
             let mut out = self.handle_event(event, ctx);
-            self.sync_point(ctx, &mut out);
+            if matches!(self.input, Input::Search(_)) || self.inspection.is_some() {
+                self.sync_point(ctx, &mut out);
+            }
             out
         };
         if matches!(event, ModeEvent::UiScanned(_)) && self.refresh_point_hit() {
-            out.push(ctx.present(self.view()));
+            self.redraw();
+        }
+        self.finish_redraw(ctx, &mut out);
+        if finishing {
+            out.extend(super::targeting::lifecycle_commands(
+                &self.config.lifecycle.after_finish,
+                &self.return_mode,
+            ));
         }
         out
     }
@@ -1151,10 +1195,13 @@ impl Mode for HintMode {
     fn handle_owned(&mut self, event: ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
         if let ModeEvent::UiScanned(result) = event {
             let mut out = self.handle_scan_result(result, ctx);
-            self.sync_point(ctx, &mut out);
-            if self.refresh_point_hit() {
-                out.push(ctx.present(self.view()));
+            if matches!(self.input, Input::Search(_)) || self.inspection.is_some() {
+                self.sync_point(ctx, &mut out);
             }
+            if self.refresh_point_hit() {
+                self.redraw();
+            }
+            self.finish_redraw(ctx, &mut out);
             out
         } else {
             self.handle(&event, ctx)
@@ -1220,7 +1267,7 @@ impl HintMode {
                             self.refresh_overlap_plan(ctx);
                         }
                     }
-                    return self.redraw(ctx);
+                    return self.redraw();
                 }
                 _ => {}
             }
@@ -1257,10 +1304,10 @@ impl HintMode {
                     && old_all == shows_all(self.input.text())
                     && old_fields == self.search_info().map(|info| info.field_count());
                 if unchanged {
-                    self.redraw(ctx)
+                    self.redraw()
                 } else {
                     self.refresh_overlap_plan(ctx);
-                    self.redraw(ctx)
+                    self.redraw()
                 }
             }
             ModeEvent::TextSubmitted(text) if matches!(self.input, Input::Search(_)) => {
@@ -1308,12 +1355,7 @@ impl HintMode {
             ModeEvent::FinishRequested { .. } if self.session.finished => CommandBatch::new(),
             ModeEvent::FinishRequested { .. } => {
                 self.session.finished = true;
-                let mut commands = self.redraw(ctx);
-                commands.extend(super::targeting::lifecycle_commands(
-                    &self.config.lifecycle.after_finish,
-                    &self.return_mode,
-                ));
-                commands
+                self.redraw()
             }
             ModeEvent::Clicked { .. } => super::targeting::lifecycle_commands(
                 &self.config.lifecycle.after_click,
@@ -1401,12 +1443,12 @@ impl HintMode {
             ModeEvent::ScreenRetargeted { screen, .. } => {
                 CommandBatch::one(Command::warp_to(screen.bounds.center()))
             }
-            ModeEvent::Resumed if self.session.finished => self.redraw(ctx),
+            ModeEvent::Resumed if self.session.finished => self.redraw(),
             ModeEvent::Resumed if self.session.scanning && self.session.hints.is_empty() => {
                 CommandBatch::one(Command::HideOverlay)
             }
-            ModeEvent::Resumed if self.session.hints.is_empty() => self.show_status(ctx),
-            ModeEvent::Resumed => self.redraw(ctx),
+            ModeEvent::Resumed if self.session.hints.is_empty() => self.show_status(),
+            ModeEvent::Resumed => self.redraw(),
             ModeEvent::Key {
                 key,
                 state,
@@ -1434,6 +1476,112 @@ impl HintMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_fresh_scene(mode: &HintMode, env: &Env, out: &CommandBatch) {
+        let mut scenes = out.iter().filter_map(|command| match command {
+            Command::ShowOverlay(scene) => Some(scene),
+            _ => None,
+        });
+        assert_eq!(scenes.next().unwrap().as_ref(), &mode.scene(&env.ctx()));
+        assert!(
+            scenes.next().is_none(),
+            "one event must compose only one final scene"
+        );
+    }
+
+    #[test]
+    fn point_state_and_sampling_follow_result_panel_visibility() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(&mut mode, &env, point_text_targets());
+        assert!(mode.inspection.is_none());
+        press(&mut mode, &env, "/");
+        for query in ["@", "a", "missing", " ", ""] {
+            let out = mode.handle(&ModeEvent::TextChanged(query.into()), &env.ctx());
+            assert!(mode.search_info().is_none(), "query: {query:?}");
+            assert!(mode.inspection.is_none(), "query: {query:?}");
+            assert!(!out.iter().any(|command| matches!(
+                command,
+                Command::SamplePoint(_)
+                    | Command::SetPointAdjustment {
+                        available: true,
+                        ..
+                    }
+            )));
+        }
+        let first = mode.handle(&ModeEvent::TextChanged("alpha".into()), &env.ctx());
+        assert_fresh_scene(&mode, &env, &first);
+        let stale = sample_request(&first);
+        let allocation = std::ptr::from_ref(mode.inspection.as_deref().unwrap());
+        let multiple = mode.handle(&ModeEvent::TextChanged("bravo alpha".into()), &env.ctx());
+        assert_fresh_scene(&mode, &env, &multiple);
+        assert_eq!(
+            std::ptr::from_ref(mode.inspection.as_deref().unwrap()),
+            allocation
+        );
+        assert_eq!(mode.inspection.as_ref().unwrap().members.len(), 2);
+        assert!(mode.search_info().is_some());
+        assert!(
+            mode.handle(
+                &ModeEvent::PointSampled(crate::api::point_sample::Sample {
+                    request: stale,
+                    color: Some(Color::rgb(1, 2, 3)),
+                }),
+                &env.ctx()
+            )
+            .is_empty()
+        );
+        let hidden = mode.handle(&ModeEvent::TextChanged("@".into()), &env.ctx());
+        assert_fresh_scene(&mode, &env, &hidden);
+        assert!(mode.inspection.is_none());
+        assert!(hidden.contains(&Command::CancelPointSample));
+        assert!(hidden.contains(&Command::CancelTimer {
+            id: point::TIMER.into()
+        }));
+    }
+
+    #[test]
+    fn streamed_point_hit_and_finish_submit_final_state_before_lifecycle() {
+        for owned in [false, true] {
+            let env = Env::new();
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            deliver(&mut mode, &env, point_text_targets());
+            press(&mut mode, &env, "/");
+            mode.handle(&ModeEvent::TextChanged("alpha".into()), &env.ctx());
+            let mut child = target("child", 35.0);
+            child.rect = Rect::new(35.0, 108.0, 10.0, 10.0);
+            let event = ModeEvent::UiScanned(UiScanResult {
+                id: mode.session.scan_id,
+                retired: Vec::new(),
+                targets: vec![child],
+                status: UiScanStatus::Partial,
+            });
+            let out = if owned {
+                mode.handle_owned(event, &env.ctx())
+            } else {
+                mode.handle(&event, &env.ctx())
+            };
+            assert_fresh_scene(&mode, &env, &out);
+            assert_eq!(mode.inspection.as_ref().unwrap().target, Some(2));
+            assert_eq!(mode.search_info().unwrap().values()[1], "child · button");
+            mode.config.lifecycle.after_finish = crate::config::LifecycleAction::Return;
+            let out = mode.handle(
+                &ModeEvent::FinishRequested {
+                    cause: FinishCause::Explicit,
+                },
+                &env.ctx(),
+            );
+            assert_fresh_scene(&mode, &env, &out);
+            let position =
+                |predicate: fn(&Command) -> bool| out.iter().position(predicate).unwrap();
+            let scene = position(|command| matches!(command, Command::ShowOverlay(_)));
+            assert!(scene < position(|command| matches!(command, Command::SwitchMode(_))));
+            assert!(position(|command| matches!(command, Command::CancelPointSample)) < scene);
+            assert!(mode.inspection.is_none());
+        }
+    }
     #[test]
     fn point_field_modes_mix_joined_and_current_text_and_coordinates() {
         use crate::api::point_sample::FieldMode::{Concat, Switch};
@@ -2479,7 +2627,9 @@ mod tests {
                             } else if let ModeEvent::TextChanged(text) = event {
                                 mode.input = Input::Search(text.clone());
                                 mode.relabel(&env.ctx());
-                                std::hint::black_box(mode.redraw(&env.ctx()));
+                                let mut commands = mode.redraw();
+                                mode.finish_redraw(&env.ctx(), &mut commands);
+                                std::hint::black_box(commands);
                             }
                         }
                         if round >= 10 {
@@ -3330,9 +3480,11 @@ mod tests {
                 &env.ctx(),
             ));
         });
-        let legacy = prepared(&env);
+        let mut legacy = prepared(&env);
         let redraw = measure(|| {
-            std::hint::black_box(legacy.redraw(&env.ctx()));
+            let mut commands = legacy.redraw();
+            legacy.finish_redraw(&env.ctx(), &mut commands);
+            std::hint::black_box(commands);
         });
         println!(
             "hint_terminal_probe samples={SAMPLES} no_op_p50={}ns no_op_p95={}ns no_op_p99={}ns redraw_p50={}ns redraw_p95={}ns redraw_p99={}ns",

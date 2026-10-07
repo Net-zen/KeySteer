@@ -18,6 +18,7 @@ pub struct PointSettings {
 }
 
 pub(super) struct Inspection {
+    movement: crate::modes::NormalMode,
     pub point: Point,
     /// Selection identity and original geometry, retained only for this query.
     pub members: SmallVec<[(usize, Rect); 8]>,
@@ -33,17 +34,33 @@ pub(super) struct Inspection {
     pub format: usize,
     pub adjusting: bool,
     pub copy_pending: bool,
-    pub sampling: bool,
+}
+
+impl Inspection {
+    fn new(movement: &crate::modes::normal::Settings) -> Self {
+        Self {
+            movement: crate::modes::NormalMode::new(movement.clone()),
+            point: Point::new(0.0, 0.0),
+            members: SmallVec::new(),
+            colors: SmallVec::new(),
+            colors_remaining: 0,
+            pending_request: None,
+            pending_member: None,
+            refresh_member: 0,
+            collect_member: 0,
+            position: 0,
+            target: None,
+            color: None,
+            format: 0,
+            adjusting: false,
+            copy_pending: false,
+        }
+    }
 }
 
 impl HintMode {
     pub(super) fn point_candidates(&self) -> &[CompactHint<usize>] {
-        match &self.input {
-            Input::Search(_) if self.session.active && !self.session.finished => {
-                &self.session.search_selected
-            }
-            _ => &[],
-        }
+        self.search_result_hints().map_or(&[], |(_, hints)| hints)
     }
 
     pub(super) fn point_members_match(&self, point: &Inspection) -> bool {
@@ -89,7 +106,6 @@ impl HintMode {
             return Command::CancelPointSample;
         };
         self.sample_serial = self.sample_serial.wrapping_add(1);
-        point.sampling = true;
         let request = Request {
             id: self.sample_serial,
             point: destination.unwrap_or(point.point),
@@ -104,7 +120,7 @@ impl HintMode {
 
     fn next_color_sample(&mut self) -> Option<Command> {
         let point = self.inspection.as_mut()?;
-        if point.sampling {
+        if point.pending_request.is_some() {
             return None;
         }
         // Each slot is visited once. Superseded member captures leave this
@@ -136,6 +152,7 @@ impl HintMode {
         point.target != before
     }
 
+    #[inline(never)]
     pub(super) fn sync_point(&mut self, ctx: &HostContext<'_>, out: &mut CommandBatch) {
         let available = !self.point_candidates().is_empty();
         if self
@@ -145,46 +162,44 @@ impl HintMode {
         {
             return;
         }
-        self.movement.handle(&ModeEvent::Deactivated, ctx);
-        self.inspection = available.then(|| Inspection {
-            point: self.point_center(self.point_candidates()),
-            members: self
-                .point_candidates()
-                .iter()
-                .map(|hint| (hint.value, self.session.scanned[hint.value].rect))
-                .collect(),
-            colors: if self.config.search_point.field_modes[3]
+        let mut inspection = self.inspection.take();
+        if let Some(point) = inspection.as_mut() {
+            point.movement.handle(&ModeEvent::Deactivated, ctx);
+        }
+        if available {
+            let mut point = inspection
+                .unwrap_or_else(|| Box::new(Inspection::new(&self.config.search_point.movement)));
+            let candidates = self.point_candidates();
+            point.point = self.point_center(candidates);
+            point.members.clear();
+            point.members.extend(
+                candidates
+                    .iter()
+                    .map(|hint| (hint.value, self.session.scanned[hint.value].rect)),
+            );
+            let color_count = if self.config.search_point.field_modes[3]
                 == crate::api::point_sample::FieldMode::Concat
-                && self.point_candidates().len() > 1
+                && candidates.len() > 1
             {
-                std::iter::repeat_n(
-                    crate::api::point_sample::SampledColor::default(),
-                    self.point_candidates().len(),
-                )
-                .collect()
-            } else {
-                SmallVec::new()
-            },
-            colors_remaining: if self.config.search_point.field_modes[3]
-                == crate::api::point_sample::FieldMode::Concat
-                && self.point_candidates().len() > 1
-            {
-                self.point_candidates().len()
+                candidates.len()
             } else {
                 0
-            },
-            pending_request: None,
-            pending_member: None,
-            refresh_member: 0,
-            collect_member: 0,
-            position: 0,
-            target: (self.point_candidates().len() == 1).then(|| self.point_candidates()[0].value),
-            color: None,
-            format: 0,
-            adjusting: false,
-            copy_pending: false,
-            sampling: false,
-        });
+            };
+            point.colors.clear();
+            point.colors.resize(color_count, Default::default());
+            point.colors_remaining = color_count;
+            point.pending_request = None;
+            point.pending_member = None;
+            point.refresh_member = 0;
+            point.collect_member = 0;
+            point.position = 0;
+            point.target = (candidates.len() == 1).then(|| candidates[0].value);
+            point.color = None;
+            point.format = 0;
+            point.adjusting = false;
+            point.copy_pending = false;
+            self.inspection = Some(point);
+        }
         if self
             .inspection
             .as_ref()
@@ -197,7 +212,7 @@ impl HintMode {
             available,
             adjusting: false,
         });
-        out.push(ctx.present(self.view()));
+        self.redraw();
         if available {
             out.push(self.sample_point());
             out.push(Command::SetTimer {
@@ -211,6 +226,7 @@ impl HintMode {
         }
     }
 
+    #[inline(never)]
     pub(super) fn point_event(
         &mut self,
         event: &ModeEvent,
@@ -231,8 +247,8 @@ impl HintMode {
             ModeEvent::TogglePointAdjustment => {
                 point.adjusting = !point.adjusting;
                 let adjusting = point.adjusting;
-                self.movement.handle(&ModeEvent::Deactivated, ctx);
-                let mut out = self.redraw(ctx);
+                point.movement.handle(&ModeEvent::Deactivated, ctx);
+                let mut out = self.redraw();
                 out.push(Command::SetFrameClock(false));
                 out.push(Command::SetPointAdjustment {
                     available: true,
@@ -243,7 +259,7 @@ impl HintMode {
             ModeEvent::CyclePointColor => {
                 point.adjusting = true;
                 point.format = (point.format + 1) % self.config.search_point.formats.len();
-                let mut out = self.redraw(ctx);
+                let mut out = self.redraw();
                 out.push(Command::SetPointAdjustment {
                     available: true,
                     adjusting: true,
@@ -259,15 +275,15 @@ impl HintMode {
                 point.point = next_point?;
                 point.target = Some(index);
                 point.color = None;
-                self.movement.handle(&ModeEvent::Deactivated, ctx);
+                point.movement.handle(&ModeEvent::Deactivated, ctx);
                 self.refresh_point_hit();
-                let mut out = self.redraw(ctx);
+                let mut out = self.redraw();
                 out.push(Command::SetFrameClock(false));
                 out.push(self.sample_point());
                 Some(out)
             }
             ModeEvent::CopyTextField(3) => {
-                self.movement.handle(&ModeEvent::Deactivated, ctx);
+                point.movement.handle(&ModeEvent::Deactivated, ctx);
                 let mut out = CommandBatch::one(Command::SetFrameClock(false));
                 let concatenate = !point.colors.is_empty();
                 let ready = if concatenate {
@@ -287,7 +303,7 @@ impl HintMode {
                     }
                 } else {
                     point.copy_pending = true;
-                    if !point.sampling {
+                    if point.pending_request.is_none() {
                         out.push(
                             self.next_color_sample()
                                 .unwrap_or_else(|| self.sample_point()),
@@ -298,7 +314,7 @@ impl HintMode {
             }
             ModeEvent::Timer { id, .. } if id == TIMER => {
                 // A clipboard sample cannot be superseded by the refresh timer.
-                Some(if point.sampling {
+                Some(if point.pending_request.is_some() {
                     CommandBatch::new()
                 } else {
                     let member = (!point.colors.is_empty()).then_some(point.refresh_member);
@@ -331,7 +347,6 @@ impl HintMode {
                     changed = point.colors[index] != captured;
                     point.colors[index] = captured;
                 }
-                point.sampling = false;
                 if sample.request.point == point.point {
                     changed |= point.color != sample.color;
                     point.color = sample.color;
@@ -342,7 +357,7 @@ impl HintMode {
                     point.copy_pending = false;
                 }
                 let mut out = if changed {
-                    self.redraw(ctx)
+                    self.redraw()
                 } else {
                     CommandBatch::new()
                 };
@@ -362,7 +377,7 @@ impl HintMode {
             {
                 let mut out = CommandBatch::new();
                 let before = point.point;
-                for command in self.movement.handle(event, ctx) {
+                for command in point.movement.handle(event, ctx) {
                     match command {
                         Command::MovePointer { dx, dy } => {
                             let bounds = self
@@ -382,7 +397,7 @@ impl HintMode {
                     point.color = None;
                     point.copy_pending = false;
                     self.refresh_point_hit();
-                    out.extend(self.redraw(ctx));
+                    out.extend(self.redraw());
                     out.push(self.sample_point());
                 }
                 Some(out)
