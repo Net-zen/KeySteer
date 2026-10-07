@@ -272,7 +272,11 @@ pub struct UiHint {
     pub search_input_ui: SearchInputUi,
     #[serde(deserialize_with = "deserialize_search_info_ui")]
     pub search_info_ui: SearchInputUi,
+    /// Independent shortcuts for OCR, accessibility, coordinates and color.
     pub search_copy_keys: Vec<String>,
+    pub search_bindings: std::collections::BTreeMap<String, crate::api::point_sample::Action>,
+    #[serde(skip_serializing_if = "SearchPoint::is_default")]
+    pub search_point: SearchPoint,
     #[serde(deserialize_with = "deserialize_search_edit_keys")]
     pub search_edit_keys: std::collections::BTreeMap<crate::api::text_edit::EditAction, String>,
     pub inherits: Vec<String>,
@@ -311,6 +315,13 @@ fn deserialize_search_info_ui<'de, D: serde::Deserializer<'de>>(
 }
 
 impl UiHint {
+    pub(crate) fn copy_chords(&self) -> Result<Vec<crate::api::KeyChord>, String> {
+        self.search_copy_keys
+            .iter()
+            .map(|key| crate::api::KeyChord::parse(key))
+            .collect()
+    }
+
     pub fn strategy_for(&self, app: Option<&FocusedApp>) -> UiScanStrategy {
         let Some(app) = app else {
             return self.strategy;
@@ -390,7 +401,18 @@ impl Default for UiHint {
                 ..Default::default()
             },
             search_edit_keys: crate::api::text_edit::default_keys(),
-            search_copy_keys: (1..=4).map(|n| format!("primary+{n}")).collect(),
+            search_copy_keys: ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"]
+                .map(String::from)
+                .to_vec(),
+            search_point: SearchPoint::default(),
+            search_bindings: std::collections::BTreeMap::from([
+                ("ctrl".into(), crate::api::point_sample::Action::PointToggle),
+                ("tab".into(), crate::api::point_sample::Action::PointNext),
+                (
+                    "ctrl+shift+4".into(),
+                    crate::api::point_sample::Action::ColorNext,
+                ),
+            ]),
             inherits: vec!["hotkeys".into(), "normal".into()],
             temporary_mode: Some("normal".into()),
             temporary_mode_keys: vec!["primary".into()],
@@ -698,6 +720,63 @@ impl Default for Pointer {
             slow_multiplier: 0.35,
             precision_multiplier: 0.12,
             fast_multiplier: 2.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SearchPoint {
+    #[serde(skip_serializing_if = "SearchPoint::default_field_modes")]
+    pub field_modes: [crate::api::point_sample::FieldMode; 4],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_background_color: Option<ThemedColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_border_color: Option<ThemedColor>,
+    #[serde(skip_serializing_if = "crate::api::style::SearchColorPreview::is_default")]
+    pub color_preview: crate::api::style::SearchColorPreview,
+    /// First entry is the initial format. Cycle order is preserved.
+    #[serde(skip_serializing_if = "SearchPoint::default_formats")]
+    pub color_formats: Vec<crate::api::point_sample::ColorFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marker_color: Option<ThemedColor>,
+    #[serde(skip_serializing_if = "SearchPoint::default_radius")]
+    pub marker_radius: u16,
+    #[serde(skip_serializing_if = "SearchPoint::default_width")]
+    pub marker_width: u16,
+}
+
+impl SearchPoint {
+    fn default_field_modes(value: &[crate::api::point_sample::FieldMode; 4]) -> bool {
+        *value == crate::api::point_sample::DEFAULT_FIELD_MODES
+    }
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+    fn default_formats(value: &[crate::api::point_sample::ColorFormat]) -> bool {
+        use crate::api::point_sample::ColorFormat::*;
+        value == [Hex, Rgb, Hsl]
+    }
+    fn default_radius(value: &u16) -> bool {
+        *value == 6
+    }
+    fn default_width(value: &u16) -> bool {
+        *value == 2
+    }
+}
+
+impl Default for SearchPoint {
+    fn default() -> Self {
+        use crate::api::point_sample::ColorFormat::*;
+        Self {
+            field_modes: crate::api::point_sample::DEFAULT_FIELD_MODES,
+            color_formats: vec![Hex, Rgb, Hsl],
+            color_preview: Default::default(),
+            input_background_color: None,
+            input_border_color: None,
+            marker_color: None,
+            marker_radius: 6,
+            marker_width: 2,
         }
     }
 }

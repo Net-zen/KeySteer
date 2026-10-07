@@ -342,6 +342,7 @@ impl Engine {
         }
         backend.set_text_capture(false);
         backend.release_text_prompt();
+        self.clear_point_input(backend);
         self.scheduler.reset();
         if let Err(cancel_error) = self.cancel_all_scans(backend) {
             recovery_errors.push("cancel scans", cancel_error);
@@ -626,6 +627,7 @@ impl Engine {
         let mut errors = crate::support::errors::ErrorBundle::default();
         errors.record("runtime", result);
         self.scheduler.text_prompt = None;
+        self.clear_point_input(backend);
         backend.set_text_capture(false);
         backend.release_text_prompt();
         for session in std::mem::take(&mut self.scheduler.audio_sessions).into_keys() {
@@ -722,6 +724,17 @@ impl Engine {
                     self.dispatch_to(&owner.clone(), ModeEvent::TextChanged(text), backend)?;
                 }
             }
+            BackendEvent::PointSampled(sample) => {
+                if let Some((owner, id, request)) = &self.scheduler.point_sample
+                    && *id == sample.request.id
+                {
+                    let sample = crate::api::point_sample::Sample {
+                        request: *request,
+                        color: sample.color,
+                    };
+                    self.dispatch_to(&owner.clone(), ModeEvent::PointSampled(sample), backend)?;
+                }
+            }
             BackendEvent::TextPromptResult { id, value } => {
                 if self
                     .scheduler
@@ -730,6 +743,7 @@ impl Engine {
                     .is_some_and(|(_, prompt)| prompt.id == id)
                 {
                     if let Some((owner, prompt)) = self.scheduler.text_prompt.take() {
+                        self.clear_point_input(backend);
                         // Retire capture before dropping ownership: a later
                         // CloseTextPrompt cannot find this already-taken prompt.
                         backend.set_text_capture(false);
@@ -1076,6 +1090,7 @@ impl Engine {
         }
         backend.set_text_capture(false);
         backend.release_text_prompt();
+        self.clear_point_input(backend);
         self.scheduler.reset();
         self.registry.modal_stack.clear();
         self.input.reset_for_plan_swap();

@@ -25,6 +25,8 @@ export const pages: SettingsPage[] = [
 
 /** The UI organization never changes the persisted TOML path. */
 export function fieldLocation(path: string): { page: string; tab: SettingsTab } {
+  if (/^ui_hint\.(search_(input|info)_ui\.|search_point\.input_)/.test(path)) return { page: 'ui_hint', tab: 'appearance' }
+  if (path.startsWith('ui_hint.search_point.marker_') || path.startsWith('ui_hint.search_point.color_preview.')) return { page: 'ui_hint', tab: 'appearance' }
   if (path.startsWith('mode_indicator.')) return { page: path.startsWith('mode_indicator.modes.') ? path.split('.')[2] : 'mode_indicator', tab: 'appearance' }
   if (path.startsWith('platform.macos.scroll.')) return { page: 'normal', tab: 'behavior' }
   const root = path.split('.')[0]

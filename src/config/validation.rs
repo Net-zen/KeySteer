@@ -324,14 +324,14 @@ impl ConfigFile {
             ));
         }
         // Accept legacy five-slot configurations; the removed label slot is ignored.
-        if !matches!(self.ui_hint.search_copy_keys.len(), 4 | 5) {
+        let chords = self.ui_hint.copy_chords().map_err(bad)?;
+        if !matches!(chords.len(), 4 | 5) {
             return Err(bad(
                 "search_copy_keys requires four stable field shortcuts".into()
             ));
         }
         let mut copy_keys = std::collections::BTreeSet::new();
-        for key in &self.ui_hint.search_copy_keys {
-            let chord = crate::api::KeyChord::parse(key).map_err(bad)?;
+        for chord in &chords {
             if chord.keys().len() < 2 || !copy_keys.insert(chord.canonical()) {
                 return Err(bad(
                     "search_copy_keys must be distinct modified chords".into()
@@ -351,6 +351,52 @@ impl ConfigFile {
                 ));
             }
         }
+        let point = &self.ui_hint.search_point;
+        validate_optional_color(
+            "ui_hint.search_point.input_background_color",
+            point.input_background_color.as_ref(),
+        )?;
+        validate_optional_color(
+            "ui_hint.search_point.input_border_color",
+            point.input_border_color.as_ref(),
+        )?;
+        let preview = &point.color_preview;
+        if !(1..=64).contains(&preview.width)
+            || !(1..=64).contains(&preview.height)
+            || !(-200..=200).contains(&preview.x_offset)
+            || !(-200..=200).contains(&preview.y_offset)
+            || preview.border_width > 10
+        {
+            return Err(bad(
+                "invalid ui_hint.search_point.color_preview size, offset or border width".into(),
+            ));
+        }
+        for (key, action) in &self.ui_hint.search_bindings {
+            let chord = KeyChord::parse(key).map_err(bad)?;
+            if (*action == crate::api::point_sample::Action::PointToggle && chord.keys().len() != 1)
+                || !copy_keys.insert(chord.canonical())
+            {
+                return Err(bad("search_bindings must be distinct from editing/copy keys; point_toggle requires one key".into()));
+            }
+        }
+        if point.color_formats.is_empty()
+            || point.color_formats.len() > 3
+            || point
+                .color_formats
+                .iter()
+                .enumerate()
+                .any(|(i, f)| point.color_formats[..i].contains(f))
+            || !(2..=40).contains(&point.marker_radius)
+            || point.marker_width > 10
+        {
+            return Err(bad(
+                "invalid ui_hint.search_point keys, formats or marker size".into(),
+            ));
+        }
+        validate_optional_color(
+            "ui_hint.search_point.marker_color",
+            point.marker_color.as_ref(),
+        )?;
         for (name, value) in [
             ("fill_color", self.mode_indicator.cursor.fill_color.as_ref()),
             (

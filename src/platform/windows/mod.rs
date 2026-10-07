@@ -60,8 +60,12 @@ const NO_WINDOW_UNDER_POINTER: &str =
     "No window under the pointer — move the pointer over a window";
 
 #[inline]
-fn label_text_offset_y(style: &LabelStyle, analysis: LabelTextAnalysis) -> f64 {
-    let units = if analysis.has_descender { -2.0 } else { -1.0 };
+fn label_text_offset_y(style: &LabelStyle, analysis: LabelTextAnalysis, fixed_line: bool) -> f64 {
+    let units = if analysis.has_descender && !fixed_line {
+        -2.0
+    } else {
+        -1.0
+    };
     analysis.scaled_units(style.font_size, units)
 }
 
@@ -587,6 +591,12 @@ impl Drop for WindowsBackend {
 }
 
 impl Backend for WindowsBackend {
+    fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
+        self.overlay.sample(Some(request)).is_ok()
+    }
+    fn cancel_point_sample(&mut self) {
+        let _ = self.overlay.sample(None);
+    }
     fn read_clipboard(&mut self) -> Result<String, String> {
         arboard::Clipboard::new()
             .and_then(|mut clipboard| clipboard.get_text())
@@ -1111,13 +1121,19 @@ mod tests {
             ..LabelStyle::default()
         };
         assert_eq!(
-            label_text_offset_y(&style, LabelTextAnalysis::analyze("asa", 0)),
+            label_text_offset_y(&style, LabelTextAnalysis::analyze("asa", 0), false),
             -1.0
         );
         assert_eq!(
-            label_text_offset_y(&style, LabelTextAnalysis::analyze("aag", 0)),
+            label_text_offset_y(&style, LabelTextAnalysis::analyze("aag", 0), false),
             -2.0
         );
+        for text in ["", "asa", "asag", "jpyq"] {
+            assert_eq!(
+                label_text_offset_y(&style, LabelTextAnalysis::analyze(text, 0), true),
+                -1.0
+            );
+        }
     }
 
     #[test]

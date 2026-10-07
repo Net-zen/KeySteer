@@ -4,6 +4,7 @@ import { cardPositionRatios } from '../simulator/window-card-position.ts'
 import CardPositionEditor from './CardPositionEditor'
 import CardStylePreview from './CardStylePreview'
 import { selectedCardStyle } from '../simulator/window-card-style'
+import { searchPanelColors } from '../simulator/search-input-style'
 import { parseSplitRatios } from '../simulator/window-ratios.ts'
 import { computed, defineComponent } from 'vue'
 import {
@@ -32,11 +33,40 @@ export default defineComponent({
   setup(props, { emit }) {
     const { t } = useStudioI18n()
     const positionRoot = computed(() => props.mode === 'window_editor' ? 'window_editor.card' : 'window.card')
+    const colorPreview = computed(() => ({ enabled: true, width: 16, height: 16, x_offset: 4, y_offset: 0, border_width: 1, ...getConfigPath(props.effectiveDocument, 'ui_hint.search_point.color_preview') as Record<string, number | boolean> }))
+    const inputColors = computed(() => searchPanelColors(props.effectiveDocument, props.appearance))
+    const previewPanelStyle = (block: 'search_input_ui' | 'search_info_ui') => {
+      const ui = { width: block === 'search_input_ui' ? 280 : 520, font_size: 14,
+        padding_y: block === 'search_input_ui' ? 6 : 16, ...props.effectiveDocument.ui_hint?.[block] }
+      const colors = searchPanelColors(props.effectiveDocument, props.appearance, block)
+      const font = Number(ui.font_size)
+      const paddingY = ui.padding_y >= 0 ? ui.padding_y : Math.round(font * .2)
+      return { boxSizing: 'border-box' as const, width: `${ui.width}px`, maxWidth: '100%',
+        textAlign: 'left' as const, lineHeight: '1.8', fontSize: `${font}px`, fontWeight: 400, fontFamily: ui.font_family || 'system-ui, sans-serif',
+        borderStyle: 'solid', borderWidth: `${Math.max(0, ui.border_width ?? 1)}px`,
+        borderRadius: `${ui.border_radius >= 0 ? ui.border_radius : Math.round(font * .35)}px`,
+        height: block === 'search_input_ui' ? `${font * 1.8 + paddingY * 2}px` : undefined,
+        padding: `${block === 'search_input_ui' ? 0 : paddingY}px ${Math.max(block === 'search_info_ui' ? 10 : 0, ui.padding_x >= 0 ? ui.padding_x : Math.round(font * .4))}px`,
+        color: colors.text_color, background: colors.background_color, borderColor: colors.border_color }
+    }
+    const inputPreviewStyle = computed(() => previewPanelStyle('search_input_ui'))
+    const infoPreviewStyle = computed(() => previewPanelStyle('search_info_ui'))
     const modeFields = computed(() => fields[props.mode])
+    const isSearchInputField = (field: StyleField) => field.path.startsWith('ui_hint.search_input_ui.') || field.path.startsWith('ui_hint.search_point.input_')
+    const isColorPreviewField = (field: StyleField) => field.path.startsWith('ui_hint.search_point.color_preview.')
     const isCardField = (field: StyleField) => props.mode.startsWith('window') &&
       ((field.path.startsWith('window.card.') || field.path.startsWith('window_editor.card.')) || /^window(?:_\w+)?\.ui\./.test(field.path))
     const fieldValue = (field: StyleField): unknown => {
       const configured = getConfigPath(props.effectiveDocument, field.path)
+      if (configured === undefined && field.kind === 'color' && /^ui_hint\.(search_(input|info)_ui\.|search_point\.input_)/.test(field.path)) {
+        const block = field.path.includes('.search_info_ui.') ? 'search_info_ui' : 'search_input_ui'
+        const key = field.path.includes('.search_point.') ? field.path.split('.').at(-1)!.replace('input_', 'point_') : field.path.split('.').at(-1)!
+        return Object.fromEntries(['light', 'dark'].map(appearance => [appearance, searchPanelColors(props.effectiveDocument, appearance, block)[key as keyof ReturnType<typeof searchPanelColors>]]))
+      }
+      if (field.kind === 'binding') return Object.entries(configured as Record<string, string> ?? {}).filter(([, action]) => action === field.action).map(([key]) => key).join(' ')
+      if (configured === undefined && field.path === 'ui_hint.search_point.marker_color') {
+        return Object.fromEntries(['light', 'dark'].map(appearance => [appearance, props.effectiveDocument.theme?.[appearance]?.accent ?? (appearance === 'dark' ? '#7F9AFFFF' : '#4965D9FF')]))
+      }
       if (field.path.includes('.lifecycle.')) return configured ?? 'keep'
       if (configured !== undefined || !isCardField(field)) return configured
       if (field.path.endsWith('.ui.border_width')) return 1
@@ -67,6 +97,13 @@ export default defineComponent({
       emit('change', next)
     }
 
+    function updateBinding(field: StyleField, value: unknown): void {
+      const table = { ...getConfigPath(props.effectiveDocument, field.path) as Record<string, string> }
+      for (const [key, action] of Object.entries(table)) if (action === field.action) delete table[key]
+      for (const key of String(value).trim().split(/\s+/).filter(Boolean)) table[key] = field.action!
+      update(field.path, table)
+    }
+
     const renderFields = (items: StyleField[]) => (
       <div class="ks-style-fields">
         {items.filter(field => { const location = fieldLocation(field.path); return location.page === props.page && location.tab === props.tab }).map((field) => (
@@ -75,8 +112,11 @@ export default defineComponent({
             value={fieldValue(field)}
             appearance={props.appearance}
             inherited={getConfigPath(props.document, field.path) === undefined}
-            onUpdate={(value) => update(field.path, value)}
-            onReset={() => reset(field.path)}
+            onUpdate={(value) => {
+              if (field.kind !== 'binding') { update(field.path, value); return }
+              updateBinding(field, value)
+            }}
+            onReset={() => field.kind === 'binding' ? updateBinding(field, field.default) : reset(field.path)}
           />
         ))}
       </div>
@@ -101,6 +141,50 @@ export default defineComponent({
             </div>
           </div>
           {props.page === 'window_editor' && props.tab === 'appearance' && <p>{t("卡片颜色与字体继承窗口共用外观；此处只覆盖布局编辑的位置与当前模式标记。")}</p>}
+          {props.page === 'ui_hint' && props.tab === 'appearance' && <section class="ks-style-section ks-settings-section ks-search-preview-section" aria-label={t('输入框状态预览')}>
+            <header class="ks-settings-section-heading">
+              <h2>{t('输入框状态预览')}</h2>
+              <p>{t('对比搜索输入与点位调整；颜色、字体和尺寸修改即时显示。')}</p>
+            </header>
+            <div class="ks-settings-section-body">
+              <div class="ks-search-input-samples">
+                <figure>
+                  <figcaption>{t('搜索输入')}</figcaption>
+                  <div class="ks-search-preview-input" aria-label={t('普通搜索输入框')} style={inputPreviewStyle.value}>
+                    <span class="ks-search-preview-query">ajh akl<i class="ks-search-preview-caret" aria-hidden="true" /></span>
+                  </div>
+                </figure>
+                <figure>
+                  <figcaption>{t('点位调整')}</figcaption>
+                  <div class="ks-search-preview-input" aria-label={t('Point 输入框')} style={{ ...inputPreviewStyle.value, background: inputColors.value.point_background_color, borderColor: inputColors.value.point_border_color }}>
+                    <span class="ks-search-preview-query">ajh akl</span>
+                    <span class="ks-search-preview-counter" style={{ color: props.appearance === 'dark' ? '#9CA3AF' : '#6B7280' }}>0/2</span>
+                    <i class="ks-search-preview-dot" aria-hidden="true" style={{ background: props.appearance === 'dark' ? '#68D9B1' : '#16856B' }} />
+                  </div>
+                </figure>
+              </div>
+              <div class="ks-search-input-controls">{renderFields(modeFields.value.colors.filter(isSearchInputField))}</div>
+              <details class="ks-style-advanced">
+                <summary>{t('输入框字体、尺寸与位置')}</summary>
+                {renderFields(modeFields.value.advanced.filter(isSearchInputField))}
+              </details>
+            </div>
+          </section>}
+          {props.page === 'ui_hint' && props.tab === 'appearance' && <section class="ks-style-section ks-settings-section ks-search-preview-section" aria-label={t('颜色色块预览（示例颜色）')}>
+            <header class="ks-settings-section-heading">
+              <h2>{t('颜色色块预览（示例颜色）')}</h2>
+              <p>{t('色块紧邻 Color 标题；在下方调整开关、尺寸、偏移和边框。')}</p>
+            </header>
+            <div class="ks-settings-section-body">
+              <div class="ks-search-color-sample" style={infoPreviewStyle.value}>
+                <div class="ks-search-color-title"><kbd class="ks-search-preview-key">4</kbd><span>Color</span>
+                  {colorPreview.value.enabled && <span data-color-swatch style={{ flexShrink: 0, boxSizing: 'border-box', width: `${colorPreview.value.width}px`, height: `${colorPreview.value.height}px`, marginLeft: `${colorPreview.value.x_offset}px`, transform: `translateY(${colorPreview.value.y_offset}px)`, border: `${colorPreview.value.border_width}px solid currentColor`, background: '#49A98A' }} />}
+                </div>
+                <div class="ks-search-color-value">#49A98A</div>
+              </div>
+              <div class="ks-search-color-controls">{renderFields(modeFields.value.layout.filter(isColorPreviewField))}</div>
+            </div>
+          </section>}
           {props.mode.startsWith('window') && props.tab === 'appearance' && <div class="ks-style-section ks-card-editor">
             <CardStylePreview document={props.effectiveDocument} mode={props.mode} appearance={props.appearance} />
             <div class="ks-card-editor-controls">
@@ -123,11 +207,11 @@ export default defineComponent({
           </div>
           <div class="ks-style-section" hidden={props.tab !== 'appearance'}>
             <span class="ks-style-section-label">{t("模式颜色")}</span>
-            {renderFields(modeFields.value.colors.filter(field => !isCardField(field)))}
+            {renderFields(modeFields.value.colors.filter(field => !isCardField(field) && !isSearchInputField(field)))}
           </div>
           <div class="ks-style-section">
             <span class="ks-style-section-label">{t("常用布局")}</span>
-            {renderFields(modeFields.value.layout.filter(field => !isCardField(field)))}
+            {renderFields(modeFields.value.layout.filter(field => !isCardField(field) && !isColorPreviewField(field)))}
           </div>
           {props.tab === 'behavior' && modeFields.value.advanced.some(field => field.path.includes('.lifecycle.')) && <section class="ks-style-section ks-settings-section">
             <header class="ks-settings-section-heading">
@@ -141,7 +225,7 @@ export default defineComponent({
           </section>}
           <details class="ks-style-advanced">
             <summary>{t("高级设置")}</summary>
-            {renderFields(modeFields.value.advanced.filter(field => !isCardField(field) && !field.path.includes('.lifecycle.')))}
+            {renderFields(modeFields.value.advanced.filter(field => !isCardField(field) && !isSearchInputField(field) && !field.path.includes('.lifecycle.')))}
           </details>
         </div>
       )
@@ -162,7 +246,7 @@ export const StyleControl = defineComponent({
     const { t } = useStudioI18n()
     return () => {
       const field = props.field
-      const source = props.value ?? fallback(field, props.appearance)
+      const source = props.value ?? field.default ?? fallback(field, props.appearance)
       const variants = field.kind === 'color' && source && typeof source === 'object' ? source as Record<string, string> : undefined
       const value = variants?.[props.appearance] ?? source
       const updateColor = (next: string) => props.onUpdate(variants ? { ...variants, [props.appearance]: next } : next)
@@ -202,6 +286,33 @@ export const StyleControl = defineComponent({
               try { parseSplitRatios(values); input.setCustomValidity(''); props.onUpdate(values) }
               catch (error) { input.setCustomValidity(String(error)); input.reportValidity() }
             }} />
+          ) : field.kind === 'chords' ? (
+            <input value={Array.isArray(value) ? value.join(', ') : String(value)} onChange={event => {
+              const input = event.target as HTMLInputElement
+              const values = input.value.split(',').map(part => part.trim())
+              if (values.length !== 4 || new Set(values).size !== 4 || values.some(value => !value.includes('+'))) {
+                input.setCustomValidity(t('请输入四个不同的复制组合键')); input.reportValidity(); return
+              }
+              input.setCustomValidity(''); props.onUpdate(values)
+            }} />
+          ) : field.kind === 'choices' ? (
+            <input value={Array.isArray(value) ? value.join(', ') : String(value)} onChange={event => {
+              const input = event.target as HTMLInputElement
+              const values = input.value.split(',').map(part => part.trim().toLowerCase())
+              if (!values.length || new Set(values).size !== values.length || values.some(value => !field.options?.includes(value))) {
+                input.setCustomValidity(t('请输入不重复的颜色格式：hex, rgb, hsl')); input.reportValidity(); return
+              }
+              input.setCustomValidity(''); props.onUpdate(values)
+            }} />
+          ) : field.kind === 'field-modes' ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+              {['1 OCR', '2 Accessibility', '3 Coordinates'].map((title, index) => <span>
+                {title}<select aria-label={t('{0}显示方式', [title])} value={(value as string[])[index]} onChange={event => {
+                  const next = [...value as string[]]; next[index] = (event.target as HTMLSelectElement).value; props.onUpdate(next)
+                }}><option value="concat">{t('拼接全部')}</option><option value="switch">{t('跟随当前点')}</option></select>
+              </span>)}
+              <span>4 Color<small>{t('仅唯一搜索结果时取色')}</small></span>
+            </div>
           ) : field.kind === 'select' ? (
             <select value={String(value)} onChange={(event) => props.onUpdate((event.target as HTMLSelectElement).value)}>
               {field.options?.map((option) => <option value={option}>{option || t('保留现有行为')}</option>)}

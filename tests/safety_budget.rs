@@ -62,7 +62,11 @@ use std::path::{Path, PathBuf};
 // registration, callback context reads, deadline changes, and invalidation;
 // one test-only boundary borrows framework mode constants. No Send/Sync or
 // raw ownership transfer is added; callbacks cannot outlive their registration.
-const MAX_UNSAFE_EXPRESSIONS: usize = 403;
+// Point sampling adds two audited blocks in existing native owners: one
+// thread-affine Win32 region aperture with explicit HRGN transfer/cleanup, and
+// one bounded macOS opaque-owner/four-byte FFI call. Both samplers reuse small
+// capture resources; portable routing and cancellation contain no unsafe code.
+const MAX_UNSAFE_EXPRESSIONS: usize = 405;
 const MAX_UNSAFE_FILES: usize = 41;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
@@ -85,7 +89,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/status_item.rs", 10),
     ("src/platform/macos/event_loop.rs", 6),
     ("src/platform/windows/text_prompt.rs", 17),
-    ("src/platform/macos/vision.rs", 6),
+    ("src/platform/macos/vision.rs", 7),
     ("src/platform/windows/accessibility.rs", 30),
     ("src/platform/windows/autostart.rs", 4),
     ("src/platform/windows/gpu_overlay.rs", 28),
@@ -109,7 +113,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/windows/native/handles.rs", 4),
     ("src/platform/windows/native/message_loop.rs", 8),
     ("src/platform/windows/native/ocr_bridge.rs", 12),
-    ("src/platform/windows/native/window.rs", 3),
+    ("src/platform/windows/native/window.rs", 4),
     ("src/platform/windows/native/winrt.rs", 5),
     ("src/platform/windows/native/gdi.rs", 11),
     ("src/platform/windows/native/uia_cache.rs", 6),

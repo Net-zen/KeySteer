@@ -16,6 +16,7 @@ use std::time::Duration;
 /// Something that happened natively and must reach the engine.
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
+    PointSampled(super::point_sample::Sample),
     TextPromptChanged {
         id: u64,
         text: String,
@@ -127,6 +128,11 @@ pub enum KeyDisposition {
 /// A native backend. Implementations live in `src/platform/<os>.rs` and are
 /// selected by `cfg(target_os)` in `src/platform/mod.rs`.
 pub trait Backend {
+    /// Queue a replaceable one-pixel sample; never capture on the input thread.
+    fn request_point_sample(&mut self, _request: super::point_sample::Request) -> bool {
+        false
+    }
+    fn cancel_point_sample(&mut self) {}
     /// Optionally own native event dispatch, including nested menu tracking.
     /// Invoke `turn` on the engine thread without retaining it after returning,
     /// without reentering it, and without holding another backend borrow.

@@ -168,6 +168,7 @@ impl Engine {
                     self.show_overlay(scene, backend)?;
                 }
                 let prompt = TextPrompt {
+                    point_keys: None,
                     edit_keys: Default::default(),
                     live_style: None,
                     copy_keys: Default::default(),

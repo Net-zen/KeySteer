@@ -240,3 +240,72 @@ test('text input keeps independent editing bindings and configurable temporary N
   assert.deepEqual(effective.text_input.inherits, ['normal'])
   assert.deepEqual(effective.text_input.temporary_mode_keys, ['right_ctrl'])
 })
+
+
+test('search operation bindings replace defaults and preserve optional point styling', async () => {
+  const { stringify } = await import('smol-toml')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  assert.deepEqual({ ...defaults.ui_hint.search_bindings }, { ctrl: 'point_toggle', tab: 'point_next', 'ctrl+shift+4': 'color_next' })
+  assert.equal(defaults.ui_hint.search_point, undefined)
+  const source = '[ui_hint.search_bindings]\nf8 = "point_toggle"\nf9 = "color_next"\n[ui_hint.search_point]\ncolor_formats = ["rgb", "hex"]\nmarker_radius = 9\nmarker_color = { light = "#112233FF", dark = "#FFEEDDFF" }'
+  const imported = parseConfigDocument(source).document
+  const effective = resolveConfigDocument(defaults, imported)
+  assert.deepEqual({ ...effective.ui_hint.search_bindings }, { f8: 'point_toggle', f9: 'color_next' })
+  const exported = parseConfigDocument(stringify(imported)).document
+  assert.deepEqual(exported.ui_hint.search_point.color_formats, ['rgb', 'hex'])
+  assert.equal(exported.ui_hint.search_point.marker_width, undefined)
+  assert.deepEqual(Object.keys(resolveConfigDocument(defaults, parseConfigDocument('[ui_hint.search_bindings]').document).ui_hint.search_bindings), [])
+  for (const entry of ['color_formats = []', 'color_formats = ["hex", "hex"]', 'marker_radius = 0', 'marker_color = "#112233"']) {
+    assert.throws(() => parseConfigDocument('[ui_hint.search_point]\n' + entry))
+  }
+  assert.throws(() => parseConfigDocument('[ui_hint.search_bindings]\nctrl = "bad"'))
+})
+
+
+test('multi-point field modes and next key validate and round-trip', async () => {
+  const { stringify } = await import('smol-toml')
+  const { fieldLocation } = await import('../config-studio/navigation.ts')
+  const document = parseConfigDocument('[ui_hint.search_point]\nfield_modes = ["switch", "concat", "concat", "switch"]\n[ui_hint.search_bindings]\nctrl = "point_toggle"\n"alt+f9" = "point_next"').document
+  assert.deepEqual(parseConfigDocument(stringify(document)).document.ui_hint.search_point.field_modes, ['switch', 'concat', 'concat', 'switch'])
+  assert.equal(document.ui_hint.search_bindings['alt+f9'], 'point_next')
+  assert.deepEqual(fieldLocation('ui_hint.search_point.field_modes'), { page: 'ui_hint', tab: 'behavior' })
+  for (const values of ['[]', '["concat"]', '["concat", "concat", "switch", "switch", "switch"]', '["concat", "concat", "all", "switch"]']) {
+    assert.throws(() => parseConfigDocument('[ui_hint.search_point]\nfield_modes = ' + values))
+  }
+})
+
+test('copy keys and color swatch overrides round-trip without expanding defaults', async () => {
+  const { stringify } = await import('smol-toml')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  assert.deepEqual(defaults.ui_hint.search_copy_keys, ['ctrl+1', 'ctrl+2', 'ctrl+3', 'ctrl+4'])
+  const document = parseConfigDocument('[ui_hint]\nsearch_copy_keys = ["ctrl+9", "cmd+2", "alt+3", "alt+4"]\n[ui_hint.search_point.color_preview]\nwidth = 24\nx_offset = -3').document
+  const effective = resolveConfigDocument(defaults, document)
+  assert.deepEqual(effective.ui_hint.search_copy_keys, ['ctrl+9', 'cmd+2', 'alt+3', 'alt+4'])
+  assert.deepEqual({ ...parseConfigDocument(stringify(document)).document.ui_hint.search_point.color_preview }, { width: 24, x_offset: -3 })
+  for (const entry of ['width = 0', 'height = 65', 'x_offset = -201', 'y_offset = 201', 'border_width = 11', 'enabled = 1', 'unknown = 1']) {
+    assert.throws(() => parseConfigDocument('[ui_hint.search_point.color_preview]\n' + entry))
+  }
+})
+
+
+test('Point input colors are optional, theme aware, and stay on the appearance page', async () => {
+  const { searchPanelColors } = await import('./search-input-style.ts')
+  const { fieldLocation } = await import('../config-studio/navigation.ts')
+  const { stringify } = await import('smol-toml')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  const config = parseConfigDocument('[ui_hint.search_point]\ninput_background_color = { light = "#11223344", dark = "#55667788" }\ninput_border_color = "#99AABBCC"').document
+  for (const appearance of ['light', 'dark']) {
+    const normal = searchPanelColors(defaults, appearance)
+    assert.equal(normal.point_background_color, appearance === 'dark' ? '#284D44FF' : '#E8F6F0FF')
+    assert.equal(normal.point_border_color, normal.border_color)
+    const custom = searchPanelColors(resolveConfigDocument(defaults, config), appearance)
+    assert.equal(custom.point_background_color, appearance === 'dark' ? '#55667788' : '#11223344')
+    assert.equal(custom.point_border_color, '#99AABBCC')
+  }
+  assert.deepEqual(parseConfigDocument(stringify(config)).document.ui_hint.search_point, config.ui_hint.search_point)
+  for (const field of ['input_background_color', 'input_border_color']) {
+    assert.deepEqual(fieldLocation('ui_hint.search_point.' + field), { page: 'ui_hint', tab: 'appearance' })
+    assert.throws(() => parseConfigDocument('[ui_hint.search_point]\n' + field + ' = "invalid"'))
+  }
+  assert.deepEqual(fieldLocation('ui_hint.search_input_ui.border_color'), { page: 'ui_hint', tab: 'appearance' })
+})

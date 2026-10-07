@@ -2,6 +2,14 @@
 
 use super::*;
 
+#[derive(Debug, Default)]
+pub(super) struct PointInput {
+    pub available: bool,
+    pub adjusting: bool,
+    pub tap: Option<Key>,
+    pub held: SmallVec<[(Key, Arc<Binding>); 4]>,
+}
+
 /// A pending timer request from a mode.
 #[derive(Debug, Clone)]
 pub(super) struct Timer {
@@ -21,6 +29,10 @@ pub(super) struct PendingSequence {
 
 #[derive(Debug, Default)]
 pub(super) struct Scheduler {
+    pub(super) point_input: PointInput,
+    pub(super) point_sample: Option<(ModeId, u64, crate::api::point_sample::Request)>,
+    /// Never reset on plan replacement: old native results cannot alias a new mode.
+    pub(super) point_sample_serial: u64,
     pub(super) text_prompt: Option<(ModeId, crate::api::window_presets::TextPrompt)>,
     pub(super) text_prompt_serial: u64,
     pub(super) scan_activation: Option<u32>,
@@ -35,6 +47,8 @@ pub(super) struct Scheduler {
 
 impl Scheduler {
     pub(super) fn reset(&mut self) {
+        self.point_input = PointInput::default();
+        self.point_sample = None;
         self.panel_geometry.clear();
         self.text_prompt = None;
         self.text_prompt_returning_focus = false;

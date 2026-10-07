@@ -196,7 +196,24 @@ struct PrefixOffset {
 #[derive(Debug, Default)]
 struct LabelTextMetrics {
     width: f32,
+    query_end: f32,
     prefix_offsets: SmallVec<[PrefixOffset; 4]>,
+}
+
+impl LabelTextMetrics {
+    fn insertion_x(&self, text: &str, byte: usize) -> f64 {
+        if byte == 0 {
+            return 0.0;
+        }
+        if byte >= text.len() {
+            return f64::from(self.width);
+        }
+        let units = text.get(..byte).unwrap_or(text).encode_utf16().count();
+        self.prefix_offsets
+            .iter()
+            .find(|offset| offset.utf16_len as usize == units)
+            .map_or(f64::from(self.width), |offset| f64::from(offset.x))
+    }
 }
 
 #[derive(Clone)]
@@ -219,6 +236,8 @@ struct LabelSpec<'a> {
     analysis: LabelTextAnalysis,
     fixed_bounds: bool,
     edit: Option<crate::api::text_edit::Selection>,
+    scroll_to_cursor: bool,
+    trailing_text_len: u8,
     z_index: i32,
 }
 
@@ -512,6 +531,8 @@ impl WindowContent {
                 analysis: label.text_analysis(),
                 fixed_bounds: label.fixed_bounds,
                 edit: label.edit.map(Into::into),
+                scroll_to_cursor: label.scroll_to_cursor,
+                trailing_text_len: label.trailing_text_len,
                 z_index: label.z_index,
             };
             self.configure_label(LabelSlot::Static(index), spec, area, rebuild_text);
@@ -740,7 +761,10 @@ impl WindowContent {
                 &font,
                 &foreground.cocoa,
                 &matched_foreground.cocoa,
-                spec.fixed_bounds.then_some(spec.rect.height),
+                (
+                    spec.fixed_bounds.then_some(spec.rect.height),
+                    spec.trailing_text_len,
+                ),
             )
         });
         let edit_colors = spec.edit.map(|_| {
@@ -759,7 +783,11 @@ impl WindowContent {
             crate::api::overlay::TextAlignment::Center => ns_string!("center"),
             crate::api::overlay::TextAlignment::Right => ns_string!("right"),
         };
-        layer.base.setAlignmentMode(alignment);
+        layer.base.setAlignmentMode(if spec.trailing_text_len > 0 {
+            ns_string!("right")
+        } else {
+            alignment
+        });
         layer.matched.setAlignmentMode(alignment);
         layer.base.setHidden(false);
         layer.base.setFrame(frame);
@@ -795,19 +823,83 @@ impl WindowContent {
                 // CALayer contents value; the transaction redraws the new text.
                 layer.base.setContents(None);
                 layer.matched.setContents(None);
-                layer.base.setString(Some(&base));
-                layer.matched.setString(Some(&matched));
+                if spec.scroll_to_cursor {
+                    // Reuse the existing clipped text child as the viewport.
+                    layer.base.setString(if spec.trailing_text_len > 0 {
+                        Some(&matched)
+                    } else {
+                        None
+                    });
+                    layer.matched.setString(Some(&base));
+                } else {
+                    layer.base.setString(Some(&base));
+                    layer.matched.setString(Some(&matched));
+                }
             }
             layer.metrics = metrics;
             layer.base.setNeedsDisplay();
             layer.matched.setNeedsDisplay();
         }
-        layer.update_matched_prefix(
-            spec.analysis.matched_utf16_len,
-            frame.size,
-            spec.style.text_alignment,
+        let left = spec
+            .style
+            .text_alignment
+            .offset(frame.size.width, f64::from(layer.metrics.width));
+        let (query, _) =
+            crate::api::overlay::split_trailing_text(spec.text, spec.trailing_text_len);
+        let query_end = f64::from(layer.metrics.query_end);
+        let trailing_width = f64::from(layer.metrics.width) - query_end;
+        let query_width = crate::api::text_edit::query_width(
+            frame.size.width,
+            spec.style.font_size,
+            trailing_width,
         );
-        if let (Some(edit), Some((caret_color, selection_color))) = (spec.edit, edit_colors) {
+        let offsets = (spec.edit.is_some() || spec.scroll_to_cursor).then(|| {
+            let cursor = spec.edit.map_or(query.len(), |edit| edit.cursor);
+            let cursor_x = left
+                + if cursor == query.len() {
+                    query_end
+                } else {
+                    layer.metrics.insertion_x(spec.text, cursor)
+                };
+            let anchor_x = spec.edit.map_or(cursor_x, |edit| {
+                if edit.anchor == cursor {
+                    cursor_x
+                } else {
+                    left + layer.metrics.insertion_x(spec.text, edit.anchor)
+                }
+            });
+            (cursor_x, anchor_x)
+        });
+        let scroll = if spec.scroll_to_cursor {
+            crate::api::text_edit::scroll_offset(
+                query_width,
+                spec.style.font_size,
+                offsets.map_or(0.0, |(cursor, _)| cursor),
+            )
+        } else {
+            0.0
+        };
+        if spec.scroll_to_cursor {
+            layer.matched_clip.setHidden(false);
+            layer.matched_clip.setFrame(NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(query_width, frame.size.height),
+            ));
+            layer.matched.setFrame(NSRect::new(
+                NSPoint::new(-scroll, 0.0),
+                NSSize::new(
+                    frame.size.width.max(f64::from(layer.metrics.width)),
+                    frame.size.height,
+                ),
+            ));
+        } else {
+            layer.update_matched_prefix(
+                spec.analysis.matched_utf16_len,
+                frame.size,
+                spec.style.text_alignment,
+            );
+        }
+        if let (Some(_), Some((caret_color, selection_color))) = (spec.edit, edit_colors) {
             let (caret_layer, selection_layer) = layer.edit_layers.get_or_insert_with(|| {
                 let caret = CALayer::new();
                 let selection = CALayer::new();
@@ -815,29 +907,13 @@ impl WindowContent {
                 layer.base.addSublayer(&caret);
                 (caret, selection)
             });
-            let offset = |byte: usize| {
-                let units = spec
-                    .text
-                    .get(..byte)
-                    .unwrap_or(spec.text)
-                    .encode_utf16()
-                    .count();
-                if units == 0 {
-                    return 0.0;
-                }
-                layer
-                    .metrics
-                    .prefix_offsets
-                    .iter()
-                    .find(|offset| offset.utf16_len as usize == units)
-                    .map_or(f64::from(layer.metrics.width), |offset| f64::from(offset.x))
-            };
-            let local = Rect::new(0.0, 0.0, frame.size.width, frame.size.height);
+            let (cursor, anchor) = offsets.unwrap_or_default();
+            let local = Rect::new(0.0, 0.0, query_width, frame.size.height);
             let (caret, selection) = crate::api::text_edit::decoration_rects(
                 local,
                 spec.style.font_size,
-                offset(edit.cursor),
-                offset(edit.anchor),
+                cursor - scroll,
+                anchor - scroll,
             );
             caret_layer.setFrame(to_window_rect(caret, local));
             caret_layer.setBackgroundColor(Some(&caret_color.core_graphics));
@@ -927,6 +1003,8 @@ impl WindowContent {
                     // within it instead of using the compact Hint offset.
                     fixed_bounds: true,
                     edit: None,
+                    scroll_to_cursor: false,
+                    trailing_text_len: 0,
                     z_index: 0,
                 },
                 local_area,
@@ -942,6 +1020,8 @@ impl WindowContent {
                         analysis: LabelTextAnalysis::analyze(text, 0),
                         fixed_bounds: true,
                         edit: None,
+                        scroll_to_cursor: false,
+                        trailing_text_len: 0,
                         z_index: 1,
                     },
                     local_area,
@@ -1199,6 +1279,8 @@ fn scene_changes(previous: Option<&OverlayScene>, current: &OverlayScene) -> Sce
 
 fn label_text_content_eq(previous: &OverlayLabel, current: &OverlayLabel) -> bool {
     previous.text == current.text
+        && previous.scroll_to_cursor == current.scroll_to_cursor
+        && previous.trailing_text_len == current.trailing_text_len
         && previous.fixed_bounds == current.fixed_bounds
         && (!current.fixed_bounds || previous.rect.height == current.rect.height)
         && previous.style.font_size.to_bits() == current.style.font_size.to_bits()
@@ -1215,7 +1297,7 @@ fn attributed_label_text_pair(
     font: &CTFont,
     foreground: &NSColor,
     matched_foreground: &NSColor,
-    fixed_height: Option<f64>,
+    (fixed_height, trailing_text_len): (Option<f64>, u8),
 ) -> (
     Retained<NSMutableAttributedString>,
     Retained<NSMutableAttributedString>,
@@ -1256,7 +1338,7 @@ fn attributed_label_text_pair(
     // then only its foreground color is replaced. CoreText borrows this same
     // toll-free bridged string; indices are UTF-16 boundaries, and optional
     // metric output pointers are null. The owned line is dropped after measuring.
-    let (matched, metrics) = unsafe {
+    let (matched, mut metrics) = unsafe {
         attributed.addAttribute_value_range(NSFontAttributeName, font_object, full_range);
         attributed.addAttribute_value_range(
             NSForegroundColorAttributeName,
@@ -1313,10 +1395,24 @@ fn attributed_label_text_pair(
             matched,
             LabelTextMetrics {
                 width,
+                query_end: width,
                 prefix_offsets,
             },
         )
     };
+    if trailing_text_len > 0 {
+        let (_, trailing) = crate::api::overlay::split_trailing_text(text, trailing_text_len);
+        let trailing_len = trailing.encode_utf16().count();
+        let query_len = analysis.utf16_len - trailing_len;
+        metrics.query_end = metrics
+            .prefix_offsets
+            .iter()
+            .rev()
+            .find(|offset| offset.utf16_len as usize == query_len)
+            .map_or(0.0, |offset| offset.x);
+        attributed.deleteCharactersInRange(NSRange::new(query_len, trailing_len));
+        matched.deleteCharactersInRange(NSRange::new(0, query_len));
+    }
     (attributed, matched, metrics)
 }
 
@@ -1427,7 +1523,7 @@ mod tests {
                     font,
                     &color,
                     &color,
-                    None,
+                    (None, 0),
                 );
                 assert_eq!(metrics.prefix_offsets.len(), text.chars().count());
                 if let Some(end) = metrics.prefix_offsets.last() {

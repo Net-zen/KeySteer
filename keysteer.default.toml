@@ -631,8 +631,8 @@ font_size = 28
 # ---------------------------------------------------------------------------
 [ui_hint]
 # Stable slots: OCR, accessibility, coordinates, color. Missing values stay empty.
-# primary is Ctrl on Windows and Cmd on macOS.
-search_copy_keys = ["primary+1", "primary+2", "primary+3", "primary+4"]
+# Ctrl+1/2/3/4 on both Windows and macOS; each shortcut is independently configurable.
+search_copy_keys = ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"]
 # window: pointer window -> active window -> pointer display; tries to activate the pointer window.
 # active: active window -> pointer window -> pointer display. screen: pointer display only.
 # Fallback resolves unavailable windows before scanning; one selected scope per scan.
@@ -778,6 +778,13 @@ select_home = "shift+home"
 select_end = "shift+end"
 backspace = "backspace"
 delete = "delete"
+
+# A solo tap toggles point adjustment; copy chords never toggle it.
+# Color cycling also enters adjustment automatically when one result remains.
+[ui_hint.search_bindings]
+ctrl = "point_toggle"
+tab = "point_next"
+"ctrl+shift+4" = "color_next"
 
 [ui_hint.search_input_ui]
 position_mode = "screen" # screen or window

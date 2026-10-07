@@ -12,6 +12,58 @@ use crate::api::overlay::{Color, LabelStyle, Placement, SharedLabelStyle, TextAl
 
 use super::theme::{ColorValue, CompiledColor, Palette, ThemedColor};
 
+/// Color chip beside the search information's Color heading, in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SearchColorPreview {
+    #[serde(skip_serializing_if = "SearchColorPreview::default_enabled")]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "SearchColorPreview::default_size")]
+    pub width: u16,
+    #[serde(skip_serializing_if = "SearchColorPreview::default_size")]
+    pub height: u16,
+    #[serde(skip_serializing_if = "SearchColorPreview::default_x")]
+    pub x_offset: i16,
+    #[serde(skip_serializing_if = "SearchColorPreview::default_y")]
+    pub y_offset: i16,
+    #[serde(skip_serializing_if = "SearchColorPreview::default_border")]
+    pub border_width: u16,
+}
+
+impl Default for SearchColorPreview {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            width: 16,
+            height: 16,
+            x_offset: 4,
+            y_offset: 0,
+            border_width: 1,
+        }
+    }
+}
+
+impl SearchColorPreview {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+    fn default_enabled(value: &bool) -> bool {
+        *value
+    }
+    fn default_size(value: &u16) -> bool {
+        *value == 16
+    }
+    fn default_x(value: &i16) -> bool {
+        *value == 4
+    }
+    fn default_y(value: &i16) -> bool {
+        *value == 0
+    }
+    fn default_border(value: &u16) -> bool {
+        *value == 1
+    }
+}
+
 /// Runtime-neutral mode badge and cursor decoration settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -543,6 +595,9 @@ impl PanelPosition {
 /// Numeric layout and both theme variants, compiled with the runtime plan.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledSearchPanel {
+    pub color_preview: SearchColorPreview,
+    point_background: Option<CompiledColor>,
+    point_border: Option<CompiledColor>,
     pub position: CompiledPanelPosition,
     pub position_mode: PanelPositionMode,
     pub width: f64,
@@ -550,9 +605,47 @@ pub struct CompiledSearchPanel {
     pub y_offset: f64,
     light: QuickSwitchStyles,
     dark: QuickSwitchStyles,
+    input_light: SharedLabelStyle,
+    input_dark: SharedLabelStyle,
+    point_light: SharedLabelStyle,
+    point_dark: SharedLabelStyle,
 }
 
 impl CompiledSearchPanel {
+    pub fn with_point_input_colors(
+        mut self,
+        background: Option<&ThemedColor>,
+        border: Option<&ThemedColor>,
+    ) -> Self {
+        self.point_background = background.map(CompiledColor::from);
+        self.point_border = border.map(CompiledColor::from);
+        self
+    }
+
+    pub fn point_input_colors(
+        &self,
+        appearance: Appearance,
+        normal: &LabelStyle,
+    ) -> (Color, Color) {
+        let background = self
+            .point_background
+            .and_then(|c| c.resolve(appearance))
+            .unwrap_or(match appearance {
+                Appearance::Light => Color::rgb(0xE8, 0xF6, 0xF0),
+                Appearance::Dark => Color::rgb(0x28, 0x4D, 0x44),
+            });
+        let border = self
+            .point_border
+            .and_then(|c| c.resolve(appearance))
+            .unwrap_or(normal.border_color);
+        (background, border)
+    }
+
+    pub fn with_color_preview(mut self, preview: SearchColorPreview) -> Self {
+        self.color_preview = preview;
+        self
+    }
+
     pub fn new(ui: &SearchInputUi, light: &Palette, dark: &Palette) -> Self {
         let compile = |palette: &Palette| {
             QuickSwitchStyles::new(ui.label.resolve(
@@ -562,7 +655,25 @@ impl CompiledSearchPanel {
                 palette.accent,
             ))
         };
+        let light = compile(light);
+        let dark = compile(dark);
+        let input_style = |source: &QuickSwitchStyles| {
+            let mut style = source.caption.as_ref().clone();
+            style.text_alignment = TextAlignment::Left;
+            SharedLabelStyle::from(style)
+        };
+        let input_light = input_style(&light);
+        let input_dark = input_style(&dark);
+        let point_style = |source: &SharedLabelStyle, muted: Color| {
+            let mut style = source.as_ref().clone();
+            // The native viewport anchors its muted counter using actual advances.
+            style.matched_text_color = muted;
+            SharedLabelStyle::from(style)
+        };
         Self {
+            color_preview: SearchColorPreview::default(),
+            point_background: None,
+            point_border: None,
             position: match &ui.position {
                 PanelPosition::Anchor(anchor) => CompiledPanelPosition::Anchor(*anchor),
                 PanelPosition::Percentages(value) => {
@@ -575,14 +686,32 @@ impl CompiledSearchPanel {
             width: ui.width.max(1) as f64,
             x_offset: ui.x_offset as f64,
             y_offset: ui.y_offset as f64,
-            light: compile(light),
-            dark: compile(dark),
+            point_light: point_style(&input_light, Color::rgb(107, 114, 128)),
+            point_dark: point_style(&input_dark, Color::rgb(156, 163, 175)),
+            input_light,
+            input_dark,
+            light,
+            dark,
         }
     }
     pub fn for_appearance(&self, appearance: Appearance) -> &QuickSwitchStyles {
         match appearance {
             Appearance::Light => &self.light,
             Appearance::Dark => &self.dark,
+        }
+    }
+
+    pub fn point_input_style(&self, appearance: Appearance) -> &SharedLabelStyle {
+        match appearance {
+            Appearance::Light => &self.point_light,
+            Appearance::Dark => &self.point_dark,
+        }
+    }
+
+    pub fn input_style(&self, appearance: Appearance) -> &SharedLabelStyle {
+        match appearance {
+            Appearance::Light => &self.input_light,
+            Appearance::Dark => &self.input_dark,
         }
     }
 }

@@ -37,6 +37,30 @@ pub(super) struct SearchText {
     initials: String,
 }
 
+/// Parse the label marker once per query term, outside the candidate loop.
+pub(super) struct Term<'a> {
+    pub code: &'a str,
+    pub labels_only: bool,
+}
+
+impl<'a> Term<'a> {
+    pub(super) fn new(word: &'a str) -> Self {
+        let code = word.strip_prefix('@').or_else(|| word.strip_suffix('@'));
+        Self {
+            code: code.unwrap_or(word),
+            labels_only: code.is_some(),
+        }
+    }
+
+    pub(super) fn matches(&self, text: &SearchText, label: &str) -> bool {
+        if self.labels_only {
+            !self.code.is_empty() && label.starts_with(self.code)
+        } else {
+            label.starts_with(self.code) || text.matches_text(self.code)
+        }
+    }
+}
+
 impl SearchText {
     pub(super) fn target(target: &crate::api::UiTarget) -> Self {
         let Some(details) = target.details.as_deref() else {
@@ -78,22 +102,15 @@ impl SearchText {
         Self { text, initials }
     }
 
-    pub(super) fn matches_term(&self, word: &str, label: &str) -> bool {
-        if let Some(prefix) = word.strip_prefix('@').or_else(|| word.strip_suffix('@')) {
-            // Hint codes are prefix-free: typing narrows candidates, and
-            // completing a code selects only that label. A bare marker
-            // is unfinished input, not a select-all term.
-            !prefix.is_empty() && label.starts_with(prefix)
-        } else {
-            label.starts_with(word) || self.text.contains(word) || self.initials.contains(word)
-        }
+    pub(super) fn matches_text(&self, word: &str) -> bool {
+        self.text.contains(word) || self.initials.contains(word)
     }
 
     #[cfg(test)]
     pub(super) fn matches(&self, query: &str, label: &str) -> bool {
         query
             .split_whitespace()
-            .all(|word| self.matches_term(word, label))
+            .all(|word| Term::new(word).matches(self, label))
     }
 }
 
