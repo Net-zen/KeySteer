@@ -335,7 +335,7 @@ precision_multiplier = 0.12
 fast_multiplier = 2.0
 
 [scroll]
-steps_per_second = 10.0
+speed = 500.0
 scroll_step = 50
 scroll_step_half = 500
 scroll_step_full = 1000000
@@ -347,9 +347,9 @@ invert_vertical = true
 
 Speed is pixels/second and acceleration is pixels/second², independent of display refresh rate. `smooth_acceleration = true` uses a gentler S curve; `false` uses linear acceleration.
 
-Pressing a scroll key immediately scrolls one configured step. Holding continues from the next display frame without the system keyboard-repeat delay; releasing stops it. Held speed equals the selected step distance × `steps_per_second`, scaled by `precision`, `slow`, or `fast`. With the defaults of 50 pixels and 10 steps/second, a tap travels 50 pixels and holding travels 500 pixels/second. Rates of 30 or 50 give 1500 or 2500 pixels/second without changing the tap distance.
+Ordinary scrolling responds immediately, continues while held, and stops on release. `scroll_step` sets the tap distance; `speed` sets the independent held speed in pixels/second. Defaults are 50 pixels per tap and 500 pixels/second while held; 0 enables tap-only scrolling. The `precision`, `slow`, and `fast` modifiers still apply.
 
-`steps_per_second` accepts fractional values from 0 to 120; 0 enables tap-only scrolling. It is a speed coefficient: held distance is integrated over elapsed display-frame time without a fixed-interval scroll timer. At the default speed, each frame travels about 8.3 pixels at 60 Hz or 3.5 at 144 Hz, with the same total distance. The target application's wheel handling and animation still affect the visual result. Under **Normal → Behavior**, the web simulator lets you configure distances and held speed, then preview taps, holds and speed modifiers.
+Half-page and full-page scrolling execute once per press without repeating while held. Continuous scrolling follows display frames without a fixed-interval timer. Under **Normal → Behavior**, the web simulator lets you edit held scroll speed directly in pixels per second.
 
 Theme colours use `#RRGGBBAA` and can differ for light and dark appearance:
 

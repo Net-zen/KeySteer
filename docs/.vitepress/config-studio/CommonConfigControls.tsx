@@ -43,9 +43,6 @@ export default defineComponent({
             field={field}
             value={getConfigPath(props.effectiveDocument, field.path)}
             inherited={getConfigPath(props.document, field.path) === undefined}
-            summary={field.path === 'scroll.steps_per_second'
-              ? t('普通滚动：{0} 像素/秒', [Number(getConfigPath(props.effectiveDocument, 'scroll.scroll_step') ?? 50) * Number(getConfigPath(props.effectiveDocument, field.path) ?? 10)])
-              : ''}
             onUpdate={(value) => update(field.path, value)}
             onReset={() => reset(field.path)}
           />
@@ -97,11 +94,12 @@ const ConfigControl = defineComponent({
         </select>
       ) : (
         <input
+          aria-label={t(field.label)}
           type={field.kind === 'number' ? 'number' : 'text'}
           value={String(props.value ?? '')}
           min={field.min}
           max={field.max}
-          step={field.step}
+          step={field.path === 'scroll.speed' ? 'any' : field.step}
           onInput={(event) => props.onUpdate(field.kind === 'number'
             ? Number((event.target as HTMLInputElement).value)
             : (event.target as HTMLInputElement).value)}
@@ -114,7 +112,9 @@ const ConfigControl = defineComponent({
             <small>{t(field.description)}</small>
             {props.summary && <small>{props.summary}</small>}
           </span>
-          <span class="ks-common-input">{control}</span>
+          <span class="ks-common-input">
+            {control}
+          </span>
           <button
             type="button"
             class={{ 'ks-inherit-button': true, inherited: props.inherited }}

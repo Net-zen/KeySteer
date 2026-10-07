@@ -20,6 +20,7 @@ pub mod lifecycle;
 pub mod overlay;
 pub mod plugin;
 pub mod presentation;
+pub mod scroll;
 pub mod style;
 pub mod text_edit;
 pub mod theme;

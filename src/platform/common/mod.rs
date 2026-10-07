@@ -19,6 +19,7 @@ pub(crate) mod overlay_reconcile;
 pub(crate) mod partial_batcher;
 pub(crate) mod scan_accumulator;
 pub(crate) mod scan_mailbox;
+pub(crate) mod scroll_worker;
 pub(crate) mod spatial_index;
 pub(crate) mod update;
 pub(crate) mod window_geometry;

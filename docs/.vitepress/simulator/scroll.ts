@@ -13,16 +13,16 @@ export interface CompiledScrollSettings {
 /** Compile distances, velocities and platform direction once per configuration. */
 export function compileScrollSettings(document: Record<string, any>, mac = false): CompiledScrollSettings {
   const scroll = document.scroll ?? {}, pointer = document.pointer ?? {}
-  const rate = Number(scroll.steps_per_second ?? 10)
+  const speed = Number(scroll.speed ?? 500)
   const pixels = { step: Number(scroll.scroll_step ?? 50), half: Number(scroll.scroll_step_half ?? 500), full: Number(scroll.scroll_step_full ?? 1000000) }
-  const validRate = Number.isFinite(rate) && rate >= 0 && rate <= 120 ? rate : 0
+  const validSpeed = Number.isFinite(speed) && speed >= 0 ? speed : 0
   const platform = document.platform?.macos?.scroll ?? {}
   const legacy = platform.invert ?? scroll.invert_scroll
   return {
     pixels,
-    speeds: { step: pixels.step * validRate, half: pixels.half * validRate, full: pixels.full * validRate },
+    speeds: { step: validSpeed, half: 0, full: 0 },
     multipliers: { precision: Number(pointer.precision_multiplier ?? .12), fast: Number(pointer.fast_multiplier ?? 2), slow: Number(pointer.slow_multiplier ?? .35) },
-    continuous: validRate > 0,
+    continuous: validSpeed > 0,
     xSign: mac && (platform.invert_horizontal ?? legacy ?? false) ? -1 : 1,
     ySign: mac && (platform.invert_vertical ?? legacy ?? true) ? -1 : 1,
   }
@@ -107,7 +107,7 @@ export class ScrollMotion {
     this.velocity = { x: 0, y: 0 }; this.scrollCount = 0
     for (const action of actions) {
       const scroll = gesture(action)
-      if (!scroll) continue
+      if (!scroll || scroll.amount !== 'step') continue
       this.scrollCount += 1
       const velocity = this.settings.speeds[scroll.amount] * this.multiplier
       this.velocity.x += scroll.x * velocity * this.settings.xSign

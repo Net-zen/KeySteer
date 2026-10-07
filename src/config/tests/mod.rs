@@ -378,28 +378,30 @@ fn partial_config_keeps_defaults_for_omitted_fields() {
     assert_eq!(config.scroll.scroll_step, 25);
     // Untouched fields keep their documented defaults.
     assert_eq!(config.scroll.scroll_step_half, 500);
-    assert_eq!(config.scroll.steps_per_second, 10.0);
+    assert_eq!(config.scroll.speed, 500.0);
     assert_eq!(config.grid.keys, Grid::default().keys);
 }
 
 #[test]
-fn scroll_rate_accepts_fractional_values_and_survives_export() {
-    for rate in [0.0, 0.5, 10.0, 30.0, 50.0, 120.0] {
-        let config = Config::parse(&format!("[scroll]\nsteps_per_second = {rate:?}")).unwrap();
+fn scroll_speed_accepts_fractional_values_and_survives_export() {
+    assert!(Config::parse("[scroll]\nsteps_per_second = 10").is_err());
+    for rate in [0.0, 0.5, 250.0, 500.0, 1000.0, 6000.0] {
+        let config = Config::parse(&format!("[scroll]\nspeed = {rate:?}")).unwrap();
         config.validate().unwrap();
-        assert_eq!(config.scroll.steps_per_second, rate);
+        assert_eq!(config.scroll.speed, rate);
+        assert!(!config.to_toml().unwrap().contains("steps_per_second"));
         assert_eq!(
             Config::parse(&config.to_toml().unwrap())
                 .unwrap()
                 .scroll
-                .steps_per_second,
+                .speed,
             rate
         );
     }
-    for rate in ["-1", "120.1", "nan", "inf", "-inf"] {
-        let config = Config::parse(&format!("[scroll]\nsteps_per_second = {rate}")).unwrap();
+    for rate in ["-1", "nan", "inf", "-inf"] {
+        let config = Config::parse(&format!("[scroll]\nspeed = {rate}")).unwrap();
         let error = config.validate().unwrap_err();
-        assert!(error.to_string().contains("scroll.steps_per_second"));
+        assert!(error.to_string().contains("scroll.speed"));
     }
 }
 

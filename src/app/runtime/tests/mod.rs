@@ -84,6 +84,7 @@ struct Recorder {
 }
 
 struct FakeBackend {
+    scroll_worker: Option<crate::platform::common::scroll_worker::ScrollWorker>,
     native_batches: Option<Vec<Result<Vec<BackendEvent>, String>>>,
     native_loop_running: bool,
     event_sender: Option<std::sync::mpsc::Sender<BackendEvent>>,
@@ -104,6 +105,7 @@ impl FakeBackend {
         let log = Arc::new(Mutex::new(Recorder::default()));
         (
             Self {
+                scroll_worker: None,
                 native_batches: None,
                 native_loop_running: false,
                 event_sender: None,
@@ -315,6 +317,15 @@ impl Backend for FakeBackend {
     fn scroll(&self, dx: f64, dy: f64) -> Result<(), String> {
         self.log.lock().unwrap().scrolls.push((dx, dy));
         Ok(())
+    }
+    fn scroll_frame(&self, frame: crate::api::scroll::ScrollFrame) -> Result<(), String> {
+        if let Some(worker) = &self.scroll_worker {
+            worker.submit(frame)
+        } else if frame.is_current() {
+            self.scroll(frame.dx, frame.dy)
+        } else {
+            Ok(())
+        }
     }
     fn send_key(&self, k: &Key, s: KeyState) -> Result<(), String> {
         let mut log = self.log.lock().unwrap();

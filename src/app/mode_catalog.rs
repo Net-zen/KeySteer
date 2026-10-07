@@ -27,7 +27,7 @@ pub(crate) fn normal_settings(config: &Config) -> modes::normal::Settings {
             config.scroll.scroll_step,
             config.scroll.scroll_step_half,
             config.scroll.scroll_step_full,
-            config.scroll.steps_per_second,
+            config.scroll.speed,
         ),
         passthrough_unbound_keys: config.normal.passthrough_unbound_keys,
     }

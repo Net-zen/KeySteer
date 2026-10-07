@@ -14,6 +14,8 @@ Mode → HostContext::present(View) → presentation → OverlayScene
 
 跨层词汇在 `src/api/backend.rs`、`src/api/command.rs`；原生对象不进入模式。
 
+连续滚动通过 `Command::ScrollFrame` / `Backend::scroll_frame` 保留取消身份和每帧距离，runtime 在提交前应用滚动反向设置；离散 `Scroll` 不可替换。原生执行与积压策略由共享滚动执行器负责，见[平台后端](06-platform-backends.md)。
+
 ## 关键语义
 
 - 同步 Hook 先取得 consume/forward 决定，再执行可能耗时的动作；不得让 Hook 与 Engine 互相等待。

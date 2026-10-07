@@ -325,6 +325,19 @@ impl Engine {
                         format!("scroll dx={dx:.3} dy={dy:.3}: ok")
                     });
                 }
+                Command::ScrollFrame(mut frame) => {
+                    let (horizontal, vertical) = self.settings.invert_scroll;
+                    if horizontal {
+                        frame.dx = -frame.dx;
+                    }
+                    if vertical {
+                        frame.dy = -frame.dy;
+                    }
+                    if let Err(error) = backend.scroll_frame(frame) {
+                        return Err(self.recoverable_input_error("continuous scroll", error));
+                    }
+                    self.recoverable_input_succeeded();
+                }
                 Command::SetFrameClock(active) => {
                     self.scheduler.frame_clock_owner = active.then(|| owner.clone());
                     if let Err(error) = backend.set_frame_clock(active) {

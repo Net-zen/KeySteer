@@ -3,23 +3,25 @@ import test from 'node:test'
 import { reactive } from 'vue'
 import { readFile } from 'node:fs/promises'
 
-test('held scroll rate validates, exports and resets to shipped defaults', async () => {
+test('held scroll speed validates, exports and resets to shipped defaults', async () => {
+  assert.throws(() => parseConfigDocument('[scroll]\nsteps_per_second = 10'), /steps_per_second/)
   const { setConfigPath, deleteConfigPath } = await import('../config-studio/document.ts')
   const { stringify } = await import('smol-toml')
   const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
-  assert.equal(defaults.scroll.steps_per_second, 10)
-  for (const rate of [0, .5, 10, 30, 50, 120]) {
+  assert.equal(defaults.scroll.speed, 500)
+  for (const rate of [0, .5, 250, 500, 1000, 6000]) {
     const document = parseConfigDocument('[scroll]\nscroll_step = 25').document
-    assert.equal(resolveConfigDocument(defaults, document).scroll.steps_per_second, 10)
-    setConfigPath(document, 'scroll.steps_per_second', rate)
+    assert.equal(resolveConfigDocument(defaults, document).scroll.speed, 500)
+    setConfigPath(document, 'scroll.speed', rate)
     const exported = parseConfigDocument(stringify(document)).document
-    assert.equal(exported.scroll.steps_per_second, rate)
-    deleteConfigPath(exported, 'scroll.steps_per_second')
-    assert.equal(resolveConfigDocument(defaults, exported).scroll.steps_per_second, 10)
+    assert.equal(exported.scroll.speed, rate)
+    assert.equal('steps_per_second' in exported.scroll, false)
+    deleteConfigPath(exported, 'scroll.speed')
+    assert.equal(resolveConfigDocument(defaults, exported).scroll.speed, 500)
     assert.equal(exported.scroll.scroll_step, 25)
   }
-  for (const rate of ['-1', '120.1', 'nan', 'inf', '-inf', '"10"']) {
-    assert.throws(() => parseConfigDocument(`[scroll]\nsteps_per_second = ${rate}`), /scroll.steps_per_second/)
+  for (const rate of ['-1', 'nan', 'inf', '-inf', '"10"']) {
+    assert.throws(() => parseConfigDocument(`[scroll]\nspeed = ${rate}`), /scroll.speed/)
   }
 })
 

@@ -104,6 +104,7 @@ pub struct MacOsBackend {
     window_move: RefCell<Option<window_move::WindowMove<accessibility::MovableWindow>>>,
     display_watcher: Option<screens::DisplayWatcher>,
     frame_clock: display_link::DisplayFrameClock,
+    scroll_worker: crate::platform::common::scroll_worker::ScrollWorker,
     workspace: workspace::Workspace,
     status_item: Option<status_item::StatusItem>,
     update_worker: Option<crate::platform::common::update::UpdateWorker>,
@@ -168,6 +169,13 @@ impl MacOsBackend {
                 None
             }
         };
+        let scroll_events = event_tx.clone();
+        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
+            input::scroll,
+            move |event| {
+                let _ = scroll_events.send(event);
+            },
+        )?;
         Ok(Self {
             hook,
             async_rx,
@@ -181,6 +189,7 @@ impl MacOsBackend {
             window_move: RefCell::new(None),
             display_watcher: Some(display_watcher),
             frame_clock,
+            scroll_worker,
             workspace,
             status_item: Some(status_item),
             update_worker: None,
@@ -320,6 +329,7 @@ impl MacOsBackend {
         // Vision is stopping would wait for an Engine disposition that can no
         // longer be sent.
         let mut errors = crate::support::errors::ErrorBundle::default();
+        self.scroll_worker.request_stop();
         if let Some(hook) = self.hook.as_mut() {
             hook.request_stop();
         }
@@ -367,6 +377,10 @@ impl MacOsBackend {
             }
         }
         errors.record("UI scan worker", self.scan_worker.shutdown_until(deadline));
+        errors.record(
+            "continuous scrolling",
+            self.scroll_worker.stop_until(deadline),
+        );
         if let Some(worker) = self.update_worker.as_mut() {
             match worker.cancel_and_wait_until(deadline) {
                 Ok(()) => {
@@ -676,6 +690,10 @@ impl Backend for MacOsBackend {
 
     fn scroll(&self, dx: f64, dy: f64) -> Result<(), String> {
         input::scroll(dx, dy)
+    }
+
+    fn scroll_frame(&self, frame: crate::api::scroll::ScrollFrame) -> Result<(), String> {
+        self.scroll_worker.submit(frame)
     }
 
     fn send_key(&self, key: &Key, state: KeyState) -> Result<(), String> {

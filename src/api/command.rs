@@ -111,6 +111,9 @@ pub enum Command {
         dx: f64,
         dy: f64,
     },
+    /// A cancellable continuous interval. Backends may replace an unexecuted
+    /// older frame to prioritize latency; discrete Scroll commands stay intact.
+    ScrollFrame(super::scroll::ScrollFrame),
 
     /// Start or stop display-synchronised frame events for continuous motion.
     /// This is driven by the native display link, not a periodic timer.

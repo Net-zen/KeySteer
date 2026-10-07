@@ -242,6 +242,7 @@ export const frequentFields: ConfigField[] = [
   { path: 'pointer.initial_speed', label: '起始速度', description: '方向键刚按下时的像素/秒', kind: 'number', min: 0, max: 10000, step: 50 },
   { path: 'pointer.max_speed', label: '最高速度', description: '持续移动达到的像素/秒', kind: 'number', min: 0, max: 20000, step: 50 },
   { path: 'pointer.acceleration', label: '加速度', description: '每秒增加的速度；0 表示保持初速', kind: 'number', min: 0, max: 30000, step: 100 },
+  { path: 'scroll.speed', label: '长按滚动速度（像素/秒）', description: '独立于短按距离；0 表示仅短按，速度修饰键继续生效', kind: 'number', min: 0, step: 50 },
   { path: 'pointer.smooth_acceleration', label: '平滑加速', description: '开启 smootherstep S 曲线；关闭为线性', kind: 'boolean' },
   { path: 'normal.passthrough_unbound_keys', label: '未绑定键透传', description: '仅接管完整命中的 KeySteer 绑定；关闭后 Normal 键盘独占', kind: 'boolean' },
   { path: 'normal.long_press_toggle_ms', label: '长按切换', description: '点击键长按多少毫秒后切换持续按下；0 为关闭', kind: 'number', min: 0, max: 5000, step: 50 },
@@ -268,8 +269,7 @@ export const advancedFields: ConfigField[] = [
   { path: 'pointer.precision_multiplier', label: 'Precision 倍率', description: 'precision 修饰键的速度倍率', kind: 'number', min: 0.01, max: 2, step: 0.01 },
   { path: 'pointer.slow_multiplier', label: 'Slow 倍率', description: 'slow 修饰键的速度倍率', kind: 'number', min: 0.01, max: 4, step: 0.05 },
   { path: 'pointer.fast_multiplier', label: 'Fast 倍率', description: 'fast 修饰键的速度倍率', kind: 'number', min: 0.1, max: 10, step: 0.1 },
-  { path: 'scroll.scroll_step', label: '滚动步长（像素）', description: '普通滚动短按一次的距离；持续速度 = 此值 × 步/秒', kind: 'number', min: 1, max: 5000, step: 10 },
-  { path: 'scroll.steps_per_second', label: '持续滚动速度（步/秒）', description: '按住时每秒经过的配置步长；0 仅短按，支持小数，速度修饰键继续生效', kind: 'number', min: 0, max: 120, step: 0.5 },
+  { path: 'scroll.scroll_step', label: '滚动步长（像素）', description: '普通滚动短按一次的距离，不影响长按速度', kind: 'number', min: 1, max: 5000, step: 10 },
   { path: 'scroll.scroll_step_half', label: '半页滚动', description: 'scroll_half_* 的像素距离', kind: 'number', min: 1, max: 50000, step: 50 },
   { path: 'scroll.scroll_step_full', label: '整页滚动', description: 'scroll_full_* 的像素距离', kind: 'number', min: 1, max: 2147483647, step: 1000 },
   { path: 'grid.cursor_follow_selection', label: 'Grid 光标跟随', description: '每次选中后移到当前单元格中心', kind: 'boolean' },
@@ -283,4 +283,3 @@ export const advancedFields: ConfigField[] = [
 ]
 
 export const commonSearchFields = [...frequentFields, ...advancedFields].map(field => ({ ...field, ...fieldLocation(field.path) }))
-

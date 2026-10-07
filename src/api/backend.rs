@@ -228,6 +228,17 @@ pub trait Backend {
     fn mouse_button(&self, button: MouseButton, action: ButtonAction) -> Result<(), String>;
     /// Scroll the native window currently underneath the physical pointer.
     fn scroll(&self, dx: f64, dy: f64) -> Result<(), String>;
+
+    /// Execute continuous scrolling independently of pointer movement. Native
+    /// asynchronous implementations keep only the newest unexecuted frame,
+    /// recheck cancellation before injection, and report errors as events.
+    fn scroll_frame(&self, frame: super::scroll::ScrollFrame) -> Result<(), String> {
+        if frame.is_current() {
+            self.scroll(frame.dx, frame.dy)
+        } else {
+            Ok(())
+        }
+    }
     fn send_key(&self, key: &Key, state: super::input::KeyState) -> Result<(), String>;
 
     /// Inject an owned, ordered keyboard sequence. Ownership lets an

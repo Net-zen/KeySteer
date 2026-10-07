@@ -45,12 +45,12 @@ pub struct ScrollSettings {
 
 impl ScrollSettings {
     /// Compile tap distances and held velocities once during mode assembly.
-    pub fn new(step: i32, half: i32, full: i32, steps_per_second: f64) -> Self {
+    pub fn new(step: i32, half: i32, full: i32, speed: f64) -> Self {
         let pixels = [step as f64, half as f64, full as f64];
         Self {
             pixels,
-            speeds: pixels.map(|distance| distance * steps_per_second),
-            continuous: steps_per_second > 0.0,
+            speeds: [speed, 0.0, 0.0],
+            continuous: speed > 0.0,
         }
     }
 
@@ -350,7 +350,9 @@ pub struct NormalMode {
     directions: DirectionMask,
     speed_multiplier: f64,
     scroll_velocity: (f64, f64),
+    continuous_scroll_held: bool,
     scroll_remainder: (f64, f64),
+    scroll_session: crate::api::scroll::ScrollSession,
 
     motion: Motion,
     /// Once the first native display update arrives, OS key repeats are
@@ -373,7 +375,9 @@ impl NormalMode {
             directions: DirectionMask::default(),
             speed_multiplier: 1.0,
             scroll_velocity: (0.0, 0.0),
+            continuous_scroll_held: false,
             scroll_remainder: (0.0, 0.0),
+            scroll_session: crate::api::scroll::ScrollSession::default(),
             motion: Motion::default(),
             frame_driven: false,
             fallback_tick: None,
@@ -386,6 +390,7 @@ impl NormalMode {
     }
 
     fn refresh_multiplier(&mut self) {
+        self.scroll_session.cancel();
         self.speed_multiplier = if self.speeds.values().any(|s| *s == Speed::Precision) {
             self.profile.precision_multiplier
         } else if self.speeds.values().any(|s| *s == Speed::Fast) {
@@ -408,6 +413,12 @@ impl NormalMode {
     }
 
     fn refresh_scroll_velocity(&mut self) {
+        self.scroll_session.cancel();
+        self.continuous_scroll_held = self.scroll.continuous
+            && self
+                .scrolling
+                .iter()
+                .any(|(_, _, amount)| *amount == ScrollAmount::Step);
         self.scroll_velocity =
             self.scrolling
                 .iter()
@@ -421,7 +432,7 @@ impl NormalMode {
     }
 
     fn is_animating(&self) -> bool {
-        !self.moving.is_empty() || self.scroll.continuous && !self.scrolling.is_empty()
+        !self.moving.is_empty() || self.continuous_scroll_held
     }
 
     fn binding(&mut self, binding: &Binding, state: KeyState, key: &Key) -> CommandBatch {
@@ -489,22 +500,26 @@ impl NormalMode {
                     if index.is_none() {
                         self.scrolling.push((key.clone(), *direction, *amount));
                         self.refresh_scroll_velocity();
-                    } else if self.frame_driven || !self.scroll.continuous {
+                    } else if self.frame_driven
+                        || !self.scroll.continuous
+                        || *amount != ScrollAmount::Step
+                    {
                         return CommandBatch::new();
                     }
                     // Taps take effect immediately. Native frames own the hold;
                     // OS repeats remain a fallback if no display clock exists.
                     let scroll = self.scroll_command(*direction, *amount);
-                    return if was_still && self.scroll.continuous {
+                    return if was_still && self.is_animating() {
                         self.frame_driven = false;
                         CommandBatch::two(scroll, Command::SetFrameClock(true))
                     } else {
                         scroll.into()
                     };
                 } else if let Some(index) = index {
+                    let was_animating = self.is_animating();
                     self.scrolling.swap_remove(index);
                     self.refresh_scroll_velocity();
-                    if !self.is_animating() {
+                    if was_animating && !self.is_animating() {
                         self.frame_driven = false;
                         return Command::SetFrameClock(false).into();
                     }
@@ -546,6 +561,7 @@ impl NormalMode {
     }
 
     fn release_all(&mut self) {
+        self.scroll_session.cancel();
         self.moving.clear();
         self.scrolling.clear();
         self.speeds.clear();
@@ -553,6 +569,7 @@ impl NormalMode {
         self.directions = DirectionMask::default();
         self.speed_multiplier = 1.0;
         self.scroll_velocity = (0.0, 0.0);
+        self.continuous_scroll_held = false;
         self.scroll_remainder = (0.0, 0.0);
         self.motion.reset();
         self.frame_driven = false;
@@ -572,7 +589,7 @@ impl NormalMode {
         if dx != 0.0 || dy != 0.0 {
             out.push(Command::MovePointer { dx, dy });
         }
-        if !self.scrolling.is_empty() {
+        if self.continuous_scroll_held {
             let time = elapsed.as_secs_f64() * self.multiplier();
             self.scroll_remainder.0 += self.scroll_velocity.0 * time;
             self.scroll_remainder.1 += self.scroll_velocity.1 * time;
@@ -581,7 +598,7 @@ impl NormalMode {
             self.scroll_remainder.0 -= dx;
             self.scroll_remainder.1 -= dy;
             if dx != 0.0 || dy != 0.0 {
-                out.push(Command::Scroll { dx, dy });
+                out.push(Command::ScrollFrame(self.scroll_session.frame(dx, dy)));
             }
         }
         out
@@ -1065,34 +1082,33 @@ mod tests {
             Direction::Left,
             Direction::Right,
         ] {
-            for amount in [ScrollAmount::Step, ScrollAmount::Half, ScrollAmount::Full] {
-                let mut mode = crate::app::mode_catalog::normal(&env.config);
-                let binding = Binding::Scroll(direction, amount);
-                let out = down(&mut mode, &env, binding.clone(), "e");
-                let (x, y) = direction.delta();
-                let pixels = env.config.scroll.pixels(amount);
-                assert_eq!(
-                    out,
-                    vec![
-                        Command::Scroll {
-                            dx: x * pixels,
-                            dy: y * pixels
-                        },
-                        Command::SetFrameClock(true)
-                    ]
-                );
+            let amount = ScrollAmount::Step;
+            let mut mode = crate::app::mode_catalog::normal(&env.config);
+            let binding = Binding::Scroll(direction, amount);
+            let out = down(&mut mode, &env, binding.clone(), "e");
+            let (x, y) = direction.delta();
+            let pixels = env.config.scroll.pixels(amount);
+            assert_eq!(
+                out,
+                vec![
+                    Command::Scroll {
+                        dx: x * pixels,
+                        dy: y * pixels
+                    },
+                    Command::SetFrameClock(true)
+                ]
+            );
 
-                // No autorepeat event occurs before this first display frame.
-                let out = mode.frame(Duration::from_millis(16));
-                assert_eq!(
-                    out,
-                    vec![Command::Scroll {
-                        dx: (x * pixels * 0.16).trunc(),
-                        dy: (y * pixels * 0.16).trunc(),
-                    }]
-                );
-                assert!(down(&mut mode, &env, binding, "e").is_empty());
-            }
+            // No autorepeat event occurs before this first display frame.
+            let out = mode.frame(Duration::from_millis(16));
+            assert_eq!(
+                out,
+                vec![Command::ScrollFrame(mode.scroll_session.frame(
+                    (x * pixels * 0.16).trunc(),
+                    (y * pixels * 0.16).trunc(),
+                ))]
+            );
+            assert!(down(&mut mode, &env, binding, "e").is_empty());
         }
     }
 
@@ -1100,6 +1116,7 @@ mod tests {
     fn scroll_distance_is_independent_of_refresh_rate_and_keeps_subpixels() {
         let mut config = Config::default();
         config.scroll.scroll_step = 1;
+        config.scroll.speed = 10.0;
         let env = Env::with(config);
         for updates in [60, 120, 144, 240] {
             let mut mode = crate::app::mode_catalog::normal(&env.config);
@@ -1118,9 +1135,9 @@ mod tests {
             let mut distance = 0.0;
             for _ in 0..updates {
                 for command in mode.frame(Duration::from_secs(1) / updates) {
-                    if let Command::Scroll { dx, dy } = command {
-                        assert_eq!(dx, 0.0);
-                        distance -= dy;
+                    if let Command::ScrollFrame(frame) = command {
+                        assert_eq!(frame.dx, 0.0);
+                        distance -= frame.dy;
                     }
                 }
             }
@@ -1157,7 +1174,7 @@ mod tests {
                         .iter()
                         .any(|c| matches!(c, Command::MovePointer { .. }))
                 );
-                assert!(frame.iter().any(|c| matches!(c, Command::Scroll { .. })));
+                assert!(frame.iter().any(|c| matches!(c, Command::ScrollFrame(_))));
                 let (released, held) = if release_scroll_first {
                     (&scroll, &movement)
                 } else {
@@ -1169,7 +1186,7 @@ mod tests {
                 let frame = mode.frame(Duration::from_millis(16));
                 assert_eq!(frame.len(), 1);
                 assert_eq!(
-                    matches!(frame[0], Command::Scroll { .. }),
+                    matches!(frame[0], Command::ScrollFrame(_)),
                     !release_scroll_first
                 );
                 assert!(down(&mut mode, &env, held.clone(), held_key).is_empty());
@@ -1193,12 +1210,50 @@ mod tests {
         assert!(up(&mut mode, &env, downwards, "m").is_empty());
         assert_eq!(
             mode.frame(Duration::from_millis(20)),
-            vec![Command::Scroll { dx: 0.0, dy: -10.0 }]
+            vec![Command::ScrollFrame(mode.scroll_session.frame(0.0, -10.0))]
         );
         down(&mut mode, &env, Binding::Speed(Speed::Fast), "v");
         assert_eq!(
             mode.frame(Duration::from_millis(20)),
-            vec![Command::Scroll { dx: 0.0, dy: -20.0 }]
+            vec![Command::ScrollFrame(mode.scroll_session.frame(0.0, -20.0))]
+        );
+    }
+
+    #[test]
+    fn movement_does_not_cancel_scroll_but_scroll_changes_invalidate_old_frames() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::normal(&env.config);
+        let scrolling = Binding::Scroll(Direction::Down, ScrollAmount::Step);
+        down(&mut mode, &env, scrolling.clone(), "m");
+        let pending = mode.frame(Duration::from_millis(16));
+        let Command::ScrollFrame(frame) = &pending[0] else {
+            panic!("scroll frame")
+        };
+        down(&mut mode, &env, Binding::Move(Direction::Left), "h");
+        up(&mut mode, &env, Binding::Move(Direction::Left), "h");
+        assert!(
+            frame.is_current(),
+            "movement changes must leave scroll state alone"
+        );
+        down(
+            &mut mode,
+            &env,
+            Binding::Scroll(Direction::Up, ScrollAmount::Step),
+            ",",
+        );
+        assert!(
+            !frame.is_current(),
+            "changed scroll direction invalidates pending work"
+        );
+        up(&mut mode, &env, scrolling, "m");
+        let pending = mode.frame(Duration::from_millis(16));
+        let Command::ScrollFrame(frame) = &pending[0] else {
+            panic!("scroll frame")
+        };
+        down(&mut mode, &env, Binding::Speed(Speed::Slow), "shift");
+        assert!(
+            !frame.is_current(),
+            "speed changes invalidate the old speed"
         );
     }
 
@@ -1207,7 +1262,7 @@ mod tests {
         let env = Env::new();
         let mut mode = crate::app::mode_catalog::normal(&env.config);
         let vertical = Binding::Scroll(Direction::Down, ScrollAmount::Step);
-        let horizontal = Binding::Scroll(Direction::Right, ScrollAmount::Half);
+        let horizontal = Binding::Scroll(Direction::Right, ScrollAmount::Step);
         down(&mut mode, &env, vertical.clone(), "e");
         mode.frame(Duration::from_millis(20));
         // The second action remains a new press even if another action on the
@@ -1215,21 +1270,18 @@ mod tests {
         assert!(
             down(&mut mode, &env, horizontal.clone(), "e")
                 .iter()
-                .any(|c| matches!(c, Command::Scroll { dx, .. } if *dx == 500.0))
+                .any(|c| matches!(c, Command::Scroll { dx, .. } if *dx == 50.0))
         );
         assert_eq!(
             mode.frame(Duration::from_millis(20)),
-            vec![Command::Scroll {
-                dx: 100.0,
-                dy: 10.0
-            }]
+            vec![Command::ScrollFrame(mode.scroll_session.frame(10.0, 10.0))]
         );
         assert!(down(&mut mode, &env, vertical.clone(), "e").is_empty());
         assert!(down(&mut mode, &env, horizontal.clone(), "e").is_empty());
         assert!(up(&mut mode, &env, vertical, "e").is_empty());
         assert_eq!(
             mode.frame(Duration::from_millis(20)),
-            vec![Command::Scroll { dx: 100.0, dy: 0.0 }]
+            vec![Command::ScrollFrame(mode.scroll_session.frame(10.0, 0.0))]
         );
         assert_eq!(
             up(&mut mode, &env, horizontal, "e"),
@@ -1238,41 +1290,70 @@ mod tests {
     }
 
     #[test]
-    fn configured_scroll_rate_is_compiled_for_all_amounts_and_does_not_change_taps() {
-        let mut config = Config::default();
-        config.scroll.scroll_step = 20;
-        config.scroll.scroll_step_half = 100;
-        config.scroll.scroll_step_full = 400;
-        config.scroll.steps_per_second = 2.5;
-        let env = Env::with(config);
-        let settings = crate::app::mode_catalog::normal_settings(&env.config);
-        assert_eq!(settings.scroll.speeds, [50.0, 250.0, 1000.0]);
-        for (amount, tap, frame) in [
-            (ScrollAmount::Step, 20.0, 10.0),
-            (ScrollAmount::Half, 100.0, 50.0),
-            (ScrollAmount::Full, 400.0, 200.0),
-        ] {
-            let mut mode = NormalMode::new(settings.clone());
+    fn scroll_speed_is_compiled_and_independent_of_tap_distance() {
+        for tap in [20, 50, 200] {
+            let mut config = Config::default();
+            config.scroll.scroll_step = tap;
+            config.scroll.speed = 52.5;
+            let env = Env::with(config);
+            let settings = crate::app::mode_catalog::normal_settings(&env.config);
+            assert_eq!(settings.scroll.speeds, [52.5, 0.0, 0.0]);
+            let mut mode = NormalMode::new(settings);
             assert!(
                 down(
                     &mut mode,
                     &env,
-                    Binding::Scroll(Direction::Down, amount),
+                    Binding::Scroll(Direction::Down, ScrollAmount::Step),
                     "e"
                 )
-                .contains(&Command::Scroll { dx: 0.0, dy: tap })
+                .contains(&Command::Scroll {
+                    dx: 0.0,
+                    dy: tap as f64
+                })
             );
             assert_eq!(
-                mode.frame(Duration::from_millis(200)),
-                vec![Command::Scroll { dx: 0.0, dy: frame }]
+                mode.frame(Duration::from_secs(2)),
+                vec![Command::ScrollFrame(mode.scroll_session.frame(0.0, 105.0))]
             );
         }
     }
 
     #[test]
-    fn zero_scroll_rate_is_tap_only_without_display_frames_or_os_repeat() {
+    fn page_scrolls_are_once_per_press_and_do_not_keep_the_frame_clock_running() {
+        let env = Env::new();
+        for amount in [ScrollAmount::Half, ScrollAmount::Full] {
+            let mut mode = crate::app::mode_catalog::normal(&env.config);
+            let action = Binding::Scroll(Direction::Down, amount);
+            assert_eq!(
+                down(&mut mode, &env, action.clone(), "e"),
+                vec![Command::Scroll {
+                    dx: 0.0,
+                    dy: env.config.scroll.pixels(amount)
+                }]
+            );
+            assert!(!mode.is_animating());
+            assert!(down(&mut mode, &env, action.clone(), "e").is_empty());
+            down(&mut mode, &env, Binding::Move(Direction::Right), "l");
+            let frame = mode.frame(Duration::from_millis(16));
+            assert!(
+                frame
+                    .iter()
+                    .any(|c| matches!(c, Command::MovePointer { .. }))
+            );
+            assert!(!frame.iter().any(|c| matches!(c, Command::ScrollFrame(_))));
+            assert_eq!(
+                up(&mut mode, &env, Binding::Move(Direction::Right), "l"),
+                vec![Command::SetFrameClock(false)]
+            );
+            assert!(up(&mut mode, &env, action.clone(), "e").is_empty());
+            assert_eq!(down(&mut mode, &env, action, "e").len(), 1);
+        }
+    }
+
+    #[test]
+    fn zero_scroll_speed_is_tap_only_without_display_frames_or_os_repeat() {
         let mut config = Config::default();
-        config.scroll.steps_per_second = 0.0;
+        config.scroll.speed = 0.0;
         let env = Env::with(config);
         let mut mode = crate::app::mode_catalog::normal(&env.config);
         let binding = Binding::Scroll(Direction::Down, ScrollAmount::Step);
@@ -1310,6 +1391,7 @@ mod tests {
     fn speed_modifiers_scale_vertical_and_horizontal_scrolling() {
         let env = Env::new();
         for (speed, multiplier) in [
+            (Speed::Precision, env.config.pointer.precision_multiplier),
             (Speed::Slow, env.config.pointer.slow_multiplier),
             (Speed::Fast, env.config.pointer.fast_multiplier),
         ] {
@@ -1336,6 +1418,54 @@ mod tests {
                     )),
                     "{speed:?} {direction:?}: {out:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn all_speed_bindings_update_held_scroll_while_moving() {
+        let env = Env::new();
+        for (speed, multiplier) in [
+            (Speed::Precision, env.config.pointer.precision_multiplier),
+            (Speed::Slow, env.config.pointer.slow_multiplier),
+            (Speed::Fast, env.config.pointer.fast_multiplier),
+        ] {
+            for toggle in [false, true] {
+                let mut mode = crate::app::mode_catalog::normal(&env.config);
+                down(&mut mode, &env, Binding::Move(Direction::Right), "l");
+                down(
+                    &mut mode,
+                    &env,
+                    Binding::Scroll(Direction::Down, ScrollAmount::Step),
+                    "e",
+                );
+                let binding = if toggle {
+                    Binding::SpeedToggle(speed)
+                } else {
+                    Binding::Speed(speed)
+                };
+                down(&mut mode, &env, binding.clone(), "shift");
+                if toggle {
+                    up(&mut mode, &env, binding.clone(), "shift");
+                }
+                let out = mode.frame(Duration::from_secs(1));
+                assert!(
+                    out.iter()
+                        .any(|c| matches!(c, Command::MovePointer { dx, .. } if *dx > 0.0))
+                );
+                let expected = (env.config.scroll.speed * multiplier).trunc();
+                assert!(
+                    out.iter()
+                        .any(|c| matches!(c, Command::ScrollFrame(frame) if frame.dy == expected)),
+                    "{speed:?}, toggle={toggle}: {out:?}"
+                );
+                if toggle {
+                    down(&mut mode, &env, binding, "shift");
+                } else {
+                    up(&mut mode, &env, binding, "shift");
+                }
+                let out = mode.frame(Duration::from_secs(1));
+                assert!(out.iter().any(|c| matches!(c, Command::ScrollFrame(frame) if frame.dy == env.config.scroll.speed)));
             }
         }
     }

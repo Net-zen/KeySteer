@@ -141,6 +141,7 @@ pub struct WindowsBackend {
     last_foreground: HWND,
     last_appearance: Appearance,
     frame_clock: frame_clock::DisplayFrameClock,
+    scroll_worker: crate::platform::common::scroll_worker::ScrollWorker,
     foreground_watcher: Option<system_events::ForegroundWatcher>,
     status_item: Option<status_item::StatusItem>,
     console_control: Option<console_control::ConsoleControl>,
@@ -244,6 +245,13 @@ impl WindowsBackend {
             Vec::new()
         });
         let vision = vision::VisionWorker::start();
+        let scroll_events = event_tx.clone();
+        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
+            input::scroll,
+            move |event| {
+                let _ = scroll_events.send(event);
+            },
+        )?;
         Ok(Self {
             hook: None,
             overlay,
@@ -256,6 +264,7 @@ impl WindowsBackend {
             last_foreground: native::foreground_window(),
             last_appearance: appearance,
             frame_clock: frame_clock::DisplayFrameClock::new(owner_thread),
+            scroll_worker,
             foreground_watcher,
             status_item,
             console_control,
@@ -431,6 +440,7 @@ impl WindowsBackend {
         let now = Instant::now();
         let deadline = now.checked_add(BACKEND_SHUTDOWN_TIMEOUT).unwrap_or(now);
         let mut errors = crate::support::errors::ErrorBundle::default();
+        self.scroll_worker.request_stop();
         if let Some(worker) = self.window_worker.as_mut() {
             match worker.stop_until(deadline) {
                 Ok(()) => {
@@ -469,6 +479,10 @@ impl WindowsBackend {
         // cannot leave process-global tracking enabled for a later backend.
         hook::set_pointer_wake_enabled(false);
         errors.record("frame clock", self.frame_clock.stop_until(deadline));
+        errors.record(
+            "continuous scrolling",
+            self.scroll_worker.stop_until(deadline),
+        );
         if let Some(hook) = self.hook.as_mut() {
             match hook.stop_until(deadline) {
                 Ok(()) => {
@@ -807,6 +821,10 @@ impl Backend for WindowsBackend {
 
     fn scroll(&self, dx: f64, dy: f64) -> Result<(), String> {
         self.inject_input(hook::InjectionRequest::Scroll { dx, dy })
+    }
+
+    fn scroll_frame(&self, frame: crate::api::scroll::ScrollFrame) -> Result<(), String> {
+        self.scroll_worker.submit(frame)
     }
 
     fn send_key(&self, key: &Key, state: KeyState) -> Result<(), String> {

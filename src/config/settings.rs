@@ -631,8 +631,8 @@ impl Default for RecursiveGridUi {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Scroll {
-    /// Configured scroll steps travelled per second while held; zero is tap-only.
-    pub steps_per_second: f64,
+    /// Ordinary held scrolling in pixels per second; zero is tap-only.
+    pub speed: f64,
     /// Pixels for `scroll_up` and friends.
     pub scroll_step: i32,
     /// Pixels for `scroll_half_up` and friends.
@@ -647,7 +647,7 @@ pub struct Scroll {
 impl Default for Scroll {
     fn default() -> Self {
         Self {
-            steps_per_second: 10.0,
+            speed: 500.0,
             scroll_step: 50,
             scroll_step_half: 500,
             scroll_step_full: 1_000_000,

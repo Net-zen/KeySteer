@@ -22,6 +22,10 @@
 
 原生错误统一进入 `src/support/logging.rs`；不得另建平台日志出口。
 
+Windows/macOS 的连续滚动共用 `common/scroll_worker.rs`：显示帧提交立即唤醒独立执行线程，不等待上一帧完成、不使用周期计时器，也不与鼠标移动合并。执行器只保留最新未执行帧；原生调用变慢时替换过期帧，不累加距离或补播历史帧，优先响应当前输入。短按仍走各平台原有离散输入路径，Windows 连续帧不占 Hook 的有界注入队列。原生调用在邮箱锁外执行，失败返回 `InputInjectionFailed`；关闭先取消待执行帧，再按共享截止时间回收线程。
+
+公共 `api::scroll::ScrollSession` 为帧提供可取消的代号；模式松键、换向、改速和退出时使旧帧失效，执行器注入前复核。已经进入原生 API 的一次调用可能完成；不得等待它来响应松键。每帧仅克隆共享身份，不新建会话或线程。
+
 ## 状态菜单与 About
 
 macOS 使用 AppKit 的 NSMenu 和非模态标准 About 面板，由系统决定外观，不覆盖系统材质。`event_loop.rs` 在主线程派发 AppKit 事件，注册 common、event-tracking 和 modal-panel 模式的 observer 与可复用 deadline timer；原生菜单的嵌套循环期间仍驱动同一个 Engine。普通输入、异步完成和显示帧唤醒原生循环，期限按引擎定时任务及待确认窗口移动调整，不增加固定高频轮询。`display_link.rs` 在相同模式注册显示帧。

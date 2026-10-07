@@ -4,7 +4,7 @@ import { categories, pages, fieldLocation, searchSettings, utilitySearchFields }
 import { lifecycleModes, lifecycleOptions, lifecycleClickActions, commonSearchFields, styleSearchFields } from '../config-studio/fields.ts'
 
 test('macOS scroll directions and full-page distance are searchable on Normal behavior', () => {
-  for (const path of ['platform.macos.scroll.invert_horizontal', 'platform.macos.scroll.invert_vertical', 'scroll.scroll_step_full', 'scroll.steps_per_second']) {
+  for (const path of ['platform.macos.scroll.invert_horizontal', 'platform.macos.scroll.invert_vertical', 'scroll.scroll_step_full', 'scroll.speed']) {
     assert.deepEqual(fieldLocation(path), { page: 'normal', tab: 'behavior' })
     assert.ok(searchSettings(commonSearchFields, path).some(entry => entry.path === path))
   }

@@ -53,9 +53,12 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
   const parsed = parse(source)
   if (!isRecord(parsed)) throw new Error('TOML 顶层必须是配置表')
   const scrollSettings: unknown = parsed.scroll
-  const scrollRate = isRecord(scrollSettings) ? scrollSettings.steps_per_second : undefined
-  if (scrollRate !== undefined && (typeof scrollRate !== 'number' || !Number.isFinite(scrollRate) || scrollRate < 0 || scrollRate > 120)) {
-    throw new Error('scroll.steps_per_second must be finite and 0..=120')
+  if (isRecord(scrollSettings) && 'steps_per_second' in scrollSettings) {
+    throw new Error('scroll.steps_per_second was removed; use scroll.speed (pixels/second)')
+  }
+  const scrollSpeed = isRecord(scrollSettings) ? scrollSettings.speed : undefined
+  if (scrollSpeed !== undefined && (typeof scrollSpeed !== 'number' || !Number.isFinite(scrollSpeed) || scrollSpeed < 0)) {
+    throw new Error('scroll.speed must be finite and non-negative')
   }
   const oldWindow = parsed.window as Record<string, unknown> | undefined
   for (const key of ['exit_mode', 'gap', 'split_ratios', 'layout_keys', 'double_tap_ms']) {
