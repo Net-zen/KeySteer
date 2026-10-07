@@ -330,7 +330,7 @@ impl Engine {
                     if let Err(error) = backend.set_frame_clock(active) {
                         self.scheduler.frame_clock_owner = None;
                         // A platform without a native display link retains
-                        // keyboard-repeat movement as its compatibility path.
+                        // keyboard-repeat movement/scrolling as its compatibility path.
                         self.trace_lazy(self.settings.debug.backend, "backend", || {
                             format!("set_frame_clock active={active}: {error}")
                         });

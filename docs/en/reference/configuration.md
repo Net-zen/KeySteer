@@ -346,6 +346,8 @@ invert_vertical = true
 
 Speed is pixels/second and acceleration is pixels/second², independent of display refresh rate. `smooth_acceleration = true` uses a gentler S curve; `false` uses linear acceleration.
 
+Pressing a scroll key immediately scrolls one configured step. Holding continues from the next display frame without the system keyboard-repeat delay; releasing stops it. Held speed is 30 configured steps per second, scaled by `precision`, `slow`, or `fast`; the default `scroll_step = 50` gives 1500 pixels/second. Refresh rate does not change total distance, though the target application's wheel handling and animation affect the visual result.
+
 Theme colours use `#RRGGBBAA` and can differ for light and dark appearance:
 
 ```toml

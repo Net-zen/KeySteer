@@ -6,7 +6,7 @@ Mode/Plugin 是平台无关状态机：接收 `ModeEvent` 和 `HostContext`，�
 
 | 能力 | 位置 |
 | --- | --- |
-| 空闲、连续移动 | `src/modes/idle.rs`、`src/modes/normal.rs` |
+| 空闲、连续移动与滚动 | `src/modes/idle.rs`、`src/modes/normal.rs` |
 | 网格与共享定位状态 | `src/modes/grid.rs`、`src/modes/targeting.rs` |
 | Hint 标签、搜索、扫描会话 | `src/modes/hint/` |
 | 窗口模式、编辑、分组与恢复 | `src/modes/window.rs`、`src/modes/window/` |
@@ -15,6 +15,8 @@ Mode/Plugin 是平台无关状态机：接收 `ModeEvent` 和 `HostContext`，�
 | 注册与生命周期词汇 | `src/app/mode_catalog.rs`、`src/api/lifecycle.rs` |
 
 普通网格与递归网格共用 `GridMode` 的事件、命令和生命周期实现，保留各自的视图、样式和模式身份。catalog 直接装配 `TargetingController` 与样式；几何选择仍由控制器负责，Normal 的静默定位也复用该控制器。
+
+Normal 移动与滚动共用原生显示帧时钟：按下立即执行短步，随后按帧的实际经过时间持续更新，不等待键盘重复延迟；仅在最后一个移动／滚动手势释放后停止时钟。滚动按每秒 30 个配置步长积分，叠加当前速度倍率并保留小数余量；帧到达后忽略 OS 重复，没有显示帧时保留键盘重复回退。模式借用仍按原 owner 接收帧与释放，会话清理清空全部保持状态。
 
 ## 关键约束
 

@@ -919,6 +919,8 @@ sub_key_preview_autohide_multiplier = 1.5
 
 [scroll]
 # Cross-platform distances for scroll bindings.
+# A press scrolls one configured step immediately. Holding scrolls at 30 steps
+# per second, scaled by precision/slow/fast and independent of refresh rate.
 # Pixels for scroll_up / scroll_down / scroll_left / scroll_right.
 scroll_step = 50
 # Pixels for scroll_half_*.
