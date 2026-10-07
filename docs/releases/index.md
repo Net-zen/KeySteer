@@ -5,24 +5,27 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.11.3
+
+- UIHint 搜索新增点位微调：轻触 `Ctrl` 切换输入与调整，沿用 Normal 的移动键；多点从平均中心开始，按 `Tab` 逐个切换。
+- 搜索信息面板支持查看和复制 OCR、辅助功能文字、坐标及实时颜色，支持 HEX、RGB、HSL；四栏均可独立配置为拼接多点信息或跟随当前点。默认用 `Ctrl+1/2/3/4` 复制，`Ctrl+Shift+4` 切换颜色格式。
+- 改善长按连续滚动与同时移动鼠标的响应，支持独立调整持续滚动速度，松键后取消尚未执行的滚动。
+- 网页配置模拟器补齐点位、信息栏和滚动速度设置。macOS 取色需要屏幕录制权限。
+
+- UIHint search now supports point adjustment: tap `Ctrl` to switch between typing and adjustment, using your Normal movement keys. Multiple points start at their average center; press `Tab` to cycle through them.
+- Inspect and copy OCR text, accessibility text, coordinates, and live color in HEX, RGB, or HSL. Each of the four fields can independently concatenate selected points or follow the current point. Default shortcuts are `Ctrl+1/2/3/4` to copy and `Ctrl+Shift+4` to change the color format.
+- Improved responsiveness when holding scroll keys and moving the pointer at the same time. Continuous scrolling has its own speed setting, and releasing the key cancels pending scroll frames.
+- The web configuration simulator adds point, information-panel, and scroll-speed settings. Color sampling on macOS requires Screen Recording permission.
+
 ## 0.11.2
 
 - 修复长按滚动时先滚一下、停顿后才连续滚动的问题。按下立即执行。
 - 新增持续滚动速度配置，可按需要调整滚动速度。
 - 网页配置模拟器增加相应的滚动速度设置。
 
-- UI Hint 搜索新增点位检查与微调：轻触 `Ctrl` 切换输入／调整，沿用 Normal 的移动键；多点从所选点的平均中心开始，调整时按 `Tab` 逐个切换。
-- 新增实时取色和色块预览，按 `Ctrl+Shift+4` 切换 HEX／RGB／HSL；调整时复制信息或点击会确认当前点并退出搜索。macOS 取色需要屏幕录制权限。
-- 多点的 OCR、辅助功能、坐标可分别选择拼接全部结果或跟随当前点。颜色仅对唯一搜索结果采样。两平台默认复制键统一为 `Ctrl+1/2/3/4`，支持分别自定义。
-- 网页模拟器补齐点位与多点信息配置，统一输入状态和色块预览样式，将相关控件集中到预览下方，方便调整。
-
 - Fixed the pause between the first scroll step and continuous scrolling when holding a key. A press scrolls immediately.
 - Added a setting to adjust continuous scrolling speed.
 - Added the corresponding scroll speed setting to the web configuration simulator.
-- UI Hint search adds point inspection and fine adjustment: tap `Ctrl` to switch between typing and adjustment, using your Normal movement keys. Multiple points start at their average center; press `Tab` while adjusting to cycle through them.
-- Added live color sampling and swatch previews. Press `Ctrl+Shift+4` to cycle through HEX, RGB, and HSL. Copying information or clicking while adjusting confirms the current point and exits search. Color sampling on macOS requires Screen Recording permission.
-- For multiple points, OCR, accessibility and coordinates can combine results or follow the current point. Color is sampled only for a unique search result. Default copy shortcuts are now `Ctrl+1/2/3/4` on both platforms, with each shortcut independently configurable.
-- The web simulator adds point and multi-point information settings, consistent input-state and swatch previews, and related controls grouped directly below each preview.
 
 ## 0.11.0
 

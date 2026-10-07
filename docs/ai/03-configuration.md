@@ -32,7 +32,7 @@ UIHint 搜索样式缺省时使用 `UiHint::default()` 的对应面板默认值�
 
 Window 多选入口与清空沿用 `window.bindings` 的 `window_multi_select`／`window_multi_clear`；输入期间由 `window.multi_select.bindings` 覆盖确认及编辑键，默认 Ctrl／Enter 确认、primary+h/l 移动输入光标。编辑键显式写在该表，支持 arrow_left/right、home/end、backspace/delete 及 Shift 方向选区，不从 Normal 复制配置。空格仍表示多个快捷键别名，也不改变 `window.target`。
 
-搜索点位操作使用 `ui_hint.search_bindings` 的“按键 = 动作”表（`point_toggle` / `point_next` / `color_next`；point_next 默认 Tab，仅调整期间生效），显式表替换默认映射；点位样式和格式顺序在 `ui_hint.search_point`，缺省字段不展开到导出配置。网页控件沿用此替换语义。四栏多点展示由 search_point.field_modes 固定长度数组配置，concat 拼接初始目标信息、switch 跟随当前检查点，默认 [concat, concat, switch, switch]；默认值不展开到导出。颜色仅在唯一可见搜索结果时生效，不执行多点颜色拼接；第四项继续保留配置兼容。反序列化直接形成四项枚举，catalog 复制到 Settings，模式只接收编译后的按键、颜色、字段行为与格式枚举，运行时不解析字符串。
+搜索点位操作使用 `ui_hint.search_bindings` 的“按键 = 动作”表（`point_toggle` / `point_next` / `color_next`；point_next 默认 Tab，仅调整期间生效），显式表替换默认映射；点位样式和格式顺序在 `ui_hint.search_point`，缺省字段不展开到导出配置。网页控件沿用此替换语义。四栏多点展示由 search_point.field_modes 固定长度数组配置，concat 拼接初始目标信息、switch 跟随当前检查点，默认 [concat, concat, switch, switch]；默认值不展开到导出。颜色与其他三栏一样可独立配置：concat 逐点异步采样并按选择顺序拼接，switch 跟随当前检查点。反序列化直接形成四项枚举，catalog 复制到 Settings，模式只接收编译后的按键、颜色、字段行为与格式枚举，运行时不解析字符串。
 
 四个搜索信息复制键继续使用 `ui_hint.search_copy_keys` 独立数组配置，默认 Ctrl+1/2/3/4，两平台一致；显式 primary 仍按别名展开。`search_point.color_preview` 控制 Color 标题旁色块的开关、宽高、水平／垂直偏移与边框线宽；默认表及未改字段不导出。网页外观页提供同范围控件和预览，重置删除覆盖。
 

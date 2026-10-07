@@ -353,6 +353,7 @@ pub struct NormalMode {
     continuous_scroll_held: bool,
     scroll_remainder: (f64, f64),
     scroll_session: crate::api::scroll::ScrollSession,
+    scroll_frames_issued: bool,
 
     motion: Motion,
     /// Once the first native display update arrives, OS key repeats are
@@ -378,6 +379,7 @@ impl NormalMode {
             continuous_scroll_held: false,
             scroll_remainder: (0.0, 0.0),
             scroll_session: crate::api::scroll::ScrollSession::default(),
+            scroll_frames_issued: false,
             motion: Motion::default(),
             frame_driven: false,
             fallback_tick: None,
@@ -389,8 +391,15 @@ impl NormalMode {
         self.speed_multiplier
     }
 
+    fn cancel_scroll_frames(&mut self) {
+        // Short taps and page scrolling have no asynchronous frames to cancel.
+        if std::mem::take(&mut self.scroll_frames_issued) {
+            self.scroll_session.cancel();
+        }
+    }
+
     fn refresh_multiplier(&mut self) {
-        self.scroll_session.cancel();
+        self.cancel_scroll_frames();
         self.speed_multiplier = if self.speeds.values().any(|s| *s == Speed::Precision) {
             self.profile.precision_multiplier
         } else if self.speeds.values().any(|s| *s == Speed::Fast) {
@@ -413,20 +422,36 @@ impl NormalMode {
     }
 
     fn refresh_scroll_velocity(&mut self) {
-        self.scroll_session.cancel();
-        self.continuous_scroll_held = self.scroll.continuous
-            && self
-                .scrolling
-                .iter()
-                .any(|(_, _, amount)| *amount == ScrollAmount::Step);
-        self.scroll_velocity =
-            self.scrolling
-                .iter()
-                .fold((0.0, 0.0), |(x, y), (_, direction, amount)| {
-                    let (dx, dy) = direction.delta();
-                    let speed = self.scroll.speed(*amount);
-                    (x + dx * speed, y + dy * speed)
-                });
+        self.cancel_scroll_frames();
+        // Most edges start or end a single gesture. Avoid two scans and the
+        // generic vector sum on those paths.
+        match self.scrolling.as_slice() {
+            [] => {
+                self.continuous_scroll_held = false;
+                self.scroll_velocity = (0.0, 0.0);
+            }
+            [(_, direction, amount)] => {
+                self.continuous_scroll_held =
+                    self.scroll.continuous && *amount == ScrollAmount::Step;
+                let (dx, dy) = direction.delta();
+                let speed = self.scroll.speed(*amount);
+                self.scroll_velocity = (dx * speed, dy * speed);
+            }
+            scrolling => {
+                self.continuous_scroll_held = self.scroll.continuous
+                    && scrolling
+                        .iter()
+                        .any(|(_, _, amount)| *amount == ScrollAmount::Step);
+                self.scroll_velocity =
+                    scrolling
+                        .iter()
+                        .fold((0.0, 0.0), |(x, y), (_, direction, amount)| {
+                            let (dx, dy) = direction.delta();
+                            let speed = self.scroll.speed(*amount);
+                            (x + dx * speed, y + dy * speed)
+                        });
+            }
+        }
         // A changed gesture must not inherit a fraction in the old direction.
         self.scroll_remainder = (0.0, 0.0);
     }
@@ -489,41 +514,7 @@ impl NormalMode {
             }
 
             Binding::Scroll(direction, amount) => {
-                let index =
-                    self.scrolling
-                        .iter()
-                        .position(|(held_key, held_direction, held_amount)| {
-                            held_key == key && held_direction == direction && held_amount == amount
-                        });
-                if pressed {
-                    let was_still = !self.is_animating();
-                    if index.is_none() {
-                        self.scrolling.push((key.clone(), *direction, *amount));
-                        self.refresh_scroll_velocity();
-                    } else if self.frame_driven
-                        || !self.scroll.continuous
-                        || *amount != ScrollAmount::Step
-                    {
-                        return CommandBatch::new();
-                    }
-                    // Taps take effect immediately. Native frames own the hold;
-                    // OS repeats remain a fallback if no display clock exists.
-                    let scroll = self.scroll_command(*direction, *amount);
-                    return if was_still && self.is_animating() {
-                        self.frame_driven = false;
-                        CommandBatch::two(scroll, Command::SetFrameClock(true))
-                    } else {
-                        scroll.into()
-                    };
-                } else if let Some(index) = index {
-                    let was_animating = self.is_animating();
-                    self.scrolling.swap_remove(index);
-                    self.refresh_scroll_velocity();
-                    if was_animating && !self.is_animating() {
-                        self.frame_driven = false;
-                        return Command::SetFrameClock(false).into();
-                    }
-                }
+                return self.scroll_binding(direction, amount, pressed, key);
             }
 
             Binding::Speed(speed) => {
@@ -551,6 +542,56 @@ impl NormalMode {
         CommandBatch::new()
     }
 
+    // Keep scroll state and its multi-command batches out of movement edges.
+    #[inline(never)]
+    fn scroll_binding(
+        &mut self,
+        direction: &Direction,
+        amount: &ScrollAmount,
+        pressed: bool,
+        key: &Key,
+    ) -> CommandBatch {
+        let index = self
+            .scrolling
+            .iter()
+            .position(|(held_key, held_direction, held_amount)| {
+                held_key == key && held_direction == direction && held_amount == amount
+            });
+        if pressed {
+            let was_still = !self.is_animating();
+            if index.is_none() {
+                self.scrolling.push((key.clone(), *direction, *amount));
+                if *amount == ScrollAmount::Step {
+                    self.refresh_scroll_velocity();
+                }
+            } else if self.frame_driven || !self.scroll.continuous || *amount != ScrollAmount::Step
+            {
+                return CommandBatch::new();
+            }
+            // Taps take effect immediately. Native frames own the hold;
+            // OS repeats remain a fallback if no display clock exists.
+            let scroll = self.scroll_command(*direction, *amount);
+            return if was_still && self.is_animating() {
+                self.frame_driven = false;
+                CommandBatch::two(scroll, Command::SetFrameClock(true))
+            } else {
+                scroll.into()
+            };
+        } else if let Some(index) = index {
+            let was_animating = self.is_animating();
+            self.scrolling.swap_remove(index);
+            if *amount == ScrollAmount::Step {
+                self.refresh_scroll_velocity();
+            }
+            if was_animating && !self.is_animating() {
+                self.frame_driven = false;
+                return Command::SetFrameClock(false).into();
+            }
+        }
+
+        CommandBatch::new()
+    }
+
     fn scroll_command(&self, direction: Direction, amount: ScrollAmount) -> Command {
         let (dx, dy) = direction.delta();
         let pixels = self.scroll.pixels(amount) * self.multiplier();
@@ -561,7 +602,7 @@ impl NormalMode {
     }
 
     fn release_all(&mut self) {
-        self.scroll_session.cancel();
+        self.cancel_scroll_frames();
         self.moving.clear();
         self.scrolling.clear();
         self.speeds.clear();
@@ -582,14 +623,27 @@ impl NormalMode {
         }
         self.frame_driven = true;
         self.fallback_tick = None;
-        let mut out = CommandBatch::new();
         let (dx, dy) = self
             .motion
             .step(self.directions, &self.profile, self.multiplier(), elapsed);
+        if !self.continuous_scroll_held {
+            return if dx == 0.0 && dy == 0.0 {
+                CommandBatch::new()
+            } else {
+                Command::MovePointer { dx, dy }.into()
+            };
+        }
+        self.frame_with_scroll(elapsed, dx, dy)
+    }
+
+    // Keep multi-command scrolling out of the pointer-only display-frame path.
+    #[inline(never)]
+    fn frame_with_scroll(&mut self, elapsed: Duration, dx: f64, dy: f64) -> CommandBatch {
+        let mut out = CommandBatch::new();
         if dx != 0.0 || dy != 0.0 {
             out.push(Command::MovePointer { dx, dy });
         }
-        if self.continuous_scroll_held {
+        {
             let time = elapsed.as_secs_f64() * self.multiplier();
             self.scroll_remainder.0 += self.scroll_velocity.0 * time;
             self.scroll_remainder.1 += self.scroll_velocity.1 * time;
@@ -598,6 +652,7 @@ impl NormalMode {
             self.scroll_remainder.0 -= dx;
             self.scroll_remainder.1 -= dy;
             if dx != 0.0 || dy != 0.0 {
+                self.scroll_frames_issued = true;
                 out.push(Command::ScrollFrame(self.scroll_session.frame(dx, dy)));
             }
         }
@@ -1316,6 +1371,38 @@ mod tests {
                 vec![Command::ScrollFrame(mode.scroll_session.frame(0.0, 105.0))]
             );
         }
+    }
+
+    #[test]
+    fn page_taps_leave_continuous_scroll_frames_valid_until_the_held_scroll_changes() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::normal(&env.config);
+        let held = Binding::Scroll(Direction::Down, ScrollAmount::Step);
+        down(&mut mode, &env, held.clone(), "m");
+        let pending = mode.frame(Duration::from_millis(16));
+        let Command::ScrollFrame(frame) = &pending[0] else {
+            panic!("continuous scroll frame");
+        };
+        for amount in [ScrollAmount::Half, ScrollAmount::Full] {
+            let page = Binding::Scroll(Direction::Down, amount);
+            assert_eq!(
+                down(&mut mode, &env, page.clone(), "e"),
+                vec![Command::Scroll {
+                    dx: 0.0,
+                    dy: env.config.scroll.pixels(amount)
+                }]
+            );
+            assert!(up(&mut mode, &env, page, "e").is_empty());
+            assert!(
+                frame.is_current(),
+                "page taps must not discard an unrelated held frame"
+            );
+        }
+        up(&mut mode, &env, held, "m");
+        assert!(
+            !frame.is_current(),
+            "releasing the held scroll still cancels its frame"
+        );
     }
 
     #[test]

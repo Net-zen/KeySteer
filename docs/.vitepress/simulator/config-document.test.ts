@@ -267,6 +267,12 @@ test('multi-point field modes and next key validate and round-trip', async () =>
   const { fieldLocation } = await import('../config-studio/navigation.ts')
   const document = parseConfigDocument('[ui_hint.search_point]\nfield_modes = ["switch", "concat", "concat", "switch"]\n[ui_hint.search_bindings]\nctrl = "point_toggle"\n"alt+f9" = "point_next"').document
   assert.deepEqual(parseConfigDocument(stringify(document)).document.ui_hint.search_point.field_modes, ['switch', 'concat', 'concat', 'switch'])
+  for (let mask = 0; mask < 16; mask++) {
+    const modes = Array.from({ length: 4 }, (_, field) => mask & (1 << field) ? 'concat' : 'switch')
+    const source = '[ui_hint.search_point]\nfield_modes = ' + JSON.stringify(modes)
+    const parsed = parseConfigDocument(source).document
+    assert.deepEqual(parseConfigDocument(stringify(parsed)).document.ui_hint.search_point.field_modes, modes)
+  }
   assert.equal(document.ui_hint.search_bindings['alt+f9'], 'point_next')
   assert.deepEqual(fieldLocation('ui_hint.search_point.field_modes'), { page: 'ui_hint', tab: 'behavior' })
   for (const values of ['[]', '["concat"]', '["concat", "concat", "switch", "switch", "switch"]', '["concat", "concat", "all", "switch"]']) {

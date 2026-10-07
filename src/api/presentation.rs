@@ -186,7 +186,7 @@ pub struct HintPointInfo<'a> {
     pub target: Option<usize>,
     pub color: Option<crate::api::Color>,
     pub format: crate::api::point_sample::ColorFormat,
-    pub sampling: bool,
+    pub colors: &'a [crate::api::point_sample::SampledColor],
 }
 
 /// Session-owned preview storage; closing the editor does not discard capacity.
@@ -195,7 +195,7 @@ pub struct HintInfoPreview(std::cell::RefCell<[String; 4]>);
 
 impl HintInfoView<'_> {
     pub fn field_count(&self) -> usize {
-        if self.hints.len() != 1 || self.point.as_ref().is_some_and(|point| !point.sampling) {
+        if self.multiple && self.point.is_none() {
             3
         } else {
             4
@@ -229,10 +229,6 @@ impl HintInfoView<'_> {
 
     fn write_field(&self, field: usize, limit: usize, text: &mut String) {
         use std::fmt::Write;
-        if field >= self.field_count() {
-            text.clear();
-            return;
-        }
         if let Some(point) = &self.point
             && (!self.multiple
                 || self.field_modes.get(field)
@@ -300,7 +296,8 @@ impl HintInfoView<'_> {
                 }
                 3 => {
                     if let Some(point) = &self.point {
-                        if let Some(color) = point.color {
+                        if let Some(color) = point.colors.get(index).and_then(|sample| sample.color)
+                        {
                             present = true;
                             point.format.write(&mut out, color)
                         } else {

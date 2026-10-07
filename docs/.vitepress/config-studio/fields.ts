@@ -140,7 +140,7 @@ fields.ui_hint.advanced.push(
   { path: 'ui_hint.search_copy_keys', label: '四个条目的复制键（按顺序，逗号分隔）', kind: 'chords', default: ['ctrl+1', 'ctrl+2', 'ctrl+3', 'ctrl+4'] },
   { path: 'ui_hint.search_bindings', label: '点位调整切换键（单击）', kind: 'binding', action: 'point_toggle', default: 'ctrl' },
   { path: 'ui_hint.search_bindings', label: '多点位置切换键（调整时）', kind: 'binding', action: 'point_next', default: 'tab' },
-  { path: 'ui_hint.search_point.field_modes', label: '多点信息栏展示方式（1–3）', kind: 'field-modes', default: ['concat', 'concat', 'switch', 'switch'] },
+  { path: 'ui_hint.search_point.field_modes', label: '多点信息栏展示方式（1–4）', kind: 'field-modes', default: ['concat', 'concat', 'switch', 'switch'] },
   { path: 'ui_hint.search_bindings', label: '颜色格式切换键（自动进入调整）', kind: 'binding', action: 'color_next', default: 'ctrl+shift+4' },
   { path: 'ui_hint.search_point.color_formats', label: '颜色格式顺序（首项为默认）', kind: 'choices', options: ['hex', 'rgb', 'hsl'], default: ['hex', 'rgb', 'hsl'] },
 )

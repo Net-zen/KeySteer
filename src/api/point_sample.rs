@@ -81,6 +81,13 @@ pub const DEFAULT_FIELD_MODES: [FieldMode; 4] = [
     FieldMode::Switch,
 ];
 
+/// A completed unavailable sample differs from a slot still awaiting capture.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SampledColor {
+    pub color: Option<Color>,
+    pub ready: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

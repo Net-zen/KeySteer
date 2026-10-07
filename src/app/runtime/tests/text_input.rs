@@ -704,13 +704,11 @@ fn multiple_point_search_routes_default_and_custom_cycles_and_copies_joined_ocr(
         let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
         engine.handle_backend_event(BackendEvent::TextPromptChanged { id, text: "bravo alpha".into() }, &mut backend).unwrap();
         assert!(engine.scheduler.point_input.available);
-        assert_eq!(log.lock().unwrap().point_requests.len(), 1);
-        assert!(log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|l| l.text.as_str() == "30, 20"));
+        assert_eq!(log.lock().unwrap().point_requests.last().unwrap().point, Point::new(30.0, 20.0));
         point_keys(&mut engine, &mut backend, &["left_ctrl"]);
         for expected in [Point::new(40.0, 20.0), Point::new(20.0, 20.0), Point::new(40.0, 20.0)] {
             point_keys(&mut engine, &mut backend, &[next]);
-            assert_eq!(log.lock().unwrap().point_requests.len(), 1);
-            assert!(log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|l| l.text.as_str() == format!("{:.0}, {:.0}", expected.x, expected.y)));
+            assert_eq!(log.lock().unwrap().point_requests.last().unwrap().point, expected);
             assert!(engine.scheduler.text_prompt.is_some());
             assert!(engine.scheduler.point_input.adjusting);
         }
@@ -723,7 +721,7 @@ fn multiple_point_search_routes_default_and_custom_cycles_and_copies_joined_ocr(
 }
 
 #[test]
-fn multiple_point_coordinates_follow_tab_without_color_capture() {
+fn multiple_point_coordinate_and_color_copies_follow_tab_and_the_current_sample() {
     for field in ["3", "4"] {
         let (mut engine, mut backend, log) = point_search_fixture(Config::default());
         let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
@@ -733,21 +731,14 @@ fn multiple_point_coordinates_follow_tab_without_color_capture() {
         point_keys(&mut engine, &mut backend, &["tab"]);
         point_keys(&mut engine, &mut backend, &["tab"]);
         let request = *log.lock().unwrap().point_requests.last().unwrap();
-        assert_eq!(log.lock().unwrap().point_requests.len(), 1);
-        assert!(engine.scheduler.point_sample.is_none());
-        assert!(!engine.scheduler.timers.contains_key("ui_hint.point_sample"));
+        assert_eq!(request.point, Point::new(40.0, 20.0));
         assert!(log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|l| l.text.as_str() == "40, 20"));
         engine.handle_backend_event(BackendEvent::PointSampled(crate::api::point_sample::Sample { request, color: Some(crate::api::Color::rgb(1, 2, 3)) }), &mut backend).unwrap();
-        assert!(!log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|l| l.text.as_str() == "#010203"));
+        assert!(log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|l| l.text.as_str() == "#010203"));
         point_keys(&mut engine, &mut backend, &["left_ctrl", field]);
-        if field == "3" {
-            assert_eq!(log.lock().unwrap().copied_text, ["40, 20"]);
-            assert_eq!(log.lock().unwrap().warps, [Point::new(40.0, 20.0)]);
-        } else {
-            assert!(log.lock().unwrap().copied_text.is_empty());
-            assert!(log.lock().unwrap().warps.is_empty());
-            assert!(engine.scheduler.text_prompt.is_some());
-        }
+        let expected = if field == "3" { "40, 20" } else { "#010203" };
+        assert_eq!(log.lock().unwrap().copied_text, [expected]);
+        assert_eq!(log.lock().unwrap().warps, [Point::new(40.0, 20.0)]);
     }
 }
 

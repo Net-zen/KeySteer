@@ -62,6 +62,7 @@ pub struct VisualLayerPlan {
     pub(crate) layers: LayerStorage,
     pub(crate) layer_count: usize,
     pub(crate) ready: bool,
+    canonical_stack: bool,
     pub(crate) wide: Option<Box<WideVisualLayerWorkspace>>,
 }
 
@@ -73,10 +74,16 @@ impl VisualLayerPlan {
         }
         self.layer_count = 0;
         self.ready = false;
+        self.canonical_stack = false;
     }
 
     pub(crate) fn is_ready(&self) -> bool {
         self.ready
+    }
+
+    /// One verified clique, in source order, with only the selected label raised.
+    pub(crate) fn is_canonical_stack(&self) -> bool {
+        self.ready && self.canonical_stack
     }
 
     pub(crate) fn layer_count(&self) -> usize {
@@ -116,6 +123,7 @@ impl VisualLayerPlan {
         self.wide = None;
         self.layer_count = 0;
         self.ready = false;
+        self.canonical_stack = false;
     }
 
     #[cfg(test)]
@@ -207,6 +215,7 @@ impl VisualLayerPlan {
     /// An empty, ready plan represents no overlap for every Hint index.
     /// Retain compact capacity for later overlapping updates in this scan.
     pub(crate) fn finish_unstacked(&mut self) {
+        self.canonical_stack = false;
         if !matches!(self.layers, LayerStorage::Compact(_)) {
             self.layers = LayerStorage::default();
         }
@@ -222,6 +231,7 @@ impl VisualLayerPlan {
     /// Write final storage directly, without a graph or a temporary packed array.
     pub(crate) fn finish_stacked(&mut self, placements: &[(usize, Rect)], hint_count: usize) {
         let count = placements.len();
+        self.canonical_stack = true;
         self.layer_count = count;
         self.ready = true;
         if count < usize::from(u8::MAX) {
@@ -259,6 +269,7 @@ impl VisualLayerPlan {
         hint_count: usize,
         depth: usize,
     ) {
+        self.canonical_stack = false;
         if depth == 0 {
             self.finish_unstacked();
             return;
@@ -304,6 +315,7 @@ impl VisualLayerPlan {
         packed_component_layers: &[u32],
         layer_count: usize,
     ) {
+        self.canonical_stack = false;
         self.layer_count = layer_count;
         self.ready = true;
         if layer_count < usize::from(u8::MAX) {

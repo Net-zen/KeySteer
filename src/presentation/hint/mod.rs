@@ -324,23 +324,34 @@ impl HintView<'_> {
         // Detach shared storage once for the whole batch, not for every label.
         // Hint labels carry no window-placement annotations.
         let labels: &mut Vec<OverlayLabel> = &mut scene.labels;
-        for z_index in first_z..=final_z {
-            for (hint_index, hint) in self
-                .content
-                .hints
-                .iter()
-                .enumerate()
-                .filter(|(_, hint)| hint.label.as_str().starts_with(self.content.prefix))
-            {
-                if z_for(hint_index) != z_index {
-                    continue;
+        if let Some(layer) = active_overlap_layer.filter(|_| self.layers.is_canonical_stack()) {
+            self.append_stack_labels(
+                labels,
+                &label_style,
+                uniform_width,
+                matched_prefix_len,
+                layer,
+            );
+        } else {
+            for z_index in first_z..=final_z {
+                for (hint_index, hint) in self
+                    .content
+                    .hints
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, hint)| hint.label.as_str().starts_with(self.content.prefix))
+                {
+                    if z_for(hint_index) != z_index {
+                        continue;
+                    }
+                    let rect =
+                        placed_hint_rect(&self.content.style, hint, &label_style, uniform_width);
+                    labels.push(
+                        OverlayLabel::new(hint.label.as_str(), rect, label_style.clone())
+                            .with_matched_prefix(matched_prefix_len)
+                            .with_z_index(z_index),
+                    );
                 }
-                let rect = placed_hint_rect(&self.content.style, hint, &label_style, uniform_width);
-                labels.push(
-                    OverlayLabel::new(hint.label.as_str(), rect, label_style.clone())
-                        .with_matched_prefix(matched_prefix_len)
-                        .with_z_index(z_index),
-                );
             }
         }
 
@@ -368,6 +379,48 @@ impl HintView<'_> {
             });
         }
         scene
+    }
+
+    // A verified clique keeps source order except for one raised item. Keep
+    // this uncommon layout out of the ordinary label scene's stack frame.
+    #[inline(never)]
+    fn append_stack_labels(
+        &self,
+        labels: &mut Vec<OverlayLabel>,
+        style: &SharedLabelStyle,
+        uniform_width: Option<f64>,
+        matched_prefix_len: usize,
+        selected_layer: usize,
+    ) {
+        let top = self.layers.layer_count();
+        let mut selected = None;
+        let mut append = |hint: &CompactHint<usize>, rank: usize| {
+            let rect = placed_hint_rect(&self.content.style, hint, style, uniform_width);
+            labels.push(
+                OverlayLabel::new(hint.label.as_str(), rect, style.clone())
+                    .with_matched_prefix(matched_prefix_len)
+                    .with_z_index(
+                        HINT_LAYER_Z_BASE.saturating_add(i32::try_from(rank).unwrap_or(i32::MAX)),
+                    ),
+            );
+        };
+        for (index, hint) in self
+            .content
+            .hints
+            .iter()
+            .enumerate()
+            .filter(|(_, hint)| hint.label.as_str().starts_with(self.content.prefix))
+        {
+            let rank = self.layers.draw_rank(index, selected_layer).unwrap_or(1);
+            if rank == top {
+                selected = Some(hint);
+            } else {
+                append(hint, rank);
+            }
+        }
+        if let Some(hint) = selected {
+            append(hint, top);
+        }
     }
 
     // Keep panel layout and its larger temporaries out of ordinary label frames.
@@ -520,7 +573,12 @@ impl HintView<'_> {
             .clamp(area.x, (area.right() - panel.width).max(area.x));
         panel.y = panel.y.clamp(area.y, (area.bottom() - height).max(area.y));
         let styles = info.ui.for_appearance(ctx.palette.appearance);
-        scene.push_shape(OverlayShape::Rect {
+        // Detach each shared buffer once for the complete information panel.
+        let labels: &mut Vec<OverlayLabel> = &mut scene.labels;
+        // The search input is appended after this panel. Reserve it too.
+        labels.reserve(info.field_count() * 3 + 1);
+        let shapes: &mut Vec<OverlayShape> = &mut scene.shapes;
+        shapes.push(OverlayShape::Rect {
             rect: panel,
             fill: base.background,
             stroke: base.border_color,
@@ -555,6 +613,8 @@ impl HintView<'_> {
                 && let Some(point) = &info.point
                 && info.ui.color_preview.enabled
                 && let Some(color) = point.color
+                && (!info.multiple
+                    || info.field_modes[3] == crate::api::point_sample::FieldMode::Switch)
             {
                 let preview = info.ui.color_preview;
                 let chip_width = f64::from(preview.width) * scale;
@@ -562,7 +622,7 @@ impl HintView<'_> {
                 // The short proportional caption is narrower than the
                 // conservative text budget used for truncation.
                 let title_width = super::text_units(title) * base.font_size * (2.0 / 3.0) * scale;
-                scene.push_shape(OverlayShape::Rect {
+                shapes.push(OverlayShape::Rect {
                     rect: Rect::new(
                         x + number_width
                             + header_gap
@@ -596,7 +656,7 @@ impl HintView<'_> {
                     styles.caption.clone(),
                 ),
             ] {
-                scene.push_label(
+                labels.push(
                     OverlayLabel::new(text, bounds, style)
                         .with_fixed_bounds()
                         .with_z_index(SEARCH_INPUT_Z_INDEX + 1),
@@ -607,7 +667,7 @@ impl HintView<'_> {
                     if value.is_empty() { "—" } else { value },
                     width / (base.font_size * scale),
                 );
-                scene.push_label(
+                labels.push(
                     OverlayLabel::new(
                         text,
                         Rect::new(x, y + line + text_gap, width, line),

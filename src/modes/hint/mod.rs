@@ -779,7 +779,7 @@ impl HintMode {
                     target: p.target,
                     color: p.color,
                     format: self.config.search_point.formats[p.format],
-                    sampling: p.sampling,
+                    colors: &p.colors,
                 }),
             preview: &self.session.search_preview,
             targets: &self.session.scanned,
@@ -1595,6 +1595,94 @@ mod tests {
     }
 
     #[test]
+    fn point_selection_reuses_active_timer_and_only_updates_changed_host_state() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(&mut mode, &env, point_text_targets());
+        press(&mut mode, &env, "/");
+        let first = mode.handle(&ModeEvent::TextChanged("alpha".into()), &env.ctx());
+        assert!(first.iter().any(|command| matches!(command,
+            Command::SetTimer { id, repeating: true, .. } if id == point::TIMER)));
+        let stale = sample_request(&first);
+        let changed = mode.handle(&ModeEvent::TextChanged("bravo".into()), &env.ctx());
+        assert_eq!(changed.len(), 2);
+        assert!(matches!(&changed[0], Command::ShowOverlay(_)));
+        let current = sample_request(&changed);
+        assert_ne!(stale.id, current.id);
+        assert!(
+            mode.handle(
+                &ModeEvent::PointSampled(crate::api::point_sample::Sample {
+                    request: stale,
+                    color: Some(Color::rgb(1, 2, 3))
+                }),
+                &env.ctx()
+            )
+            .is_empty()
+        );
+        let timer = ModeEvent::Timer {
+            id: point::TIMER.into(),
+            elapsed: Duration::from_millis(100),
+        };
+        assert!(mode.handle(&timer, &env.ctx()).is_empty());
+        mode.handle(
+            &ModeEvent::PointSampled(crate::api::point_sample::Sample {
+                request: current,
+                color: Some(Color::rgb(1, 2, 3)),
+            }),
+            &env.ctx(),
+        );
+        assert_ne!(
+            sample_request(&mode.handle(&timer, &env.ctx())).id,
+            current.id
+        );
+
+        mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+        let moving = mode.handle(
+            &ModeEvent::Binding {
+                binding: std::sync::Arc::new(Binding::Move(crate::api::Direction::Right)),
+                state: KeyState::Down,
+                key: Key::new("l").unwrap(),
+            },
+            &env.ctx(),
+        );
+        assert!(moving.contains(&Command::SetFrameClock(true)));
+        let changed = mode.handle(&ModeEvent::TextChanged("alpha".into()), &env.ctx());
+        assert!(changed.contains(&Command::SetFrameClock(false)));
+        assert!(changed.contains(&Command::SetPointAdjustment {
+            available: true,
+            adjusting: false
+        }));
+        assert!(
+            !changed
+                .iter()
+                .any(|command| matches!(command, Command::SetTimer { .. }))
+        );
+
+        let multiple = mode.handle(&ModeEvent::TextChanged("alpha bravo".into()), &env.ctx());
+        sample_request(&multiple);
+        assert!(!multiple.iter().any(|command| matches!(
+            command,
+            Command::CancelPointSample | Command::CancelTimer { .. } | Command::SetTimer { .. }
+        )));
+        let changed = mode.handle(&ModeEvent::TextChanged("bravo alpha".into()), &env.ctx());
+        assert!(!changed.iter().any(|command| matches!(
+            command,
+            Command::SetFrameClock(_)
+                | Command::SetPointAdjustment { .. }
+                | Command::SetTimer { .. }
+                | Command::CancelTimer { .. }
+        )));
+        let unique = mode.handle(&ModeEvent::TextChanged("alpha".into()), &env.ctx());
+        sample_request(&unique);
+        assert!(
+            !unique
+                .iter()
+                .any(|command| matches!(command, Command::SetTimer { .. }))
+        );
+    }
+
+    #[test]
     fn streamed_point_hit_and_finish_submit_final_state_before_lifecycle() {
         for owned in [false, true] {
             let env = Env::new();
@@ -1692,7 +1780,7 @@ mod tests {
     }
 
     #[test]
-    fn sampling_requires_one_visible_result_and_cancels_when_candidates_expand() {
+    fn point_joined_colors_sample_sequentially_resume_after_cycle_and_copy_once_ready() {
         use crate::api::point_sample::{FieldMode, Sample};
         let mut config = Config::default();
         config.ui_hint.search_point.field_modes[3] = FieldMode::Concat;
@@ -1701,68 +1789,205 @@ mod tests {
         activate(&mut mode, &env);
         deliver(&mut mode, &env, point_text_targets());
         press(&mut mode, &env, "/");
-        let multiple = mode.handle(&ModeEvent::TextChanged("bravo alpha".into()), &env.ctx());
-        assert_eq!(mode.search_info().unwrap().field_count(), 3);
-        assert!(
-            !multiple.iter().any(|command| matches!(
-                command,
-                Command::SamplePoint(_) | Command::SetTimer { .. }
-            ))
-        );
-        mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+        let center =
+            sample_request(&mode.handle(&ModeEvent::TextChanged("bravo alpha".into()), &env.ctx()));
         let timer = ModeEvent::Timer {
             id: point::TIMER.into(),
             elapsed: Duration::from_millis(100),
         };
-        for event in [
-            ModeEvent::CyclePointTarget,
-            ModeEvent::CyclePointColor,
-            ModeEvent::CopyTextField(3),
-            timer.clone(),
-        ] {
-            let out = mode.handle(&event, &env.ctx());
-            assert!(
-                !out.iter().any(|command| matches!(
-                    command,
-                    Command::SamplePoint(_) | Command::CopyText(_)
-                ))
-            );
-        }
-        assert_eq!(mode.inspection.as_ref().unwrap().position, 1);
-        let first =
-            sample_request(&mode.handle(&ModeEvent::TextChanged("alpha".into()), &env.ctx()));
         assert!(mode.handle(&timer, &env.ctx()).is_empty());
-        let expanded = mode.handle(&ModeEvent::TextChanged("alpha ".into()), &env.ctx());
-        assert_eq!(mode.session.hints.len(), 2);
-        assert_eq!(mode.session.search_selected.len(), 1);
-        assert!(expanded.contains(&Command::CancelPointSample));
-        assert!(expanded.contains(&Command::CancelTimer {
-            id: point::TIMER.into()
-        }));
-        assert_eq!(mode.search_info().unwrap().field_count(), 3);
+        let first = sample_request(&mode.handle(
+            &ModeEvent::PointSampled(Sample {
+                request: center,
+                color: Some(Color::rgb(99, 99, 99)),
+            }),
+            &env.ctx(),
+        ));
+        assert_eq!(first.point, mode.target_point(1));
+        assert_eq!(mode.search_info().unwrap().values()[3], "");
+        mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+        let selected = sample_request(&mode.handle(&ModeEvent::CyclePointTarget, &env.ctx()));
         assert!(
             mode.handle(
                 &ModeEvent::PointSampled(Sample {
                     request: first,
-                    color: Some(Color::rgb(1, 2, 3))
+                    color: Some(Color::rgb(255, 0, 0))
                 }),
                 &env.ctx()
             )
             .is_empty()
         );
-        assert!(mode.handle(&timer, &env.ctx()).is_empty());
-        let current =
-            sample_request(&mode.handle(&ModeEvent::TextChanged("alpha".into()), &env.ctx()));
-        assert_ne!(first.id, current.id);
-        let out = mode.handle(
+        let second = sample_request(&mode.handle(
             &ModeEvent::PointSampled(Sample {
-                request: current,
+                request: selected,
                 color: Some(Color::rgb(1, 2, 3)),
             }),
             &env.ctx(),
+        ));
+        assert_eq!(second.point, mode.target_point(0));
+        assert_eq!(mode.search_info().unwrap().values()[3], "#010203\n");
+        let pending = mode.handle(&ModeEvent::CopyTextField(3), &env.ctx());
+        assert!(
+            !pending
+                .iter()
+                .any(|command| matches!(command, Command::CopyText(_) | Command::SamplePoint(_)))
         );
-        assert_fresh_scene(&mode, &env, &out);
-        assert_eq!(mode.search_info().unwrap().values()[3], "#010203");
+        assert!(mode.handle(&timer, &env.ctx()).is_empty());
+        assert!(
+            mode.handle(&ModeEvent::CyclePointTarget, &env.ctx())
+                .is_empty()
+        );
+        let out = mode.handle(
+            &ModeEvent::PointSampled(Sample {
+                request: second,
+                color: Some(Color::rgb(4, 5, 6)),
+            }),
+            &env.ctx(),
+        );
+        assert!(out.contains(&Command::CopyText("#010203\n#040506".into())));
+        assert!(
+            !out.iter()
+                .any(|command| matches!(command, Command::SamplePoint(_)))
+        );
+        assert_eq!(
+            mode.inspection.as_ref().unwrap().point,
+            mode.target_point(1)
+        );
+        mode.handle(&ModeEvent::CyclePointColor, &env.ctx());
+        assert_eq!(
+            mode.search_info().unwrap().values()[3],
+            "rgb(1, 2, 3)\nrgb(4, 5, 6)"
+        );
+        let refresh = sample_request(&mode.handle(&timer, &env.ctx()));
+        assert_eq!(refresh.point, mode.target_point(1));
+        let out = mode.handle(
+            &ModeEvent::PointSampled(Sample {
+                request: refresh,
+                color: None,
+            }),
+            &env.ctx(),
+        );
+        assert!(
+            !out.iter()
+                .any(|command| matches!(command, Command::CopyText(_)))
+        );
+        assert_eq!(
+            mode.search_info().unwrap().values()[3],
+            "\nrgb(4, 5, 6)",
+            "failed refresh cannot retain the previous member color"
+        );
+    }
+
+    #[test]
+    fn all_four_point_field_modes_control_display_copy_and_color_swatch() {
+        use crate::api::point_sample::{FieldMode, Sample};
+        for mask in 0..16 {
+            let mut config = Config::default();
+            config.ui_hint.search_point.field_modes = std::array::from_fn(|field| {
+                if mask & (1 << field) != 0 {
+                    FieldMode::Concat
+                } else {
+                    FieldMode::Switch
+                }
+            });
+            let config = Config::parse(&config.to_toml().unwrap()).unwrap();
+            let env = Env::with(config);
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            deliver(&mut mode, &env, point_text_targets());
+            press(&mut mode, &env, "/");
+            let mut out = mode.handle(&ModeEvent::TextChanged("alpha bravo".into()), &env.ctx());
+            let first_color = Color::rgb(1, 2, 3);
+            let second_color = Color::rgb(4, 5, 6);
+            while out.iter().any(|c| matches!(c, Command::SamplePoint(_))) {
+                let request = sample_request(&out);
+                let color = if request.point == mode.target_point(0) {
+                    first_color
+                } else {
+                    second_color
+                };
+                out = mode.handle(
+                    &ModeEvent::PointSampled(Sample {
+                        request,
+                        color: Some(color),
+                    }),
+                    &env.ctx(),
+                );
+            }
+            mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+            mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+            let request = sample_request(&mode.handle(&ModeEvent::CyclePointTarget, &env.ctx()));
+            let out = mode.handle(
+                &ModeEvent::PointSampled(Sample {
+                    request,
+                    color: Some(second_color),
+                }),
+                &env.ctx(),
+            );
+            assert_fresh_scene(&mode, &env, &out);
+            let info = mode.search_info().unwrap();
+            assert_eq!(info.field_count(), 4);
+            let joined = [
+                "alpha\nbravo",
+                "alpha · button\nbravo · button",
+                "40, 112\n240, 112",
+                "#010203\n#040506",
+            ];
+            let current = ["bravo", "bravo · button", "240, 112", "#040506"];
+            let values = info.values();
+            let preview = info.preview_values();
+            for field in 0..4 {
+                let expected = if mask & (1 << field) != 0 {
+                    joined[field]
+                } else {
+                    current[field]
+                };
+                assert_eq!(values[field], expected, "mask={mask}, field={field}");
+                assert_eq!(preview[field], expected);
+                assert_eq!(info.copy_value(field), expected);
+            }
+            let has_swatch = scene_of(&out).shapes.iter().any(|shape| {
+                matches!(shape, crate::api::OverlayShape::Rect { fill, .. } if *fill == second_color)
+            });
+            assert_eq!(has_swatch, mask & 8 == 0, "mask={mask}");
+        }
+    }
+
+    #[test]
+    fn point_joined_color_failures_finish_without_copying_an_empty_field() {
+        use crate::api::point_sample::{FieldMode, Sample};
+        let mut config = Config::default();
+        config.ui_hint.search_point.field_modes[3] = FieldMode::Concat;
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(&mut mode, &env, point_text_targets());
+        press(&mut mode, &env, "/");
+        let mut request =
+            sample_request(&mode.handle(&ModeEvent::TextChanged("alpha bravo".into()), &env.ctx()));
+        mode.handle(&ModeEvent::CopyTextField(3), &env.ctx());
+        for _ in 0..2 {
+            request = sample_request(&mode.handle(
+                &ModeEvent::PointSampled(Sample {
+                    request,
+                    color: None,
+                }),
+                &env.ctx(),
+            ));
+        }
+        let out = mode.handle(
+            &ModeEvent::PointSampled(Sample {
+                request,
+                color: None,
+            }),
+            &env.ctx(),
+        );
+        assert!(
+            !out.iter()
+                .any(|command| matches!(command, Command::CopyText(_) | Command::SamplePoint(_)))
+        );
+        assert_eq!(mode.search_info().unwrap().values()[3], "");
+        assert!(!mode.inspection.as_ref().unwrap().copy_pending);
     }
 
     #[test]
@@ -2008,7 +2233,9 @@ mod tests {
                 format!("{:.0}, {:.0}", destination.x, destination.y)
             );
             assert_eq!(point.color, None);
-            assert!(!out.iter().any(|c| matches!(c, Command::SamplePoint(_))));
+            assert!(out.iter().any(
+                |c| matches!(c, Command::SamplePoint(r) if r.point == mode.target_point(index))
+            ));
             assert_eq!(
                 mode.search_info().unwrap().values()[0],
                 "text2\ntext0\ntext1"
@@ -2712,7 +2939,7 @@ mod tests {
             [1, 0]
         );
         let info = mode.search_info().unwrap();
-        assert_eq!(info.field_count(), 3);
+        assert_eq!(info.field_count(), 4);
         assert_eq!(info.values()[0], "蓝香蕉\n红苹果");
         assert_eq!(info.values()[2], "140, 112");
         assert!(
@@ -2732,7 +2959,7 @@ mod tests {
                 .iter()
                 .filter(|label| label.fixed_bounds && label.z_index == 10_001)
                 .count(),
-            9
+            12
         );
         let capacity = mode.session.search_matches.capacity();
         let selected_capacity = mode.session.search_selected.capacity();
@@ -2889,6 +3116,72 @@ mod tests {
             assert_eq!(actual.rect, expected.rect);
             assert_eq!(actual.text, expected.text);
             assert_eq!(actual.z_index, expected.z_index);
+        }
+    }
+
+    #[test]
+    fn canonical_stack_scene_matches_general_ranks_after_filtering_and_cycling() {
+        for scale in [1.0, 1.25] {
+            let mut env = Env::new();
+            env.screens[0].scale = scale;
+            for count in [2, 24, 128, 254, 255, 512, 513] {
+                let mut mode = crate::app::mode_catalog::hint(&env.config);
+                activate(&mut mode, &env);
+                deliver(
+                    &mut mode,
+                    &env,
+                    (0..count)
+                        .map(|index| target(&format!("Control {index}"), 100.0))
+                        .collect(),
+                );
+                assert!(mode.overlap_plan.is_canonical_stack());
+                let prefix = mode.session.hints[0].label.as_str()[..1].to_owned();
+                mode.held_overlap_keys.push(Key::new("shift").unwrap());
+                for prefix in ["", prefix.as_str(), "!", ""] {
+                    mode.input = Input::Labels(prefix.into());
+                    mode.refresh_overlap_plan(&env.ctx());
+                    let placements: Vec<_> = mode
+                        .session
+                        .hints
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, hint)| mode.hint_is_visible(hint))
+                        .map(|(index, hint)| (index, hint.bounds))
+                        .collect();
+                    let packed: Vec<_> = placements
+                        .iter()
+                        .map(|(index, _)| {
+                            mode.overlap_plan
+                                .layer_info(*index)
+                                .map_or(u32::MAX, |(layer, depth)| {
+                                    ((depth as u32) << 16) | layer as u32
+                                })
+                        })
+                        .collect();
+                    let mut general = VisualLayerPlan::default();
+                    general.finish(&placements, count, &packed, mode.overlap_plan.layer_count());
+                    assert!(!general.is_canonical_stack());
+                    for cycle in [0, 1, count / 2, count - 1] {
+                        mode.overlap_cycle = cycle;
+                        let actual = mode.scene(&env.ctx());
+                        std::mem::swap(&mut mode.overlap_plan, &mut general);
+                        assert_eq!(
+                            actual,
+                            mode.scene(&env.ctx()),
+                            "count={count} prefix={prefix} cycle={cycle}"
+                        );
+                        std::mem::swap(&mut mode.overlap_plan, &mut general);
+                    }
+                }
+                mode.overlap_plan.clear();
+                assert!(!mode.overlap_plan.is_canonical_stack());
+                mode.refresh_overlap_plan(&env.ctx());
+                mode.overlap_plan.finish_unstacked();
+                assert!(!mode.overlap_plan.is_canonical_stack());
+                mode.refresh_overlap_plan(&env.ctx());
+                mode.overlap_plan.release_retained();
+                assert!(!mode.overlap_plan.is_canonical_stack());
+            }
         }
     }
 

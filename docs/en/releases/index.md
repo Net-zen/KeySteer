@@ -5,15 +5,18 @@ outline: false
 
 # Release notes
 
+## 0.11.3
+
+- UIHint search now supports point adjustment: tap `Ctrl` to switch between typing and adjustment, using your Normal movement keys. Multiple points start at their average center; press `Tab` to cycle through them.
+- Inspect and copy OCR text, accessibility text, coordinates, and live color in HEX, RGB, or HSL. Each of the four fields can independently concatenate selected points or follow the current point. Default shortcuts are `Ctrl+1/2/3/4` to copy and `Ctrl+Shift+4` to change the color format.
+- Improved responsiveness when holding scroll keys and moving the pointer at the same time. Continuous scrolling has its own speed setting, and releasing the key cancels pending scroll frames.
+- The web configuration simulator adds point, information-panel, and scroll-speed settings. Color sampling on macOS requires Screen Recording permission.
+
 ## 0.11.2
 
 - Fixed the pause between the first scroll step and continuous scrolling when holding a key. A press scrolls immediately.
 - Added a setting to adjust continuous scrolling speed.
 - Added the corresponding scroll speed setting to the web configuration simulator.
-- UI Hint search adds point inspection and fine adjustment: tap `Ctrl` to switch between typing and adjustment, using your Normal movement keys. Multiple points start at their average center; press `Tab` while adjusting to cycle through them.
-- Added live color sampling and swatch previews. Press `Ctrl+Shift+4` to cycle through HEX, RGB, and HSL. Copying information or clicking while adjusting confirms the current point and exits search. Color sampling on macOS requires Screen Recording permission.
-- For multiple points, OCR, accessibility and coordinates can combine results or follow the current point. Color is sampled only for a unique search result. Default copy shortcuts are now `Ctrl+1/2/3/4` on both platforms, with each shortcut independently configurable.
-- The web simulator adds point and multi-point information settings, consistent input-state and swatch previews, and related controls grouped directly below each preview.
 
 ## 0.11.0
 

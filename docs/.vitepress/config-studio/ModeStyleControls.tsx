@@ -306,12 +306,11 @@ export const StyleControl = defineComponent({
             }} />
           ) : field.kind === 'field-modes' ? (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-              {['1 OCR', '2 Accessibility', '3 Coordinates'].map((title, index) => <span>
+              {['1 OCR', '2 Accessibility', '3 Coordinates', '4 Color'].map((title, index) => <span>
                 {title}<select aria-label={t('{0}显示方式', [title])} value={(value as string[])[index]} onChange={event => {
                   const next = [...value as string[]]; next[index] = (event.target as HTMLSelectElement).value; props.onUpdate(next)
                 }}><option value="concat">{t('拼接全部')}</option><option value="switch">{t('跟随当前点')}</option></select>
               </span>)}
-              <span>4 Color<small>{t('仅唯一搜索结果时取色')}</small></span>
             </div>
           ) : field.kind === 'select' ? (
             <select value={String(value)} onChange={(event) => props.onUpdate((event.target as HTMLSelectElement).value)}>
