@@ -39,7 +39,7 @@ pub struct PointerSettings {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScrollSettings {
     pixels: [f64; 3],
-    speeds: [f64; 3],
+    speed: f64,
     continuous: bool,
 }
 
@@ -49,7 +49,7 @@ impl ScrollSettings {
         let pixels = [step as f64, half as f64, full as f64];
         Self {
             pixels,
-            speeds: [speed, 0.0, 0.0],
+            speed,
             continuous: speed > 0.0,
         }
     }
@@ -67,7 +67,11 @@ impl ScrollSettings {
     }
 
     fn speed(&self, amount: ScrollAmount) -> f64 {
-        self.speeds[Self::index(amount)]
+        if amount == ScrollAmount::Step {
+            self.speed
+        } else {
+            0.0
+        }
     }
 }
 
@@ -542,8 +546,6 @@ impl NormalMode {
         CommandBatch::new()
     }
 
-    // Keep scroll state and its multi-command batches out of movement edges.
-    #[inline(never)]
     fn scroll_binding(
         &mut self,
         direction: &Direction,
@@ -1352,7 +1354,7 @@ mod tests {
             config.scroll.speed = 52.5;
             let env = Env::with(config);
             let settings = crate::app::mode_catalog::normal_settings(&env.config);
-            assert_eq!(settings.scroll.speeds, [52.5, 0.0, 0.0]);
+            assert_eq!(settings.scroll.speed, 52.5);
             let mut mode = NormalMode::new(settings);
             assert!(
                 down(

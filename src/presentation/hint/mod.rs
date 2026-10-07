@@ -80,6 +80,8 @@ fn hint_label_width(style: &LabelStyle, characters: usize) -> f64 {
     style.font_size * 0.75 * characters as f64 + style.padding_x * 2.0
 }
 
+// Keep uniform width and placement visible to the per-label planning loops.
+#[inline(always)]
 pub(crate) fn placed_hint_rect(
     config: &HintStyle<'_>,
     hint: &CompactHint<usize>,
@@ -180,12 +182,15 @@ pub(crate) fn prepare_hints(
     let visual_scale = visual_layer_scale(ctx, content.scan_bounds);
     let visual_padding_x = (style.padding_x * visual_scale).round();
     let visual_padding_y = (style.padding_y * visual_scale).round();
+    // An empty prefix accepts every label without decoding its inline text.
     let placements = || {
         content
             .hints
             .iter()
             .enumerate()
-            .filter(|(_, hint)| hint.label.as_str().starts_with(content.prefix))
+            .filter(|(_, hint)| {
+                content.prefix.is_empty() || hint.label.as_str().starts_with(content.prefix)
+            })
             .map(|(index, hint)| {
                 let rect = placed_hint_rect(&content.style, hint, &style, uniform_width);
                 (index, visual_layer_rect(rect, visual_scale))
@@ -278,12 +283,10 @@ impl HintView<'_> {
         if self.content.style.boundary_highlight.enabled {
             let bh = &self.content.style.boundary_highlight;
             let shapes: &mut Vec<OverlayShape> = &mut scene.shapes;
-            for hint in self
-                .content
-                .hints
-                .iter()
-                .filter(|hint| hint.label.as_str().starts_with(self.content.prefix))
-            {
+            for hint in self.content.hints.iter().filter(|hint| {
+                self.content.prefix.is_empty()
+                    || hint.label.as_str().starts_with(self.content.prefix)
+            }) {
                 shapes.push(OverlayShape::Rect {
                     rect: hint.bounds,
                     fill: bh.fill(palette),
@@ -298,7 +301,8 @@ impl HintView<'_> {
         // Remove non-matching labels as the prefix narrows. The matched part of
         // each remaining label is painted with `matched_text_color`.
         let typed = self.content.prefix;
-        let matched_prefix_len = typed.chars().count();
+        // Every emitted label passed starts_with, so this count already fits.
+        let matched_prefix_len = typed.chars().count().min(u32::MAX as usize) as u32;
         let active_overlap_layer = self.active_layer;
         let z_for = |hint_index| {
             active_overlap_layer
@@ -334,23 +338,22 @@ impl HintView<'_> {
             );
         } else {
             for z_index in first_z..=final_z {
-                for (hint_index, hint) in self
-                    .content
-                    .hints
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, hint)| hint.label.as_str().starts_with(self.content.prefix))
+                for (hint_index, hint) in
+                    self.content.hints.iter().enumerate().filter(|(_, hint)| {
+                        self.content.prefix.is_empty()
+                            || hint.label.as_str().starts_with(self.content.prefix)
+                    })
                 {
                     if z_for(hint_index) != z_index {
                         continue;
                     }
                     let rect =
                         placed_hint_rect(&self.content.style, hint, &label_style, uniform_width);
-                    labels.push(
-                        OverlayLabel::new(hint.label.as_str(), rect, label_style.clone())
-                            .with_matched_prefix(matched_prefix_len)
-                            .with_z_index(z_index),
-                    );
+                    labels.push(OverlayLabel {
+                        matched_prefix_len,
+                        z_index,
+                        ..OverlayLabel::new(hint.label.as_str(), rect, label_style.clone())
+                    });
                 }
             }
         }
@@ -389,28 +392,22 @@ impl HintView<'_> {
         labels: &mut Vec<OverlayLabel>,
         style: &SharedLabelStyle,
         uniform_width: Option<f64>,
-        matched_prefix_len: usize,
+        matched_prefix_len: u32,
         selected_layer: usize,
     ) {
         let top = self.layers.layer_count();
         let mut selected = None;
         let mut append = |hint: &CompactHint<usize>, rank: usize| {
             let rect = placed_hint_rect(&self.content.style, hint, style, uniform_width);
-            labels.push(
-                OverlayLabel::new(hint.label.as_str(), rect, style.clone())
-                    .with_matched_prefix(matched_prefix_len)
-                    .with_z_index(
-                        HINT_LAYER_Z_BASE.saturating_add(i32::try_from(rank).unwrap_or(i32::MAX)),
-                    ),
-            );
+            labels.push(OverlayLabel {
+                matched_prefix_len,
+                z_index: HINT_LAYER_Z_BASE.saturating_add(i32::try_from(rank).unwrap_or(i32::MAX)),
+                ..OverlayLabel::new(hint.label.as_str(), rect, style.clone())
+            });
         };
-        for (index, hint) in self
-            .content
-            .hints
-            .iter()
-            .enumerate()
-            .filter(|(_, hint)| hint.label.as_str().starts_with(self.content.prefix))
-        {
+        for (index, hint) in self.content.hints.iter().enumerate().filter(|(_, hint)| {
+            self.content.prefix.is_empty() || hint.label.as_str().starts_with(self.content.prefix)
+        }) {
             let rank = self.layers.draw_rank(index, selected_layer).unwrap_or(1);
             if rank == top {
                 selected = Some(hint);

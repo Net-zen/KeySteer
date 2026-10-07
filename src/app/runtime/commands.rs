@@ -295,12 +295,17 @@ impl Engine {
                     });
                     // Synthetic movement is not guaranteed to re-enter the
                     // input hook. Store the constrained position actually sent.
-                    let previous_bounds = self.context().active_bounds();
+                    let window_suspended = self.registry.modal_stack.contains(&ModeId::window());
+                    // Normal does not consume pointer notifications. A suspended
+                    // Window can change the active mode while receiving one.
+                    let previous_bounds = (window_suspended || self.active_wants_pointer_events())
+                        .then(|| self.context().active_bounds());
                     self.cursor = to;
-                    if self.registry.modal_stack.contains(&ModeId::window()) {
+                    if window_suspended {
                         self.dispatch_to(&ModeId::window(), ModeEvent::PointerMoved(to), backend)?;
                     }
-                    if previous_bounds != self.context().active_bounds()
+                    if previous_bounds
+                        .is_some_and(|bounds| bounds != self.context().active_bounds())
                         && self.active_wants_pointer_events()
                     {
                         self.dispatch(ModeEvent::PointerMoved(to), backend)?;
@@ -324,15 +329,20 @@ impl Engine {
                     self.trace_lazy(self.settings.debug.motion, "backend", || {
                         format!("warp_pointer x={:.3} y={:.3}: ok", to.x, to.y)
                     });
-                    let previous_bounds = self.context().active_bounds();
+                    let window_suspended = self.registry.modal_stack.contains(&ModeId::window());
+                    // Normal does not consume pointer notifications. A suspended
+                    // Window can change the active mode while receiving one.
+                    let previous_bounds = (window_suspended || self.active_wants_pointer_events())
+                        .then(|| self.context().active_bounds());
                     self.cursor = to;
-                    if self.registry.modal_stack.contains(&ModeId::window()) {
+                    if window_suspended {
                         self.dispatch_to(&ModeId::window(), ModeEvent::PointerMoved(to), backend)?;
                     }
                     // Respect the same subscription as physical pointer events.
                     // Window selection warps must not become MoveTo requests;
                     // explicit modal targeting is delivered separately above.
-                    if previous_bounds != self.context().active_bounds()
+                    if previous_bounds
+                        .is_some_and(|bounds| bounds != self.context().active_bounds())
                         && self.active_wants_pointer_events()
                     {
                         self.dispatch(ModeEvent::PointerMoved(to), backend)?;

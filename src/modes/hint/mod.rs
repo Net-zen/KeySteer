@@ -950,7 +950,21 @@ impl HintMode {
                 self.session.search_hints.clone_from(&self.session.hints);
                 self.input = Input::Search(std::mem::take(&mut self.session.search_query));
                 self.session.search_selection = Default::default();
-                self.relabel_with_refresh(ctx, !same_labels);
+                if self.input.text().is_empty() {
+                    // Opening an empty query leaves the full label list intact.
+                    // Avoid clearing and copying it back through the filter path.
+                    self.session.ensure_search_names();
+                    self.session.search_matches.clear();
+                    self.session.search_selected.clear();
+                    self.session
+                        .search_seen
+                        .resize(self.session.scanned.len(), false);
+                    if !same_labels {
+                        self.refresh_overlap_plan(ctx);
+                    }
+                } else {
+                    self.relabel(ctx);
+                }
                 let mut commands = self.redraw();
                 commands.push(self.open_search(ctx));
                 return commands;
@@ -1532,7 +1546,7 @@ mod tests {
                 mode.session.search_query = query.into();
                 let out = press(&mut mode, &env, "/");
                 let actual = scene_of(&out).clone();
-                mode.refresh_overlap_plan(&env.ctx());
+                mode.relabel(&env.ctx());
                 assert_eq!(
                     actual,
                     mode.scene(&env.ctx()),
