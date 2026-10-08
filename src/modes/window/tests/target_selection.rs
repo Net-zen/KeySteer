@@ -245,3 +245,56 @@ fn suspended_target_lookup_cannot_replace_the_preserved_window() {
     assert_eq!(mode.target.as_ref().unwrap().id, WindowId(1));
     assert!(mode.ignored_selections.is_none());
 }
+
+#[test]
+fn initial_window_lookup_failure_keeps_mode_and_number_selection_available() {
+    let config = crate::config::Config::default();
+    let palette = config.palette(Appearance::Dark);
+    let screens = [crate::api::Screen {
+        bounds: Rect::new(0.0, 0.0, 1200.0, 900.0),
+        work_area: Rect::new(0.0, 0.0, 1200.0, 860.0),
+        scale: 1.0,
+        is_primary: true,
+        name: None,
+    }];
+    let ctx = HostContext {
+        presenter: &crate::presentation::COMPOSER,
+        screens: &screens,
+        cursor: Point::new(150.0, 100.0),
+        focused_app: None,
+        palette: &palette,
+    };
+    for error in [false, true] {
+        let mut mode = crate::app::mode_catalog::window(&config);
+        let acquire = request(&mode.handle(&ModeEvent::Activated { previous: None }, &ctx));
+        assert_eq!(acquire.operation, WindowOperation::Acquire(ctx.cursor));
+        let commands = mode.handle(&response(&acquire, None, error), &ctx);
+        assert_eq!(mode.session, acquire.session);
+        assert!(mode.target.is_none());
+        assert!(commands.iter().all(|command| !matches!(
+            command,
+            Command::Quit | Command::PopMode | Command::SwitchMode(_) | Command::FinishMode { .. }
+        )));
+        let enumerate = request(&commands);
+        assert_eq!(enumerate.operation, WindowOperation::Enumerate);
+        let mut telegram = window(7);
+        telegram.app = "Telegram".into();
+        let ModeEvent::WindowResult(mut inventory) = response(&enumerate, None, false) else {
+            unreachable!()
+        };
+        inventory.windows = Some(vec![telegram.clone()]);
+        mode.handle(&ModeEvent::WindowResult(inventory), &ctx);
+        assert_eq!(mode.numbers.get(&telegram.id), Some(&1));
+        let select = request(&mode.handle(
+            &ModeEvent::Key {
+                key: Key::new("1").unwrap(),
+                state: KeyState::Down,
+                repeat: false,
+            },
+            &ctx,
+        ));
+        assert_eq!(select.operation, WindowOperation::Select(telegram.id));
+        mode.handle(&response(&select, Some(telegram.clone()), false), &ctx);
+        assert_eq!(mode.target.as_ref(), Some(&telegram));
+    }
+}

@@ -269,3 +269,64 @@ fn overlay_capture_affinity_cannot_be_reintroduced() -> Result<(), Box<dyn std::
     }
     Ok(())
 }
+
+#[test]
+fn cf_owner_rejects_empty_ax_output_without_releasing_null()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Compile the actual macOS owner on every host. The fixture replaces only
+    // CFRelease with a checked release counter, so this exercises ownership and
+    // transfer without calling frameworks or needing Accessibility permission.
+    let native = include_str!("../src/platform/macos/native.rs");
+    let (_, owner) = native
+        .split_once("/// A Core Foundation object")
+        .ok_or("missing CF owner source")?;
+    let (owner, _) = owner
+        .split_once("// Signalable run-loop source")
+        .ok_or("missing CF owner boundary")?;
+    let fixture = include_str!("fixtures/macos-cf-owner-probe.rs").replace(
+        "// PRODUCTION_CF_OWNER",
+        &format!("/// A Core Foundation object{owner}"),
+    );
+    struct Directory(PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let directory = std::env::temp_dir().join(format!(
+        "keysteer-cf-owner-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory)?;
+    let directory = Directory(directory);
+    let source = directory.0.join("probe.rs");
+    let executable = directory
+        .0
+        .join(format!("probe{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&source, fixture)?;
+    let built =
+        std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .args(["--edition=2024", "--test"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .output()?;
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let tested = std::process::Command::new(&executable)
+        .args(["--test-threads=1", "--nocapture"])
+        .output()?;
+    assert!(
+        tested.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&tested.stdout),
+        String::from_utf8_lossy(&tested.stderr)
+    );
+    Ok(())
+}
