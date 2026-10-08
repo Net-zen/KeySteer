@@ -44,6 +44,27 @@ pub(crate) fn resolve<L: Lookup>(lookup: &L, hit: L::Node) -> Option<L::Node> {
     visit(lookup, hit, &mut smallvec::SmallVec::new())
 }
 
+/// Preserve the fast hit-test path; use native window inventory only when
+/// hit-testing fails or cannot find a containing window. Keep the original AX
+/// error when inventory also cannot supply a target.
+pub(crate) fn with_inventory_fallback<T, E>(
+    direct: Result<Option<T>, E>,
+    inventory: impl FnOnce() -> Result<Option<T>, E>,
+) -> Result<Option<T>, E> {
+    let unavailable = match direct {
+        Ok(Some(window)) => return Ok(Some(window)),
+        other => other,
+    };
+    match inventory() {
+        Ok(Some(window)) => Ok(Some(window)),
+        Ok(None) => unavailable,
+        Err(error) => match unavailable {
+            Err(original) => Err(original),
+            Ok(_) => Err(error),
+        },
+    }
+}
+
 /// Missing subrole metadata alone does not invalidate a real AX window.
 pub(crate) fn ordinary_role(role: Option<&str>, subrole: Option<&str>) -> bool {
     role == Some("AXWindow") && matches!(subrole, None | Some("AXStandardWindow"))
@@ -130,5 +151,34 @@ mod tests {
         assert!(!ordinary_role(Some("AXSheet"), None));
         assert!(!ordinary_role(Some("AXButton"), None));
         assert!(!ordinary_role(None, None));
+    }
+
+    #[test]
+    fn successful_hit_never_queries_window_inventory() {
+        assert_eq!(
+            with_inventory_fallback::<_, &str>(Ok(Some(7)), || panic!(
+                "unexpected inventory lookup"
+            )),
+            Ok(Some(7))
+        );
+    }
+
+    #[test]
+    fn missing_or_failed_hit_uses_inventory_without_losing_the_target() {
+        for direct in [Ok(None), Err("AX hit-test unavailable")] {
+            assert_eq!(with_inventory_fallback(direct, || Ok(Some(7))), Ok(Some(7)));
+        }
+        assert_eq!(
+            with_inventory_fallback::<usize, _>(Err("AX failure"), || Ok(None)),
+            Err("AX failure")
+        );
+        assert_eq!(
+            with_inventory_fallback::<usize, _>(Err("AX failure"), || Err("inventory failure")),
+            Err("AX failure")
+        );
+        assert_eq!(
+            with_inventory_fallback::<usize, _>(Ok(None), || Err("inventory failure")),
+            Err("inventory failure")
+        );
     }
 }

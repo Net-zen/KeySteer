@@ -4,7 +4,9 @@ use crate::api::window::{WindowId, WindowInfo};
 use crate::api::{Point, Screen};
 use crate::platform::common::window_geometry;
 use crate::platform::common::window_session::{Snapshot, WindowAccess};
-use crate::platform::common::window_visibility::{Visible, visible_candidates};
+use crate::platform::common::window_visibility::{
+    Visible, pointer_candidate, pointer_window, visible_candidates,
+};
 use core_foundation::base::{CFEqual, CFRetain};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
@@ -71,6 +73,10 @@ fn dictionary(value: &CFType) -> Option<CFDictionary<CFString, CFType>> {
 }
 
 pub(in crate::platform::macos) fn visible_windows() -> Result<Vec<Visible>, String> {
+    on_screen_windows(true)
+}
+
+fn on_screen_windows(ordinary_only: bool) -> Result<Vec<Visible>, String> {
     let list = copy_window_info(
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
         0,
@@ -102,7 +108,10 @@ pub(in crate::platform::macos) fn visible_windows() -> Result<Vec<Visible>, Stri
                 .and_then(|v| v.downcast::<CFNumber>())
                 .and_then(|v| v.to_i64())
         };
-        if number(&keys[0]) != Some(0) {
+        let Some(layer) = number(&keys[0]) else {
+            continue;
+        };
+        if ordinary_only && layer != 0 {
             continue;
         }
         let Some(pid) = number(&keys[1]) else {
@@ -128,13 +137,18 @@ pub(in crate::platform::macos) fn visible_windows() -> Result<Vec<Visible>, Stri
         ) else {
             continue;
         };
+        let frame = Rect::new(x, y, width, height);
+        if frame.is_empty() || ![x, y, width, height].iter().all(|value| value.is_finite()) {
+            continue;
+        }
         let title = dict
             .find(&keys[7])
             .and_then(|v| v.downcast::<CFString>())
             .map(|s| s.to_string());
         result.push(Visible {
             pid: pid as i32,
-            bounds: Rect::new(x, y, width, height),
+            layer,
+            bounds: frame,
             title,
             number: number(&keys[8]).and_then(|n| isize::try_from(n).ok()),
         });
@@ -142,10 +156,109 @@ pub(in crate::platform::macos) fn visible_windows() -> Result<Vec<Visible>, Stri
     Ok(result)
 }
 
+/// The same retained AX identities serve numbered enumeration and pointer
+/// fallback. Callers choose a finite timeout and cancellation/deadline policy.
+fn application_windows(
+    pid: i32,
+    timeout: c_float,
+    ordinary_only: bool,
+    cancelled: &dyn Fn() -> bool,
+    mut on_window: impl FnMut(MovableWindow),
+) {
+    if cancelled() {
+        return;
+    }
+    let Ok(app) = AxApplication::with_timeout(pid, timeout) else {
+        return;
+    };
+    if cancelled() {
+        return;
+    }
+    let Some(windows) = copy_array_attribute(app.as_ptr(), &CFString::new("AXWindows")) else {
+        return;
+    };
+    for raw in windows.iter() {
+        if cancelled() {
+            break;
+        }
+        if !is_ax_element(*raw) {
+            continue;
+        }
+        // SAFETY: each array element was checked as an AX object; retain
+        // it before releasing the array, then install a finite timeout.
+        let Some(owned) = (unsafe { OwnedCf::from_create_rule(CFRetain(*raw)) }) else {
+            continue;
+        };
+        if install_window_timeout(&owned, timeout).is_err() {
+            continue;
+        }
+        if ordinary_only && !is_ordinary_ax_window(owned.as_ptr()) {
+            continue;
+        }
+        let window = MovableWindow {
+            window: owned,
+            attributes: AxAttributes::new(),
+            fullscreen: CFString::new("AXFullScreen"),
+            minimized: CFString::new("AXMinimized"),
+        };
+        on_window(window);
+    }
+}
+
+/// Recover applications whose AX hit-test is absent but whose window inventory
+/// is usable. Only inspect the topmost hit process, never the focused app or a
+/// lower window; a missing/ambiguous identity remains unavailable.
+pub(super) fn pointer_window_from_inventory(
+    cursor: Point,
+) -> Result<Option<MovableWindow>, String> {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let visible = on_screen_windows(false)?;
+    let Some(shown) = pointer_window(&visible, cursor) else {
+        return Ok(None);
+    };
+    let expired = || Instant::now() >= deadline;
+    let mut candidates = Vec::new();
+    application_windows(
+        shown.pid,
+        WINDOW_TIMEOUT_SECONDS,
+        false,
+        &expired,
+        |window| {
+            if expired() {
+                return;
+            }
+            let Some(bounds) = element_rect(window.window.as_ptr(), &window.attributes) else {
+                return;
+            };
+            let title = copy_string_attribute(window.window.as_ptr(), &window.attributes.title)
+                .unwrap_or_default();
+            candidates.push((window, bounds, title));
+        },
+    );
+    if expired() {
+        return Ok(None);
+    }
+    let metadata: Vec<_> = candidates
+        .iter()
+        .map(|(_, bounds, title)| (*bounds, title.as_str()))
+        .collect();
+    let Some(index) = pointer_candidate(&metadata, shown, cursor) else {
+        return Ok(None);
+    };
+    let window = candidates.swap_remove(index).0;
+    if !is_ordinary_ax_window(window.window.as_ptr())
+        || copy_bool_attribute(window.window.as_ptr(), &window.minimized) == Some(true)
+        || expired()
+    {
+        return Ok(None);
+    }
+    Ok(Some(window))
+}
+
 // Only called for AX elements retained by acquire or checked during enumeration.
-fn install_window_timeout(window: &OwnedCf) -> Result<(), String> {
+fn install_window_timeout(window: &OwnedCf, timeout: c_float) -> Result<(), String> {
     // SAFETY: callers supply a retained AX element; timeout is finite.
-    if unsafe { AXUIElementSetMessagingTimeout(window.as_ptr(), WINDOW_TIMEOUT_SECONDS) } == AX_OK {
+    if unsafe { AXUIElementSetMessagingTimeout(window.as_ptr(), timeout) } == AX_OK {
         Ok(())
     } else {
         Err("cannot configure window messaging timeout".into())
@@ -294,7 +407,7 @@ impl MacWindows {
         screens: &[Screen],
     ) -> Result<WindowInfo, String> {
         // Acquired windows originate in the short-timeout scanner too.
-        install_window_timeout(&window.window)?;
+        install_window_timeout(&window.window, WINDOW_TIMEOUT_SECONDS)?;
         let existing = self
             .entries
             .iter()
@@ -667,53 +780,26 @@ impl WindowAccess for MacWindows {
             if self.probe_pid.is_some_and(|expected| expected != pid) {
                 continue;
             }
-            let Ok(app) = AxApplication::with_timeout(pid, WINDOW_TIMEOUT_SECONDS) else {
-                continue;
-            };
-            let Some(windows) = copy_array_attribute(app.as_ptr(), &CFString::new("AXWindows"))
-            else {
-                continue;
-            };
             let mut candidates = Vec::new();
-            for raw in windows.iter() {
+            application_windows(pid, WINDOW_TIMEOUT_SECONDS, true, cancelled, |window| {
                 if cancelled() {
-                    break;
+                    return;
                 }
-                if !is_ax_element(*raw) {
-                    continue;
-                }
-                // SAFETY: each array element was checked as an AX object; retain
-                // it before releasing the array, then install a finite timeout.
-                let Some(owned) = (unsafe { OwnedCf::from_create_rule(CFRetain(*raw)) }) else {
-                    continue;
-                };
-                if install_window_timeout(&owned).is_err() {
-                    continue;
-                }
-                if !is_ordinary_ax_window(owned.as_ptr()) {
-                    continue;
-                }
-                let window = MovableWindow {
-                    window: owned,
-                    attributes: AxAttributes::new(),
-                    fullscreen: CFString::new("AXFullScreen"),
-                    minimized: CFString::new("AXMinimized"),
-                };
                 if copy_bool_attribute(window.window.as_ptr(), &window.minimized) == Some(true) {
                     if self.include_minimized
                         && let Ok(info) = self.retain(window, pid, screens)
                     {
                         result.push((usize::MAX, info));
                     }
-                    continue;
+                    return;
                 }
                 let Some(bounds) = element_rect(window.window.as_ptr(), &window.attributes) else {
-                    continue;
+                    return;
                 };
                 let title = copy_string_attribute(window.window.as_ptr(), &window.attributes.title)
                     .unwrap_or_default();
                 candidates.push((window, bounds, title));
-            }
+            });
             // Quartz can omit titles without Screen Recording permission. A
             // complete coincident cohort is still safe to enumerate, although
             // its individual Quartz window numbers cannot be identified.
@@ -1487,6 +1573,16 @@ mod tests {
             "accepted {:?}, expected {:?}",
             tiled.bounds,
             split
+        );
+        native.select(id)?;
+        let recovered = pointer_window_from_inventory(tiled.bounds.center())?
+            .ok_or("pointer inventory fallback did not identify the disposable window")?;
+        let recovered = native
+            .retain_acquired(recovered, &screens)?
+            .ok_or("recovered pointer window is unavailable")?;
+        assert_eq!(
+            recovered.id, id,
+            "fallback must preserve the numbered AX identity"
         );
         native.restore(&original, &screens, &|| false)?;
         println!("Probe: standalone F cycle");

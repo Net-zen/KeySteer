@@ -158,6 +158,13 @@ pub(super) fn movable_focused_window() -> Result<Option<MovableWindow>, String> 
 pub(super) fn window_under_pointer(
     cursor: crate::api::geometry::Point,
 ) -> Result<Option<MovableWindow>, String> {
+    crate::platform::common::accessibility_window::with_inventory_fallback(
+        ax_window_under_pointer(cursor),
+        || window_manager::pointer_window_from_inventory(cursor),
+    )
+}
+
+fn ax_window_under_pointer(cursor: crate::api::Point) -> Result<Option<MovableWindow>, String> {
     // SAFETY: AX Create returns a +1 object, transferred once to OwnedCf.
     let system = unsafe { OwnedCf::from_create_rule(AXUIElementCreateSystemWide()) }
         .ok_or_else(|| "cannot create AX system element".to_string())?;
