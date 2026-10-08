@@ -5,6 +5,10 @@ outline: false
 
 # Release notes
 
+## 0.11.4
+
+- Fixed flickering feedback when adjusting volume, toggling mute, or switching audio output devices in Window mode.
+
 ## 0.11.3
 
 - UIHint search now supports point adjustment: tap `Ctrl` to switch between typing and adjustment, using your Normal movement keys. Multiple points start at their average center; press `Tab` to cycle through them.

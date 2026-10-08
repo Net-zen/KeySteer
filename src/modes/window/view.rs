@@ -73,8 +73,9 @@ impl WindowSession {
             if !self.number.display.is_empty() {
                 detail.push_str(&format!("\nInput: {}", self.number.display));
             }
+            detail.push('\n');
             if let Some(status) = &self.status {
-                detail.push_str(&format!("\n{status}"));
+                detail.push_str(status);
             }
             return detail;
         }
@@ -111,7 +112,13 @@ impl WindowSession {
                 .next()
                 .unwrap_or(&window.app)
                 .trim_end_matches(".exe");
-            detail.push_str(&format!("\n{app}\n{}", window.title));
+            detail.push_str(&format!("\n{app}\n"));
+            detail.extend(
+                window
+                    .title
+                    .chars()
+                    .map(|c| if matches!(c, '\r' | '\n') { ' ' } else { c }),
+            );
             if window.minimized {
                 detail.push_str("\nMinimized · cycle to restore");
             }
@@ -126,9 +133,16 @@ impl WindowSession {
         if let Some(source) = self.swap_source.and_then(|id| self.numbers.get(&id)) {
             detail.push_str(&format!("\nWindow {source} → window number / `area"));
         }
+        // Preserve the feedback row even while empty, so result updates do not
+        // move the panel or the window cards placed around it.
+        detail.push('\n');
         if let Some(status) = &self.status {
-            detail.push('\n');
-            detail.extend(status.chars().take(140));
+            detail.extend(
+                status
+                    .chars()
+                    .take(140)
+                    .map(|c| if matches!(c, '\r' | '\n') { ' ' } else { c }),
+            );
         }
         detail
     }

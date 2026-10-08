@@ -5,6 +5,11 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.11.4
+
+- 修复 Window 模式调整音量、切换静音或音频输出设备时的提示闪烁。
+- Fixed flickering feedback when adjusting volume, toggling mute, or switching audio output devices in Window mode.
+
 ## 0.11.3
 
 - UIHint 搜索新增点位微调：轻触 `Ctrl` 切换输入与调整，沿用 Normal 的移动键；多点从平均中心开始，按 `Tab` 逐个切换。

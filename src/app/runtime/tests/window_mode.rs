@@ -1661,6 +1661,40 @@ fn audio_feedback_and_cancellation_are_independent_of_window_results() {
 }
 
 #[test]
+fn repeated_audio_actions_keep_feedback_visible_until_the_next_result() {
+    use crate::api::audio::AudioResult;
+    for system in [false, true] {
+        for key in ["j", "k", "h", "l", "m"] {
+            let (mut engine, mut backend, log) = window_test_engine(&Config::default());
+            enter_window(&mut engine, &mut backend, &log);
+            if system {
+                engine.handle_backend_event(key_down("left_shift"), &mut backend).unwrap();
+            }
+            engine.handle_backend_event(key_down("v"), &mut backend).unwrap();
+            let panel = log.lock().unwrap().scenes.last().unwrap().labels.iter()
+                .find(|label| label.z_index == i32::MAX - 1).unwrap().rect;
+            for message in ["Volume 50%", "Volume 51%", "Audio device unavailable"] {
+                let previous = log.lock().unwrap().scenes.last().unwrap().clone();
+                let before = log.lock().unwrap().scenes.len();
+                engine.handle_backend_event(key_down(key), &mut backend).unwrap();
+                for scene in &log.lock().unwrap().scenes[before..] {
+                    assert!(scene.labels == previous.labels, "system={system} key={key}: pending audio must retain panel feedback");
+                }
+                let request = log.lock().unwrap().audio_requests.last().unwrap().clone();
+                engine.handle_backend_event(BackendEvent::AudioResult(Box::new(AudioResult {
+                    session: request.session,
+                    id: request.id,
+                    outcome: if message.contains("unavailable") { Err(message.into()) } else { Ok(message.into()) },
+                })), &mut backend).unwrap();
+                let scene = log.lock().unwrap().scenes.last().unwrap().clone();
+                assert!(scene.labels.iter().any(|label| label.text == message));
+                assert_eq!(scene.labels.iter().find(|label| label.z_index == i32::MAX - 1).unwrap().rect, panel);
+                engine.handle_backend_event(key_up(key), &mut backend).unwrap();
+            }
+        }
+    }
+}
+#[test]
 fn window_help_cache_restores_connectors_with_displaced_labels() {
     use crate::api::overlay::{Color, OverlayShape, LabelConnectorStyle, LabelPlacementRole, LabelStyle, OverlayLabel};
     let (mut engine, mut backend, log) = window_test_engine(&Config::default());
