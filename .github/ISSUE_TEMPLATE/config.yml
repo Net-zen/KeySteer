@@ -3,3 +3,6 @@ contact_links:
   - name: KeySteer 文档
     url: https://dccif.github.io/KeySteer/
     about: 使用说明、模式说明与完整默认配置参考。
+  - name: KeySteer documentation
+    url: https://dccif.github.io/KeySteer/en/
+    about: Usage guides, mode descriptions, and the complete default configuration reference.
