@@ -8,6 +8,7 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include "point_capture.h"
 
 typedef struct {
     bool detect_text;
@@ -263,19 +264,23 @@ bool NmkSamplePoint(void **owner, double x, double y, bool reset, uint8_t *rgba)
         NmkPointSampler *state = (__bridge NmkPointSampler *)*owner;
         if (state == nil || !tryAcquireCapture()) return false;
         CGRect bounds = CGDisplayBounds(displayID);
-        CGFloat scaleX = (CGFloat)CGDisplayPixelsWide(displayID) / bounds.size.width;
-        CGFloat scaleY = (CGFloat)CGDisplayPixelsHigh(displayID) / bounds.size.height;
-        SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
-        configuration.sourceRect = CGRectMake(floor((x - bounds.origin.x) * scaleX) / scaleX,
-            floor((y - bounds.origin.y) * scaleY) / scaleY, 1.0 / scaleX, 1.0 / scaleY);
-        configuration.width = 1;
-        configuration.height = 1;
-        configuration.showsCursor = NO;
         dispatch_group_t group = dispatch_group_create();
         dispatch_group_enter(group);
         __block CGImageRef captured = NULL;
+        __block NmkPointCapture region = {0};
         void (^capture)(SCContentFilter *) = ^(SCContentFilter *filter) {
-            if (filter == nil) { releaseCapture(); dispatch_group_leave(group); return; }
+            if (filter == nil || !NmkPlanPointCapture(x, y, bounds.origin.x, bounds.origin.y,
+                bounds.size.width, bounds.size.height, filter.pointPixelScale, &region)) {
+                releaseCapture(); dispatch_group_leave(group); return;
+            }
+            SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
+            configuration.sourceRect = CGRectMake(region.x, region.y,
+                region.source_width, region.source_height);
+            configuration.width = region.width;
+            configuration.height = region.height;
+            configuration.destinationRect = CGRectMake(0, 0, region.width, region.height);
+            configuration.scalesToFit = NO;
+            configuration.showsCursor = NO;
             [SCScreenshotManager captureImageWithFilter:filter configuration:configuration completionHandler:^(CGImageRef image, NSError *error) {
                 if (error == nil && image != NULL) captured = CGImageRetain(image);
                 releaseCapture();
@@ -291,6 +296,8 @@ bool NmkSamplePoint(void **owner, double x, double y, bool reset, uint8_t *rgba)
             if (error != nil || display == nil) { capture(nil); return; }
             NSMutableArray<SCRunningApplication *> *excluded = [NSMutableArray array];
             for (SCRunningApplication *app in content.applications) if (app.processID == getpid()) [excluded addObject:app];
+            // Never cache a filter that could capture our own marker or panel.
+            if (excluded.count == 0) { capture(nil); return; }
             SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display excludingApplications:excluded exceptingWindows:@[]];
             @synchronized(state) { state.displayID = displayID; state.filter = filter; }
             capture(filter);
@@ -302,11 +309,10 @@ bool NmkSamplePoint(void **owner, double x, double y, bool reset, uint8_t *rgba)
             return false;
         }
         if (captured == NULL) return false;
-        CGContextSetBlendMode(state->context, kCGBlendModeCopy);
-        CGContextDrawImage(state->context, CGRectMake(0, 0, 1, 1), captured);
+        bool sampled = NmkReadPointPixel(captured, state->context, region);
         CGImageRelease(captured);
-        memcpy(rgba, state->pixel, 4);
-        return true;
+        if (sampled) memcpy(rgba, state->pixel, 4);
+        return sampled;
     }
 }
 
