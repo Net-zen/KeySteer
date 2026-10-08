@@ -72,9 +72,13 @@ impl ScrollWorker {
         }
         // Replace an obsolete interval; do not add its distance to the new
         // one. Latency takes precedence over catching up after native stalls.
-        state.latest = Some(frame);
+        // A pending frame already has a wake-up (or an active consumer).
+        // Replacing it does not need another native condition-variable signal.
+        let wake_worker = state.latest.replace(frame).is_none();
         drop(state);
-        self.mailbox.ready.notify_one();
+        if wake_worker {
+            self.mailbox.ready.notify_one();
+        }
         Ok(())
     }
 
