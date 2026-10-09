@@ -1,48 +1,30 @@
 #![forbid(unsafe_code)]
-
-//! Windows UI-scan result coordination.
-//!
-//! UI Automation and visual providers run on independent workers. This
-//! session is the single publication point so a fast provider can stream
-//! immediately without allowing competing terminal results or duplicate hint
-//! positions to destabilise labels which are already visible.
-
-use std::sync::{Arc, Mutex};
-
-use smallvec::SmallVec;
-
+//! Provider completion and data submission; fusion runs on its own reusable worker.
+use super::EventSender;
+use super::accessibility::WindowsScanPlan;
 use crate::api::command::UiScanStatus;
 use crate::api::geometry::UiTarget;
 #[cfg(test)]
 use crate::api::geometry::{Rect, SemanticRole};
-use crate::platform::common::scan_accumulator::ScanAccumulator;
+use crate::platform::common::scan_fusion::{Handle, Options, Sink};
 use crate::platform::common::scan_mailbox::ScanMailbox;
 use crate::platform::common::spatial_index::TargetSource;
 #[cfg(test)]
 use crate::platform::common::spatial_index::{SpatialIndex, rectangles_match};
-
-use super::EventSender;
-use super::accessibility::WindowsScanPlan;
-
+use smallvec::SmallVec;
+use std::sync::{Arc, Mutex};
 #[cfg(test)]
 const MAX_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 
 pub(super) struct ScanSession {
-    id: u64,
-    generation: u64,
-    mailbox: Arc<ScanMailbox>,
-    wake: EventSender,
-    plan: Arc<WindowsScanPlan>,
+    sink: Sink,
     state: Mutex<SessionState>,
 }
-
 struct SessionState {
     remaining: usize,
-    accumulator: ScanAccumulator,
     statuses: SmallVec<[UiScanStatus; 2]>,
     finished: bool,
 }
-
 impl ScanSession {
     pub(super) fn new(
         plan: Arc<WindowsScanPlan>,
@@ -50,23 +32,65 @@ impl ScanSession {
         sources: usize,
         mailbox: Arc<ScanMailbox>,
         wake: EventSender,
+        fusion: &Handle,
     ) -> Arc<Self> {
-        let id = plan.id;
-        Arc::new(Self {
-            id,
+        let current_plan = Arc::clone(&plan);
+        Self::with_current(
+            plan,
             generation,
+            sources,
             mailbox,
             wake,
+            fusion,
+            Arc::new(move || current_plan.target_is_current()),
+        )
+    }
+    #[cfg(test)]
+    pub(super) fn test(
+        plan: Arc<WindowsScanPlan>,
+        generation: u64,
+        sources: usize,
+        mailbox: Arc<ScanMailbox>,
+        wake: EventSender,
+        fusion: &Handle,
+    ) -> Arc<Self> {
+        Self::with_current(
             plan,
+            generation,
+            sources,
+            mailbox,
+            wake,
+            fusion,
+            Arc::new(|| true),
+        )
+    }
+    fn with_current(
+        plan: Arc<WindowsScanPlan>,
+        generation: u64,
+        sources: usize,
+        mailbox: Arc<ScanMailbox>,
+        wake: EventSender,
+        fusion: &Handle,
+        current: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Arc<Self> {
+        let sink = fusion.begin(Options {
+            id: plan.id,
+            generation,
+            threshold: plan.vision.merge_iou_threshold,
+            output: mailbox,
+            wake: Arc::new(move || wake.wake()),
+            accepts: Arc::new(move |target| plan.target_center_is_visible(target)),
+            current,
+        });
+        Arc::new(Self {
+            sink,
             state: Mutex::new(SessionState {
                 remaining: sources,
-                accumulator: ScanAccumulator::new(),
                 statuses: SmallVec::new(),
                 finished: false,
             }),
         })
     }
-
     pub(super) fn source(self: &Arc<Self>, name: &'static str) -> ScanSource {
         ScanSource {
             name,
@@ -74,110 +98,58 @@ impl ScanSession {
             complete: false,
         }
     }
-
-    fn publish(&self, targets: Vec<UiTarget>, status: UiScanStatus) {
-        if self
-            .mailbox
-            .publish(self.generation, self.id, targets, status)
-        {
-            self.wake.wake();
+    fn finish_source(&self, status: UiScanStatus) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.finished {
+            return;
         }
+        let context_changed = status == UiScanStatus::ContextChanged;
+        state.statuses.push(status);
+        state.remaining = state.remaining.saturating_sub(1);
+        if state.remaining != 0 && !context_changed {
+            return;
+        }
+        state.finished = true;
+        let terminal = combined_status(&state.statuses);
+        if terminal == UiScanStatus::Success {
+            for status in &state.statuses {
+                if let UiScanStatus::Failed(error) = status {
+                    crate::report_error!(
+                        "windows-ui-scan",
+                        "a provider failed while another provider completed the hybrid scan: {error}"
+                    );
+                }
+            }
+        }
+        self.sink.finish(terminal);
+    }
+    #[cfg(test)]
+    pub(super) fn flush(&self) {
+        self.sink.flush();
     }
 }
-
-/// A completion token for one independently scheduled scan provider.
+/// A token for one independently scheduled provider. Counts mean queued data,
+/// not accepted fusion results: producers never execute or wait for fusion.
 pub(super) struct ScanSource {
     name: &'static str,
     session: Arc<ScanSession>,
     complete: bool,
 }
-
 impl ScanSource {
+    pub(super) fn sink(&self) -> Sink {
+        self.session.sink.clone()
+    }
     pub(super) fn push(&self, targets: Vec<UiTarget>) -> usize {
         self.push_from(TargetSource::Accessibility, targets)
     }
-
-    pub(super) fn push_from(&self, source: TargetSource, mut targets: Vec<UiTarget>) -> usize {
-        let mut state = self
-            .session
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if state.finished {
-            return 0;
-        }
-        let threshold = self.session.plan.vision.merge_iou_threshold;
-        targets.retain(|target| self.session.plan.target_center_is_visible(target));
-        let mut update = state.accumulator.push(source, targets, threshold);
-        // Keep publication ordered with fusion, including removal-only deltas.
-        for batch in update.batches {
-            if self.session.mailbox.publish_update(
-                self.session.generation,
-                self.session.id,
-                batch,
-                std::mem::take(&mut update.retired),
-                UiScanStatus::Partial,
-            ) {
-                self.session.wake.wake();
-            }
-        }
-        update.accepted
+    pub(super) fn push_from(&self, source: TargetSource, targets: Vec<UiTarget>) -> usize {
+        self.session.sink.submit(source, targets)
     }
-
     pub(super) fn finish(mut self, status: UiScanStatus) {
         self.complete = true;
-        let (tail, terminal, masked_failures) = {
-            let mut state = self
-                .session
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if state.finished {
-                return;
-            }
-            let context_changed = status == UiScanStatus::ContextChanged;
-            state.statuses.push(status);
-            state.remaining = state.remaining.saturating_sub(1);
-            if state.remaining != 0 && !context_changed {
-                return;
-            }
-            state.finished = true;
-            let tail = if context_changed {
-                // Old coordinates are invalid. Drain them only to release their
-                // strings now; publishing them would delay the retarget.
-                drop(state.accumulator.finish());
-                None
-            } else {
-                state.accumulator.finish()
-            };
-            let terminal = combined_status(&state.statuses);
-            let masked_failures = if terminal == UiScanStatus::Success {
-                state
-                    .statuses
-                    .iter()
-                    .filter_map(|status| match status {
-                        UiScanStatus::Failed(error) => Some(error.clone()),
-                        _ => None,
-                    })
-                    .collect::<SmallVec<[String; 1]>>()
-            } else {
-                SmallVec::new()
-            };
-            (tail, terminal, masked_failures)
-        };
-        for error in masked_failures {
-            crate::report_error!(
-                "windows-ui-scan",
-                "a provider failed while another provider completed the hybrid scan: {error}"
-            );
-        }
-        if let Some(batch) = tail {
-            self.session.publish(batch, UiScanStatus::Partial);
-        }
-        self.session.publish(Vec::new(), terminal);
+        self.session.finish_source(status);
     }
 }
-
 impl Drop for ScanSource {
     fn drop(&mut self) {
         if !self.complete {
@@ -186,6 +158,10 @@ impl Drop for ScanSource {
                 "{} provider exited without a terminal status",
                 self.name
             );
+            self.session.finish_source(UiScanStatus::Failed(format!(
+                "{} provider exited without a terminal status",
+                self.name
+            )));
         }
     }
 }
@@ -249,18 +225,21 @@ mod tests {
     }
 
     #[test]
-    fn late_accessible_row_retires_both_published_and_pending_visual_fragments() {
+    fn late_accessible_row_retires_both_immediately_published_visual_fragments() {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(41);
         let (events, _) = crate::platform::common::event_queue::channel();
         let mut input = request(41);
         input.scope = crate::api::UiScanScope::Screen;
-        let session = ScanSession::new(
+        let mut fusion_worker = crate::platform::common::scan_fusion::Worker::default();
+        let fusion = fusion_worker.prepare(generation).unwrap();
+        let session = ScanSession::test(
             super::super::accessibility::test_scan_plan(input),
             generation,
             2,
             Arc::clone(&mailbox),
             super::super::EventSender::without_wake(events),
+            &fusion,
         );
         let visual = session.source("visual");
         let ax = session.source("accessibility");
@@ -271,9 +250,11 @@ mod tests {
             role: SemanticRole::Control,
         };
         visual.push_from(TargetSource::Contour, vec![fragment(20.0)]);
+        session.flush();
         assert_eq!(mailbox.take().unwrap().targets.len(), 1);
         visual.push_from(TargetSource::Contour, vec![fragment(200.0)]);
-        assert!(mailbox.take().is_none(), "second fragment is still batched");
+        session.flush();
+        assert_eq!(mailbox.take().unwrap().targets.len(), 1);
         let row = UiTarget {
             details: None,
             rect: rect(10.0, 95.0, 400.0, 32.0),
@@ -281,11 +262,13 @@ mod tests {
             role: SemanticRole::ListItem,
         };
         ax.push(vec![row.clone()]);
+        session.flush();
         let update = mailbox.take().unwrap();
         assert_eq!(update.targets, vec![row]);
         assert_eq!(update.retired.len(), 2);
         visual.finish(UiScanStatus::Success);
         ax.finish(UiScanStatus::Success);
+        session.flush();
         assert!(mailbox.take().unwrap().targets.is_empty());
     }
 
@@ -297,12 +280,15 @@ mod tests {
         let mut input = request(42);
         input.scope = crate::api::UiScanScope::Screen;
         input.bounds = Some(rect(0.0, 0.0, 4096.0, 4096.0));
-        let session = ScanSession::new(
+        let mut fusion_worker = crate::platform::common::scan_fusion::Worker::default();
+        let fusion = fusion_worker.prepare(generation).unwrap();
+        let session = ScanSession::test(
             super::super::accessibility::test_scan_plan(input),
             generation,
             2,
             Arc::clone(&mailbox),
             super::super::EventSender::without_wake(events),
+            &fusion,
         );
         let ax = session.source("accessibility");
         let visual = session.source("OCR + contour");
@@ -317,9 +303,13 @@ mod tests {
                 .collect()
         };
         assert_eq!(ax.push(targets(0..5000)), 5000);
-        assert_eq!(visual.push(targets(4000..10001)), 5000);
+        assert_eq!(
+            visual.push_from(TargetSource::Contour, targets(4000..10001)),
+            6001
+        );
         ax.finish(UiScanStatus::Success);
         visual.finish(UiScanStatus::Success);
+        session.flush();
         let result = mailbox.take().unwrap();
         assert_eq!(result.targets.len(), MAX_TARGETS);
         assert_eq!(result.status, UiScanStatus::Success);
@@ -398,12 +388,15 @@ mod tests {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(41);
         let (events, _ignored) = crate::platform::common::event_queue::channel();
-        let session = ScanSession::new(
+        let mut fusion_worker = crate::platform::common::scan_fusion::Worker::default();
+        let fusion = fusion_worker.prepare(generation).unwrap();
+        let session = ScanSession::test(
             super::super::accessibility::test_scan_plan(request(41)),
             generation,
             2,
             Arc::clone(&mailbox),
             super::super::EventSender::without_wake(events),
+            &fusion,
         );
         let first = session.source("first");
         let second = session.source("second");
@@ -417,6 +410,7 @@ mod tests {
             first.push(vec![target(rect(0.0, 0.0, 40.0, 20.0), "first text")]),
             1
         );
+        session.flush();
         let first_result = mailbox.take().unwrap();
         assert_eq!(first_result.status, UiScanStatus::Partial);
         assert_eq!(first_result.targets[0].name, "first text");
@@ -425,15 +419,19 @@ mod tests {
                 target(rect(1.0, 1.0, 40.0, 20.0), "later replacement"),
                 target(rect(80.0, 0.0, 40.0, 20.0), "unique"),
             ]),
-            1
+            2
         );
         first.finish(UiScanStatus::TimedOut);
-        assert!(mailbox.take().is_none());
+        session.flush();
+        let ready = mailbox.take().unwrap();
+        assert_eq!(ready.status, UiScanStatus::Partial);
+        assert_eq!(ready.targets.len(), 1);
+        assert_eq!(ready.targets[0].name, "unique");
         second.finish(UiScanStatus::Success);
+        session.flush();
         let result = mailbox.take().unwrap();
         assert_eq!(result.status, UiScanStatus::Success);
-        assert_eq!(result.targets.len(), 1);
-        assert_eq!(result.targets[0].name, "unique");
+        assert!(result.targets.is_empty());
         assert!(mailbox.take().is_none());
     }
 
@@ -444,12 +442,15 @@ mod tests {
         let (events, _ignored) = crate::platform::common::event_queue::channel();
         let plan = super::super::accessibility::test_scan_plan(request(42));
         let observer = Arc::clone(&plan);
-        let session = ScanSession::new(
+        let mut fusion_worker = crate::platform::common::scan_fusion::Worker::default();
+        let fusion = fusion_worker.prepare(generation).unwrap();
+        let session = ScanSession::test(
             plan,
             generation,
             2,
             mailbox,
             super::super::EventSender::without_wake(events),
+            &fusion,
         );
         let first = session.source("first");
         let second = session.source("second");
@@ -457,6 +458,9 @@ mod tests {
 
         first.finish(UiScanStatus::ContextChanged);
         second.finish(UiScanStatus::ContextChanged);
+        fusion_worker
+            .stop_until(std::time::Instant::now() + std::time::Duration::from_secs(5))
+            .unwrap();
 
         assert_eq!(
             Arc::strong_count(&observer),
@@ -470,17 +474,21 @@ mod tests {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(43);
         let (events, _ignored) = crate::platform::common::event_queue::channel();
-        let session = ScanSession::new(
+        let mut fusion_worker = crate::platform::common::scan_fusion::Worker::default();
+        let fusion = fusion_worker.prepare(generation).unwrap();
+        let session = ScanSession::test(
             super::super::accessibility::test_scan_plan(request(43)),
             generation,
             2,
             Arc::clone(&mailbox),
             super::super::EventSender::without_wake(events),
+            &fusion,
         );
         let first = session.source("first");
         let second = session.source("second");
 
         first.finish(UiScanStatus::ContextChanged);
+        session.flush();
         let result = mailbox
             .take()
             .expect("context change must publish immediately");
@@ -488,6 +496,7 @@ mod tests {
         assert!(result.targets.is_empty());
 
         second.finish(UiScanStatus::Success);
+        session.flush();
         assert!(mailbox.take().is_none());
     }
 }

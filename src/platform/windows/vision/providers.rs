@@ -177,7 +177,7 @@ fn run_scan_inner(
             );
         }
     };
-    let provider_mailbox = Arc::new(ProviderMailbox::new());
+    let provider_mailbox = Arc::new(ProviderMailbox::with_output(job.source.sink()));
     let cancellation = ScanCancellation::new(
         shared,
         job.generation,
@@ -560,7 +560,7 @@ fn run_scan_inner(
                 } => ocr_done.push((provider, elapsed, result)),
             }
         }
-        ocr_ready.sort_by(|a, b| compare_ready(a.2.len(), a.1, b.2.len(), b.1));
+        ocr_ready.sort_by_key(|batch| batch.1);
         for (provider, _elapsed, targets) in ocr_ready {
             if !context_is_current(shared, job.generation, &job.request) {
                 cancellation.cancel();

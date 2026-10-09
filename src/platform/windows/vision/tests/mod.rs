@@ -336,18 +336,6 @@ fn pure_rust_detector_finds_a_closed_button_border() {
 }
 
 #[test]
-fn ready_ocr_batches_prefer_more_targets_then_lower_latency() {
-    assert_eq!(
-        compare_ready(12, Duration::from_millis(30), 20, Duration::from_millis(80)),
-        std::cmp::Ordering::Greater
-    );
-    assert_eq!(
-        compare_ready(20, Duration::from_millis(30), 20, Duration::from_millis(80)),
-        std::cmp::Ordering::Less
-    );
-}
-
-#[test]
 fn worker_start_does_not_wait_for_ocr_discovery_or_start_a_coordinator() {
     let started = Instant::now();
     let mut worker = VisionWorker::start();
@@ -445,6 +433,7 @@ fn quarantine_scan_fixture(
     u64,
     Arc<super::super::ui_scan::ScanSession>,
     Arc<crate::platform::common::scan_mailbox::ScanMailbox>,
+    crate::platform::common::scan_fusion::Worker,
 ) {
     use crate::platform::common::scan_mailbox::ScanMailbox;
     use crate::platform::windows::{EventSender, accessibility, ui_scan::ScanSession};
@@ -465,14 +454,17 @@ fn quarantine_scan_fixture(
     let generation = output.begin(request.id);
     let (events, _) = crate::platform::common::event_queue::channel();
     let plan = accessibility::test_scan_plan(request);
-    let session = ScanSession::new(
+    let mut fusion_worker = crate::platform::common::scan_fusion::Worker::default();
+    let fusion = fusion_worker.prepare(generation).unwrap();
+    let session = ScanSession::test(
         Arc::clone(&plan),
         generation,
         provider_count,
         Arc::clone(&output),
         EventSender::without_wake(events),
+        &fusion,
     );
-    (plan, generation, session, output)
+    (plan, generation, session, output, fusion_worker)
 }
 
 #[test]
@@ -480,7 +472,7 @@ fn quarantined_vision_submit_preserves_hybrid_uia_results_and_deferred_frame() {
     let mut worker = VisionWorker::start();
     let release = quarantine_blocked_provider(&worker);
     for _ in 0..3 {
-        let (plan, generation, session, output) = quarantine_scan_fixture(
+        let (plan, generation, session, output, _fusion_worker) = quarantine_scan_fixture(
             crate::api::UiScanStrategy::Hybrid,
             2,
             Rect::new(0.0, 0.0, 1920.0, 1080.0),
@@ -498,6 +490,7 @@ fn quarantined_vision_submit_preserves_hybrid_uia_results_and_deferred_frame() {
         worker
             .submit(plan, generation, session.source("visual scan"), capture)
             .expect("quarantine must not cancel the hybrid session");
+        session.flush();
         let result = output.take().expect("both sources must publish a terminal");
         assert_eq!(result.status, UiScanStatus::Success);
         assert_eq!(result.targets.len(), 1);
@@ -515,7 +508,7 @@ fn quarantined_vision_submit_preserves_hybrid_uia_results_and_deferred_frame() {
 fn scan_queued_before_quarantine_finishes_without_starting_native_work() {
     let mut worker = VisionWorker::start();
     let release = quarantine_blocked_provider(&worker);
-    let (plan, generation, session, output) = quarantine_scan_fixture(
+    let (plan, generation, session, output, _fusion_worker) = quarantine_scan_fixture(
         crate::api::UiScanStrategy::Vision,
         1,
         Rect::new(0.0, 0.0, 1920.0, 1080.0),
@@ -536,6 +529,7 @@ fn scan_queued_before_quarantine_finishes_without_starting_native_work() {
         &worker.shared,
         &worker.discovery.handle(),
     );
+    session.flush();
     let result = output.take().expect("queued scan must publish a terminal");
     assert!(matches!(result.status, UiScanStatus::Unsupported(_)));
     assert!(frame_restored());
@@ -571,7 +565,7 @@ fn vision_resumes_after_quarantined_provider_exits() {
     }
     // Invalid bounds let us verify submission reaches the normal capture path
     // after recovery without depending on native OCR or screen contents.
-    let (plan, generation, session, output) = quarantine_scan_fixture(
+    let (plan, generation, session, output, _fusion_worker) = quarantine_scan_fixture(
         crate::api::UiScanStrategy::Contour,
         1,
         Rect::new(0.0, 0.0, 0.0, 0.0),
@@ -949,12 +943,15 @@ fn early_ocr_and_contour_are_both_published_without_waiting_for_ocr_terminal() {
     let output = Arc::new(ScanMailbox::default());
     let generation = output.begin(input.id);
     let (events, _) = crate::platform::common::event_queue::channel();
-    let session = ScanSession::new(
+    let mut fusion_worker = crate::platform::common::scan_fusion::Worker::default();
+    let fusion = fusion_worker.prepare(generation).unwrap();
+    let session = ScanSession::test(
         accessibility::test_scan_plan(input),
         generation,
         1,
         Arc::clone(&output),
         EventSender::without_wake(events),
+        &fusion,
     );
     let source = session.source("visual");
     let mailbox = ProviderMailbox::new();
@@ -983,6 +980,7 @@ fn early_ocr_and_contour_are_both_published_without_waiting_for_ocr_terminal() {
     ));
     assert!(deferred.is_empty());
     source.finish(UiScanStatus::Success);
+    session.flush();
     let result = output.take().unwrap();
     assert_eq!(result.targets.len(), 2);
     assert!(result.targets.iter().any(|t| t.name == "OCR text"));
@@ -1020,12 +1018,15 @@ fn early_and_late_visual_sources_use_identical_ownership() {
                 let output = Arc::new(ScanMailbox::default());
                 let generation = output.begin(request.id);
                 let (events, _) = crate::platform::common::event_queue::channel();
-                let session = ScanSession::new(
+                let mut fusion_worker = crate::platform::common::scan_fusion::Worker::default();
+                let fusion = fusion_worker.prepare(generation).unwrap();
+                let session = ScanSession::test(
                     accessibility::test_scan_plan(request),
                     generation,
                     1,
                     Arc::clone(&output),
                     EventSender::without_wake(events),
+                    &fusion,
                 );
                 let source = session.source("visual");
                 let mailbox = ProviderMailbox::new();
@@ -1056,6 +1057,7 @@ fn early_and_late_visual_sources_use_identical_ownership() {
                     role: SemanticRole::Button,
                 };
                 source.push(vec![button.clone()]);
+                session.flush();
                 let mut visible = output.take().unwrap().targets;
                 for i in order {
                     let batch = vec![targets[i].clone()];
@@ -1086,12 +1088,14 @@ fn early_and_late_visual_sources_use_identical_ownership() {
                             batch,
                         );
                     }
+                    session.flush();
                     if let Some(update) = output.take() {
                         crate::api::command::remove_retired_targets(&mut visible, &update.retired);
                         visible.extend(update.targets);
                     }
                 }
                 source.finish(UiScanStatus::Success);
+                session.flush();
                 if let Some(update) = output.take() {
                     crate::api::command::remove_retired_targets(&mut visible, &update.retired);
                     visible.extend(update.targets);
@@ -1214,4 +1218,77 @@ fn ocr_word_and_phrase_converge_across_engines_and_batch_order() {
             assert!(visible.iter().any(|t| t.rect == next_row.rect));
         }
     }
+}
+
+#[test]
+fn ready_visual_data_bypasses_busy_native_coordinator_and_count_gates() {
+    let (_plan, _generation, session, output, _fusion_worker) = quarantine_scan_fixture(
+        crate::api::UiScanStrategy::Vision,
+        1,
+        Rect::new(0., 0., 1920., 1080.),
+    );
+    let source = session.source("visual");
+    let mailbox = ProviderMailbox::with_output(source.sink());
+    mailbox
+        .publish(ProviderEvent::OcrBatch {
+            provider: "system",
+            elapsed: Duration::ZERO,
+            targets: Vec::new(),
+        })
+        .unwrap();
+    session.flush();
+    assert!(output.take().is_none());
+    let targets: Vec<_> = (0..512)
+        .map(|i| {
+            UiTarget::recognized_text(
+                Rect::new((i % 32 * 50) as f64, (i / 32 * 50) as f64, 20., 20.),
+                i.to_string(),
+            )
+        })
+        .collect();
+    send_ocr_batches(&mailbox, "system", Instant::now(), targets).unwrap();
+    // Deliberately never drain the coordinator mailbox: data must already flow.
+    session.flush();
+    let ready = output.take().unwrap();
+    assert_eq!(ready.targets.len(), 512);
+    assert_eq!(ready.status, UiScanStatus::Partial);
+    assert_eq!(mailbox.ready_flags.load(Ordering::Acquire), 0);
+    source.finish(UiScanStatus::Success);
+    session.flush();
+    assert_eq!(output.take().unwrap().status, UiScanStatus::Success);
+}
+
+#[test]
+fn provider_data_slots_ignore_empty_and_keep_valid_prefix_of_oversized_buffers() {
+    let mailbox = ProviderMailbox::new();
+    send_ocr_batches(&mailbox, "system", Instant::now(), Vec::new()).unwrap();
+    mailbox
+        .publish(ProviderEvent::ContourBatch(Vec::new()))
+        .unwrap();
+    assert_eq!(mailbox.ready_flags.load(Ordering::Acquire), 0);
+    let targets = || {
+        (0..MAX_OCR_TARGETS + 2)
+            .map(|i| {
+                UiTarget::recognized_text(Rect::new(i as f64 * 20., 0., 10., 10.), i.to_string())
+            })
+            .collect()
+    };
+    assert_eq!(
+        send_ocr_batches(&mailbox, "system", Instant::now(), targets()).unwrap(),
+        MAX_OCR_TARGETS
+    );
+    send_contour_batches(&mailbox, targets()).unwrap();
+    let mut events = ProviderEvents::new();
+    mailbox.drain_into(&mut events);
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|event| match event {
+                ProviderEvent::OcrBatch { targets, .. } | ProviderEvent::ContourBatch(targets) =>
+                    Some(targets.len()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![MAX_OCR_TARGETS, MAX_OCR_TARGETS]
+    );
 }

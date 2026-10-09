@@ -139,6 +139,7 @@ pub struct WindowsBackend {
     background_budget: event_queue::BackgroundBudget,
     event_tx: EventSender,
     scan_mailbox: Arc<ScanMailbox>,
+    scan_fusion: crate::platform::common::scan_fusion::Worker,
     pending: VecDeque<BackendEvent>,
     screens: Vec<Screen>,
     /// Foreground window at the last check, to detect focus changes.
@@ -263,6 +264,14 @@ impl WindowsBackend {
             background_budget: event_queue::BackgroundBudget::default(),
             event_tx,
             scan_mailbox,
+            scan_fusion: crate::platform::common::scan_fusion::Worker::with_setup(|| {
+                if let Err(error) = native::prefer_background_work() {
+                    crate::report_warning!(
+                        "windows-ui-scan",
+                        "cannot lower fusion worker priority: {error}"
+                    );
+                }
+            }),
             pending,
             screens: initial_screens,
             last_foreground: native::foreground_window(),
@@ -445,6 +454,7 @@ impl WindowsBackend {
         let deadline = now.checked_add(BACKEND_SHUTDOWN_TIMEOUT).unwrap_or(now);
         let mut errors = crate::support::errors::ErrorBundle::default();
         self.scroll_worker.request_stop();
+        self.scan_fusion.request_stop();
         if let Some(worker) = self.window_worker.as_mut() {
             match worker.stop_until(deadline) {
                 Ok(()) => {
@@ -475,6 +485,7 @@ impl WindowsBackend {
                 Err(error) => errors.push("UI Automation worker", error),
             }
         }
+        errors.record("UI scan fusion", self.scan_fusion.stop_until(deadline));
         if let Err(error) = self.release_held_buttons() {
             errors.push("held mouse buttons", error);
         }
@@ -940,6 +951,13 @@ impl Backend for WindowsBackend {
         } else {
             None
         };
+        let fusion = match self.scan_fusion.prepare(generation) {
+            Ok(fusion) => fusion,
+            Err(error) => {
+                self.scan_mailbox.cancel(request_id);
+                return Err(error);
+            }
+        };
         let sources = usize::from(wants_uia) + usize::from(wants_vision);
         let session = ui_scan::ScanSession::new(
             Arc::clone(&plan),
@@ -947,6 +965,7 @@ impl Backend for WindowsBackend {
             sources,
             Arc::clone(&self.scan_mailbox),
             self.event_tx.clone(),
+            &fusion,
         );
         let result = (|| {
             if wants_uia {
@@ -970,6 +989,7 @@ impl Backend for WindowsBackend {
             Ok(())
         })();
         if result.is_err() {
+            self.scan_fusion.cancel(request_id);
             self.scan_mailbox.cancel(request_id);
             if let Some(worker) = self.ui_automation.as_ref() {
                 worker.cancel(request_id);
@@ -981,6 +1001,7 @@ impl Backend for WindowsBackend {
 
     fn cancel_ui_scan(&mut self, id: u64) -> Result<(), String> {
         if self.scan_mailbox.cancel(id) {
+            self.scan_fusion.cancel(id);
             if let Some(worker) = self.ui_automation.as_ref() {
                 worker.cancel(id);
             }

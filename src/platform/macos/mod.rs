@@ -98,6 +98,7 @@ pub struct MacOsBackend {
     background_budget: event_queue::BackgroundBudget,
     event_tx: EventSender,
     scan_mailbox: Arc<ScanMailbox>,
+    scan_fusion: crate::platform::common::scan_fusion::Worker,
     scan_worker: ui_scan::UiScanWorker,
     pending: VecDeque<BackendEvent>,
     overlay: Overlay,
@@ -184,6 +185,7 @@ impl MacOsBackend {
             background_budget: event_queue::BackgroundBudget::default(),
             event_tx,
             scan_mailbox,
+            scan_fusion: crate::platform::common::scan_fusion::Worker::default(),
             scan_worker: ui_scan::UiScanWorker::new(),
             pending: VecDeque::new(),
             overlay: Overlay::new(),
@@ -343,6 +345,7 @@ impl MacOsBackend {
         }
         self.frame_clock.stop();
         self.scan_worker.request_stop();
+        self.scan_fusion.request_stop();
         if let Some(worker) = &self.point_sampler {
             worker.request_stop();
         }
@@ -382,6 +385,7 @@ impl MacOsBackend {
             }
         }
         errors.record("UI scan worker", self.scan_worker.shutdown_until(deadline));
+        errors.record("UI scan fusion", self.scan_fusion.stop_until(deadline));
         errors.record(
             "continuous scrolling",
             self.scroll_worker.stop_until(deadline),
@@ -794,17 +798,26 @@ impl Backend for MacOsBackend {
 
     fn request_ui_scan(&mut self, request: crate::api::UiScanRequest) -> Result<(), String> {
         let generation = self.scan_mailbox.begin(request.id);
+        let fusion = match self.scan_fusion.prepare(generation) {
+            Ok(fusion) => fusion,
+            Err(error) => {
+                self.scan_mailbox.cancel(request.id);
+                return Err(error);
+            }
+        };
         self.scan_worker.request_scan(
             request,
             generation,
             Arc::clone(&self.scan_mailbox),
             self.event_tx.clone(),
+            fusion,
         );
         Ok(())
     }
 
     fn cancel_ui_scan(&mut self, id: u64) -> Result<(), String> {
         if self.scan_mailbox.cancel(id) {
+            self.scan_fusion.cancel(id);
             self.scan_worker.cancel_scan(id);
         }
         Ok(())

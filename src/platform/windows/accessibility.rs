@@ -44,10 +44,8 @@ use windows::core::{BOOL, Interface};
 use super::ui_scan::ScanSource;
 use crate::api::command::{UiScanRequest, UiScanStatus};
 use crate::api::geometry::{Rect, SemanticRole, UiTarget};
-use crate::platform::common::partial_batcher::PartialBatcher;
 use crate::support::worker::WorkerJoin;
 
-const PARTIAL_BATCH_SIZE: usize = 24;
 const MAX_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 const MAX_VISITED_ELEMENTS: usize = 20_000;
 const MAX_SCAN_WINDOWS: usize = 16;
@@ -1173,7 +1171,6 @@ fn stream_scan(
     let deadline =
         Instant::now() + Duration::from_millis(u64::from(scan_timeout_ms(job.request.timeout_ms)));
     let mut deduper = SpatialDeduper::new(MINIMUM_SPACING);
-    let mut batches = PartialBatcher::new(PARTIAL_BATCH_SIZE, MAX_TARGETS);
     let mut target_count = 0usize;
     let mut visited_count = 0usize;
     let mut queried_window = false;
@@ -1245,7 +1242,7 @@ fn stream_scan(
             visited_count += 1;
             // The atomic generation is cheap enough for every node. Querying
             // target HWND/PID/bounds cross into user32/DWM, so sample them every 32
-            // nodes and always immediately before publishing a partial batch.
+            // nodes. The fusion worker validates again before publication.
             if !is_current(shared, job.generation)
                 || visited_count.is_multiple_of(32) && !job.request.target_is_current()
             {
@@ -1274,12 +1271,7 @@ fn stream_scan(
                 && deduper.insert(&target)
             {
                 target_count += 1;
-                if let Some(batch) = batches.push_one(target) {
-                    if !context_is_current(shared, job.generation, &job.request) {
-                        return Ok(UiScanStatus::ContextChanged);
-                    }
-                    send_partial(job, batch);
-                }
+                send_partial(job, vec![target]);
             }
         }
         if element_count > remaining {
@@ -1303,9 +1295,6 @@ fn stream_scan(
     }
     if !context_is_current(shared, job.generation, &job.request) {
         return Ok(UiScanStatus::ContextChanged);
-    }
-    if let Some(batch) = batches.finish() {
-        send_partial(job, batch);
     }
     Ok(terminal_status)
 }
