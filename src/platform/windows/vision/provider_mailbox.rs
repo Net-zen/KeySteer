@@ -1,7 +1,7 @@
 //! Bounded provider result aggregation and publication.
 
 use super::*;
-use crate::platform::common::spatial_index::TargetSource;
+use crate::platform::common::{scan_fusion::Sink, spatial_index::TargetSource};
 
 pub(super) fn ocr_source(provider: &str) -> TargetSource {
     if provider == "wechat" {
@@ -9,17 +9,6 @@ pub(super) fn ocr_source(provider: &str) -> TargetSource {
     } else {
         TargetSource::SystemOcr
     }
-}
-
-pub(super) fn compare_ready(
-    first_count: usize,
-    first_elapsed: Duration,
-    second_count: usize,
-    second_elapsed: Duration,
-) -> std::cmp::Ordering {
-    second_count
-        .cmp(&first_count)
-        .then_with(|| first_elapsed.cmp(&second_elapsed))
 }
 
 pub(super) enum ProviderEvent {
@@ -47,11 +36,12 @@ const CONTOUR_READY: u8 = 1 << 2;
 
 /// Generation-owned provider mailbox with one fixed slot per provider.
 ///
-/// A producer replaces an empty target vector or appends to its own bounded
-/// slot. It never waits for coordinator capacity, and repeated batches merely
-/// keep the same ready bit set. The coordinator takes ownership of each slot
-/// when woken, so all valid targets are preserved without an event queue.
+/// Ready data goes straight to the common fusion inbox. Terminals remain here
+/// for the native coordinator's deadline, cancellation and cleanup lifecycle.
+/// Test/native probes can use bounded data slots without a fusion consumer.
 pub(super) struct ProviderMailbox {
+    output: Option<Sink>,
+    closed: AtomicBool,
     state: Mutex<ProviderMailboxState>,
     pub(super) ready_flags: AtomicU8,
     ready: Condvar,
@@ -84,8 +74,19 @@ struct ContourProviderSlot {
 }
 
 impl ProviderMailbox {
+    pub(super) fn with_output(output: Sink) -> Self {
+        Self::create(Some(output))
+    }
+
+    #[cfg(test)]
     pub(super) fn new() -> Self {
+        Self::create(None)
+    }
+
+    fn create(output: Option<Sink>) -> Self {
         Self {
+            output,
+            closed: AtomicBool::new(false),
             state: Mutex::new(ProviderMailboxState::default()),
             ready_flags: AtomicU8::new(0),
             ready: Condvar::new(),
@@ -93,6 +94,32 @@ impl ProviderMailbox {
     }
 
     pub(super) fn publish(&self, event: ProviderEvent) -> Result<(), VisionError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(VisionError::Cancelled);
+        }
+        // Data bypasses screenshot/tile preparation and provider cleanup. Only
+        // terminal events need the native coordinator; fusion owns data quotas.
+        let event = match (&self.output, event) {
+            (
+                Some(output),
+                ProviderEvent::OcrBatch {
+                    provider, targets, ..
+                },
+            ) => {
+                if !matches!(provider, "system" | "wechat") {
+                    return Err(VisionError::Operational(format!(
+                        "unknown OCR provider {provider}"
+                    )));
+                }
+                output.submit(ocr_source(provider), targets);
+                return Ok(());
+            }
+            (Some(output), ProviderEvent::ContourBatch(targets)) => {
+                output.submit(TargetSource::Contour, targets);
+                return Ok(());
+            }
+            (_, event) => event,
+        };
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.closed {
             return Err(VisionError::Cancelled);
@@ -101,7 +128,7 @@ impl ProviderMailbox {
         state.publish(event)?;
         self.ready_flags.store(state.ready, Ordering::Release);
         drop(state);
-        if was_empty {
+        if was_empty && self.ready_flags.load(Ordering::Acquire) != 0 {
             self.ready.notify_one();
         }
         Ok(())
@@ -138,6 +165,7 @@ impl ProviderMailbox {
     }
 
     pub(super) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.closed = true;
         drop(state);
@@ -164,7 +192,9 @@ impl ProviderMailboxState {
             } => {
                 let (slot, ready) = self.ocr_slot(provider)?;
                 slot.append(provider, elapsed, targets)?;
-                self.ready |= ready;
+                if !slot.targets.is_empty() {
+                    self.ready |= ready;
+                }
             }
             ProviderEvent::OcrDone {
                 provider,
@@ -175,26 +205,12 @@ impl ProviderMailboxState {
                 slot.finish(provider, elapsed, result)?;
                 self.ready |= ready;
             }
-            ProviderEvent::ContourBatch(targets) => {
-                if targets.is_empty() || targets.len() > MAX_OCR_TARGETS {
-                    return Err(VisionError::Operational(format!(
-                        "contour published an invalid batch of {} targets",
-                        targets.len()
-                    )));
+            ProviderEvent::ContourBatch(mut targets) => {
+                targets.truncate(MAX_OCR_TARGETS.saturating_sub(self.contour.published_targets));
+                if targets.is_empty() {
+                    return Ok(());
                 }
-                let next = self
-                    .contour
-                    .published_targets
-                    .checked_add(targets.len())
-                    .ok_or_else(|| {
-                        VisionError::Operational("contour target count overflow".into())
-                    })?;
-                if next > MAX_OCR_TARGETS {
-                    return Err(VisionError::Operational(format!(
-                        "contour exceeded the {MAX_OCR_TARGETS}-target limit"
-                    )));
-                }
-                self.contour.published_targets = next;
+                self.contour.published_targets += targets.len();
                 if self.contour.targets.is_empty() {
                     self.contour.targets = targets;
                 } else {
@@ -295,28 +311,15 @@ impl ProviderMailboxState {
 impl OcrProviderSlot {
     pub(super) fn append(
         &mut self,
-        provider: &'static str,
+        _provider: &'static str,
         elapsed: Duration,
-        targets: Vec<UiTarget>,
+        mut targets: Vec<UiTarget>,
     ) -> Result<(), VisionError> {
-        if targets.is_empty() || targets.len() > PROVIDER_BATCH_SIZE {
-            return Err(VisionError::Operational(format!(
-                "{provider} OCR published an invalid batch of {} targets",
-                targets.len()
-            )));
+        targets.truncate(MAX_OCR_TARGETS.saturating_sub(self.published_targets));
+        if targets.is_empty() {
+            return Ok(());
         }
-        let next = self
-            .published_targets
-            .checked_add(targets.len())
-            .ok_or_else(|| {
-                VisionError::Operational(format!("{provider} OCR target count overflow"))
-            })?;
-        if next > MAX_OCR_TARGETS {
-            return Err(VisionError::Operational(format!(
-                "{provider} OCR exceeded the {MAX_OCR_TARGETS}-target limit"
-            )));
-        }
-        self.published_targets = next;
+        self.published_targets += targets.len();
         if self.targets.is_empty() {
             self.targets = targets;
             self.target_elapsed = Some(elapsed);
@@ -367,7 +370,7 @@ pub(super) fn drain_early_ocr_events(
             event => deferred.push(event),
         }
     }
-    ready.sort_by(|a, b| compare_ready(a.2.len(), a.1, b.2.len(), b.1));
+    ready.sort_by_key(|batch| batch.1);
     for (provider, _elapsed, targets) in ready {
         if !context_is_current() {
             return false;
@@ -391,40 +394,12 @@ pub(super) fn send_ocr_batches(
     started: Instant,
     targets: Vec<UiTarget>,
 ) -> Result<usize, VisionError> {
-    let count = targets.len();
-    if count > MAX_OCR_TARGETS {
-        return Err(VisionError::Operational(format!(
-            "{provider} OCR returned {count} targets; limit is {MAX_OCR_TARGETS}"
-        )));
-    }
-    if count <= PROVIDER_BATCH_SIZE {
-        if count != 0 {
-            mailbox.publish(ProviderEvent::OcrBatch {
-                provider,
-                elapsed: started.elapsed(),
-                targets,
-            })?;
-        }
-        return Ok(count);
-    }
-    let mut batch = Vec::with_capacity(PROVIDER_BATCH_SIZE);
-    for target in targets {
-        batch.push(target);
-        if batch.len() == PROVIDER_BATCH_SIZE {
-            mailbox.publish(ProviderEvent::OcrBatch {
-                provider,
-                elapsed: started.elapsed(),
-                targets: std::mem::replace(&mut batch, Vec::with_capacity(PROVIDER_BATCH_SIZE)),
-            })?;
-        }
-    }
-    if !batch.is_empty() {
-        mailbox.publish(ProviderEvent::OcrBatch {
-            provider,
-            elapsed: started.elapsed(),
-            targets: batch,
-        })?;
-    }
+    let count = targets.len().min(MAX_OCR_TARGETS);
+    mailbox.publish(ProviderEvent::OcrBatch {
+        provider,
+        elapsed: started.elapsed(),
+        targets,
+    })?;
     Ok(count)
 }
 
@@ -432,15 +407,8 @@ pub(super) fn send_contour_batches(
     mailbox: &ProviderMailbox,
     targets: Vec<UiTarget>,
 ) -> Result<(), VisionError> {
-    if targets.len() > MAX_OCR_TARGETS {
-        return Err(VisionError::Operational(format!(
-            "contour returned {} targets; limit is {MAX_OCR_TARGETS}",
-            targets.len()
-        )));
-    }
-    // Contour completes before it has candidates to publish. Moving its Vec
-    // once avoids splitting and rejoining hundreds of allocations at 10000
-    // candidates. ScanSession still emits the normal count-driven Partials.
+    // Move the provider buffer once; the fusion inbox bounds storage and the
+    // consumer controls its own processing quanta.
     if !targets.is_empty() {
         mailbox.publish(ProviderEvent::ContourBatch(targets))?;
     }

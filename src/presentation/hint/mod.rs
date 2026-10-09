@@ -17,6 +17,22 @@ const MIN_TEXT_OCCLUSION_EXTENT: f64 = 0.5;
 const HINT_LAYER_Z_BASE: i32 = 1;
 const SEARCH_INPUT_Z_INDEX: i32 = 10_000;
 
+fn push_number(text: &mut crate::api::overlay::OverlayText, mut value: usize) {
+    let mut digits = [0_u8; 20];
+    let mut start = digits.len();
+    loop {
+        start -= 1;
+        digits[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    for digit in &digits[start..] {
+        text.push(char::from(*digit));
+    }
+}
+
 pub(super) fn input_panel(
     cfg: &crate::api::style::CompiledSearchPanel,
     window: Option<Rect>,
@@ -64,6 +80,8 @@ fn hint_label_width(style: &LabelStyle, characters: usize) -> f64 {
     style.font_size * 0.75 * characters as f64 + style.padding_x * 2.0
 }
 
+// Keep uniform width and placement visible to the per-label planning loops.
+#[inline(always)]
 pub(crate) fn placed_hint_rect(
     config: &HintStyle<'_>,
     hint: &CompactHint<usize>,
@@ -164,6 +182,20 @@ pub(crate) fn prepare_hints(
     let visual_scale = visual_layer_scale(ctx, content.scan_bounds);
     let visual_padding_x = (style.padding_x * visual_scale).round();
     let visual_padding_y = (style.padding_y * visual_scale).round();
+    // An empty prefix accepts every label without decoding its inline text.
+    let placements = || {
+        content
+            .hints
+            .iter()
+            .enumerate()
+            .filter(|(_, hint)| {
+                content.prefix.is_empty() || hint.label.as_str().starts_with(content.prefix)
+            })
+            .map(|(index, hint)| {
+                let rect = placed_hint_rect(&content.style, hint, &style, uniform_width);
+                (index, visual_layer_rect(rect, visual_scale))
+            })
+    };
     let visible = if content.prefix.is_empty() {
         content.hints.len()
     } else {
@@ -174,49 +206,40 @@ pub(crate) fn prepare_hints(
             .count()
     };
     let stacked = |left, right| visually_stacked(left, right, visual_padding_x, visual_padding_y);
+    prepare_hint_plan(
+        placements(),
+        visible,
+        content.hints.len(),
+        uniform_width.is_some(),
+        stacked,
+        layers,
+        workspace,
+    );
+}
+
+#[inline(never)]
+fn prepare_hint_plan(
+    placements: impl Iterator<Item = (usize, Rect)>,
+    visible: usize,
+    hint_count: usize,
+    uniform_size: bool,
+    stacked: impl Fn(Rect, Rect) -> bool,
+    layers: &mut VisualLayerPlan,
+    workspace: &mut Option<Vec<(usize, Rect)>>,
+) {
     if visible > INLINE_LABELS {
-        let mut placements = workspace.take().unwrap_or_default();
-        placements.clear();
+        let mut buffer = workspace.take().unwrap_or_default();
+        buffer.clear();
         // Filtering loses the iterator's exact lower bound. The visible count
         // is already known, so avoid repeated growth on the first wide scan.
-        placements.reserve(visible);
-        placements.extend(
-            content
-                .hints
-                .iter()
-                .enumerate()
-                .filter(|(_, hint)| hint.label.as_str().starts_with(content.prefix))
-                .map(|(index, hint)| {
-                    let rect = placed_hint_rect(&content.style, hint, &style, uniform_width);
-                    (index, visual_layer_rect(rect, visual_scale))
-                }),
-        );
-        build_visual_layer_plan(
-            &placements,
-            content.hints.len(),
-            uniform_width.is_some(),
-            stacked,
-            layers,
-        );
-        *workspace = Some(placements);
+        buffer.reserve(visible);
+        buffer.extend(placements);
+        build_visual_layer_plan(&buffer, hint_count, uniform_size, stacked, layers);
+        *workspace = Some(buffer);
     } else {
-        let placements: SmallVec<[(usize, Rect); INLINE_LABELS]> = content
-            .hints
-            .iter()
-            .enumerate()
-            .filter(|(_, hint)| hint.label.as_str().starts_with(content.prefix))
-            .map(|(index, hint)| {
-                let rect = placed_hint_rect(&content.style, hint, &style, uniform_width);
-                (index, visual_layer_rect(rect, visual_scale))
-            })
-            .collect();
-        build_visual_layer_plan(
-            &placements,
-            content.hints.len(),
-            uniform_width.is_some(),
-            stacked,
-            layers,
-        );
+        let mut buffer = SmallVec::<[(usize, Rect); INLINE_LABELS]>::new();
+        buffer.extend(placements);
+        build_visual_layer_plan(&buffer, hint_count, uniform_size, stacked, layers);
     }
 }
 
@@ -259,13 +282,12 @@ impl HintView<'_> {
         // Optional outlines behind only the currently visible candidates.
         if self.content.style.boundary_highlight.enabled {
             let bh = &self.content.style.boundary_highlight;
-            for hint in self
-                .content
-                .hints
-                .iter()
-                .filter(|hint| hint.label.as_str().starts_with(self.content.prefix))
-            {
-                scene.push_shape(OverlayShape::Rect {
+            let shapes: &mut Vec<OverlayShape> = &mut scene.shapes;
+            for hint in self.content.hints.iter().filter(|hint| {
+                self.content.prefix.is_empty()
+                    || hint.label.as_str().starts_with(self.content.prefix)
+            }) {
+                shapes.push(OverlayShape::Rect {
                     rect: hint.bounds,
                     fill: bh.fill(palette),
                     stroke: bh.stroke(palette),
@@ -279,7 +301,8 @@ impl HintView<'_> {
         // Remove non-matching labels as the prefix narrows. The matched part of
         // each remaining label is painted with `matched_text_color`.
         let typed = self.content.prefix;
-        let matched_prefix_len = typed.chars().count();
+        // Every emitted label passed starts_with, so this count already fits.
+        let matched_prefix_len = typed.chars().count().min(u32::MAX as usize) as u32;
         let active_overlap_layer = self.active_layer;
         let z_for = |hint_index| {
             active_overlap_layer
@@ -302,207 +325,356 @@ impl HintView<'_> {
         } else {
             (HINT_LAYER_Z_BASE, final_z)
         };
-        for z_index in first_z..=final_z {
-            for (hint_index, hint) in self
-                .content
-                .hints
-                .iter()
-                .enumerate()
-                .filter(|(_, hint)| hint.label.as_str().starts_with(self.content.prefix))
-            {
-                if z_for(hint_index) != z_index {
-                    continue;
+        // Detach shared storage once for the whole batch, not for every label.
+        // Hint labels carry no window-placement annotations.
+        let labels: &mut Vec<OverlayLabel> = &mut scene.labels;
+        if let Some(layer) = active_overlap_layer.filter(|_| self.layers.is_canonical_stack()) {
+            self.append_stack_labels(
+                labels,
+                &label_style,
+                uniform_width,
+                matched_prefix_len,
+                layer,
+            );
+        } else {
+            for z_index in first_z..=final_z {
+                for (hint_index, hint) in
+                    self.content.hints.iter().enumerate().filter(|(_, hint)| {
+                        self.content.prefix.is_empty()
+                            || hint.label.as_str().starts_with(self.content.prefix)
+                    })
+                {
+                    if z_for(hint_index) != z_index {
+                        continue;
+                    }
+                    let rect =
+                        placed_hint_rect(&self.content.style, hint, &label_style, uniform_width);
+                    labels.push(OverlayLabel {
+                        matched_prefix_len,
+                        z_index,
+                        ..OverlayLabel::new(hint.label.as_str(), rect, label_style.clone())
+                    });
                 }
-                let rect = placed_hint_rect(&self.content.style, hint, &label_style, uniform_width);
-                scene.push_label(
-                    OverlayLabel::new(hint.label.as_str(), rect, label_style.clone())
-                        .with_matched_prefix(matched_prefix_len)
-                        .with_z_index(z_index),
+            }
+        }
+
+        if self.content.search.is_some() {
+            self.append_search(&mut scene, ctx);
+        }
+
+        if let Some(point) = &self.point {
+            let radius = f64::from(point.radius) * super::label_scale(ctx.scale());
+            scene.push_shape(OverlayShape::Rect {
+                rect: Rect::new(
+                    point.point.x - radius,
+                    point.point.y - radius,
+                    radius * 2.0,
+                    radius * 2.0,
+                ),
+                fill: Color::TRANSPARENT,
+                stroke: point
+                    .color
+                    .and_then(|c| c.resolve(ctx.palette.appearance))
+                    .unwrap_or(ctx.palette.accent),
+                stroke_width: f64::from(point.width),
+                corner_radius: radius,
+                z_index: SEARCH_INPUT_Z_INDEX + 3,
+            });
+        }
+        scene
+    }
+
+    // A verified clique keeps source order except for one raised item. Keep
+    // this uncommon layout out of the ordinary label scene's stack frame.
+    #[inline(never)]
+    fn append_stack_labels(
+        &self,
+        labels: &mut Vec<OverlayLabel>,
+        style: &SharedLabelStyle,
+        uniform_width: Option<f64>,
+        matched_prefix_len: u32,
+        selected_layer: usize,
+    ) {
+        let top = self.layers.layer_count();
+        let mut selected = None;
+        let mut append = |hint: &CompactHint<usize>, rank: usize| {
+            let rect = placed_hint_rect(&self.content.style, hint, style, uniform_width);
+            labels.push(OverlayLabel {
+                matched_prefix_len,
+                z_index: HINT_LAYER_Z_BASE.saturating_add(i32::try_from(rank).unwrap_or(i32::MAX)),
+                ..OverlayLabel::new(hint.label.as_str(), rect, style.clone())
+            });
+        };
+        for (index, hint) in self.content.hints.iter().enumerate().filter(|(_, hint)| {
+            self.content.prefix.is_empty() || hint.label.as_str().starts_with(self.content.prefix)
+        }) {
+            let rank = self.layers.draw_rank(index, selected_layer).unwrap_or(1);
+            if rank == top {
+                selected = Some(hint);
+            } else {
+                append(hint, rank);
+            }
+        }
+        if let Some(hint) = selected {
+            append(hint, top);
+        }
+    }
+
+    // Keep panel layout and its larger temporaries out of ordinary label frames.
+    #[inline(never)]
+    fn append_search(&self, scene: &mut OverlayScene, ctx: &HostContext<'_>) {
+        scene.clip = Some(ctx.active_bounds());
+        let cfg = &self.content.style.search_input_ui;
+        let (rect, style) = input_panel(cfg, *self.window_bounds, ctx);
+        if let Some(info) = &self.info {
+            self.append_info(info, rect, scene, ctx);
+        }
+        // Text, selection and caret are shared across native renderers.
+        let scale = super::label_scale(ctx.scale());
+        let adjusting = self.point.as_ref().is_some_and(|point| point.adjusting);
+        let (background, border) = if adjusting {
+            cfg.point_input_colors(ctx.palette.appearance, &style)
+        } else {
+            (style.background, style.border_color)
+        };
+        scene.push_shape(OverlayShape::Rect {
+            rect,
+            fill: background,
+            stroke: border,
+            stroke_width: style.border_width * scale,
+            corner_radius: style.border_radius * scale,
+            z_index: SEARCH_INPUT_Z_INDEX,
+        });
+        let text = self.content.search.unwrap_or_default();
+        // Point editing suspends text editing. Hide its caret/selection,
+        // preserving them so toggling back resumes at the same position.
+        let font = style.font_size * scale;
+        let area = rect.inset(
+            (style.padding_x + style.border_width) * scale,
+            (style.padding_y + style.border_width) * scale,
+        );
+        let mut text_area = area;
+        let mut counter = crate::api::overlay::OverlayText::default();
+        if adjusting {
+            let radius = (2.5 * scale).min(area.width / 2.0);
+            let dot = Rect::new(
+                area.right() - radius * 2.0,
+                area.center().y - radius,
+                radius * 2.0,
+                radius * 2.0,
+            );
+            scene.push_shape(OverlayShape::Rect {
+                rect: dot,
+                fill: match ctx.palette.appearance {
+                    crate::api::Appearance::Light => Color::rgb(0x16, 0x85, 0x6B),
+                    crate::api::Appearance::Dark => Color::rgb(0x68, 0xD9, 0xB1),
+                },
+                stroke: Color::TRANSPARENT,
+                stroke_width: 0.0,
+                corner_radius: radius,
+                z_index: SEARCH_INPUT_Z_INDEX + 4,
+            });
+            let reserved = radius * 2.0 + font * 0.3;
+            if let Some(point) = self.point.as_ref().filter(|p| p.count > 1) {
+                push_number(&mut counter, point.position);
+                counter.push('/');
+                push_number(&mut counter, point.count);
+            }
+            text_area.width = (area.width - reserved).max(0.0);
+        }
+        let mut visible = crate::api::overlay::OverlayText::default();
+        let mut edit = crate::api::text_edit::Selection::default();
+        for (offset, character) in text.char_indices() {
+            let character = if character.is_control() {
+                ' '
+            } else {
+                character
+            };
+            visible.push(character);
+            if offset < self.content.search_selection.cursor {
+                edit.cursor = visible.len();
+            }
+            if offset < self.content.search_selection.anchor {
+                edit.anchor = visible.len();
+            }
+        }
+        visible.push_str(counter.as_str());
+        let mut input = OverlayLabel::new(
+            visible,
+            text_area,
+            if counter.is_empty() {
+                cfg.input_style(ctx.palette.appearance)
+            } else {
+                cfg.point_input_style(ctx.palette.appearance)
+            }
+            .clone(),
+        )
+        .with_fixed_bounds()
+        .with_z_index(SEARCH_INPUT_Z_INDEX + 2);
+        input.scroll_to_cursor = true;
+        input.trailing_text_len = counter.len() as u8;
+        if !adjusting {
+            input.edit = crate::api::overlay::LabelEdit::try_from(edit).ok();
+        }
+        scene.push_label(input);
+    }
+
+    #[inline(never)]
+    fn append_info(
+        &self,
+        info: &crate::api::presentation::HintInfoView<'_>,
+        rect: Rect,
+        scene: &mut OverlayScene,
+        ctx: &HostContext<'_>,
+    ) {
+        let scale = super::label_scale(ctx.scale());
+        let (mut panel, base) = input_panel(info.ui, *self.window_bounds, ctx);
+        let line = base.font_size * 1.8 * scale;
+        let gap = base.font_size * 0.8 * scale;
+        let padding = (base.padding_x.max(10.0) * scale, base.padding_y * scale);
+        let text_gap = base.font_size * 0.5 * scale;
+        let height = line * 4.0 + text_gap * 2.0 + gap + padding.1 * 2.0;
+        panel.height = height;
+        if info.ui.position_mode == crate::api::style::PanelPositionMode::SearchInput {
+            let anchor = match &info.ui.position {
+                crate::api::style::CompiledPanelPosition::Percentages(value) => {
+                    crate::api::style::percentage_region(rect, *value).center()
+                }
+                crate::api::style::CompiledPanelPosition::Anchor(anchor) => {
+                    anchor.place(rect, 0.0, 0.0, 0.0, 0.0).center()
+                }
+            };
+            panel.x = anchor.x - panel.width / 2.0 + info.ui.x_offset * scale;
+            panel.y = if anchor.y <= rect.center().y {
+                anchor.y - height - info.ui.y_offset * scale
+            } else {
+                anchor.y + info.ui.y_offset * scale
+            };
+        } else {
+            let area = if info.ui.position_mode == crate::api::style::PanelPositionMode::Window {
+                self.window_bounds.unwrap_or(ctx.active_bounds())
+            } else {
+                ctx.active_bounds()
+            };
+            panel = info.ui.position.place(
+                area,
+                panel.width,
+                height,
+                info.ui.x_offset * scale,
+                info.ui.y_offset * scale,
+            );
+        }
+        let area = ctx.active_bounds();
+        panel.x = panel
+            .x
+            .clamp(area.x, (area.right() - panel.width).max(area.x));
+        panel.y = panel.y.clamp(area.y, (area.bottom() - height).max(area.y));
+        let styles = info.ui.for_appearance(ctx.palette.appearance);
+        // Detach each shared buffer once for the complete information panel.
+        let labels: &mut Vec<OverlayLabel> = &mut scene.labels;
+        // The search input is appended after this panel. Reserve it too.
+        labels.reserve(info.field_count() * 3 + 1);
+        let shapes: &mut Vec<OverlayShape> = &mut scene.shapes;
+        shapes.push(OverlayShape::Rect {
+            rect: panel,
+            fill: base.background,
+            stroke: base.border_color,
+            stroke_width: base.border_width * scale,
+            corner_radius: base.border_radius * scale,
+            z_index: SEARCH_INPUT_Z_INDEX,
+        });
+        for (index, (title, value)) in info
+            .titles
+            .iter()
+            .zip(info.preview_values().iter())
+            .take(info.field_count())
+            .enumerate()
+        {
+            let column_width = ((panel.width - padding.0 * 2.0 - gap) / 2.0).max(1.0);
+            let x = panel.x
+                + padding.0
+                + if !(info.field_count() == 3 && index == 2) {
+                    (index % 2) as f64 * (column_width + gap)
+                } else {
+                    0.0
+                };
+            let y = panel.y + padding.1 + (index / 2) as f64 * (line * 2.0 + text_gap + gap);
+            let width = if !(info.field_count() == 3 && index == 2) {
+                column_width
+            } else {
+                (panel.width - padding.0 * 2.0).max(1.0)
+            };
+            let number_width = base.font_size * 1.3 * scale;
+            let header_gap = 6.0 * scale;
+            if index == 3
+                && let Some(point) = &info.point
+                && info.ui.color_preview.enabled
+                && let Some(color) = point.color
+                && (!info.multiple
+                    || info.field_modes[3] == crate::api::point_sample::FieldMode::Switch)
+            {
+                let preview = info.ui.color_preview;
+                let chip_width = f64::from(preview.width) * scale;
+                let chip_height = f64::from(preview.height) * scale;
+                // The short proportional caption is narrower than the
+                // conservative text budget used for truncation.
+                let title_width = super::text_units(title) * base.font_size * (2.0 / 3.0) * scale;
+                shapes.push(OverlayShape::Rect {
+                    rect: Rect::new(
+                        x + number_width
+                            + header_gap
+                            + title_width
+                            + f64::from(preview.x_offset) * scale,
+                        y + (line - chip_height) / 2.0 + f64::from(preview.y_offset) * scale,
+                        chip_width,
+                        chip_height,
+                    ),
+                    fill: color,
+                    stroke: base.text_color,
+                    stroke_width: f64::from(preview.border_width) * scale,
+                    corner_radius: 0.0,
+                    z_index: SEARCH_INPUT_Z_INDEX + 2,
+                });
+            }
+            for (text, bounds, style) in [
+                (
+                    ["1", "2", "3", "4"][index],
+                    Rect::new(x, y, number_width, line),
+                    styles.key.clone(),
+                ),
+                (
+                    title.as_str(),
+                    Rect::new(
+                        x + number_width + header_gap,
+                        y,
+                        (width - number_width - header_gap).max(1.0),
+                        line,
+                    ),
+                    styles.caption.clone(),
+                ),
+            ] {
+                labels.push(
+                    OverlayLabel::new(text, bounds, style)
+                        .with_fixed_bounds()
+                        .with_z_index(SEARCH_INPUT_Z_INDEX + 1),
+                );
+            }
+            {
+                let text = super::single_line_elide_width(
+                    if value.is_empty() { "—" } else { value },
+                    width / (base.font_size * scale),
+                );
+                labels.push(
+                    OverlayLabel::new(
+                        text,
+                        Rect::new(x, y + line + text_gap, width, line),
+                        styles.caption.clone(),
+                    )
+                    .with_fixed_bounds()
+                    .with_z_index(SEARCH_INPUT_Z_INDEX + 1),
                 );
             }
         }
-
-        // Search box, shown only while searching.
-        if self.content.search.is_some() {
-            scene.clip = Some(ctx.active_bounds());
-            let cfg = &self.content.style.search_input_ui;
-            let (rect, style) = input_panel(cfg, self.window_bounds, ctx);
-            if let Some(info) = &self.info {
-                let scale = super::label_scale(ctx.scale());
-                let (mut panel, base) = input_panel(info.ui, self.window_bounds, ctx);
-                let line = base.font_size * 1.8 * scale;
-                let gap = base.font_size * 0.8 * scale;
-                let padding = (base.padding_x.max(10.0) * scale, base.padding_y * scale);
-                let text_gap = base.font_size * 0.5 * scale;
-                let height = line * 4.0 + text_gap * 2.0 + gap + padding.1 * 2.0;
-                panel.height = height;
-                if info.ui.position_mode == crate::api::style::PanelPositionMode::SearchInput {
-                    let anchor = match &info.ui.position {
-                        crate::api::style::CompiledPanelPosition::Percentages(value) => {
-                            crate::api::style::percentage_region(rect, *value).center()
-                        }
-                        crate::api::style::CompiledPanelPosition::Anchor(anchor) => {
-                            anchor.place(rect, 0.0, 0.0, 0.0, 0.0).center()
-                        }
-                    };
-                    panel.x = anchor.x - panel.width / 2.0 + info.ui.x_offset * scale;
-                    panel.y = if anchor.y <= rect.center().y {
-                        anchor.y - height - info.ui.y_offset * scale
-                    } else {
-                        anchor.y + info.ui.y_offset * scale
-                    };
-                } else {
-                    let area =
-                        if info.ui.position_mode == crate::api::style::PanelPositionMode::Window {
-                            self.window_bounds.unwrap_or(ctx.active_bounds())
-                        } else {
-                            ctx.active_bounds()
-                        };
-                    panel = info.ui.position.place(
-                        area,
-                        panel.width,
-                        height,
-                        info.ui.x_offset * scale,
-                        info.ui.y_offset * scale,
-                    );
-                }
-                let area = ctx.active_bounds();
-                panel.x = panel
-                    .x
-                    .clamp(area.x, (area.right() - panel.width).max(area.x));
-                panel.y = panel.y.clamp(area.y, (area.bottom() - height).max(area.y));
-                let styles = info.ui.for_appearance(ctx.palette.appearance);
-                scene.push_shape(OverlayShape::Rect {
-                    rect: panel,
-                    fill: base.background,
-                    stroke: base.border_color,
-                    stroke_width: base.border_width * scale,
-                    corner_radius: base.border_radius * scale,
-                    z_index: SEARCH_INPUT_Z_INDEX,
-                });
-                for (index, (title, value)) in info
-                    .titles
-                    .iter()
-                    .zip(info.preview_values().iter())
-                    .take(info.field_count())
-                    .enumerate()
-                {
-                    let column_width = ((panel.width - padding.0 * 2.0 - gap) / 2.0).max(1.0);
-                    let x = panel.x
-                        + padding.0
-                        + if !(info.multiple && index == 2) {
-                            (index % 2) as f64 * (column_width + gap)
-                        } else {
-                            0.0
-                        };
-                    let y =
-                        panel.y + padding.1 + (index / 2) as f64 * (line * 2.0 + text_gap + gap);
-                    let width = if !(info.multiple && index == 2) {
-                        column_width
-                    } else {
-                        (panel.width - padding.0 * 2.0).max(1.0)
-                    };
-                    let number_width = base.font_size * 1.3 * scale;
-                    let header_gap = 6.0 * scale;
-                    for (text, bounds, style) in [
-                        (
-                            ["1", "2", "3", "4"][index],
-                            Rect::new(x, y, number_width, line),
-                            styles.key.clone(),
-                        ),
-                        (
-                            title.as_str(),
-                            Rect::new(
-                                x + number_width + header_gap,
-                                y,
-                                (width - number_width - header_gap).max(1.0),
-                                line,
-                            ),
-                            styles.caption.clone(),
-                        ),
-                    ] {
-                        scene.push_label(
-                            OverlayLabel::new(text, bounds, style)
-                                .with_fixed_bounds()
-                                .with_z_index(SEARCH_INPUT_Z_INDEX + 1),
-                        );
-                    }
-                    {
-                        let text = super::single_line_elide_width(
-                            if value.is_empty() { "—" } else { value },
-                            (width - 4.0 * scale).max(0.0) / (base.font_size * scale),
-                        );
-                        scene.push_label(
-                            OverlayLabel::new(
-                                text,
-                                Rect::new(x, y + line + text_gap, width, line),
-                                styles.caption.clone(),
-                            )
-                            .with_fixed_bounds()
-                            .with_z_index(SEARCH_INPUT_Z_INDEX + 1),
-                        );
-                    }
-                }
-            }
-            // Text, selection and caret are shared across native renderers.
-            let scale = super::label_scale(ctx.scale());
-            scene.push_shape(OverlayShape::Rect {
-                rect,
-                fill: style.background,
-                stroke: style.border_color,
-                stroke_width: style.border_width * scale,
-                corner_radius: style.border_radius * scale,
-                z_index: SEARCH_INPUT_Z_INDEX,
-            });
-            let text = self.content.search.unwrap_or_default();
-            let cursor = self.content.search_selection.cursor.min(text.len());
-            let font = style.font_size * scale;
-            let area = rect.inset(
-                (style.padding_x + style.border_width) * scale,
-                (style.padding_y + style.border_width) * scale,
-            );
-            let budget = (area.width / font - 1.0).max(0.0);
-            let mut start = cursor;
-            let mut used = 0.0;
-            for (i, c) in text[..cursor].char_indices().rev() {
-                let width = if c.is_ascii() { 0.75 } else { 1.0 };
-                if used + width > budget {
-                    break;
-                }
-                used += width;
-                start = i;
-            }
-            let mut visible = crate::api::overlay::OverlayText::default();
-            let mut edit = crate::api::text_edit::Selection::default();
-            let mut units = 0.0;
-            for (offset, character) in text[start..].char_indices() {
-                let character = if character.is_control() {
-                    ' '
-                } else {
-                    character
-                };
-                let width = if character.is_ascii() { 0.75 } else { 1.0 };
-                if units + width > budget {
-                    break;
-                }
-                units += width;
-                visible.push(character);
-                if start + offset < cursor {
-                    edit.cursor = visible.len();
-                }
-                if start + offset < self.content.search_selection.anchor {
-                    edit.anchor = visible.len();
-                }
-            }
-            let ink = cfg.for_appearance(ctx.palette.appearance).caption.clone();
-            let mut input = OverlayLabel::new(visible, area, ink)
-                .with_fixed_bounds()
-                .with_z_index(SEARCH_INPUT_Z_INDEX + 2);
-            input.edit = crate::api::overlay::LabelEdit::try_from(edit).ok();
-            scene.push_label(input);
-        }
-
-        scene
     }
 }
 impl HintSelectionView<'_> {

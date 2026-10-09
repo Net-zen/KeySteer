@@ -335,6 +335,7 @@ precision_multiplier = 0.12
 fast_multiplier = 2.0
 
 [scroll]
+speed = 500.0
 scroll_step = 50
 scroll_step_half = 500
 scroll_step_full = 1000000
@@ -345,6 +346,10 @@ invert_vertical = true
 ```
 
 Speed is pixels/second and acceleration is pixels/second², independent of display refresh rate. `smooth_acceleration = true` uses a gentler S curve; `false` uses linear acceleration.
+
+Ordinary scrolling responds immediately, continues while held, and stops on release. `scroll_step` sets the tap distance; `speed` sets the independent held speed in pixels/second. Defaults are 50 pixels per tap and 500 pixels/second while held; 0 enables tap-only scrolling. The `precision`, `slow`, and `fast` modifiers still apply.
+
+Half-page and full-page scrolling execute once per press without repeating while held. Continuous scrolling follows display frames without a fixed-interval timer. Under **Normal → Behavior**, the web simulator lets you edit held scroll speed directly in pixels per second.
 
 Theme colours use `#RRGGBBAA` and can differ for light and dark appearance:
 

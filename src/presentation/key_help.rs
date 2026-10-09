@@ -241,7 +241,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             "window" | "window_quick" | "window_editor"
         )
     {
-        let lines: Vec<_> = detail_status.lines().collect();
+        let lines: Vec<_> = detail_status.split('\n').collect();
         if lines.len() >= 2 {
             detail_status = std::iter::once(format!("{}  \u{b7}  {}", lines[0], lines[1]))
                 .chain(lines[2..].iter().map(|line| (*line).to_owned()))
@@ -259,7 +259,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
     let mut prompt = String::from(">");
     if window_help {
         let mut notes = Vec::new();
-        for line in detail_status.lines().filter(|line| !line.is_empty()) {
+        for line in detail_status.split('\n') {
             if let Some(value) = line.strip_prefix("Input:") {
                 let (value, hint) = value.trim().split_once(" · ").unwrap_or((value.trim(), ""));
                 prompt = format!("> {value}");
@@ -286,16 +286,11 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
         + 2.0)
         * scale
         + key_gap * 3.0;
-    let status_width = detail_status
-        .lines()
-        .map(super::text_units)
-        .fold(0.0, f64::max)
-        * ui.font_size
-        * scale;
+    // Changing titles and device names must not resize the entire help panel
+    // or change the binding columns/font size. Keep numeric input sizing.
     let natural_width = (if window_help {
         content_width
             .max(header_width)
-            .max(status_width)
             .max(super::text_units(&prompt) * ui.font_size * 1.65 * scale)
     } else {
         content_width
@@ -382,7 +377,11 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             0.0
         },
     ) * scale;
-    let status_lines = detail_status.lines().count();
+    let status_lines = if window_help {
+        detail_status.split('\n').count()
+    } else {
+        detail_status.lines().count()
+    };
     let status_height = ui.font_size * 1.8 * scale;
     let prompt_height = if window_help && prompt != ">" {
         ui.font_size * 2.3 * scale
@@ -653,14 +652,10 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             scale,
         );
     }
-    for (index, status) in detail_status.lines().enumerate() {
+    for (index, status) in detail_status.split('\n').enumerate().take(status_lines) {
         push_panel_text(
             scene,
-            if window_help {
-                status.into()
-            } else {
-                super::elide_width(status, (width - padding * 2.0) / (ui.font_size * scale))
-            },
+            super::elide_width(status, (width - padding * 2.0) / (ui.font_size * scale)),
             Rect::new(
                 panel.x + padding,
                 panel.y
@@ -1180,6 +1175,86 @@ mod tests {
         }
     }
 
+    #[test]
+    fn window_feedback_updates_keep_panel_and_binding_geometry_stable() {
+        for width in [520.0, 1920.0] {
+            for scale in [1.0, 1.5, 2.0] {
+                let config = crate::config::Config::default();
+                let entries: std::sync::Arc<[String]> = config
+                    .window
+                    .bindings
+                    .iter()
+                    .map(|(key, action)| format!("{key}  ·  {}", action.canonical()))
+                    .collect::<Vec<_>>()
+                    .into();
+                let screen = Screen {
+                    bounds: Rect::new(0.0, 0.0, width, 2400.0),
+                    work_area: Rect::new(0.0, 0.0, width, 2360.0),
+                    scale,
+                    is_primary: true,
+                    name: None,
+                };
+                for anchor in [None, Some(screen.work_area)] {
+                    let render = |title: &str, status: &str| {
+                        let mut scene = OverlayScene::new();
+                        compose(
+                            &mut scene,
+                            KeyHelpView {
+                                prepared: None,
+                                screen: &screen,
+                                ui: &KeyHelp::default(),
+                                palette: &Palette::default(),
+                                entries: entries.clone(),
+                                extra_entries: Vec::new(),
+                                return_target: Some("idle".into()),
+                                window_help: true,
+                                display_name: "window".into(),
+                                ruler: None,
+                                previews: Vec::new(),
+                                detail: Some(format!("Move\nPlayer\n{title}\n{status}")),
+                                anchor,
+                                indicator_style: None,
+                            },
+                        );
+                        scene
+                    };
+                    let baseline = render("Track", "");
+                    let geometry = |scene: &OverlayScene| {
+                        scene
+                            .labels
+                            .iter()
+                            .filter(|label| {
+                                label.z_index == i32::MAX - 1
+                                    || label.text == "V+J/K"
+                                    || label.text == "Move ←↓↑→"
+                            })
+                            .map(|label| (label.rect, label.style.font_size))
+                            .collect::<Vec<_>>()
+                    };
+                    let expected = geometry(&baseline);
+                    assert!(expected.len() >= 2);
+                    for status in [
+                        "System volume 9%",
+                        "System volume 100%",
+                        "Audio device unavailable",
+                        "",
+                    ] {
+                        for title in [
+                            "Track".to_owned(),
+                            "Very long changing window title 音乐播放器 ".repeat(12),
+                        ] {
+                            let scene = render(&title, status);
+                            assert_eq!(
+                                geometry(&scene),
+                                expected,
+                                "width={width} scale={scale} anchor={anchor:?} status={status}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn window_help_fits_inside_target_or_visible_work_area_at_multiple_scales() {
         for scale in [1.0, 1.5, 2.0] {

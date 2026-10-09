@@ -17,7 +17,6 @@ pub(super) fn stream_system_targets_from_result(
         VisionError::Operational(format!("cannot read OCR line count: {error}"))
     })?;
     let mut accepted = 0usize;
-    let mut batch = Vec::with_capacity(PROVIDER_BATCH_SIZE.min(maximum));
     for index in 0..count {
         if accepted == maximum {
             break;
@@ -68,25 +67,14 @@ pub(super) fn stream_system_targets_from_result(
         if text.is_empty() {
             continue;
         }
-        batch.push(UiTarget::recognized_text(rect, text));
-        accepted += 1;
-        if batch.len() == PROVIDER_BATCH_SIZE {
-            mailbox.publish(ProviderEvent::OcrBatch {
-                provider: "system",
-                elapsed: started.elapsed(),
-                targets: std::mem::replace(
-                    &mut batch,
-                    Vec::with_capacity(PROVIDER_BATCH_SIZE.min(maximum - accepted)),
-                ),
-            })?;
-        }
-    }
-    if !batch.is_empty() {
+        // Conversion can make native calls for each line. Submit each ready
+        // result now; the fusion worker coalesces buffers without count gates.
         mailbox.publish(ProviderEvent::OcrBatch {
             provider: "system",
             elapsed: started.elapsed(),
-            targets: batch,
+            targets: vec![UiTarget::recognized_text(rect, text)],
         })?;
+        accepted += 1;
     }
     Ok(accepted)
 }

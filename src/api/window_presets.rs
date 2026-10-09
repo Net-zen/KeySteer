@@ -272,6 +272,7 @@ pub enum WorkspaceValue {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextPrompt {
+    pub point_keys: Option<super::point_sample::PromptKeys>,
     /// Some selects shared overlay editing; None opens a native preset-note editor.
     pub edit_keys: std::sync::Arc<[(crate::api::KeyChord, crate::api::text_edit::EditAction)]>,
     pub live_style: Option<crate::api::overlay::SharedLabelStyle>,

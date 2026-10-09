@@ -1,13 +1,8 @@
 name: Deploy documentation
 
 on:
-  workflow_call:
-    inputs:
-      release_tag:
-        description: 'Download release tag (latest = latest stable release)'
-        type: string
-        required: false
-        default: latest
+  # Cross-build dispatches this workflow from the default branch so the
+  # github-pages environment evaluates a branch ref rather than a release tag.
   workflow_dispatch:
     inputs:
       release_tag:

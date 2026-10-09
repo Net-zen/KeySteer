@@ -1,18 +1,16 @@
-//! Shared fusion and count-driven publication for Windows UIA and macOS AX.
+//! Shared fusion; each ready input produces an immediate atomic delta.
 
 use smallvec::SmallVec;
 
-use crate::api::command::{MAX_UI_SCAN_TARGETS, remove_retired_targets};
+use crate::api::command::MAX_UI_SCAN_TARGETS;
 use crate::api::{Rect, SemanticRole, UiTarget};
 
-use super::partial_batcher::PartialBatcher;
 use super::spatial_index::{TargetIndex, TargetSource};
 
 pub(crate) struct ScanAccumulator {
     index: TargetIndex,
-    batches: PartialBatcher<UiTarget>,
-    published_any: bool,
     visual_text: Vec<UiTarget>,
+    text_spatial: super::spatial_index::SpatialIndex,
     images: Vec<UiTarget>,
     search_targets: Vec<Option<UiTarget>>,
     ocr_scratch: OcrScratch,
@@ -29,9 +27,8 @@ impl ScanAccumulator {
     pub(crate) fn new() -> Self {
         Self {
             index: TargetIndex::new(),
-            batches: PartialBatcher::new(24, MAX_UI_SCAN_TARGETS),
-            published_any: false,
             visual_text: Vec::new(),
+            text_spatial: super::spatial_index::SpatialIndex::new(64.0, 0.0, 0.0),
             images: Vec::new(),
             search_targets: Vec::new(),
             ocr_scratch: OcrScratch::default(),
@@ -41,7 +38,7 @@ impl ScanAccumulator {
 
     /// Each input batch has one provenance. Semantic owners can retire an
     /// earlier text descendant in the same batch; prune before publication.
-    /// Call and publish the returned delta under the same platform session lock.
+    /// The single-writer fusion worker publishes each returned delta atomically.
     pub(crate) fn push(
         &mut self,
         source: TargetSource,
@@ -76,6 +73,7 @@ impl ScanAccumulator {
                     // second copy of the provider's metadata/boxed strings.
                     let mut name = String::with_capacity(t.name.len());
                     let _ = crate::api::presentation::write_ocr_text(&mut name, &t.name);
+                    self.text_spatial.store(t.rect);
                     self.visual_text.push(UiTarget {
                         rect: t.rect,
                         role: t.role,
@@ -88,7 +86,12 @@ impl ScanAccumulator {
         if source == TargetSource::Contour {
             for t in &mut targets {
                 if t.role == SemanticRole::Image {
-                    image_name(t, &self.visual_text, &mut self.ocr_scratch);
+                    image_name(
+                        t,
+                        &self.visual_text,
+                        &mut self.ocr_scratch,
+                        &mut self.text_spatial,
+                    );
                 }
             }
         }
@@ -131,47 +134,25 @@ impl ScanAccumulator {
                     continue;
                 }
                 let previous = image.name.clone();
-                image_name(image, &self.visual_text, &mut self.ocr_scratch);
+                image_name(
+                    image,
+                    &self.visual_text,
+                    &mut self.ocr_scratch,
+                    &mut self.text_spatial,
+                );
                 if image.name != previous {
                     retired.push(image.rect);
                     targets.push(image.clone());
                 }
             }
         }
-        crate::api::command::enrich_replacements(
-            &mut targets,
-            self.batches.pending_mut(),
-            &retired,
-        );
         let accepted = targets.len();
-        remove_retired_targets(self.batches.pending_mut(), &retired);
+        // The asynchronous fusion scheduler owns processing quanta. Never hold
+        // ready data for another source or a cumulative count boundary here.
+        // Retirements and replacements stay in the same observable transaction.
         let mut batches: SmallVec<[Vec<UiTarget>; 2]> = SmallVec::new();
-        for target in targets {
-            if let Some(batch) = self.batches.push_one(target) {
-                batches.push(batch);
-            }
-        }
-        // Never wait for another provider to complete a small first batch.
-        // A replacement also flushes its tail so removal and addition travel
-        // together, including when the replacement has identical geometry.
-        if (!retired.is_empty() || (accepted != 0 && batches.is_empty() && !self.published_any))
-            && let Some(batch) = self.batches.flush_pending()
-        {
-            batches.push(batch);
-        }
-        self.published_any |= !batches.is_empty();
-        if batches.is_empty() && !retired.is_empty() {
-            batches.push(Vec::new());
-        }
-        // A retirement and ALL replacements form one observable transaction.
-        // Native adapters attach retirements to the first batch; splitting the
-        // replacements lets the engine paint an intermediate incomplete frame.
-        if !retired.is_empty() && batches.len() > 1 {
-            let mut transaction = Vec::with_capacity(batches.iter().map(Vec::len).sum());
-            for batch in batches.drain(..) {
-                transaction.extend(batch);
-            }
-            batches.push(transaction);
+        if !targets.is_empty() || !retired.is_empty() {
+            batches.push(targets);
         }
         for &rect in &retired {
             self.search_spatial.any_match(rect, |index, old, _| {
@@ -189,7 +170,12 @@ impl ScanAccumulator {
                 self.search_spatial.any_match(text.rect, |index, _, _| {
                     if !changed.contains(&index)
                         && let Some(target) = &mut self.search_targets[index]
-                        && attach_ocr(target, &self.visual_text, &mut self.ocr_scratch)
+                        && attach_ocr(
+                            target,
+                            &self.visual_text,
+                            &mut self.ocr_scratch,
+                            &mut self.text_spatial,
+                        )
                     {
                         changed.insert(index);
                     }
@@ -208,7 +194,12 @@ impl ScanAccumulator {
         }
         for batch in &mut batches {
             for target in batch {
-                attach_ocr(target, &self.visual_text, &mut self.ocr_scratch);
+                attach_ocr(
+                    target,
+                    &self.visual_text,
+                    &mut self.ocr_scratch,
+                    &mut self.text_spatial,
+                );
                 let mut existing = None;
                 self.search_spatial
                     .any_match(target.rect, |index, rect, _| {
@@ -240,16 +231,9 @@ impl ScanAccumulator {
     }
 
     pub(crate) fn finish(&mut self) -> Option<Vec<UiTarget>> {
-        let mut pending = self.batches.finish();
-        if let Some(targets) = &mut pending {
-            for target in targets {
-                attach_ocr(target, &self.visual_text, &mut self.ocr_scratch);
-            }
-        }
-        // Fusion evidence is no longer needed after terminal publication.
-        // Release it even if a native completion token still owns the session.
+        // Every push already published its tail. Release scan-only evidence.
         *self = Self::new();
-        pending
+        None
     }
 }
 
@@ -262,20 +246,31 @@ struct OcrScratch {
 
 // Rebuild from bounded, original scan evidence, never from previously joined text.
 // Scratch capacity is retained for this scan and released by finish/drop.
-fn attach_ocr(target: &mut UiTarget, text: &[UiTarget], scratch: &mut OcrScratch) -> bool {
+fn attach_ocr(
+    target: &mut UiTarget,
+    text: &[UiTarget],
+    scratch: &mut OcrScratch,
+    spatial: &mut super::spatial_index::SpatialIndex,
+) -> bool {
     let OcrScratch {
         text: scratch,
         runs,
     } = scratch;
     runs.clear();
-    runs.extend(text.iter().enumerate().filter_map(|(index, item)| {
-        (!item.name.is_empty()
+    // Evidence is append-only for this scan. Query overlapping cells rather
+    // than repeatedly walking all previous OCR lines for each small quantum.
+    spatial.any_match(target.rect, |index, _, _| {
+        let item = &text[index];
+        if !item.name.is_empty()
             && target
                 .rect
                 .intersect(&item.rect)
-                .is_some_and(|r| r.width * r.height >= item.rect.width * item.rect.height * 0.9))
-        .then_some(index)
-    }));
+                .is_some_and(|r| r.width * r.height >= item.rect.width * item.rect.height * 0.9)
+        {
+            runs.push(index);
+        }
+        false
+    });
     if runs.is_empty() {
         return false;
     }
@@ -400,8 +395,13 @@ fn text_overlap(left: &str, right: &str) -> usize {
     }
 }
 
-fn image_name(image: &mut UiTarget, text: &[UiTarget], scratch: &mut OcrScratch) {
-    attach_ocr(image, text, scratch);
+fn image_name(
+    image: &mut UiTarget,
+    text: &[UiTarget],
+    scratch: &mut OcrScratch,
+    spatial: &mut super::spatial_index::SpatialIndex,
+) {
+    attach_ocr(image, text, scratch, spatial);
     if let Some(details) = &image.details {
         image.name.clone_from(&details.ocr);
     }
@@ -410,8 +410,15 @@ fn image_name(image: &mut UiTarget, text: &[UiTarget], scratch: &mut OcrScratch)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::geometry::SemanticRole;
+    use crate::api::{command::remove_retired_targets, geometry::SemanticRole};
 
+    fn evidence_index(text: &[UiTarget]) -> super::super::spatial_index::SpatialIndex {
+        let mut index = super::super::spatial_index::SpatialIndex::new(64.0, 0.0, 0.0);
+        for item in text {
+            assert!(index.store(item.rect));
+        }
+        index
+    }
     #[test]
     #[ignore = "allocation counter requires isolated execution"]
     fn warmed_seam_assembly_reuses_strings_and_fragment_storage() {
@@ -426,11 +433,12 @@ mod tests {
         let mut target =
             UiTarget::recognized_text(Rect::new(0.0, 0.0, 5000.0, 30.0), String::new());
         let mut scratch = OcrScratch::default();
-        attach_ocr(&mut target, &text, &mut scratch);
-        attach_ocr(&mut target, &text, &mut scratch);
+        let mut spatial = evidence_index(&text);
+        attach_ocr(&mut target, &text, &mut scratch, &mut spatial);
+        attach_ocr(&mut target, &text, &mut scratch, &mut spatial);
         let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
         for _ in 0..1000 {
-            assert!(!attach_ocr(&mut target, &text, &mut scratch));
+            assert!(!attach_ocr(&mut target, &text, &mut scratch, &mut spatial));
         }
         let stats = region.change();
         assert_eq!(stats.allocations + stats.reallocations, 0, "{stats:?}");
@@ -498,12 +506,55 @@ mod tests {
             ];
             let mut owner =
                 UiTarget::recognized_text(Rect::new(0.0, 0.0, 300.0, 60.0), String::new());
-            attach_ocr(&mut owner, &text, &mut scratch);
+            let mut spatial = evidence_index(&text);
+            attach_ocr(&mut owner, &text, &mut scratch, &mut spatial);
             assert_eq!(owner.ocr_text(), expected);
         }
         assert_eq!(text_overlap("重复的字符字", "字结束"), 0);
         assert_eq!(text_overlap("🦀支持搜索", "支持搜索结果"), "支持搜索".len());
         assert_eq!(text_overlap(&"a".repeat(10_000), &"a".repeat(10_000)), 512);
+    }
+
+    #[test]
+    fn indexed_evidence_matches_full_geometry_filter_for_small_and_oversized_owners() {
+        let text: Vec<_> = (0..1024)
+            .map(|i| {
+                UiTarget::recognized_text(
+                    Rect::new(
+                        (i % 32 * 40) as f64 - 200.,
+                        (i / 32 * 30) as f64 - 200.,
+                        30.,
+                        20.,
+                    ),
+                    i.to_string(),
+                )
+            })
+            .collect();
+        let mut spatial = evidence_index(&text);
+        for rect in [
+            Rect::new(-200., -200., 5000., 5000.),
+            Rect::new(-200., -200., 30., 20.),
+            Rect::new(10., 10., 251., 105.),
+            Rect::new(4000., 4000., 30., 20.),
+        ] {
+            let mut target = UiTarget::recognized_text(rect, String::new());
+            let mut scratch = OcrScratch::default();
+            attach_ocr(&mut target, &text, &mut scratch, &mut spatial);
+            let mut actual = scratch.runs.to_vec();
+            actual.sort_unstable();
+            let expected: Vec<_> = text
+                .iter()
+                .enumerate()
+                .filter_map(|(i, item)| {
+                    rect.intersect(&item.rect)
+                        .is_some_and(|r| {
+                            r.width * r.height >= item.rect.width * item.rect.height * 0.9
+                        })
+                        .then_some(i)
+                })
+                .collect();
+            assert_eq!(actual, expected, "{rect:?}");
+        }
     }
 
     #[test]
@@ -570,7 +621,7 @@ mod tests {
         assert_eq!(scan.index.len(), 0);
         assert_eq!(scan.images.capacity(), 0);
         assert_eq!(scan.visual_text.capacity(), 0);
-        assert!(!scan.published_any);
+        assert_eq!(scan.search_targets.capacity(), 0);
     }
 
     #[test]
@@ -692,18 +743,17 @@ mod tests {
     }
 
     #[test]
-    fn small_first_batch_is_immediate_and_replacement_prunes_pending_fragments() {
+    fn every_ready_batch_is_immediate_and_replacement_retires_fragments() {
         let mut scan = ScanAccumulator::new();
         let a = target(0.0, 20.0, SemanticRole::Control);
         let b = target(50.0, 20.0, SemanticRole::Control);
         let first = scan.push(TargetSource::Contour, vec![a.clone()], 0.5);
         assert_eq!(first.batches[0][0].rect, a.rect);
         assert_eq!(first.batches[0][0].accessibility_text(), "");
-        assert!(
-            scan.push(TargetSource::Contour, vec![b.clone()], 0.5)
-                .batches
-                .is_empty()
-        );
+        let second = scan.push(TargetSource::Contour, vec![b.clone()], 0.5);
+        assert_eq!(second.batches.len(), 1);
+        assert_eq!(second.batches[0].len(), 1);
+        assert_eq!(second.batches[0][0].rect, b.rect);
         let row = target(0.0, 100.0, SemanticRole::ListItem);
         let update = scan.push(TargetSource::Accessibility, vec![row.clone()], 0.5);
         assert_eq!(update.accepted, 1);

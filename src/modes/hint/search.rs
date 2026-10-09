@@ -34,7 +34,31 @@ impl SearchTerms {
 #[derive(Default)]
 pub(super) struct SearchText {
     text: String,
-    initials: String,
+    initials_start: usize,
+}
+
+/// Parse the label marker once per query term, outside the candidate loop.
+pub(super) struct Term<'a> {
+    pub code: &'a str,
+    pub labels_only: bool,
+}
+
+impl<'a> Term<'a> {
+    pub(super) fn new(word: &'a str) -> Self {
+        let code = word.strip_prefix('@').or_else(|| word.strip_suffix('@'));
+        Self {
+            code: code.unwrap_or(word),
+            labels_only: code.is_some(),
+        }
+    }
+
+    pub(super) fn matches(&self, text: &SearchText, label: &str) -> bool {
+        if self.labels_only {
+            !self.code.is_empty() && label.starts_with(self.code)
+        } else {
+            label.starts_with(self.code) || text.matches_text(self.code)
+        }
+    }
 }
 
 impl SearchText {
@@ -59,39 +83,58 @@ impl SearchText {
         Self::new(&format!("{name} {ocr} {accessibility}"), target.role)
     }
     pub(super) fn new(name: &str, role: SemanticRole) -> Self {
-        let text = format!(
-            "{} {} {}",
-            name.to_lowercase(),
-            role.as_str(),
-            role_chinese(role)
-        );
-        let mut initials = String::with_capacity(text.len());
-        for ch in text.chars() {
+        let role_name = role.as_str();
+        let role_translation = role_chinese(role);
+        let suffix_len = 2 + role_name.len() + role_translation.len();
+        let mut text = if name
+            .chars()
+            .any(|ch| !ch.is_ascii() && ch.to_lowercase().ne(std::iter::once(ch)))
+        {
+            // Whole-string conversion preserves contextual Unicode mappings,
+            // including final sigma, and mappings that expand to multiple chars.
+            let mut text = name.to_lowercase();
+            text.reserve_exact(text.len() + 2 * suffix_len);
+            text
+        } else {
+            // ASCII and uncased text (including Chinese) fit with the roles in
+            // one allocation. Lowercasing ASCII preserves all other UTF-8 bytes.
+            let mut text = String::with_capacity(2 * (name.len() + suffix_len));
+            text.push_str(name);
+            text.make_ascii_lowercase();
+            text
+        };
+        text.push(' ');
+        text.push_str(role_name);
+        text.push(' ');
+        text.push_str(role_translation);
+        // Both representations share one allocation; the split keeps searches
+        // from matching across their boundary, including control characters.
+        let initials_start = text.len();
+        let mut cursor = 0;
+        while let Some(ch) = text[cursor..initials_start].chars().next() {
+            cursor += ch.len_utf8();
             if let Some(py) = ch.to_pinyin() {
-                initials.push_str(py.first_letter());
+                text.push_str(py.first_letter());
             } else {
-                initials.push(ch);
+                text.push(ch);
             }
         }
-        Self { text, initials }
+        Self {
+            text,
+            initials_start,
+        }
     }
 
-    pub(super) fn matches_term(&self, word: &str, label: &str) -> bool {
-        if let Some(prefix) = word.strip_prefix('@').or_else(|| word.strip_suffix('@')) {
-            // Hint codes are prefix-free: typing narrows candidates, and
-            // completing a code selects only that label. A bare marker
-            // is unfinished input, not a select-all term.
-            !prefix.is_empty() && label.starts_with(prefix)
-        } else {
-            label.starts_with(word) || self.text.contains(word) || self.initials.contains(word)
-        }
+    pub(super) fn matches_text(&self, word: &str) -> bool {
+        let (text, initials) = self.text.split_at(self.initials_start);
+        text.contains(word) || initials.contains(word)
     }
 
     #[cfg(test)]
     pub(super) fn matches(&self, query: &str, label: &str) -> bool {
         query
             .split_whitespace()
-            .all(|word| self.matches_term(word, label))
+            .all(|word| Term::new(word).matches(self, label))
     }
 }
 
@@ -174,6 +217,27 @@ mod tests {
         }
         assert!(!text.matches("粘贴", "aj"));
         assert!(!text.matches("fzwj checkbox", "aj"));
+        let separate_fields = SearchText::new("X", SemanticRole::Button);
+        assert!(separate_fields.matches_text("an"));
+        assert!(!separate_fields.matches_text("钮x"));
+        for name in [
+            "",
+            "SAVE",
+            "复制 Ctrl+C",
+            "ΟΣ",
+            "ΟΣΑ",
+            "İ",
+            "ǅ",
+            "Σ 复制",
+            "Σ\u{301}",
+        ] {
+            let indexed = SearchText::new(name, SemanticRole::Button);
+            assert_eq!(
+                &indexed.text[..indexed.initials_start],
+                format!("{} button 按钮", name.to_lowercase()),
+                "{name:?}"
+            );
+        }
     }
 
     #[test]
@@ -201,7 +265,7 @@ mod tests {
             let indexed = SearchText::target(&target);
             let expected = SearchText::new(distinct, target.role);
             assert_eq!(indexed.text, expected.text);
-            assert_eq!(indexed.initials, expected.initials);
+            assert_eq!(indexed.initials_start, expected.initials_start);
             let previous = SearchText::new(&format!("{name} {ocr} {accessibility}"), target.role);
             for query in [
                 "save", "复制", "fz", "设置", "sz", "cancel", "ο", "ος", "i\u{307}", "ǆ", "button",

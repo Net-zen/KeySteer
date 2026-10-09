@@ -5,6 +5,39 @@ outline: false
 
 # Release notes
 
+## 0.11.5
+
+Improved UIHint responsiveness on Windows and macOS, with labels appearing more promptly and fewer pauses on screens with many targets. Across the three target counts below, CPU processing time dropped by **48% on average**, with a reduction of up to **67%**.
+
+| CPU processing time (p50) | Before | After | Reduction |
+| --- | ---: | ---: | ---: |
+| UIHint (300 targets) | 0.3310 ms | 0.2642 ms | 20.2% |
+| UIHint (2000 targets) | 4.9206 ms | 2.0797 ms | 57.7% |
+| UIHint (10000 targets) | 60.0125 ms | 19.9858 ms | 66.7% |
+
+## 0.11.4
+
+- Fixed flickering feedback when adjusting volume, toggling mute, or switching audio output devices in Window mode.
+
+## 0.11.3
+
+- UIHint search now supports point adjustment: tap `Ctrl` to switch between typing and adjustment, using your Normal movement keys. Multiple points start at their average center; press `Tab` to cycle through them.
+- Inspect and copy OCR text, accessibility text, coordinates, and live color in HEX, RGB, or HSL. Each of the four fields can independently concatenate selected points or follow the current point. Default shortcuts are `Ctrl+1/2/3/4` to copy and `Ctrl+Shift+4` to change the color format.
+- Improved responsiveness when holding scroll keys and moving the pointer at the same time. Continuous scrolling has its own speed setting, and releasing the key cancels pending scroll frames.
+- The web configuration simulator adds point, information-panel, and scroll-speed settings. Color sampling on macOS requires Screen Recording permission.
+
+## 0.11.2
+
+- Fixed the pause between the first scroll step and continuous scrolling when holding a key. A press scrolls immediately.
+- Added a setting to adjust continuous scrolling speed.
+- Added the corresponding scroll speed setting to the web configuration simulator.
+
+## 0.11.0
+
+- Added window multi-selection for moving, resizing, maximizing/minimizing, and closing multiple windows together, with highlighted selections.
+- With default bindings, press `Alt+W`, then `Ctrl` to start selecting (Control on macOS too; the current window starts selected). Type `234` to toggle windows 2, 3, and 4; press Space before entering multi-digit labels. Press `Enter` or `Ctrl` again to confirm.
+- Use the usual action keys after confirming: `E` tiles only selected windows, `T` combines them into a tab group, and `Ctrl+X` clears the selection and returns to the original window.
+
 ## 0.10.30
 
 Improved window movement, resizing, and UI Hint search responsiveness, reducing repeated work and temporary allocations.

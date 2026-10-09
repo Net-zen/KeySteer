@@ -219,7 +219,7 @@ pub(crate) fn build_visual_layer_plan(
 ) {
     plan.clear();
     if placements.len() < 2 || separated_in_order(placements) {
-        plan.finish_unstacked(hint_count);
+        plan.finish_unstacked();
         return;
     }
 
@@ -377,7 +377,7 @@ fn build_general_plan(
         .iter()
         .all(|&degree| degree == 0)
     {
-        plan.finish_unstacked(hint_count);
+        plan.finish_unstacked();
         return;
     }
 
@@ -514,7 +514,7 @@ fn build_wide_plan(
             &mut wide.sweep_active,
         )
     {
-        plan.finish_unstacked(hint_count);
+        plan.finish_unstacked();
         return;
     }
     let mut graph = ConflictGraph::new_wide(
@@ -1075,7 +1075,7 @@ mod tests {
         quadratic_reference(placements, &mut reference);
 
         assert_eq!(optimized.layer_count(), reference.layer_count());
-        assert_eq!(optimized.len(), reference.len());
+        assert!(optimized.is_ready());
         for hint_index in 0..placements.len() {
             assert_eq!(
                 optimized.layer_info(hint_index),
@@ -1267,7 +1267,7 @@ mod tests {
                 &mut plan,
             );
             assert!(plan.is_ready());
-            assert_eq!(plan.len(), count * 2);
+            assert_eq!(plan.len(), 0);
             assert_eq!(plan.layer_count(), 0);
             assert!(plan.wide.is_none());
             for i in 0..count * 2 {

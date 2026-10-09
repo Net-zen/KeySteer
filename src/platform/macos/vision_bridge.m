@@ -8,6 +8,7 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include "point_capture.h"
 
 typedef struct {
     bool detect_text;
@@ -222,6 +223,98 @@ static CGImageRef captureRegion(
 }
 
 void NmkFreeVisionResult(NmkVisionResult *result);
+
+// A point sampler retains only a display filter, a tiny configuration and one
+// sRGB pixel context. Capture callbacks own their state across bounded waits.
+@interface NmkPointSampler : NSObject {
+@public
+    uint8_t pixel[4];
+    CGContextRef context;
+}
+@property(nonatomic, strong) SCContentFilter *filter;
+@property(nonatomic) CGDirectDisplayID displayID;
+@end
+
+@implementation NmkPointSampler
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        context = CGBitmapContextCreate(pixel, 1, 1, 8, 4, space,
+            kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+        CGColorSpaceRelease(space);
+        if (context == NULL) return nil;
+    }
+    return self;
+}
+- (void)dealloc { if (context != NULL) CGContextRelease(context); }
+@end
+
+bool NmkSamplePoint(void **owner, double x, double y, bool reset, uint8_t *rgba) {
+    @autoreleasepool {
+        if (reset) {
+            if (*owner != NULL) { id old = CFBridgingRelease(*owner); *owner = NULL; (void)old; }
+            return false;
+        }
+        if (!isfinite(x) || !isfinite(y) || !CGPreflightScreenCaptureAccess()) return false;
+        CGDirectDisplayID displayID = 0;
+        uint32_t count = 0;
+        if (CGGetDisplaysWithPoint(CGPointMake(x, y), 1, &displayID, &count) != kCGErrorSuccess || count == 0) return false;
+        if (*owner == NULL) *owner = (void *)CFBridgingRetain([[NmkPointSampler alloc] init]);
+        NmkPointSampler *state = (__bridge NmkPointSampler *)*owner;
+        if (state == nil || !tryAcquireCapture()) return false;
+        CGRect bounds = CGDisplayBounds(displayID);
+        dispatch_group_t group = dispatch_group_create();
+        dispatch_group_enter(group);
+        __block CGImageRef captured = NULL;
+        __block NmkPointCapture region = {0};
+        void (^capture)(SCContentFilter *) = ^(SCContentFilter *filter) {
+            if (filter == nil || !NmkPlanPointCapture(x, y, bounds.origin.x, bounds.origin.y,
+                bounds.size.width, bounds.size.height, filter.pointPixelScale, &region)) {
+                releaseCapture(); dispatch_group_leave(group); return;
+            }
+            SCStreamConfiguration *configuration = [[SCStreamConfiguration alloc] init];
+            configuration.sourceRect = CGRectMake(region.x, region.y,
+                region.source_width, region.source_height);
+            configuration.width = region.width;
+            configuration.height = region.height;
+            configuration.destinationRect = CGRectMake(0, 0, region.width, region.height);
+            configuration.scalesToFit = NO;
+            configuration.showsCursor = NO;
+            [SCScreenshotManager captureImageWithFilter:filter configuration:configuration completionHandler:^(CGImageRef image, NSError *error) {
+                if (error == nil && image != NULL) captured = CGImageRetain(image);
+                releaseCapture();
+                dispatch_group_leave(group);
+            }];
+        };
+        SCContentFilter *cached = nil;
+        @synchronized(state) { if (state.displayID == displayID) cached = state.filter; }
+        if (cached != nil) capture(cached);
+        else [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
+            SCDisplay *display = nil;
+            for (SCDisplay *item in content.displays) if (item.displayID == displayID) { display = item; break; }
+            if (error != nil || display == nil) { capture(nil); return; }
+            NSMutableArray<SCRunningApplication *> *excluded = [NSMutableArray array];
+            for (SCRunningApplication *app in content.applications) if (app.processID == getpid()) [excluded addObject:app];
+            // Never cache a filter that could capture our own marker or panel.
+            if (excluded.count == 0) { capture(nil); return; }
+            SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display excludingApplications:excluded exceptingWindows:@[]];
+            @synchronized(state) { state.displayID = displayID; state.filter = filter; }
+            capture(filter);
+        }];
+        if (dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC)) != 0) {
+            dispatch_group_notify(group, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                if (captured != NULL) CGImageRelease(captured);
+            });
+            return false;
+        }
+        if (captured == NULL) return false;
+        bool sampled = NmkReadPointPixel(captured, state->context, region);
+        CGImageRelease(captured);
+        if (sampled) memcpy(rgba, state->pixel, 4);
+        return sampled;
+    }
+}
 
 NmkVisionResult *NmkDetectVisionElements(
     CGRect windowBounds,

@@ -42,6 +42,8 @@ fn active_config(engine: &Engine) -> Config {
 /// Records what the engine asked of the platform.
 #[derive(Default)]
 struct Recorder {
+    point_requests: Vec<crate::api::point_sample::Request>,
+    point_cancels: usize,
     copied_text: Vec<String>,
     clipboard_input: String,
     text_capture: bool,
@@ -84,6 +86,7 @@ struct Recorder {
 }
 
 struct FakeBackend {
+    scroll_worker: Option<crate::platform::common::scroll_worker::ScrollWorker>,
     native_batches: Option<Vec<Result<Vec<BackendEvent>, String>>>,
     native_loop_running: bool,
     event_sender: Option<std::sync::mpsc::Sender<BackendEvent>>,
@@ -104,6 +107,7 @@ impl FakeBackend {
         let log = Arc::new(Mutex::new(Recorder::default()));
         (
             Self {
+                scroll_worker: None,
                 native_batches: None,
                 native_loop_running: false,
                 event_sender: None,
@@ -124,6 +128,13 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
+    fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
+        self.log.lock().unwrap().point_requests.push(request);
+        true
+    }
+    fn cancel_point_sample(&mut self) {
+        self.log.lock().unwrap().point_cancels += 1;
+    }
     fn run_event_loop(
         &mut self,
         turn: &mut crate::api::backend::EventLoopTurn<'_>,
@@ -316,6 +327,15 @@ impl Backend for FakeBackend {
         self.log.lock().unwrap().scrolls.push((dx, dy));
         Ok(())
     }
+    fn scroll_frame(&self, frame: crate::api::scroll::ScrollFrame) -> Result<(), String> {
+        if let Some(worker) = &self.scroll_worker {
+            worker.submit(frame)
+        } else if frame.is_current() {
+            self.scroll(frame.dx, frame.dy)
+        } else {
+            Ok(())
+        }
+    }
     fn send_key(&self, k: &Key, s: KeyState) -> Result<(), String> {
         let mut log = self.log.lock().unwrap();
         if s == KeyState::Up && log.fail_next_key_up {
@@ -412,6 +432,10 @@ impl Mode for ProbeMode {
     }
     fn handle(&mut self, event: &ModeEvent, _ctx: &HostContext<'_>) -> CommandBatch {
         let label = match event {
+            ModeEvent::TogglePointAdjustment
+            | ModeEvent::CyclePointTarget
+            | ModeEvent::CyclePointColor
+            | ModeEvent::PointSampled(_) => "point",
             ModeEvent::PanelWindowBounds { .. } => "panel_bounds",
             ModeEvent::TextChanged(_) => "text_changed",
             ModeEvent::TextSubmitted(_) => "text_submitted",

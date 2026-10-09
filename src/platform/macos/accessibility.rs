@@ -158,6 +158,13 @@ pub(super) fn movable_focused_window() -> Result<Option<MovableWindow>, String> 
 pub(super) fn window_under_pointer(
     cursor: crate::api::geometry::Point,
 ) -> Result<Option<MovableWindow>, String> {
+    crate::platform::common::accessibility_window::with_inventory_fallback(
+        ax_window_under_pointer(cursor),
+        || window_manager::pointer_window_from_inventory(cursor),
+    )
+}
+
+fn ax_window_under_pointer(cursor: crate::api::Point) -> Result<Option<MovableWindow>, String> {
     // SAFETY: AX Create returns a +1 object, transferred once to OwnedCf.
     let system = unsafe { OwnedCf::from_create_rule(AXUIElementCreateSystemWide()) }
         .ok_or_else(|| "cannot create AX system element".to_string())?;
@@ -434,7 +441,6 @@ pub(crate) fn scan_process_stream(
         attributes,
         allowed_roles,
         deadline: Instant::now() + SCAN_BUDGET,
-        batch: Vec::with_capacity(24),
         target_count: 0,
         on_batch: &mut on_batch,
         is_current: &is_current,
@@ -442,9 +448,6 @@ pub(crate) fn scan_process_stream(
         occluders: Vec::new(),
     };
     scan.visit(root.cast(), 0);
-    if (scan.is_current)() {
-        scan.flush();
-    }
 
     Ok(())
 }
@@ -466,7 +469,6 @@ pub(crate) fn scan_screen_stream(
         attributes: AxAttributes::new(),
         allowed_roles: ax_roles_for(&request.roles).into_iter().collect(),
         deadline,
-        batch: Vec::with_capacity(24),
         target_count: 0,
         on_batch: &mut on_batch,
         is_current: &is_current,
@@ -513,9 +515,6 @@ pub(crate) fn scan_screen_stream(
             scan.occluders.push(item.bounds);
         }
     }
-    if is_current() {
-        scan.flush();
-    }
     Ok(())
 }
 
@@ -525,7 +524,6 @@ struct Scan<'a> {
     attributes: AxAttributes,
     allowed_roles: HashSet<String>,
     deadline: Instant,
-    batch: Vec<UiTarget>,
     target_count: usize,
     on_batch: &'a mut dyn FnMut(Vec<UiTarget>),
     is_current: &'a dyn Fn() -> bool,
@@ -534,13 +532,6 @@ struct Scan<'a> {
 }
 
 impl Scan<'_> {
-    fn flush(&mut self) {
-        if !self.batch.is_empty() {
-            let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(24));
-            (self.on_batch)(batch);
-        }
-    }
-
     fn visit(&mut self, element: AXUIElementRef, depth: u32) {
         if !is_ax_element(element)
             || depth > self.request.max_depth
@@ -588,16 +579,13 @@ impl Scan<'_> {
         {
             let key = normalized_rect(rect);
             if self.seen.insert(key) {
-                self.batch.push(UiTarget {
+                (self.on_batch)(vec![UiTarget {
                     details: None,
                     rect,
                     name: accessible_name(element, &self.attributes),
                     role: semantic_role,
-                });
+                }]);
                 self.target_count += 1;
-                if self.batch.len() >= 24 {
-                    self.flush();
-                }
             }
         }
 

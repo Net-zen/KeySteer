@@ -607,6 +607,101 @@ fn real_normal_mode_moves_immediately_and_decorations_follow_the_pointer() {
 }
 
 #[test]
+fn held_scrolling_runs_before_os_repeat_and_stops_on_key_up() {
+    for key in ["m", ",", ".", "/", "mouse_x2"] {
+        let mut config = Config::default();
+        config.normal.bindings.insert("mouse_x2".into(), Binding::parse("scroll_down").unwrap());
+        let mut engine = Engine::from_plan(crate::app::configuration::compile(&config).unwrap(), Appearance::Dark).unwrap();
+        engine.rebuild_tables();
+        engine.set_active(ModeId::normal());
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.handle_backend_event(key_down(key), &mut backend).unwrap();
+        assert_eq!(log.lock().unwrap().scrolls.len(), 1);
+        assert_eq!(engine.scheduler.frame_clock_owner, Some(ModeId::normal()));
+        engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(16)), &mut backend).unwrap();
+        assert_eq!(log.lock().unwrap().scrolls.len(), 2, "{key}: first frame must scroll without OS repeat");
+        let BackendEvent::Input(mut repeat) = key_down(key) else { unreachable!() };
+        repeat.repeat = true;
+        engine.handle_backend_event(BackendEvent::Input(repeat), &mut backend).unwrap();
+        assert_eq!(log.lock().unwrap().scrolls.len(), 2, "{key}: autorepeat must not add extra scroll");
+        engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(16)), &mut backend).unwrap();
+        engine.handle_backend_event(key_up(key), &mut backend).unwrap();
+        engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(16)), &mut backend).unwrap();
+        assert_eq!(log.lock().unwrap().scrolls.len(), 3, "{key}: queued frame after release must not scroll");
+        assert_eq!(log.lock().unwrap().frame_clock_states, vec![true, false]);
+        assert!(engine.scheduler.frame_clock_owner.is_none());
+        assert!(engine.scheduler.timers.is_empty());
+        assert!(engine.input.active_gestures.is_empty());
+    }
+}
+
+#[test]
+fn held_scrolling_stops_on_mode_exit_pause_and_capture_loss() {
+    for cancel in [key_down("esc"), BackendEvent::ToggleEnabled, BackendEvent::InputCaptureLost("test capture loss".into())] {
+        let config = Config::default();
+        let mut engine = Engine::from_plan(crate::app::configuration::compile(&config).unwrap(), Appearance::Dark).unwrap();
+        engine.rebuild_tables();
+        engine.set_active(ModeId::normal());
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.handle_backend_event(key_down("m"), &mut backend).unwrap();
+        engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(16)), &mut backend).unwrap();
+        engine.handle_backend_event(cancel, &mut backend).unwrap();
+        engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(16)), &mut backend).unwrap();
+        assert_eq!(log.lock().unwrap().scrolls.len(), 2);
+        assert!(engine.scheduler.frame_clock_owner.is_none());
+        assert!(engine.input.active_gestures.is_empty());
+        assert_eq!(log.lock().unwrap().frame_clock_states.last(), Some(&false));
+    }
+}
+
+#[test]
+fn stalled_native_scroll_does_not_block_movement_release_or_mode_cleanup() {
+    for cancel in [key_up("m"), key_down("esc"), BackendEvent::ToggleEnabled, BackendEvent::InputCaptureLost("test capture loss".into())] {
+        let config = Config::default();
+        let mut engine = Engine::from_plan(crate::app::configuration::compile(&config).unwrap(), Appearance::Dark).unwrap();
+        engine.rebuild_tables();
+        engine.set_active(ModeId::normal());
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.cursor = Point::new(500.0, 400.0);
+        let (injected, observed) = std::sync::mpsc::channel();
+        let (resume, gate) = std::sync::mpsc::channel();
+        backend.scroll_worker = Some(crate::platform::common::scroll_worker::ScrollWorker::start(
+            move |dx, dy| {
+                injected.send((dx, dy)).unwrap();
+                gate.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(())
+            },
+            |_| panic!("unexpected native failure"),
+        ).unwrap());
+        engine.handle_backend_event(key_down("m"), &mut backend).unwrap();
+        engine.handle_backend_event(key_down("l"), &mut backend).unwrap();
+        engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(16)), &mut backend).unwrap();
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        for _ in 0..240 {
+            engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(16)), &mut backend).unwrap();
+        }
+        assert!(log.lock().unwrap().moves.len() > 2, "movement continues while native scrolling is stalled");
+        assert_eq!(engine.active_mode(), &ModeId::normal(), "scroll backlog must not reset input state");
+        assert!(!engine.input.active_gestures.is_empty());
+        assert!(engine.scheduler.timers.is_empty());
+        let release_only = matches!(&cancel, BackendEvent::Input(input) if input.state == KeyState::Up);
+        engine.handle_backend_event(cancel, &mut backend).unwrap();
+        if release_only {
+            assert_eq!(engine.scheduler.frame_clock_owner, Some(ModeId::normal()));
+            engine.handle_backend_event(key_up("l"), &mut backend).unwrap();
+        }
+        assert!(engine.scheduler.frame_clock_owner.is_none());
+        // Let the in-flight native call finish. The queued continuous frame
+        // must already be cancelled, with no delayed scrolling after release.
+        resume.send(()).unwrap();
+        assert!(observed.recv_timeout(Duration::from_millis(30)).is_err());
+        backend.scroll_worker.as_mut().unwrap().stop_until(Instant::now() + Duration::from_secs(2)).unwrap();
+        assert_eq!(log.lock().unwrap().scrolls.len(), 1, "the initial tap remains intact");
+    }
+}
+
+#[test]
 fn physical_pointer_after_normal_movement_reanchors_the_next_keyboard_move() {
     let config = Config::default();
     let mut engine = Engine::new(config.clone(), Appearance::Dark);
@@ -677,6 +772,27 @@ fn inherited_normal_movement_receives_frames_while_grid_is_active() {
         2,
         "initial key-down and the display frame must both reach normal"
     );
+    assert!(engine.scheduler.frame_clock_owner.is_none());
+}
+
+#[test]
+fn inherited_normal_scrolling_receives_frames_while_grid_is_active() {
+    let mut config = Config::default();
+    config.normal.bindings.insert("f21".into(), Binding::parse("scroll_down").unwrap());
+    let mut engine = Engine::new(config.clone(), Appearance::Dark);
+    for mode in crate::app::mode_catalog::built_in(&config) {
+        engine.register(mode);
+    }
+    let mut script = enter_normal();
+    script.extend([
+        key_down("g"), key_up("g"), key_down("f21"),
+        BackendEvent::Frame(Duration::from_millis(16)), key_up("f21"),
+        BackendEvent::Frame(Duration::from_millis(16)),
+    ]);
+    let (mut backend, log) = FakeBackend::new(script);
+    engine.run(&mut backend).unwrap();
+    assert_eq!(engine.active_mode(), &ModeId::grid());
+    assert_eq!(log.lock().unwrap().scrolls.len(), 2, "initial press and first frame must reach Normal; release must stop it");
     assert!(engine.scheduler.frame_clock_owner.is_none());
 }
 

@@ -1,6 +1,40 @@
 use std::ffi::c_char;
 use std::ptr::NonNull;
 
+#[derive(Default)]
+pub(super) struct PointSampler {
+    native: *mut std::ffi::c_void,
+}
+
+impl PointSampler {
+    pub(super) fn sample(
+        &mut self,
+        request: Option<crate::api::point_sample::Request>,
+    ) -> Option<crate::api::Color> {
+        let point = request.map(|r| r.point).unwrap_or_default();
+        let mut rgba = [0u8; 4];
+        // SAFETY: the opaque owner is created, used and released only on this
+        // worker. The bridge writes four bytes synchronously and retains neither
+        // stack pointer. Its late capture callbacks retain their own native owner.
+        let ok = unsafe {
+            NmkSamplePoint(
+                &mut self.native,
+                point.x,
+                point.y,
+                request.is_none(),
+                rgba.as_mut_ptr(),
+            )
+        };
+        ok.then(|| crate::api::Color::rgb(rgba[0], rgba[1], rgba[2]))
+    }
+}
+
+impl Drop for PointSampler {
+    fn drop(&mut self) {
+        self.sample(None);
+    }
+}
+
 use crate::api::command::{UiScanStatus, VisionOptions};
 use crate::api::geometry::{Rect, SemanticRole, UiTarget};
 use crate::platform::common::spatial_index::{SpatialIndex, TargetSource};
@@ -158,6 +192,13 @@ impl Drop for OwnedVisionResult {
 }
 
 unsafe extern "C" {
+    fn NmkSamplePoint(
+        owner: *mut *mut std::ffi::c_void,
+        x: f64,
+        y: f64,
+        reset: bool,
+        rgba: *mut u8,
+    ) -> bool;
     safe fn NmkSetLatestVisionScan(scan_id: u64);
     safe fn NmkDetectVisionElements(
         bounds: NativeRect,

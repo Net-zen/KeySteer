@@ -4,6 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=assets/windows/keysteer.manifest");
     println!("cargo:rerun-if-changed=src/platform/windows/compositor_clock.c");
     println!("cargo:rerun-if-changed=src/platform/macos/vision_bridge.m");
+    println!("cargo:rerun-if-changed=src/platform/macos/point_capture.h");
     println!("cargo:rerun-if-changed=src/platform/macos/autostart_bridge.m");
     println!("cargo:rerun-if-changed=src/platform/macos/audio_bridge.m");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");

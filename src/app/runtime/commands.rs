@@ -61,6 +61,43 @@ impl Engine {
                 )
             });
             match command {
+                Command::SetPointAdjustment {
+                    available,
+                    adjusting,
+                } => {
+                    if self.scheduler.point_input.available != available
+                        || self.scheduler.point_input.adjusting != adjusting
+                    {
+                        self.scheduler.point_input = PointInput {
+                            available,
+                            adjusting,
+                            ..PointInput::default()
+                        };
+                    }
+                }
+                Command::SamplePoint(request) => {
+                    self.flush_pending_overlay(backend)?;
+                    self.scheduler.point_sample_serial =
+                        self.scheduler.point_sample_serial.wrapping_add(1);
+                    let id = self.scheduler.point_sample_serial;
+                    self.scheduler.point_sample = Some((owner.clone(), id, request));
+                    if !backend
+                        .request_point_sample(crate::api::point_sample::Request { id, ..request })
+                    {
+                        self.dispatch_to(
+                            owner,
+                            ModeEvent::PointSampled(crate::api::point_sample::Sample {
+                                request,
+                                color: None,
+                            }),
+                            backend,
+                        )?;
+                    }
+                }
+                Command::CancelPointSample => {
+                    self.scheduler.point_sample = None;
+                    backend.cancel_point_sample();
+                }
                 Command::RequestPanelWindowBounds(id) => {
                     if let Some(process) = self.focused_app.as_ref().map(|app| app.process_id) {
                         self.scheduler.panel_geometry.insert(id, owner.clone());
@@ -70,6 +107,7 @@ impl Engine {
                     }
                 }
                 Command::OpenTextPrompt(mut prompt) => {
+                    self.clear_point_input(backend);
                     self.scheduler.text_prompt_serial =
                         self.scheduler.text_prompt_serial.wrapping_add(1);
                     prompt.id = self.scheduler.text_prompt_serial | (1 << 63);
@@ -90,6 +128,7 @@ impl Engine {
                     }
                 }
                 Command::CloseTextPrompt => {
+                    self.clear_point_input(backend);
                     backend.set_text_capture(false);
                     if let Some((_, prompt)) = self.scheduler.text_prompt.take() {
                         self.scheduler.text_prompt_returning_focus = prompt.live_style.is_none();
@@ -97,6 +136,7 @@ impl Engine {
                     }
                 }
                 Command::ReleaseTextPrompt => {
+                    self.clear_point_input(backend);
                     self.scheduler.text_prompt = None;
                     backend.set_text_capture(false);
                     backend.release_text_prompt();
@@ -255,12 +295,17 @@ impl Engine {
                     });
                     // Synthetic movement is not guaranteed to re-enter the
                     // input hook. Store the constrained position actually sent.
-                    let previous_bounds = self.context().active_bounds();
+                    let window_suspended = self.registry.modal_stack.contains(&ModeId::window());
+                    // Normal does not consume pointer notifications. A suspended
+                    // Window can change the active mode while receiving one.
+                    let previous_bounds = (window_suspended || self.active_wants_pointer_events())
+                        .then(|| self.context().active_bounds());
                     self.cursor = to;
-                    if self.registry.modal_stack.contains(&ModeId::window()) {
+                    if window_suspended {
                         self.dispatch_to(&ModeId::window(), ModeEvent::PointerMoved(to), backend)?;
                     }
-                    if previous_bounds != self.context().active_bounds()
+                    if previous_bounds
+                        .is_some_and(|bounds| bounds != self.context().active_bounds())
                         && self.active_wants_pointer_events()
                     {
                         self.dispatch(ModeEvent::PointerMoved(to), backend)?;
@@ -284,15 +329,20 @@ impl Engine {
                     self.trace_lazy(self.settings.debug.motion, "backend", || {
                         format!("warp_pointer x={:.3} y={:.3}: ok", to.x, to.y)
                     });
-                    let previous_bounds = self.context().active_bounds();
+                    let window_suspended = self.registry.modal_stack.contains(&ModeId::window());
+                    // Normal does not consume pointer notifications. A suspended
+                    // Window can change the active mode while receiving one.
+                    let previous_bounds = (window_suspended || self.active_wants_pointer_events())
+                        .then(|| self.context().active_bounds());
                     self.cursor = to;
-                    if self.registry.modal_stack.contains(&ModeId::window()) {
+                    if window_suspended {
                         self.dispatch_to(&ModeId::window(), ModeEvent::PointerMoved(to), backend)?;
                     }
                     // Respect the same subscription as physical pointer events.
                     // Window selection warps must not become MoveTo requests;
                     // explicit modal targeting is delivered separately above.
-                    if previous_bounds != self.context().active_bounds()
+                    if previous_bounds
+                        .is_some_and(|bounds| bounds != self.context().active_bounds())
                         && self.active_wants_pointer_events()
                     {
                         self.dispatch(ModeEvent::PointerMoved(to), backend)?;
@@ -325,12 +375,25 @@ impl Engine {
                         format!("scroll dx={dx:.3} dy={dy:.3}: ok")
                     });
                 }
+                Command::ScrollFrame(mut frame) => {
+                    let (horizontal, vertical) = self.settings.invert_scroll;
+                    if horizontal {
+                        frame.dx = -frame.dx;
+                    }
+                    if vertical {
+                        frame.dy = -frame.dy;
+                    }
+                    if let Err(error) = backend.scroll_frame(frame) {
+                        return Err(self.recoverable_input_error("continuous scroll", error));
+                    }
+                    self.recoverable_input_succeeded();
+                }
                 Command::SetFrameClock(active) => {
                     self.scheduler.frame_clock_owner = active.then(|| owner.clone());
                     if let Err(error) = backend.set_frame_clock(active) {
                         self.scheduler.frame_clock_owner = None;
                         // A platform without a native display link retains
-                        // keyboard-repeat movement as its compatibility path.
+                        // keyboard-repeat movement/scrolling as its compatibility path.
                         self.trace_lazy(self.settings.debug.backend, "backend", || {
                             format!("set_frame_clock active={active}: {error}")
                         });

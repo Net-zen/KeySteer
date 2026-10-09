@@ -62,7 +62,11 @@ use std::path::{Path, PathBuf};
 // registration, callback context reads, deadline changes, and invalidation;
 // one test-only boundary borrows framework mode constants. No Send/Sync or
 // raw ownership transfer is added; callbacks cannot outlive their registration.
-const MAX_UNSAFE_EXPRESSIONS: usize = 403;
+// Point sampling adds two audited blocks in existing native owners: one
+// thread-affine Win32 region aperture with explicit HRGN transfer/cleanup, and
+// one bounded macOS opaque-owner/four-byte FFI call. Both samplers reuse small
+// capture resources; portable routing and cancellation contain no unsafe code.
+const MAX_UNSAFE_EXPRESSIONS: usize = 405;
 const MAX_UNSAFE_FILES: usize = 41;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
@@ -85,7 +89,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/status_item.rs", 10),
     ("src/platform/macos/event_loop.rs", 6),
     ("src/platform/windows/text_prompt.rs", 17),
-    ("src/platform/macos/vision.rs", 6),
+    ("src/platform/macos/vision.rs", 7),
     ("src/platform/windows/accessibility.rs", 30),
     ("src/platform/windows/autostart.rs", 4),
     ("src/platform/windows/gpu_overlay.rs", 28),
@@ -109,7 +113,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/windows/native/handles.rs", 4),
     ("src/platform/windows/native/message_loop.rs", 8),
     ("src/platform/windows/native/ocr_bridge.rs", 12),
-    ("src/platform/windows/native/window.rs", 3),
+    ("src/platform/windows/native/window.rs", 4),
     ("src/platform/windows/native/winrt.rs", 5),
     ("src/platform/windows/native/gdi.rs", 11),
     ("src/platform/windows/native/uia_cache.rs", 6),
@@ -263,5 +267,66 @@ fn overlay_capture_affinity_cannot_be_reintroduced() -> Result<(), Box<dyn std::
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn cf_owner_rejects_empty_ax_output_without_releasing_null()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Compile the actual macOS owner on every host. The fixture replaces only
+    // CFRelease with a checked release counter, so this exercises ownership and
+    // transfer without calling frameworks or needing Accessibility permission.
+    let native = include_str!("../src/platform/macos/native.rs");
+    let (_, owner) = native
+        .split_once("/// A Core Foundation object")
+        .ok_or("missing CF owner source")?;
+    let (owner, _) = owner
+        .split_once("// Signalable run-loop source")
+        .ok_or("missing CF owner boundary")?;
+    let fixture = include_str!("fixtures/macos-cf-owner-probe.rs").replace(
+        "// PRODUCTION_CF_OWNER",
+        &format!("/// A Core Foundation object{owner}"),
+    );
+    struct Directory(PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let directory = std::env::temp_dir().join(format!(
+        "keysteer-cf-owner-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory)?;
+    let directory = Directory(directory);
+    let source = directory.0.join("probe.rs");
+    let executable = directory
+        .0
+        .join(format!("probe{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&source, fixture)?;
+    let built =
+        std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .args(["--edition=2024", "--test"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .output()?;
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let tested = std::process::Command::new(&executable)
+        .args(["--test-threads=1", "--nocapture"])
+        .output()?;
+    assert!(
+        tested.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&tested.stdout),
+        String::from_utf8_lossy(&tested.stderr)
+    );
     Ok(())
 }

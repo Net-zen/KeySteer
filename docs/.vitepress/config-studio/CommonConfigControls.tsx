@@ -76,6 +76,7 @@ const ConfigControl = defineComponent({
     field: { type: Object as () => ConfigField, required: true },
     value: { required: false },
     inherited: { type: Boolean, required: true },
+    summary: { type: String, default: '' },
     onUpdate: { type: Function as unknown as () => (value: unknown) => void, required: true },
     onReset: { type: Function as unknown as () => () => void, required: true },
   },
@@ -93,11 +94,12 @@ const ConfigControl = defineComponent({
         </select>
       ) : (
         <input
+          aria-label={t(field.label)}
           type={field.kind === 'number' ? 'number' : 'text'}
           value={String(props.value ?? '')}
           min={field.min}
           max={field.max}
-          step={field.step}
+          step={field.path === 'scroll.speed' ? 'any' : field.step}
           onInput={(event) => props.onUpdate(field.kind === 'number'
             ? Number((event.target as HTMLInputElement).value)
             : (event.target as HTMLInputElement).value)}
@@ -108,8 +110,11 @@ const ConfigControl = defineComponent({
           <span class="ks-common-copy">
             <strong>{t(field.label)}</strong>
             <small>{t(field.description)}</small>
+            {props.summary && <small>{props.summary}</small>}
           </span>
-          <span class="ks-common-input">{control}</span>
+          <span class="ks-common-input">
+            {control}
+          </span>
           <button
             type="button"
             class={{ 'ks-inherit-button': true, inherited: props.inherited }}

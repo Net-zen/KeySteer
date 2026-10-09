@@ -60,8 +60,12 @@ const NO_WINDOW_UNDER_POINTER: &str =
     "No window under the pointer — move the pointer over a window";
 
 #[inline]
-fn label_text_offset_y(style: &LabelStyle, analysis: LabelTextAnalysis) -> f64 {
-    let units = if analysis.has_descender { -2.0 } else { -1.0 };
+fn label_text_offset_y(style: &LabelStyle, analysis: LabelTextAnalysis, fixed_line: bool) -> f64 {
+    let units = if analysis.has_descender && !fixed_line {
+        -2.0
+    } else {
+        -1.0
+    };
     analysis.scaled_units(style.font_size, units)
 }
 
@@ -135,12 +139,14 @@ pub struct WindowsBackend {
     background_budget: event_queue::BackgroundBudget,
     event_tx: EventSender,
     scan_mailbox: Arc<ScanMailbox>,
+    scan_fusion: crate::platform::common::scan_fusion::Worker,
     pending: VecDeque<BackendEvent>,
     screens: Vec<Screen>,
     /// Foreground window at the last check, to detect focus changes.
     last_foreground: HWND,
     last_appearance: Appearance,
     frame_clock: frame_clock::DisplayFrameClock,
+    scroll_worker: crate::platform::common::scroll_worker::ScrollWorker,
     foreground_watcher: Option<system_events::ForegroundWatcher>,
     status_item: Option<status_item::StatusItem>,
     console_control: Option<console_control::ConsoleControl>,
@@ -244,6 +250,13 @@ impl WindowsBackend {
             Vec::new()
         });
         let vision = vision::VisionWorker::start();
+        let scroll_events = event_tx.clone();
+        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
+            input::scroll,
+            move |event| {
+                let _ = scroll_events.send(event);
+            },
+        )?;
         Ok(Self {
             hook: None,
             overlay,
@@ -251,11 +264,20 @@ impl WindowsBackend {
             background_budget: event_queue::BackgroundBudget::default(),
             event_tx,
             scan_mailbox,
+            scan_fusion: crate::platform::common::scan_fusion::Worker::with_setup(|| {
+                if let Err(error) = native::prefer_background_work() {
+                    crate::report_warning!(
+                        "windows-ui-scan",
+                        "cannot lower fusion worker priority: {error}"
+                    );
+                }
+            }),
             pending,
             screens: initial_screens,
             last_foreground: native::foreground_window(),
             last_appearance: appearance,
             frame_clock: frame_clock::DisplayFrameClock::new(owner_thread),
+            scroll_worker,
             foreground_watcher,
             status_item,
             console_control,
@@ -431,6 +453,8 @@ impl WindowsBackend {
         let now = Instant::now();
         let deadline = now.checked_add(BACKEND_SHUTDOWN_TIMEOUT).unwrap_or(now);
         let mut errors = crate::support::errors::ErrorBundle::default();
+        self.scroll_worker.request_stop();
+        self.scan_fusion.request_stop();
         if let Some(worker) = self.window_worker.as_mut() {
             match worker.stop_until(deadline) {
                 Ok(()) => {
@@ -461,6 +485,7 @@ impl WindowsBackend {
                 Err(error) => errors.push("UI Automation worker", error),
             }
         }
+        errors.record("UI scan fusion", self.scan_fusion.stop_until(deadline));
         if let Err(error) = self.release_held_buttons() {
             errors.push("held mouse buttons", error);
         }
@@ -469,6 +494,10 @@ impl WindowsBackend {
         // cannot leave process-global tracking enabled for a later backend.
         hook::set_pointer_wake_enabled(false);
         errors.record("frame clock", self.frame_clock.stop_until(deadline));
+        errors.record(
+            "continuous scrolling",
+            self.scroll_worker.stop_until(deadline),
+        );
         if let Some(hook) = self.hook.as_mut() {
             match hook.stop_until(deadline) {
                 Ok(()) => {
@@ -573,6 +602,12 @@ impl Drop for WindowsBackend {
 }
 
 impl Backend for WindowsBackend {
+    fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
+        self.overlay.sample(Some(request)).is_ok()
+    }
+    fn cancel_point_sample(&mut self) {
+        let _ = self.overlay.sample(None);
+    }
     fn read_clipboard(&mut self) -> Result<String, String> {
         arboard::Clipboard::new()
             .and_then(|mut clipboard| clipboard.get_text())
@@ -809,6 +844,10 @@ impl Backend for WindowsBackend {
         self.inject_input(hook::InjectionRequest::Scroll { dx, dy })
     }
 
+    fn scroll_frame(&self, frame: crate::api::scroll::ScrollFrame) -> Result<(), String> {
+        self.scroll_worker.submit(frame)
+    }
+
     fn send_key(&self, key: &Key, state: KeyState) -> Result<(), String> {
         self.inject_input(hook::InjectionRequest::Key {
             key: key.clone(),
@@ -912,6 +951,13 @@ impl Backend for WindowsBackend {
         } else {
             None
         };
+        let fusion = match self.scan_fusion.prepare(generation) {
+            Ok(fusion) => fusion,
+            Err(error) => {
+                self.scan_mailbox.cancel(request_id);
+                return Err(error);
+            }
+        };
         let sources = usize::from(wants_uia) + usize::from(wants_vision);
         let session = ui_scan::ScanSession::new(
             Arc::clone(&plan),
@@ -919,6 +965,7 @@ impl Backend for WindowsBackend {
             sources,
             Arc::clone(&self.scan_mailbox),
             self.event_tx.clone(),
+            &fusion,
         );
         let result = (|| {
             if wants_uia {
@@ -942,6 +989,7 @@ impl Backend for WindowsBackend {
             Ok(())
         })();
         if result.is_err() {
+            self.scan_fusion.cancel(request_id);
             self.scan_mailbox.cancel(request_id);
             if let Some(worker) = self.ui_automation.as_ref() {
                 worker.cancel(request_id);
@@ -953,6 +1001,7 @@ impl Backend for WindowsBackend {
 
     fn cancel_ui_scan(&mut self, id: u64) -> Result<(), String> {
         if self.scan_mailbox.cancel(id) {
+            self.scan_fusion.cancel(id);
             if let Some(worker) = self.ui_automation.as_ref() {
                 worker.cancel(id);
             }
@@ -1093,13 +1142,19 @@ mod tests {
             ..LabelStyle::default()
         };
         assert_eq!(
-            label_text_offset_y(&style, LabelTextAnalysis::analyze("asa", 0)),
+            label_text_offset_y(&style, LabelTextAnalysis::analyze("asa", 0), false),
             -1.0
         );
         assert_eq!(
-            label_text_offset_y(&style, LabelTextAnalysis::analyze("aag", 0)),
+            label_text_offset_y(&style, LabelTextAnalysis::analyze("aag", 0), false),
             -2.0
         );
+        for text in ["", "asa", "asag", "jpyq"] {
+            assert_eq!(
+                label_text_offset_y(&style, LabelTextAnalysis::analyze(text, 0), true),
+                -1.0
+            );
+        }
     }
 
     #[test]

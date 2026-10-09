@@ -92,11 +92,13 @@ impl EventSender {
 }
 
 pub struct MacOsBackend {
+    point_sampler: Option<crate::platform::common::point_sample::Worker>,
     hook: Option<HookThread>,
     async_rx: Receiver,
     background_budget: event_queue::BackgroundBudget,
     event_tx: EventSender,
     scan_mailbox: Arc<ScanMailbox>,
+    scan_fusion: crate::platform::common::scan_fusion::Worker,
     scan_worker: ui_scan::UiScanWorker,
     pending: VecDeque<BackendEvent>,
     overlay: Overlay,
@@ -104,6 +106,7 @@ pub struct MacOsBackend {
     window_move: RefCell<Option<window_move::WindowMove<accessibility::MovableWindow>>>,
     display_watcher: Option<screens::DisplayWatcher>,
     frame_clock: display_link::DisplayFrameClock,
+    scroll_worker: crate::platform::common::scroll_worker::ScrollWorker,
     workspace: workspace::Workspace,
     status_item: Option<status_item::StatusItem>,
     update_worker: Option<crate::platform::common::update::UpdateWorker>,
@@ -168,12 +171,21 @@ impl MacOsBackend {
                 None
             }
         };
+        let scroll_events = event_tx.clone();
+        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
+            input::scroll,
+            move |event| {
+                let _ = scroll_events.send(event);
+            },
+        )?;
         Ok(Self {
+            point_sampler: None,
             hook,
             async_rx,
             background_budget: event_queue::BackgroundBudget::default(),
             event_tx,
             scan_mailbox,
+            scan_fusion: crate::platform::common::scan_fusion::Worker::default(),
             scan_worker: ui_scan::UiScanWorker::new(),
             pending: VecDeque::new(),
             overlay: Overlay::new(),
@@ -181,6 +193,7 @@ impl MacOsBackend {
             window_move: RefCell::new(None),
             display_watcher: Some(display_watcher),
             frame_clock,
+            scroll_worker,
             workspace,
             status_item: Some(status_item),
             update_worker: None,
@@ -320,6 +333,7 @@ impl MacOsBackend {
         // Vision is stopping would wait for an Engine disposition that can no
         // longer be sent.
         let mut errors = crate::support::errors::ErrorBundle::default();
+        self.scroll_worker.request_stop();
         if let Some(hook) = self.hook.as_mut() {
             hook.request_stop();
         }
@@ -331,6 +345,10 @@ impl MacOsBackend {
         }
         self.frame_clock.stop();
         self.scan_worker.request_stop();
+        self.scan_fusion.request_stop();
+        if let Some(worker) = &self.point_sampler {
+            worker.request_stop();
+        }
         if let Some(worker) = self.update_worker.as_ref() {
             worker.request_cancel();
         }
@@ -367,6 +385,14 @@ impl MacOsBackend {
             }
         }
         errors.record("UI scan worker", self.scan_worker.shutdown_until(deadline));
+        errors.record("UI scan fusion", self.scan_fusion.stop_until(deadline));
+        errors.record(
+            "continuous scrolling",
+            self.scroll_worker.stop_until(deadline),
+        );
+        if let Some(mut worker) = self.point_sampler.take() {
+            errors.record("point sampler", worker.stop_until(deadline));
+        }
         if let Some(worker) = self.update_worker.as_mut() {
             match worker.cancel_and_wait_until(deadline) {
                 Ok(()) => {
@@ -397,6 +423,32 @@ impl Drop for MacOsBackend {
 }
 
 impl Backend for MacOsBackend {
+    fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
+        if self.point_sampler.is_none() {
+            let tx = self.event_tx.clone();
+            self.point_sampler = crate::platform::common::point_sample::Worker::new(
+                || {
+                    let mut sampler = vision::PointSampler::default();
+                    move |request| sampler.sample(request)
+                },
+                move |sample| {
+                    let _ = tx.send(BackendEvent::PointSampled(sample));
+                },
+            )
+            .ok();
+        }
+        if let Some(worker) = &self.point_sampler {
+            worker.submit(Some(request));
+            true
+        } else {
+            false
+        }
+    }
+    fn cancel_point_sample(&mut self) {
+        if let Some(worker) = &self.point_sampler {
+            worker.submit(None);
+        }
+    }
     fn read_clipboard(&mut self) -> Result<String, String> {
         arboard::Clipboard::new()
             .and_then(|mut clipboard| clipboard.get_text())
@@ -678,6 +730,10 @@ impl Backend for MacOsBackend {
         input::scroll(dx, dy)
     }
 
+    fn scroll_frame(&self, frame: crate::api::scroll::ScrollFrame) -> Result<(), String> {
+        self.scroll_worker.submit(frame)
+    }
+
     fn send_key(&self, key: &Key, state: KeyState) -> Result<(), String> {
         self.keyboard.send_key(key, state)
     }
@@ -742,17 +798,26 @@ impl Backend for MacOsBackend {
 
     fn request_ui_scan(&mut self, request: crate::api::UiScanRequest) -> Result<(), String> {
         let generation = self.scan_mailbox.begin(request.id);
+        let fusion = match self.scan_fusion.prepare(generation) {
+            Ok(fusion) => fusion,
+            Err(error) => {
+                self.scan_mailbox.cancel(request.id);
+                return Err(error);
+            }
+        };
         self.scan_worker.request_scan(
             request,
             generation,
             Arc::clone(&self.scan_mailbox),
             self.event_tx.clone(),
+            fusion,
         );
         Ok(())
     }
 
     fn cancel_ui_scan(&mut self, id: u64) -> Result<(), String> {
         if self.scan_mailbox.cancel(id) {
+            self.scan_fusion.cancel(id);
             self.scan_worker.cancel_scan(id);
         }
         Ok(())

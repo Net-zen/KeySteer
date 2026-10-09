@@ -278,8 +278,9 @@ impl WindowSession {
             if !self.number.display.is_empty() {
                 text.push_str(&format!("\nInput: {}", self.number.display));
             }
+            text.push('\n');
             if let Some(status) = &self.status {
-                text.push_str(&format!("\n{status}"));
+                text.push_str(status);
             }
             return text;
         }
@@ -313,9 +314,14 @@ impl WindowSession {
         if self.number.slot {
             text.push_str(" · choose a tab group");
         }
+        text.push('\n');
         if let Some(status) = &self.status {
-            text.push('\n');
-            text.extend(status.chars().take(180));
+            text.extend(
+                status
+                    .chars()
+                    .take(180)
+                    .map(|c| if matches!(c, '\r' | '\n') { ' ' } else { c }),
+            );
         }
         text
     }

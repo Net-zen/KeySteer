@@ -65,6 +65,11 @@ struct CachedScene {
 }
 
 impl Overlay {
+    pub(super) fn sample_aperture(&self, point: Option<Point>) -> Result<(), String> {
+        self.window
+            .as_ref()
+            .map_or(Ok(()), |window| window.sample_aperture(point))
+    }
     pub fn new() -> Self {
         Self {
             class_registered: false,
@@ -229,7 +234,7 @@ impl Overlay {
                 &indicator.style,
                 0,
                 text_rasterizer,
-                None,
+                (None, false, 0),
             )?;
             if let Some(held_text) = &indicator.held_text {
                 let (held_width, held_height) = label_size(held_text);
@@ -244,7 +249,7 @@ impl Overlay {
                     &indicator.style,
                     0,
                     text_rasterizer,
-                    None,
+                    (None, false, 0),
                 )?;
             }
         }
@@ -383,6 +388,8 @@ fn scene_matches_local(
                         && label.z_index == cached.z_index
                         && label.fit_to_text == cached.fit_to_text
                         && label.edit == cached.edit
+                        && label.scroll_to_cursor == cached.scroll_to_cursor
+                        && label.trailing_text_len == cached.trailing_text_len
                 }))
         && match (&scene.cursor_marker, &cached.cursor_marker) {
             (Some(marker), Some(cached)) => {
@@ -796,7 +803,11 @@ impl<'a> Surface<'a> {
             &label.style,
             label.matched_prefix_len as usize,
             rasterizer,
-            label.edit.map(Into::into),
+            (
+                label.edit.map(Into::into),
+                label.scroll_to_cursor,
+                label.trailing_text_len,
+            ),
         )
     }
 
@@ -807,7 +818,7 @@ impl<'a> Surface<'a> {
         style: &LabelStyle,
         matched_prefix_len: usize,
         rasterizer: &mut TextRasterizer,
-        edit: Option<crate::api::text_edit::Selection>,
+        text_input: (Option<crate::api::text_edit::Selection>, bool, u8),
     ) -> Result<(), String> {
         self.fill(rect, style.background, style.border_radius);
         self.stroke_rect(
@@ -816,7 +827,14 @@ impl<'a> Surface<'a> {
             style.border_width,
             style.border_radius,
         );
-        self.text(text, rect, style, matched_prefix_len, rasterizer, edit)
+        self.text(
+            text,
+            rect,
+            style,
+            matched_prefix_len,
+            rasterizer,
+            text_input,
+        )
     }
 
     fn text(
@@ -826,7 +844,7 @@ impl<'a> Surface<'a> {
         style: &LabelStyle,
         matched_prefix_len: usize,
         rasterizer: &mut TextRasterizer,
-        edit: Option<crate::api::text_edit::Selection>,
+        text_input: (Option<crate::api::text_edit::Selection>, bool, u8),
     ) -> Result<(), String> {
         let rect = self.local_rect(label_rect);
         let width = rect.width.max(1.0).ceil() as usize;
@@ -834,10 +852,18 @@ impl<'a> Surface<'a> {
         let RasterizedText {
             mask,
             matched_boundary,
+            trailing_boundary,
             edit_offsets: offsets,
-        } = rasterizer.rasterize(text, style, width, height, matched_prefix_len, edit)?;
+        } = rasterizer.rasterize(text, style, width, height, matched_prefix_len, text_input)?;
         let decorations = offsets.map(|(cursor, anchor)| {
-            crate::api::text_edit::decoration_rects(label_rect, style.font_size, cursor, anchor)
+            let mut text_rect = label_rect;
+            text_rect.y += super::label_text_offset_y(
+                style,
+                LabelTextAnalysis::analyze(text, matched_prefix_len),
+                text_input.1,
+            )
+            .round();
+            crate::api::text_edit::decoration_rects(text_rect, style.font_size, cursor, anchor)
         });
         if let Some((_, Some(selection))) = decorations {
             self.fill(selection, style.matched_text_color.with_opacity(0.25), 0.0);
@@ -848,7 +874,9 @@ impl<'a> Surface<'a> {
                 if coverage == 0 {
                     continue;
                 }
-                let color = if matched_boundary.is_some_and(|boundary| x < boundary) {
+                let color = if matched_boundary.is_some_and(|boundary| x < boundary)
+                    || trailing_boundary.is_some_and(|boundary| x >= boundary)
+                {
                     style.matched_text_color
                 } else {
                     style.text_color
@@ -885,6 +913,7 @@ struct FontEntry {
 struct RasterizedText<'a> {
     mask: &'a [u8],
     matched_boundary: Option<usize>,
+    trailing_boundary: Option<usize>,
     edit_offsets: Option<(f64, f64)>,
 }
 
@@ -922,7 +951,11 @@ impl TextRasterizer {
         width: usize,
         height: usize,
         matched_prefix_len: usize,
-        edit: Option<crate::api::text_edit::Selection>,
+        (edit, scroll_to_cursor, trailing_text_len): (
+            Option<crate::api::text_edit::Selection>,
+            bool,
+            u8,
+        ),
     ) -> Result<RasterizedText<'_>, String> {
         // An empty editor still needs its caret, but has no glyphs to submit
         // to GDI. In particular, do not pass an empty slice's dangling pointer
@@ -933,7 +966,11 @@ impl TextRasterizer {
             return Ok(RasterizedText {
                 mask: &self.mask,
                 matched_boundary: None,
-                edit_offsets: edit.map(|_| (0.0, 0.0)),
+                trailing_boundary: None,
+                edit_offsets: edit.map(|_| {
+                    let x = style.text_alignment.offset(width as f64, 0.0);
+                    (x, x)
+                }),
             });
         }
         self.ensure_scratch(width, height)?;
@@ -970,6 +1007,8 @@ impl TextRasterizer {
         };
         scratch.clear_region(width, height);
         let mut matched_boundary = None;
+        let mut trailing_boundary = None;
+        let mut trailing_origin = 0;
         let mut edit_offsets = edit.map(|_| (0.0, 0.0));
         {
             let selected_font = scratch.select_font(&font.font)?;
@@ -984,22 +1023,24 @@ impl TextRasterizer {
                 }
                 SetTextColor(selected_font.dc(), COLORREF(0x00FF_FFFF));
             }
-            let text_offset_y = if edit.is_some() {
-                0
-            } else {
-                super::label_text_offset_y(style, analysis).round() as i32
-            };
+            let text_offset_y =
+                super::label_text_offset_y(style, analysis, scroll_to_cursor).round() as i32;
             let mut draw_rect = windows::Win32::Foundation::RECT {
                 left: 0,
                 top: text_offset_y,
                 right: width as i32,
                 bottom: height as i32 + text_offset_y,
             };
+            let (query, trailing) =
+                crate::api::overlay::split_trailing_text(text, trailing_text_len);
+            let query_utf16_len = self.utf16.len() - trailing.encode_utf16().count();
             // SAFETY: `utf16`, `draw_rect`, and the selected scratch DC remain
             // valid and writable for this synchronous text draw.
             unsafe {
                 let prefix_utf16_len = analysis.matched_utf16_len;
-                if !self.utf16.is_empty() && (prefix_utf16_len > 0 || edit.is_some()) {
+                if !self.utf16.is_empty()
+                    && (prefix_utf16_len > 0 || edit.is_some() || scroll_to_cursor)
+                {
                     let utf16_len = i32::try_from(self.utf16.len())
                         .map_err(|_| "overlay text is too long for GDI measurement")?;
                     self.advances.resize(self.utf16.len(), 0);
@@ -1017,17 +1058,51 @@ impl TextRasterizer {
                     {
                         return Err("GetTextExtentExPointW failed while measuring hint text".into());
                     }
-                    let left = style
+                    let mut left = style
                         .text_alignment
                         .offset(width as f64, text_size.cx as f64);
-                    let offset = |byte: usize| {
-                        let units = text.get(..byte).unwrap_or(text).encode_utf16().count();
-                        left + units
+                    let advance = |byte: usize| {
+                        let units = if byte >= text.len() {
+                            self.utf16.len()
+                        } else if byte == query.len() {
+                            query_utf16_len
+                        } else {
+                            text.get(..byte).unwrap_or(text).encode_utf16().count()
+                        };
+                        units
                             .checked_sub(1)
                             .and_then(|i| self.advances.get(i))
                             .copied()
                             .unwrap_or(0) as f64
                     };
+                    let query_end = advance(query.len());
+                    let trailing_width = if trailing.is_empty() {
+                        0.0
+                    } else {
+                        text_size.cx as f64 - query_end
+                    };
+                    let query_width = crate::api::text_edit::query_width(
+                        width as f64,
+                        style.font_size,
+                        trailing_width,
+                    );
+                    if !trailing.is_empty() {
+                        trailing_origin = (width as f64 - trailing_width) as i32;
+                        trailing_boundary = Some(trailing_origin.max(0) as usize);
+                        draw_rect.right = query_width.floor() as i32;
+                    }
+                    if scroll_to_cursor {
+                        let cursor_x = left + advance(edit.map_or(query.len(), |edit| edit.cursor));
+                        let scroll = crate::api::text_edit::scroll_offset(
+                            query_width,
+                            style.font_size,
+                            cursor_x,
+                        )
+                        .ceil();
+                        left -= scroll;
+                        draw_rect.left -= scroll as i32;
+                    }
+                    let offset = |byte| left + advance(byte);
                     edit_offsets = edit.map(|edit| (offset(edit.cursor), offset(edit.anchor)));
                     if prefix_utf16_len > 0 {
                         let prefix_width = self
@@ -1039,22 +1114,37 @@ impl TextRasterizer {
                             Some((left as i32 + prefix_width).clamp(0, width as i32) as usize);
                     }
                 }
-                DrawTextW(
-                    selected_font.dc(),
-                    &mut self.utf16,
-                    &mut draw_rect,
-                    match style.text_alignment {
-                        crate::api::overlay::TextAlignment::Left => {
-                            windows::Win32::Graphics::Gdi::DT_LEFT
-                        }
-                        crate::api::overlay::TextAlignment::Center => DT_CENTER,
-                        crate::api::overlay::TextAlignment::Right => {
-                            windows::Win32::Graphics::Gdi::DT_RIGHT
-                        }
-                    } | DT_VCENTER
-                        | DT_SINGLELINE
-                        | DT_NOPREFIX,
-                );
+                if !query.is_empty() {
+                    DrawTextW(
+                        selected_font.dc(),
+                        &mut self.utf16[..query_utf16_len],
+                        &mut draw_rect,
+                        match style.text_alignment {
+                            crate::api::overlay::TextAlignment::Left => {
+                                windows::Win32::Graphics::Gdi::DT_LEFT
+                            }
+                            crate::api::overlay::TextAlignment::Center => DT_CENTER,
+                            crate::api::overlay::TextAlignment::Right => {
+                                windows::Win32::Graphics::Gdi::DT_RIGHT
+                            }
+                        } | DT_VCENTER
+                            | DT_SINGLELINE
+                            | DT_NOPREFIX,
+                    );
+                }
+                if trailing_boundary.is_some() {
+                    draw_rect.left = trailing_origin;
+                    draw_rect.right = width as i32;
+                    DrawTextW(
+                        selected_font.dc(),
+                        &mut self.utf16[query_utf16_len..],
+                        &mut draw_rect,
+                        windows::Win32::Graphics::Gdi::DT_LEFT
+                            | DT_VCENTER
+                            | DT_SINGLELINE
+                            | DT_NOPREFIX,
+                    );
+                }
             }
         }
 
@@ -1076,6 +1166,7 @@ impl TextRasterizer {
         Ok(RasterizedText {
             mask: &self.mask,
             matched_boundary,
+            trailing_boundary,
             edit_offsets,
         })
     }
@@ -1243,6 +1334,161 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "native GDI rasterization; requires an interactive Windows desktop"]
+    fn native_search_counter_uses_actual_width_and_keeps_the_baseline() -> Result<(), String> {
+        let mut rasterizer = TextRasterizer::new();
+        for family in ["", "Consolas"] {
+            for font_size in [14.0, 21.0, 28.0] {
+                let style = LabelStyle {
+                    font_family: family.into(),
+                    font_size,
+                    text_alignment: crate::api::overlay::TextAlignment::Left,
+                    ..Default::default()
+                };
+                let plain = rasterizer
+                    .rasterize("asas", &style, 280, 60, 0, (None, true, 0))?
+                    .mask
+                    .to_vec();
+                let prefix_width = rasterizer.advances[2] as usize;
+                for text in ["asasg", "asasj", "asasp", "asasq", "asasy"] {
+                    let drawn = rasterizer.rasterize(text, &style, 280, 60, 0, (None, true, 0))?;
+                    for (actual, expected) in drawn
+                        .mask
+                        .as_chunks::<280>()
+                        .0
+                        .iter()
+                        .zip(plain.as_chunks::<280>().0)
+                    {
+                        assert_eq!(
+                            &actual[..prefix_width],
+                            &expected[..prefix_width],
+                            "{text}, {family}, {font_size}"
+                        );
+                    }
+                }
+                let query = "sda sd ".repeat(80) + "sd";
+                for counter in ["0/163", "99/163", "163/163"] {
+                    let text = format!("{query}{counter}");
+                    let drawn = rasterizer.rasterize(
+                        &text,
+                        &style,
+                        280,
+                        60,
+                        0,
+                        (None, true, counter.len() as u8),
+                    )?;
+                    let counter_left = drawn.trailing_boundary.unwrap();
+                    let query_right = (counter_left as f64 - font_size * 0.2).floor() as usize;
+                    let ink = drawn
+                        .mask
+                        .as_chunks::<280>()
+                        .0
+                        .iter()
+                        .filter_map(|row| row[..query_right].iter().rposition(|pixel| *pixel != 0))
+                        .max()
+                        .unwrap();
+                    assert!(
+                        counter_left as f64 - ink as f64 <= font_size * 0.6,
+                        "gap before {counter} at {font_size}"
+                    );
+                    let expected = rasterizer.advances.last().copied().unwrap()
+                        - rasterizer.advances[query.len() - 1];
+                    assert_eq!(280 - counter_left, expected as usize);
+                }
+                rasterizer.rasterize("0/163", &style, 280, 60, 0, (None, true, 5))?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "native GDI rasterization; requires an interactive Windows desktop"]
+    fn native_search_viewport_fills_width_and_matches_point_text() -> Result<(), String> {
+        let mut rasterizer = TextRasterizer::new();
+        for family in ["", "Consolas"] {
+            for font_size in [14.0, 21.0, 28.0] {
+                let style = LabelStyle {
+                    font_family: family.into(),
+                    font_size,
+                    text_alignment: crate::api::overlay::TextAlignment::Left,
+                    ..Default::default()
+                };
+                let query = "as ".repeat(80);
+                let end = crate::api::text_edit::Selection {
+                    cursor: query.len(),
+                    anchor: query.len(),
+                };
+                let drawn =
+                    rasterizer.rasterize(&query, &style, 280, 60, 0, (Some(end), true, 0))?;
+                let cursor = drawn.edit_offsets.unwrap().0;
+                assert!((cursor - (280.0 - (font_size / 14.0).max(1.0))).abs() <= 1.0);
+                let rightmost_ink = drawn
+                    .mask
+                    .as_chunks::<280>()
+                    .0
+                    .iter()
+                    .filter_map(|row| row.iter().rposition(|pixel| *pixel > 0))
+                    .max()
+                    .unwrap();
+                assert!(rightmost_ink as f64 >= 280.0 - font_size);
+                let pixels = drawn.mask.to_vec();
+                let point = rasterizer.rasterize(&query, &style, 280, 60, 0, (None, true, 0))?;
+                assert_eq!(
+                    point.mask, pixels,
+                    "Point and input must show the same tail"
+                );
+                assert!(point.edit_offsets.is_none());
+                let home = crate::api::text_edit::Selection::default();
+                let pixels = rasterizer
+                    .rasterize(&query, &style, 280, 60, 0, (Some(home), true, 0))?
+                    .mask
+                    .to_vec();
+                assert_eq!(
+                    rasterizer
+                        .rasterize(&query, &style, 280, 60, 0, (None, false, 0))?
+                        .mask,
+                    pixels,
+                    "Home must reveal the beginning without moving fitting text"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "native GDI rasterization; requires an interactive Windows desktop"]
+    fn switching_edit_state_preserves_glyph_pixels_and_centers_empty_caret() {
+        let mut rasterizer = TextRasterizer::new();
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let style = LabelStyle {
+                font_size: 14.0 * scale,
+                text_alignment: crate::api::overlay::TextAlignment::Center,
+                ..Default::default()
+            };
+            for text in ["afs", "afs  Point", "gj", "复制"] {
+                let plain = rasterizer
+                    .rasterize(text, &style, 400, 60, 0, (None, false, 0))
+                    .unwrap()
+                    .mask
+                    .to_vec();
+                let edit = crate::api::text_edit::Selection {
+                    cursor: text.len(),
+                    anchor: 0,
+                };
+                let editing = rasterizer
+                    .rasterize(text, &style, 400, 60, 0, (Some(edit), false, 0))
+                    .unwrap();
+                assert_eq!(editing.mask, plain, "{text} at scale {scale}");
+                assert!(plain.iter().any(|pixel| *pixel != 0));
+            }
+            let empty = rasterizer
+                .rasterize("", &style, 400, 60, 0, (Some(Default::default()), false, 0))
+                .unwrap();
+            assert_eq!(empty.edit_offsets, Some((200.0, 200.0)));
+        }
+    }
+
+    #[test]
     #[ignore = "native GDI font measurement; requires an interactive Windows desktop"]
     fn editor_caret_uses_font_advances_and_reuses_raster_storage() {
         let mut rasterizer = TextRasterizer::new();
@@ -1260,7 +1506,7 @@ mod tests {
                     anchor: 0,
                 };
                 let drawn = rasterizer
-                    .rasterize(text, &style, 400, 60, 0, Some(edit))
+                    .rasterize(text, &style, 400, 60, 0, (Some(edit), false, 0))
                     .unwrap();
                 let (cursor, anchor) = drawn.edit_offsets.unwrap();
                 assert_eq!(anchor, 0.0);
@@ -1278,7 +1524,7 @@ mod tests {
                     anchor: 0,
                 };
                 rasterizer
-                    .rasterize("ajs", &style, 400, 60, 0, Some(edit))
+                    .rasterize("ajs", &style, 400, 60, 0, (Some(edit), false, 0))
                     .unwrap();
                 assert_eq!(rasterizer.advances.as_ptr(), storage);
             }

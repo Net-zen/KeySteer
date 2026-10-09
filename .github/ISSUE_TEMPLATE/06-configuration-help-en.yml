@@ -1,0 +1,31 @@
+name: Configuration or keyboard help
+description: Ask about TOML, configuration discovery, key bindings, or mode behavior.
+title: "[Config]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain what you want to achieve. Avoid sharing full configurations containing private paths, commands, or credentials.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: Briefly describe your goal, the current behavior, and where you are stuck.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration (optional)
+      description: Paste the relevant TOML snippet with private information removed, and include the configuration file name.
+      render: toml
+  - type: input
+    id: environment
+    attributes:
+      label: Version and environment (optional)
+      placeholder: For example, KeySteer 1.0.0 on macOS 15 Apple Silicon
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional information (optional)
+      description: Include `keysteer --doctor` output, logs, or screenshots.

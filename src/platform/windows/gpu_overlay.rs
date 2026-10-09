@@ -12,9 +12,10 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_NONE,
-    D2D1_ROUNDED_RECT, D2D1CreateDevice, ID2D1DeviceContext, ID2D1SolidColorBrush,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
+    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ROUNDED_RECT, D2D1CreateDevice, ID2D1DeviceContext,
+    ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -114,6 +115,9 @@ struct EditLayout {
     format: IDWriteTextFormat,
     width: f32,
     height: f32,
+    trailing_text_len: u8,
+    trailing_offsets: Option<(f64, f64)>,
+    query_width: f64,
     layout: IDWriteTextLayout,
 }
 
@@ -229,6 +233,11 @@ struct SceneChanges {
 }
 
 impl GpuOverlay {
+    pub(super) fn sample_aperture(&self, point: Option<Point>) -> Result<(), String> {
+        self.content
+            .as_ref()
+            .map_or(Ok(()), |content| content.window.sample_aperture(point))
+    }
     pub(super) const CLASS_NAME: PCWSTR = w!("KeySteerGpuOverlay");
 
     pub(super) fn new() -> Result<Self, String> {
@@ -281,7 +290,11 @@ impl GpuOverlay {
     }
 
     pub(super) fn present(&mut self, scene: Arc<OverlayScene>, area: Rect) -> Result<(), String> {
-        if !scene.labels.iter().any(|label| label.edit.is_some()) {
+        if !scene
+            .labels
+            .iter()
+            .any(|label| label.edit.is_some() || label.scroll_to_cursor)
+        {
             self.edit_layout = None;
         }
         let dimensions = NativeDimensions::from_f64(area.width, area.height)?;
@@ -716,7 +729,7 @@ impl GpuOverlay {
                         &indicator.style,
                         LabelTextAnalysis::analyze(&indicator.text, 0),
                         origin,
-                        None,
+                        (None, false, 0),
                     )?;
                     if let (Some(text), Some(rect)) = (&indicator.held_text, held) {
                         renderer.draw_label_parts(
@@ -725,7 +738,7 @@ impl GpuOverlay {
                             &indicator.style,
                             LabelTextAnalysis::analyze(text, 0),
                             origin,
-                            None,
+                            (None, false, 0),
                         )?;
                     }
                     Ok(())
@@ -788,7 +801,11 @@ impl GpuOverlay {
             &label.style,
             label.text_analysis(),
             origin,
-            label.edit.map(Into::into),
+            (
+                label.edit.map(Into::into),
+                label.scroll_to_cursor,
+                label.trailing_text_len,
+            ),
         )
     }
 
@@ -799,7 +816,11 @@ impl GpuOverlay {
         style: &LabelStyle,
         analysis: LabelTextAnalysis,
         origin: Point,
-        edit: Option<crate::api::text_edit::Selection>,
+        (edit, scroll_to_cursor, trailing_text_len): (
+            Option<crate::api::text_edit::Selection>,
+            bool,
+            u8,
+        ),
     ) -> Result<(), String> {
         let mut rect = local_rect(label_rect, origin);
         let rounded = D2D1_ROUNDED_RECT {
@@ -817,11 +838,7 @@ impl GpuOverlay {
             // SAFETY: drawing is active and both objects are live.
             draw_rounded_rectangle(&self.d2d, &rounded, &brush, style.border_width as f32);
         }
-        let text_offset_y = if edit.is_some() {
-            0.0
-        } else {
-            super::label_text_offset_y(style, analysis) as f32
-        };
+        let text_offset_y = super::label_text_offset_y(style, analysis, scroll_to_cursor) as f32;
         rect.top += text_offset_y;
         rect.bottom += text_offset_y;
         let format = self.text_format(style)?;
@@ -834,43 +851,91 @@ impl GpuOverlay {
         } else {
             D2D1_DRAW_TEXT_OPTIONS_NONE
         };
-        if edit.is_some() || (prefix_utf16_len > 0 && !style.matched_text_color.is_transparent()) {
+        if edit.is_some()
+            || scroll_to_cursor
+            || (prefix_utf16_len > 0 && !style.matched_text_color.is_transparent())
+        {
             let matched_brush = self.brush(style.matched_text_color)?;
-            let layout_origin = Vector2 {
+            let mut layout_origin = Vector2 {
                 X: rect.left,
                 Y: rect.top,
             };
+            let (query, trailing) =
+                crate::api::overlay::split_trailing_text(text, trailing_text_len);
+            let trailing_utf16_len = trailing.encode_utf16().count();
             // SAFETY: UTF-16 data, format, brushes and resulting COM layout
             // remain live through the draw. The text range was derived from
             // the same UTF-16 buffer and cannot exceed it.
             unsafe {
-                let width = (rect.right - rect.left).max(1.0);
-                let height = (rect.bottom - rect.top).max(1.0);
+                // Keep layout dimensions independent of the compositor's
+                // changing surface origin and the optical baseline offset.
+                let width = label_rect.width.max(1.0) as f32;
+                let height = label_rect.height.max(1.0) as f32;
+                let measure = |layout: &IDWriteTextLayout, position: u32| -> Result<f64, String> {
+                    let (mut x, mut y) = (0.0, 0.0);
+                    let mut metrics = DWRITE_HIT_TEST_METRICS::default();
+                    layout
+                        .HitTestTextPosition(position, false, &mut x, &mut y, &mut metrics)
+                        .map_err(|error| format!("Measure edit position failed: {error}"))?;
+                    Ok(f64::from(x))
+                };
                 let cached = self.edit_layout.as_ref().filter(|cache| {
-                    edit.is_some()
+                    (edit.is_some() || scroll_to_cursor)
                         && cache.text == text
                         && cache.format == format
                         && cache.width == width
                         && cache.height == height
+                        && cache.trailing_text_len == trailing_text_len
                 });
-                let layout = if let Some(cached) = cached {
-                    cached.layout.clone()
+                let (layout, trailing_offsets, query_width) = if let Some(cached) = cached {
+                    (
+                        cached.layout.clone(),
+                        cached.trailing_offsets,
+                        cached.query_width,
+                    )
                 } else {
                     let layout = self
                         .dwrite
                         .CreateTextLayout(&self.utf16, &format, width, height)
                         .map_err(|error| format!("CreateTextLayout failed: {error}"))?;
-                    if edit.is_some() {
+                    let trailing_offsets = if trailing.is_empty() {
+                        None
+                    } else {
+                        Some((
+                            measure(&layout, (analysis.utf16_len - trailing_utf16_len) as u32)?,
+                            measure(&layout, analysis.utf16_len as u32)?,
+                        ))
+                    };
+                    let query_width = crate::api::text_edit::query_width(
+                        f64::from(width),
+                        style.font_size,
+                        trailing_offsets.map_or(0.0, |(query_end, full_end)| full_end - query_end),
+                    );
+                    if edit.is_some() || scroll_to_cursor {
                         self.edit_layout = Some(EditLayout {
                             text: text.into(),
                             format: format.clone(),
                             width,
                             height,
+                            trailing_text_len,
+                            trailing_offsets,
+                            query_width,
                             layout: layout.clone(),
                         });
                     }
-                    layout
+                    (layout, trailing_offsets, query_width)
                 };
+                if !trailing.is_empty() {
+                    layout
+                        .SetDrawingEffect(
+                            &matched_brush,
+                            DWRITE_TEXT_RANGE {
+                                startPosition: (analysis.utf16_len - trailing_utf16_len) as u32,
+                                length: trailing_utf16_len as u32,
+                            },
+                        )
+                        .map_err(|error| format!("Set counter color failed: {error}"))?;
+                }
                 if prefix_utf16_len > 0 {
                     layout
                         .SetDrawingEffect(
@@ -882,30 +947,59 @@ impl GpuOverlay {
                         )
                         .map_err(|error| format!("SetDrawingEffect failed: {error}"))?;
                 }
-                if let Some(edit) = edit {
-                    let offset = |byte: usize| -> Result<f64, String> {
-                        if text.is_empty() {
-                            return Ok(0.0);
+                let offset = |byte: usize| -> Result<f64, String> {
+                    if text.is_empty() {
+                        return Ok(style.text_alignment.offset(f64::from(width), 0.0));
+                    }
+                    if let Some((query_end, full_end)) = trailing_offsets {
+                        if byte == query.len() {
+                            return Ok(query_end);
                         }
-                        let position =
-                            text.get(..byte).unwrap_or(text).encode_utf16().count() as u32;
-                        let (mut x, mut y) = (0.0, 0.0);
-                        let mut metrics = DWRITE_HIT_TEST_METRICS::default();
-                        layout
-                            .HitTestTextPosition(position, false, &mut x, &mut y, &mut metrics)
-                            .map_err(|error| format!("Measure edit position failed: {error}"))?;
-                        Ok(f64::from(x))
+                        if byte >= text.len() {
+                            return Ok(full_end);
+                        }
+                    }
+                    let position = if byte >= text.len() {
+                        analysis.utf16_len as u32
+                    } else if byte == query.len() {
+                        (analysis.utf16_len - trailing_utf16_len) as u32
+                    } else {
+                        text.get(..byte).unwrap_or(text).encode_utf16().count() as u32
                     };
+                    measure(&layout, position)
+                };
+                let cursor_x = if edit.is_some() || scroll_to_cursor {
+                    offset(edit.map_or(query.len(), |edit| edit.cursor))?
+                } else {
+                    0.0
+                };
+                let full_end = trailing_offsets.map_or(0.0, |(_, full_end)| full_end);
+                let trailing_width =
+                    trailing_offsets.map_or(0.0, |(query_end, full_end)| full_end - query_end);
+                let scroll = if scroll_to_cursor {
+                    crate::api::text_edit::scroll_offset(query_width, style.font_size, cursor_x)
+                } else {
+                    0.0
+                };
+                layout_origin.X -= scroll as f32;
+                let mut query_rect = rect;
+                // The same layout contains the counter. Short queries must
+                // clip at their own end so the suffix is painted only on the right.
+                query_rect.right = query_rect.left
+                    + trailing_offsets.map_or(query_width, |(query_end, _)| {
+                        (query_end - scroll).max(0.0).min(query_width)
+                    }) as f32;
+                if let Some(edit) = edit {
                     let (caret, selection) = crate::api::text_edit::decoration_rects(
                         Rect::new(
                             rect.left as f64,
                             rect.top as f64,
-                            width as f64,
+                            query_width,
                             height as f64,
                         ),
                         style.font_size,
-                        offset(edit.cursor)?,
-                        offset(edit.anchor)?,
+                        cursor_x - scroll,
+                        offset(edit.anchor)? - scroll,
                     );
                     if let Some(selection) = selection {
                         let brush = self.brush(style.matched_text_color.with_opacity(0.25))?;
@@ -915,8 +1009,37 @@ impl GpuOverlay {
                     self.d2d
                         .FillRectangle(&local_rect(caret, Point::new(0.0, 0.0)), &normal);
                 }
-                self.d2d
-                    .DrawTextLayout(layout_origin, &layout, &normal, draw_options);
+                if scroll_to_cursor {
+                    self.d2d
+                        .PushAxisAlignedClip(&query_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                }
+                self.d2d.DrawTextLayout(
+                    layout_origin,
+                    &layout,
+                    &normal,
+                    if scroll_to_cursor {
+                        D2D1_DRAW_TEXT_OPTIONS_NONE
+                    } else {
+                        draw_options
+                    },
+                );
+                if scroll_to_cursor {
+                    self.d2d.PopAxisAlignedClip();
+                }
+                if !trailing.is_empty() {
+                    let mut counter_rect = rect;
+                    counter_rect.left = (counter_rect.right - trailing_width as f32).max(rect.left);
+                    self.d2d
+                        .PushAxisAlignedClip(&counter_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    layout_origin.X = rect.right - full_end as f32;
+                    self.d2d.DrawTextLayout(
+                        layout_origin,
+                        &layout,
+                        &normal,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
+                    self.d2d.PopAxisAlignedClip();
+                }
             }
         } else {
             // SAFETY: UTF-16 data, format, brush and layout rectangle remain
@@ -1422,6 +1545,130 @@ mod tests {
         renderer.dismiss()?;
         assert_eq!(renderer.utf16.capacity(), 0);
         assert!(renderer.content.is_none());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows compositor"]
+    fn native_search_counter_is_drawn_once_on_the_right() -> Result<(), String> {
+        crate::platform::windows::screens::enable_dpi_awareness()?;
+        let mut renderer = GpuOverlay::new()?;
+        let area = Rect::new(40.0, 40.0, 480.0, 80.0);
+        let bounds = Rect::new(52.0, 52.0, 420.0, 56.0);
+        let mut capture = crate::platform::windows::native::PreparedCapture::new(480, 80)?;
+        for family in ["", "Consolas"] {
+            for query in ["sas sas aka", "sda sd ".repeat(80).as_str()] {
+                let mut scene = OverlayScene::new();
+                scene.clip = Some(area);
+                scene.shapes.push(OverlayShape::Rect {
+                    rect: area,
+                    fill: Color::rgb(255, 255, 255),
+                    stroke: Color::TRANSPARENT,
+                    stroke_width: 0.0,
+                    corner_radius: 0.0,
+                    z_index: 0,
+                });
+                let mut label = OverlayLabel::new(
+                    format!("{query}0/155"),
+                    bounds,
+                    LabelStyle {
+                        font_family: family.into(),
+                        font_size: 21.0,
+                        text_alignment: crate::api::overlay::TextAlignment::Left,
+                        text_color: Color::rgb(0, 0, 200),
+                        matched_text_color: Color::rgb(107, 114, 128),
+                        ..Default::default()
+                    },
+                )
+                .with_fixed_bounds();
+                label.scroll_to_cursor = true;
+                label.trailing_text_len = 5;
+                scene.labels.push(label);
+                renderer.present(Arc::new(scene), area)?;
+                crate::platform::windows::native::wait_for_dwm_frame()
+                    .map_err(|error| error.to_string())?;
+                let offsets = renderer
+                    .edit_layout
+                    .as_ref()
+                    .unwrap()
+                    .trailing_offsets
+                    .unwrap();
+                let counter_left = bounds.right() - area.x - (offsets.1 - offsets.0);
+                let leftmost = capture
+                    .capture_with(40, 40, 480, 80, |pixels, width, _| {
+                        Ok(pixels
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, pixel)| {
+                                let channels = &pixel[..3];
+                                let low = *channels.iter().min().unwrap();
+                                let high = *channels.iter().max().unwrap();
+                                (high < 220 && high - low <= 30).then_some(index % width as usize)
+                            })
+                            .min())
+                    })?
+                    .ok_or("counter pixels were not presented")?;
+                assert!(
+                    leftmost as f64 >= counter_left - 1.0,
+                    "duplicate counter before x={counter_left}: x={leftmost}, {family}, query length={}",
+                    query.len()
+                );
+            }
+        }
+        renderer.dismiss()?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows compositor"]
+    fn native_search_viewport_reuses_layout_for_cursor_and_point() -> Result<(), String> {
+        let mut renderer = GpuOverlay::new()?;
+        let area = Rect::new(0.0, 0.0, 480.0, 80.0);
+        let mut scene = OverlayScene::new();
+        scene.clip = Some(area);
+        let query = "ahd dhad dha had dhad h ".repeat(80);
+        let mut input = OverlayLabel::new(
+            query.as_str(),
+            Rect::new(12.0, 12.0, 420.0, 56.0),
+            LabelStyle {
+                font_size: 21.0,
+                text_alignment: crate::api::overlay::TextAlignment::Left,
+                ..Default::default()
+            },
+        )
+        .with_fixed_bounds();
+        input.scroll_to_cursor = true;
+        input.edit = Some(crate::api::overlay::LabelEdit::try_from(
+            crate::api::text_edit::Selection {
+                cursor: query.len(),
+                anchor: query.len(),
+            },
+        )?);
+        scene.labels.push(input);
+        renderer.present(Arc::new(scene.clone()), area)?;
+        let layout = renderer.edit_layout.as_ref().unwrap().layout.clone();
+        scene.labels[0].edit = Some(crate::api::overlay::LabelEdit::try_from(
+            crate::api::text_edit::Selection::default(),
+        )?);
+        renderer.present(Arc::new(scene.clone()), area)?;
+        assert_eq!(renderer.edit_layout.as_ref().unwrap().layout, layout);
+        scene.labels[0].edit = None;
+        assert!(scene.labels[0].scroll_to_cursor);
+        renderer.present(Arc::new(scene.clone()), area)?;
+        assert_eq!(renderer.edit_layout.as_ref().unwrap().layout, layout);
+        scene.labels[0].text.push_str("0/163");
+        scene.labels[0].trailing_text_len = 5;
+        renderer.present(Arc::new(scene.clone()), area)?;
+        let layout = renderer.edit_layout.as_ref().unwrap().layout.clone();
+        renderer.present(Arc::new(scene.clone()), area)?;
+        assert_eq!(renderer.edit_layout.as_ref().unwrap().layout, layout);
+        scene.labels[0].trailing_text_len = 0;
+        renderer.present(Arc::new(scene), area)?;
+        assert_ne!(renderer.edit_layout.as_ref().unwrap().layout, layout);
+        renderer.dismiss()?;
+        assert!(renderer.edit_layout.is_none());
         Ok(())
     }
 

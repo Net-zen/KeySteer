@@ -20,6 +20,8 @@ pub(super) struct ScanSession {
     pub(super) search_text: Vec<super::search::SearchText>,
     pub(super) search_hints: Vec<CompactHint<usize>>,
     pub(super) search_matches: Vec<CompactHint<usize>>,
+    /// Resolved input items, distinct from the broader search preview.
+    pub(super) search_selected: Vec<CompactHint<usize>>,
     pub(super) search_seen: Vec<bool>,
     pub(super) search_preview: crate::api::presentation::HintInfoPreview,
     pub(super) search_query: String,
@@ -66,6 +68,7 @@ impl ScanSession {
         self.search_text = Vec::new();
         self.search_hints = Vec::new();
         self.search_matches = Vec::new();
+        self.search_selected = Vec::new();
         self.search_seen = Vec::new();
         self.search_preview = Default::default();
         self.search_query = String::new();
@@ -316,8 +319,9 @@ impl ScanSession {
             self.next_same_rect.reserve(self.scanned.len());
 
             let mut retained = 0;
+            let mut geometry = RectKeyCache::default();
             for index in 0..self.scanned.len() {
-                let key = rect_hash(self.scanned[index].rect);
+                let key = hash_rect_key(geometry.key(self.scanned[index].rect));
                 let entry = self.seen_targets.entry(key);
                 let head = match &entry {
                     Entry::Occupied(entry) => *entry.get(),
@@ -416,9 +420,41 @@ fn contains_target(
 }
 
 fn rect_hash(rect: Rect) -> u64 {
+    hash_rect_key(rect_key(rect))
+}
+
+fn hash_rect_key(key: (i64, i64, i64, i64)) -> u64 {
     let mut hasher = rustc_hash::FxHasher::default();
-    rect_key(rect).hash(&mut hasher);
+    key.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Batch-local reuse for repeated row coordinates and control dimensions.
+/// Changed values still use exactly the same rounding and saturating cast.
+#[derive(Default)]
+struct RectKeyCache {
+    rect: Rect,
+    key: (i64, i64, i64, i64),
+}
+
+impl RectKeyCache {
+    fn key(&mut self, rect: Rect) -> (i64, i64, i64, i64) {
+        let quantize = |value: f64, previous: f64, key: i64| {
+            if value == previous {
+                key
+            } else {
+                (value * 4.0).round() as i64
+            }
+        };
+        self.key = (
+            quantize(rect.x, self.rect.x, self.key.0),
+            quantize(rect.y, self.rect.y, self.key.1),
+            quantize(rect.width, self.rect.width, self.key.2),
+            quantize(rect.height, self.rect.height, self.key.3),
+        );
+        self.rect = rect;
+        self.key
+    }
 }
 
 fn rect_key(rect: Rect) -> (i64, i64, i64, i64) {
@@ -433,6 +469,50 @@ fn rect_key(rect: Rect) -> (i64, i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_geometry_reuse_matches_standard_quantization() {
+        let mut cache = RectKeyCache::default();
+        let mut rect = Rect::default();
+        let values = [
+            0.0,
+            -0.0,
+            0.124999999999,
+            0.125,
+            0.125000000001,
+            -0.124999999999,
+            -0.125,
+            -0.125000000001,
+            64.0,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::MIN,
+            i64::MAX as f64,
+            i64::MIN as f64,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        let mut state = 1u64;
+        for index in 0..10_000 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let value = if index % 2 == 0 {
+                values[(state as usize) % values.len()]
+            } else {
+                f64::from_bits(state)
+            };
+            match index % 4 {
+                0 => rect.x = value,
+                1 => rect.y = value,
+                2 => rect.width = value,
+                _ => rect.height = value,
+            }
+            for _ in 0..2 {
+                assert_eq!(cache.key(rect), rect_key(rect), "{rect:?}");
+                assert_eq!(hash_rect_key(cache.key(rect)), rect_hash(rect));
+            }
+        }
+    }
 
     #[test]
     fn compact_lookup_collision_chain_checks_full_geometry_and_semantics() {

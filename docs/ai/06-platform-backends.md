@@ -22,6 +22,12 @@
 
 原生错误统一进入 `src/support/logging.rs`；不得另建平台日志出口。
 
+macOS 的 `native::OwnedCf` 只持有非空的 Create／Copy 引用；AX 查询失败或无结果返回空指针时，不创建临时 owner，也不调用 `CFRelease(NULL)`。鼠标窗口识别先走 AX 取点；失败或无法沿关系找到窗口时，才按 Quartz 前后顺序确定鼠标下最上层窗口，并复用编号枚举的 AXWindows 读取，只查询该进程、匹配唯一的普通且非最小化 AX 窗口。回退忽略本进程覆盖层，菜单／浮动层阻止选择后方窗口，不转向活动应用，也不猜测无法区分的重合身份；使用与编号枚举相同的 AX 超时和有限截止时间。正常取点成功不增加枚举。两条路径都失败时由现有 worker 回传结果，Window 模式保留窗口列表和编号选择，不退出进程。
+
+Windows/macOS 的连续滚动共用 `common/scroll_worker.rs`：待执行邮箱由空变为有帧时立即唤醒独立执行线程；已有待执行帧时只替换，不重复通知。不等待上一帧完成、不使用周期计时器，也不与鼠标移动合并。执行器只保留最新未执行帧；原生调用变慢时替换过期帧，不累加距离或补播历史帧，优先响应当前输入。短按仍走各平台原有离散输入路径，Windows 连续帧不占 Hook 的有界注入队列。原生调用在邮箱锁外执行，失败返回 `InputInjectionFailed`；关闭先取消待执行帧，再按共享截止时间回收线程。
+
+公共 `api::scroll::ScrollSession` 为帧提供可取消的代号；模式松键、换向、改速和退出时使旧帧失效，执行器注入前复核。已经进入原生 API 的一次调用可能完成；不得等待它来响应松键。每帧仅克隆共享身份，不新建会话或线程。
+
 ## 状态菜单与 About
 
 macOS 使用 AppKit 的 NSMenu 和非模态标准 About 面板，由系统决定外观，不覆盖系统材质。`event_loop.rs` 在主线程派发 AppKit 事件，注册 common、event-tracking 和 modal-panel 模式的 observer 与可复用 deadline timer；原生菜单的嵌套循环期间仍驱动同一个 Engine。普通输入、异步完成和显示帧唤醒原生循环，期限按引擎定时任务及待确认窗口移动调整，不增加固定高频轮询。`display_link.rs` 在相同模式注册显示帧。
@@ -42,3 +48,9 @@ UIHint 搜索由共享 Mode 编辑状态、presentation 绘制文字／选区／
 macOS 应用重新激活时保留已有 field editor；输入法切换中的临时 first-responder 拒绝不能关闭备注面板。初次打开仍检查焦点是否成功建立。
 
 多窗口连续操作由公共 worker 按目标保留小数移动余量和尺寸约束缓存，并在同一手势中合并交错目标的排队增量；撤销记录合并该手势的全部目标。音频批量请求在窗口 worker 解析全部选中窗口及 tab 成员的进程身份，独立 audio worker 按进程身份去重并逐项执行，单项失败不阻断其余目标。多选关闭 tab 组请求关闭全部成员，保存确认仍由应用处理。
+
+## 点位取样
+
+`api/point_sample.rs` 定义一个像素的异步请求／结果；runtime 按 owner 和版本路由，结束清除路由及原生取样状态。Windows 复用 overlay worker 的最新请求槽和 1×1 GDI 缓冲，在自有窗口 region 留一个三像素孔，再等待一次 DWM 提交，避免读取标签／标记且不隐藏整层；取消恢复 region 并释放像素缓冲。macOS 使用 common/point_sample 的单执行／单待办 worker，ScreenCaptureKit 按显示缓存排除本进程的 filter，使用 filter 的 pointPixelScale 将固定全局点映射到最多 32×32 像素的小区域，按原尺寸捕获并裁出指定的单个像素转为 sRGB；返回尺寸不符时拒绝样本，不将整张截图缩小成一个颜色；原生等待有界，超时后的回调自持有资源并释放迟到图像，屏幕捕获许可直到回调完成才释放。退出时取消、停止并有界 join，原生资源不进入模式。
+
+搜索输入与 Point 显示共用固定文字基线和左对齐布局；`OverlayLabel::scroll_to_cursor` 将完整单行文字交给后端，用已有字形位置保持光标可见，非编辑态显示末尾。`trailing_text_len` 标出右对齐的计数后缀，两段文字共用一次布局，按实际计数宽度裁剪查询；查询裁剪还止于自身文字末尾，避免短输入重复绘制后缀。计数宽度及文字区边界在布局变化时计算并缓存，后缀使用 matched_text_color。Windows 复用 DirectWrite 编辑布局或 GDI advance 缓冲；macOS 复用 CoreText 测量和已有裁剪文字子层，光标／选区跟随同一水平偏移。Windows 输入视口使用不随下伸字符变化的固定偏移，空输入也按对齐方式计算插入位置；macOS 固定面板继续按字体行高居中。

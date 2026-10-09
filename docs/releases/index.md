@@ -5,6 +5,55 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.11.5
+
+优化 Windows 和 macOS 的 UIHint 响应，让标签显示更及时、多标签界面更流畅。下表三个规模的结果处理 CPU 耗时平均降低约 **48%**，最高降低约 **67%**。
+
+Improved UIHint responsiveness on Windows and macOS, with labels appearing more promptly and fewer pauses on screens with many targets. Across the three target counts below, CPU processing time dropped by **48% on average**, with a reduction of up to **67%**.
+
+| CPU 处理耗时（p50） / CPU processing time (p50) | 优化前 / Before | 优化后 / After | 降低 / Reduction |
+| --- | ---: | ---: | ---: |
+| UIHint（300 个目标） / UIHint (300 targets) | 0.3310 ms | 0.2642 ms | 20.2% |
+| UIHint（2000 个目标） / UIHint (2000 targets) | 4.9206 ms | 2.0797 ms | 57.7% |
+| UIHint（10000 个目标） / UIHint (10000 targets) | 60.0125 ms | 19.9858 ms | 66.7% |
+
+## 0.11.4
+
+- 修复 Window 模式调整音量、切换静音或音频输出设备时的提示闪烁。
+- Fixed flickering feedback when adjusting volume, toggling mute, or switching audio output devices in Window mode.
+
+## 0.11.3
+
+- UIHint 搜索新增点位微调：轻触 `Ctrl` 切换输入与调整，沿用 Normal 的移动键；多点从平均中心开始，按 `Tab` 逐个切换。
+- 搜索信息面板支持查看和复制 OCR、辅助功能文字、坐标及实时颜色，支持 HEX、RGB、HSL；四栏均可独立配置为拼接多点信息或跟随当前点。默认用 `Ctrl+1/2/3/4` 复制，`Ctrl+Shift+4` 切换颜色格式。
+- 改善长按连续滚动与同时移动鼠标的响应，支持独立调整持续滚动速度，松键后取消尚未执行的滚动。
+- 网页配置模拟器补齐点位、信息栏和滚动速度设置。macOS 取色需要屏幕录制权限。
+
+- UIHint search now supports point adjustment: tap `Ctrl` to switch between typing and adjustment, using your Normal movement keys. Multiple points start at their average center; press `Tab` to cycle through them.
+- Inspect and copy OCR text, accessibility text, coordinates, and live color in HEX, RGB, or HSL. Each of the four fields can independently concatenate selected points or follow the current point. Default shortcuts are `Ctrl+1/2/3/4` to copy and `Ctrl+Shift+4` to change the color format.
+- Improved responsiveness when holding scroll keys and moving the pointer at the same time. Continuous scrolling has its own speed setting, and releasing the key cancels pending scroll frames.
+- The web configuration simulator adds point, information-panel, and scroll-speed settings. Color sampling on macOS requires Screen Recording permission.
+
+## 0.11.2
+
+- 修复长按滚动时先滚一下、停顿后才连续滚动的问题。按下立即执行。
+- 新增持续滚动速度配置，可按需要调整滚动速度。
+- 网页配置模拟器增加相应的滚动速度设置。
+
+- Fixed the pause between the first scroll step and continuous scrolling when holding a key. A press scrolls immediately.
+- Added a setting to adjust continuous scrolling speed.
+- Added the corresponding scroll speed setting to the web configuration simulator.
+
+## 0.11.0
+
+- 新增窗口多选，可批量移动、缩放、最大化／最小化和关闭窗口，选中窗口会高亮显示。
+- 默认按 `Alt+W` 进入窗口模式，再按 `Ctrl` 开始多选（macOS 同样使用 Control，当前窗口默认选中）；输入 `234` 切换选择窗口 2、3、4，多位编号先按空格再输入，按 `Enter` 或再次按 `Ctrl` 确认。
+- 确认后沿用原有操作键，按 `E` 只平铺选中窗口，按 `T` 将它们组成标签组；`Ctrl+X` 清除多选并回到最初窗口。
+
+- Added window multi-selection for moving, resizing, maximizing/minimizing, and closing multiple windows together, with highlighted selections.
+- With default bindings, press `Alt+W`, then `Ctrl` to start selecting (Control on macOS too; the current window starts selected). Type `234` to toggle windows 2, 3, and 4; press Space before entering multi-digit labels. Press `Enter` or `Ctrl` again to confirm.
+- Use the usual action keys after confirming: `E` tiles only selected windows, `T` combines them into a tab group, and `Ctrl+X` clears the selection and returns to the original window.
+
 ## 0.10.30
 
 优化窗口移动、缩放和 UI Hint 搜索响应，减少重复计算与临时内存分配。

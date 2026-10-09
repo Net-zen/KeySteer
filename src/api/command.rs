@@ -58,6 +58,12 @@ pub enum Command {
     RequestPanelWindowBounds(u64),
     OpenTextPrompt(Box<super::window_presets::TextPrompt>),
     CloseTextPrompt,
+    SetPointAdjustment {
+        available: bool,
+        adjusting: bool,
+    },
+    SamplePoint(super::point_sample::Request),
+    CancelPointSample,
     ReleaseTextPrompt,
     CopyText(String),
     ReadClipboard,
@@ -111,6 +117,9 @@ pub enum Command {
         dx: f64,
         dy: f64,
     },
+    /// A cancellable continuous interval. Backends may replace an unexecuted
+    /// older frame to prioritize latency; discrete Scroll commands stay intact.
+    ScrollFrame(super::scroll::ScrollFrame),
 
     /// Start or stop display-synchronised frame events for continuous motion.
     /// This is driven by the native display link, not a periodic timer.
@@ -284,6 +293,28 @@ impl CommandBatch {
             Self::Two(first, second) => CommandBatchIter::Two([first, second].into_iter()),
             Self::Many(commands) => CommandBatchIter::Many(commands.iter()),
         }
+    }
+
+    /// Preserve effect order while inserting a late-composed scene.
+    pub fn insert(&mut self, index: usize, command: Command) {
+        assert!(index <= self.len());
+        if index == self.len() {
+            self.push(command);
+            return;
+        }
+        *self = match std::mem::take(self) {
+            Self::One(first) => Self::Two(command, first),
+            Self::Two(first, second) => Self::Many(if index == 0 {
+                vec![command, first, second]
+            } else {
+                vec![first, command, second]
+            }),
+            Self::Many(mut commands) => {
+                commands.insert(index, command);
+                Self::Many(commands)
+            }
+            Self::Empty => unreachable!(),
+        };
     }
 }
 
@@ -472,6 +503,10 @@ pub enum ModeEvent {
     TextEdit(super::text_edit::EditAction),
     TextSubmitted(Option<String>),
     CopyTextField(usize),
+    TogglePointAdjustment,
+    CyclePointTarget,
+    CyclePointColor,
+    PointSampled(super::point_sample::Sample),
     TextCopied,
     AudioResult(Box<super::audio::AudioResult>),
     WindowResult(Box<super::window::WindowResult>),

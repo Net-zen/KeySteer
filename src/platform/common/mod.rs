@@ -16,9 +16,12 @@ pub(crate) mod event_queue;
 pub(crate) mod image_tiles;
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod overlay_reconcile;
-pub(crate) mod partial_batcher;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod point_sample;
 pub(crate) mod scan_accumulator;
+pub(crate) mod scan_fusion;
 pub(crate) mod scan_mailbox;
+pub(crate) mod scroll_worker;
 pub(crate) mod spatial_index;
 pub(crate) mod update;
 pub(crate) mod window_geometry;

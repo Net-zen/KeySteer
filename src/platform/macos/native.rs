@@ -1,6 +1,7 @@
 //! Zero-allocation ownership primitives shared by macOS native services.
 
 use std::ffi::c_void;
+use std::ptr::NonNull;
 
 use core_foundation::base::TCFType;
 use core_foundation::mach_port::CFMachPort;
@@ -120,7 +121,7 @@ pub(crate) fn clear_event_tap_invalidation_callback(tap: &CFMachPort) {
 /// This is pointer-sized and performs the same single `CFRelease` that callers
 /// would otherwise issue manually. It does not retain, clone or allocate.
 #[repr(transparent)]
-pub(crate) struct OwnedCf(*const c_void);
+pub(crate) struct OwnedCf(NonNull<c_void>);
 
 impl OwnedCf {
     /// Take ownership of a pointer returned under the Create/Copy rule.
@@ -129,18 +130,20 @@ impl OwnedCf {
     /// `value` must be either null or a live +1 Core Foundation object.
     #[inline(always)]
     pub(crate) unsafe fn from_create_rule(value: *const c_void) -> Option<Self> {
-        (!value.is_null()).then_some(Self(value))
+        // Never construct an owner for null: even a discarded temporary would
+        // run Drop, and CFRelease(NULL) aborts the entire process.
+        NonNull::new(value.cast_mut()).map(Self)
     }
 
     #[inline(always)]
     pub(crate) fn as_ptr(&self) -> *const c_void {
-        self.0
+        self.0.as_ptr()
     }
 
     /// Transfer the +1 reference into another typed create-rule wrapper.
     #[inline(always)]
     pub(crate) fn into_raw(self) -> *const c_void {
-        let value = self.0;
+        let value = self.as_ptr();
         std::mem::forget(self);
         value
     }
@@ -151,7 +154,7 @@ impl Drop for OwnedCf {
     fn drop(&mut self) {
         // SAFETY: construction requires one owned Create/Copy reference and
         // this non-Clone wrapper has exactly one Drop path.
-        unsafe { core_foundation::base::CFRelease(self.0) };
+        unsafe { core_foundation::base::CFRelease(self.as_ptr()) };
     }
 }
 

@@ -43,7 +43,6 @@ const MAX_CONTOUR_PIXELS: f64 = 2_073_600.0;
 const MAX_CONTOUR_EDGE: f64 = 2_560.0;
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const PROVIDER_STOP_TIMEOUT: Duration = Duration::from_millis(500);
-const PROVIDER_BATCH_SIZE: usize = 24;
 const MAX_OCR_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 const MIN_SYSTEM_OCR_TILE_SIDE: u32 = 64;
 const SYSTEM_OCR_TILE_OVERLAP: u32 = 64;

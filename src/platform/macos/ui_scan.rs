@@ -5,7 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::api::command::{UiScanRequest, UiScanStatus, UiScanStrategy};
-use crate::platform::common::scan_accumulator::ScanAccumulator;
+use crate::platform::common::scan_fusion::{Handle, Options, Sink};
 use crate::platform::common::scan_mailbox::ScanMailbox;
 use crate::platform::common::spatial_index::TargetSource;
 use crate::support::worker::WorkerJoin;
@@ -21,6 +21,7 @@ struct ScanJob {
     generation: u64,
     mailbox: Arc<ScanMailbox>,
     wake: EventSender,
+    fusion: Handle,
 }
 
 impl ScanJob {
@@ -69,6 +70,7 @@ impl UiScanWorker {
         generation: u64,
         mailbox: Arc<ScanMailbox>,
         wake: EventSender,
+        fusion: Handle,
     ) {
         LATEST_SCAN.store(generation, Ordering::Release);
         vision::mark_latest(generation);
@@ -91,6 +93,7 @@ impl UiScanWorker {
             generation,
             mailbox,
             wake,
+            fusion,
         }));
     }
 
@@ -170,71 +173,35 @@ impl Drop for UiScanWorker {
     }
 }
 
-/// AX and Vision share this publisher in Hybrid mode, so their combined target
-/// count follows one deterministic threshold sequence instead of each source
-/// independently repainting the overlay.
-struct PartialPublisher<'a> {
-    job: &'a ScanJob,
-    pid: libc::pid_t,
-    activation_pid: Option<libc::pid_t>,
-    state: Mutex<ScanAccumulator>,
+/// AX and Vision only submit buffers; one common worker owns all fusion state.
+struct PartialPublisher {
+    sink: Sink,
 }
-
-impl<'a> PartialPublisher<'a> {
-    fn new(job: &'a ScanJob, pid: libc::pid_t, activation_pid: Option<libc::pid_t>) -> Self {
-        Self {
-            job,
-            pid,
-            activation_pid,
-            state: Mutex::new(ScanAccumulator::new()),
-        }
+impl PartialPublisher {
+    fn new(job: &ScanJob, pid: libc::pid_t, activation_pid: Option<libc::pid_t>) -> Self {
+        let generation = job.generation;
+        let bounds = job.request.bounds;
+        let wake = job.wake.clone();
+        let sink = job.fusion.begin(Options {
+            id: job.request.id,
+            generation,
+            threshold: job.request.vision.merge_iou_threshold,
+            output: Arc::clone(&job.mailbox),
+            wake: Arc::new(move || wake.wake()),
+            accepts: Arc::new(move |target| {
+                bounds.is_none_or(|bounds| bounds.contains(&target.rect.center()))
+            }),
+            current: Arc::new(move || {
+                autoreleasepool(|_| scan_is_current(generation, pid, activation_pid))
+            }),
+        });
+        Self { sink }
     }
-
-    fn push(&self, source: TargetSource, mut targets: Vec<crate::api::UiTarget>) {
-        if !scan_is_current(self.job.generation, self.pid, self.activation_pid) {
-            return;
-        }
-        if let Some(bounds) = self.job.request.bounds {
-            targets.retain(|target| bounds.contains(&target.rect.center()));
-        }
-        if targets.is_empty() {
-            return;
-        }
-        // Keep publication under the same short lock as threshold assignment.
-        // In Hybrid mode this prevents the 48-target batch from overtaking the
-        // 24-target batch after two sources cross thresholds concurrently.
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let iou_threshold = self.job.request.vision.merge_iou_threshold;
-        let mut update = state.push(source, targets, iou_threshold);
-        for batch in update.batches {
-            self.send_update(batch, std::mem::take(&mut update.retired));
-        }
+    fn push(&self, source: TargetSource, targets: Vec<crate::api::UiTarget>) {
+        self.sink.submit(source, targets);
     }
-
-    fn finish(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let pending = state.finish();
-        if let Some(batch) = pending {
-            self.send(batch);
-        }
-    }
-
-    fn send(&self, targets: Vec<crate::api::UiTarget>) {
-        self.send_update(targets, Vec::new());
-    }
-
-    fn send_update(&self, targets: Vec<crate::api::UiTarget>, retired: Vec<crate::api::Rect>) {
-        if scan_is_current(self.job.generation, self.pid, self.activation_pid)
-            && self.job.mailbox.publish_update(
-                self.job.generation,
-                self.job.request.id,
-                targets,
-                retired,
-                UiScanStatus::Partial,
-            )
-        {
-            self.job.wake.wake();
-        }
+    fn finish(&self, status: UiScanStatus) {
+        self.sink.finish(status);
     }
 }
 
@@ -364,16 +331,11 @@ fn run_scan(mut job: ScanJob) {
     };
 
     let status = if scan_is_current(job.generation, pid, activation_pid) {
-        publisher.finish();
-        if scan_is_current(job.generation, pid, activation_pid) {
-            status
-        } else {
-            UiScanStatus::ContextChanged
-        }
+        status
     } else {
         UiScanStatus::ContextChanged
     };
-    job.publish(Vec::new(), status);
+    publisher.finish(status);
 }
 
 fn scan_sources(strategy: UiScanStrategy) -> (bool, bool) {
@@ -387,7 +349,7 @@ fn scan_sources(strategy: UiScanStrategy) -> (bool, bool) {
 fn stream_ax(
     job: &ScanJob,
     target: Option<(libc::pid_t, crate::api::Rect)>,
-    publisher: &PartialPublisher<'_>,
+    publisher: &PartialPublisher,
 ) -> UiScanStatus {
     let Some((pid, bounds)) = target else {
         return accessibility::scan_screen_stream(
@@ -407,7 +369,7 @@ fn stream_ax(
     .map_or_else(UiScanStatus::Failed, |_| UiScanStatus::Success)
 }
 
-fn stream_vision(job: &ScanJob, publisher: &PartialPublisher<'_>) -> UiScanStatus {
+fn stream_vision(job: &ScanJob, publisher: &PartialPublisher) -> UiScanStatus {
     scan_vision(job.generation, &job.request, publisher)
 }
 
@@ -466,7 +428,7 @@ fn requested_window_bounds(
 fn scan_vision(
     generation: u64,
     request: &UiScanRequest,
-    publisher: &PartialPublisher<'_>,
+    publisher: &PartialPublisher,
 ) -> UiScanStatus {
     match request.bounds {
         Some(bounds) => vision::detect(
@@ -570,6 +532,7 @@ mod tests {
         let wake = EventSender::new(sender);
         let mailbox = Arc::new(ScanMailbox::default());
         let first_generation = mailbox.begin(1);
+        let mut fusion_worker = crate::platform::common::scan_fusion::Worker::default();
         assert!(
             queue
                 .submit(ScanJob {
@@ -577,6 +540,7 @@ mod tests {
                     generation: first_generation,
                     mailbox: Arc::clone(&mailbox),
                     wake: wake.clone(),
+                    fusion: fusion_worker.prepare(first_generation).unwrap(),
                 })
                 .is_none()
         );
@@ -587,6 +551,7 @@ mod tests {
                 generation: second_generation,
                 mailbox,
                 wake,
+                fusion: fusion_worker.prepare(second_generation).unwrap(),
             })
             .expect("the single slot should replace its old request");
         assert_eq!(replaced.request.id, 1);
@@ -612,11 +577,14 @@ mod tests {
         };
         let (sender, _receiver) = crate::platform::common::event_queue::channel();
         let mailbox = Arc::new(ScanMailbox::default());
+        let mut fusion_worker = crate::platform::common::scan_fusion::Worker::default();
+        let generation = mailbox.begin(7);
         queue.submit(ScanJob {
             request: request(7),
-            generation: mailbox.begin(7),
+            generation,
             mailbox,
             wake: EventSender::new(sender),
+            fusion: fusion_worker.prepare(generation).unwrap(),
         });
 
         queue.stop();

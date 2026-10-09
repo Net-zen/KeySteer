@@ -231,7 +231,8 @@ pub(crate) trait WindowAccess {
     /// `native_deadline` clears; grouped visibility is committed after that.
     fn select(&self, id: WindowId) -> Result<(), String>;
     /// Query one source only. The caller applies priority and validates the
-    /// snapshot before choosing a fallback; native implementations avoid enumeration.
+    /// snapshot before choosing a fallback. Native recovery stays within this source;
+    /// successful direct native lookups do not enumerate.
     fn resolve_window_target(
         &mut self,
         source: crate::api::window::WindowTarget,

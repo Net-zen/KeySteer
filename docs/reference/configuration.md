@@ -396,6 +396,7 @@ precision_multiplier = 0.12
 fast_multiplier = 2.0
 
 [scroll]
+speed = 500.0
 scroll_step = 50
 scroll_step_half = 500
 scroll_step_full = 1000000
@@ -406,6 +407,10 @@ invert_vertical = true
 ```
 
 速度单位是像素/秒，加速度单位是像素/秒²，与显示器刷新率无关。`smooth_acceleration = true` 使用起步和收尾更柔和的 S 曲线；设为 `false` 使用线性加速。
+
+普通滚动按下立即响应，按住连续滚动，松开停止。`scroll_step` 设置短按距离，`speed` 设置长按速度（像素/秒），两者独立。默认短按 50 像素，长按 500 像素/秒；设为 0 时仅短按。`precision`、`slow`、`fast` 修饰键仍生效。
+
+半页、整页滚动每次按下执行一次，按住不重复。持续滚动跟随显示帧，不使用固定间隔计时器。网页模拟器的 **Normal → 行为** 页可直接修改长按滚动速度，单位为像素/秒。
 
 主题颜色使用 `#RRGGBBAA`，可以为浅色和深色外观分别设置：
 

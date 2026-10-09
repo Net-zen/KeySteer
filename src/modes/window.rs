@@ -869,9 +869,13 @@ impl WindowSession {
                 if result.session != self.session {
                     return out;
                 }
-                self.status = Some(match &result.outcome {
-                    Ok(message) | Err(message) => message.clone(),
-                });
+                let message = match &result.outcome {
+                    Ok(message) | Err(message) => message,
+                };
+                redraw = self.status.as_ref() != Some(message);
+                if redraw {
+                    self.status = Some(message.clone());
+                }
             }
             ModeEvent::WindowResult(result) => return self.window_result((**result).clone(), ctx),
             ModeEvent::WindowPresets(result) => {
@@ -898,7 +902,22 @@ impl WindowSession {
                 };
                 let had_status = self.status.is_some();
                 let selecting = source.is_some() || self.selection.is_some();
-                if *state == KeyState::Down {
+                // Audio feedback is replaced by its asynchronous result. Clearing
+                // it on each repeat exposes an empty intermediate panel frame.
+                let audio = matches!(
+                    action,
+                    W::VolumeDown
+                        | W::VolumeUp
+                        | W::VolumeMute
+                        | W::AudioPrevious
+                        | W::AudioNext
+                        | W::SystemVolumeDown
+                        | W::SystemVolumeUp
+                        | W::SystemVolumeMute
+                        | W::SystemAudioPrevious
+                        | W::SystemAudioNext
+                );
+                if *state == KeyState::Down && !audio {
                     self.status = None;
                 }
                 if selecting {

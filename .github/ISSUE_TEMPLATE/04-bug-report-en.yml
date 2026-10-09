@@ -1,0 +1,37 @@
+name: Bug report
+description: Report a reproducible issue with KeySteer behavior, input, or overlays.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue. Please include the relevant details and remove any private information.
+  - type: textarea
+    id: details
+    attributes:
+      label: Issue description
+      description: Briefly describe what happened and what you expected. Include steps if you can reproduce the issue.
+      placeholder: |
+        Actual behavior:
+        Expected behavior:
+        Steps to reproduce:
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Version and environment
+      description: Optional. KeySteer version, Windows/macOS version, and processor architecture.
+      placeholder: For example, KeySteer 1.0.0 on Windows 11 x64
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration (optional)
+      description: If configuration is involved, paste the relevant TOML snippet with private information removed.
+      render: toml
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Additional information (optional)
+      description: Include `keysteer --doctor` output, logs, screenshots, or other useful details.
+      render: text

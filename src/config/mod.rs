@@ -609,6 +609,18 @@ impl ConfigFile {
             )?;
         }
         normalize_key_if_aliased(&mut self.ui_hint.overlap_cycle_key, &aliases)?;
+        normalize_key_list(&mut self.ui_hint.search_copy_keys, &aliases)?;
+        normalize_binding_keys(
+            &mut self.ui_hint.search_bindings,
+            "[ui_hint.search_bindings]",
+            &aliases,
+        )?;
+        for alternatives in self.ui_hint.search_edit_keys.values_mut() {
+            let mut keys: Vec<String> =
+                alternatives.split_whitespace().map(str::to_owned).collect();
+            normalize_key_list(&mut keys, &aliases)?;
+            *alternatives = keys.join(" ");
+        }
         for keys in [
             &mut self.text_input.temporary_mode_keys,
             &mut self.grid.temporary_mode_keys,

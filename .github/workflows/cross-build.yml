@@ -28,6 +28,16 @@ on:
         options:
           - release
           - pre-release
+      release_tag:
+        description: Existing release tag (empty = derive from package version)
+        required: false
+        default: ''
+        type: string
+      source_sha:
+        description: Source commit forwarded to the default-branch build (empty = selected ref)
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -35,13 +45,75 @@ permissions:
 concurrency:
   # Publish runs share a group across refs so an older build cannot publish
   # after a newer build of the same package version.
-  group: cross-build-${{ github.repository }}-${{ (github.event_name == 'push' || inputs.publish) && 'publish' || github.ref }}
+  # Forwarders must not cancel the default-branch build they dispatch.
+  group: cross-build-${{ github.repository }}-${{ (github.event_name == 'push' || github.ref != format('refs/heads/{0}', github.event.repository.default_branch)) && format('dispatch-{0}', github.run_id) || (inputs.publish && 'publish' || github.ref) }}
   cancel-in-progress: true
 
 jobs:
+  dispatch:
+    name: Forward build to the default branch
+    if: ${{ !github.event.deleted && (github.event_name == 'push' || github.ref != format('refs/heads/{0}', github.event.repository.default_branch)) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Dispatch cross-build from the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_BRANCH: ${{ github.event.repository.default_branch }}
+          BUILD_PLATFORM: ${{ inputs.platform || 'all' }}
+          BUILD_PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+          RELEASE_TYPE: ${{ inputs.release_type || 'release' }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          test -n "$BUILD_BRANCH"
+          gh workflow run cross-build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$BUILD_BRANCH" \
+            --raw-field "platform=$BUILD_PLATFORM" \
+            --raw-field "publish=$BUILD_PUBLISH" \
+            --raw-field "release_type=$RELEASE_TYPE" \
+            --raw-field "release_tag=$RELEASE_TAG" \
+            --raw-field "source_sha=$SOURCE_SHA"
+          echo "Cross-build dispatched from $BUILD_BRANCH for $SOURCE_SHA ($RELEASE_TAG)"
+
+  source:
+    name: Resolve build commit
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha || inputs.release_tag || github.sha }}
+          fetch-depth: 0
+
+      - name: Validate release source
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BUILD_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          source_sha="$(git rev-parse HEAD)"
+          if [[ -n "$RELEASE_TAG" ]]; then
+            git check-ref-format "refs/tags/$RELEASE_TAG"
+            tag_sha="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+            test "$tag_sha" = "$source_sha"
+            # Tags are releases of commits already present on the default branch.
+            git merge-base --is-ancestor "$source_sha" "refs/remotes/origin/$BUILD_BRANCH"
+          fi
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+
   windows:
     name: Windows ${{ matrix.arch }}
-    if: ${{ !github.event.deleted && (github.event_name == 'push' || inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all') }}
+    needs: source
+    if: ${{ inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -76,6 +148,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.source.outputs.sha }}
 
       - name: Resolve latest stable cargo-xwin
         env:
@@ -161,7 +235,8 @@ jobs:
 
   macos:
     name: macOS ${{ matrix.arch }}
-    if: ${{ !github.event.deleted && (github.event_name == 'push' || inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all') }}
+    needs: source
+    if: ${{ inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -180,6 +255,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.source.outputs.sha }}
 
       - name: Resolve SDK source
         id: sdk
@@ -264,8 +341,8 @@ jobs:
   release:
     # A public release must contain every supported platform. Partial manual
     # builds still retain their downloadable workflow artifacts.
-    if: ${{ !github.event.deleted && (github.event_name == 'push' || inputs.publish) }}
-    needs: [windows, macos]
+    if: ${{ inputs.publish }}
+    needs: [source, windows, macos]
     outputs:
       tag: ${{ steps.publish.outputs.tag }}
     # Keep release tooling stable across GitHub's ubuntu-latest migrations.
@@ -275,6 +352,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.source.outputs.sha }}
 
       - name: Read package version
         id: version
@@ -312,13 +391,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TYPE: ${{ inputs.release_type }}
           VERSION: ${{ steps.version.outputs.value }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
         shell: bash
         run: |
           prerelease=false
-          if [[ "$REF_TYPE" == "tag" ]]; then
-            tag="$REF_NAME"
+          if [[ -n "$RELEASE_TAG" ]]; then
+            tag="$RELEASE_TAG"
             title="KeySteer $tag"
             if [[ "$RELEASE_TYPE" == "pre-release" || "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+- ]]; then
               prerelease=true
@@ -341,7 +420,7 @@ jobs:
           if [[ -n "$remote_tag" ]]; then
             git push origin ":refs/tags/$tag"
           fi
-          git push origin "$GITHUB_SHA:refs/tags/$tag"
+          git push origin "$SOURCE_SHA:refs/tags/$tag"
 
           latest_flag=(--latest)
           if [[ "$prerelease" == "true" ]]; then
@@ -349,7 +428,7 @@ jobs:
           fi
           gh release create "$tag" \
             --verify-tag \
-            --target "$GITHUB_SHA" \
+            --target "$SOURCE_SHA" \
             --title "$title" \
             --prerelease="$prerelease" \
             "${latest_flag[@]}" \
@@ -359,7 +438,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   pages:
-    name: Deploy documentation after build
+    name: deploy documentation
     needs: [windows, macos, release]
     # Partial build-only runs may skip one platform and the release job.
     # Failed or cancelled builds/publications must never deploy the website.
@@ -369,10 +448,23 @@ jobs:
           (needs.windows.result == 'success' || needs.windows.result == 'skipped') &&
           (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
           (needs.release.result == 'success' || needs.release.result == 'skipped') }}
-    uses: ./.github/workflows/pages.yml
+    # Keep Pages in its own default-branch run; the release tag is only an
+    # input selecting which published packages the documentation links to.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: read
-      pages: write
-      id-token: write
-    with:
-      release_tag: ${{ needs.release.outputs.tag || 'latest' }}
+      actions: write
+    steps:
+      - name: Dispatch Pages from the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAGES_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag || 'latest' }}
+        run: |
+          test -n "$PAGES_BRANCH"
+          gh workflow run pages.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$PAGES_BRANCH" \
+            --raw-field "release_tag=$RELEASE_TAG"
+          echo "Pages workflow dispatched from $PAGES_BRANCH for $RELEASE_TAG"

@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest a new action, mode, configuration option, or usability improvement.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your suggestion. A brief description of your use case and the experience you want is enough.
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Feature request
+      description: What difficulty are you facing? How would you like KeySteer to improve?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional information (optional)
+      description: Include example configuration, sketches, screenshots, reference links, or alternatives.

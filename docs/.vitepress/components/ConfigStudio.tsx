@@ -34,6 +34,7 @@ import { layoutRect, quickRect, treeSlots } from '../simulator/window-layout'
 import { quickRulerPlan } from '../simulator/window-ratios'
 import { windowHelpSections, windowHelpGrid, windowHelpActionSupported, type HelpEntry } from '../simulator/window-help'
 import { consumeConfigHandoff } from '../simulator/config-handoff'
+import { compileScrollSettings, isScrollAction, ScrollMotion, type ScrollDelta } from '../simulator/scroll'
 import CommonConfigControls from '../config-studio/CommonConfigControls'
 import ModeStyleControls, { StyleControl } from '../config-studio/ModeStyleControls'
 import ModeIndicatorControls from '../config-studio/ModeIndicatorControls'
@@ -238,6 +239,7 @@ export default defineComponent({
     function releasePreview(): void {
       quickStarted = 0; quickVisible.value = false; simulatorArmed.value = false
       heldActions.clear(); heldCharacterActions.clear(); physicalKeys.clear(); temporaryEntryKeys.clear()
+      scrollMotion.clear(); scrollPulse.value = ''
       simulator.window.gesture = false
       temporaryWindow(simulator.window, false)
     }
@@ -409,6 +411,7 @@ export default defineComponent({
     const heldActions = new Set<string>()
     watch(() => simulator.window.noteOpen, async open => {
       heldActions.clear(); heldCharacterActions.clear(); physicalKeys.clear()
+      scrollMotion.clear(); scrollPulse.value = ''
       if (open) layoutNote.value = simulator.window.presets.find(p => p.id === simulator.window.editingPresetId)?.note ?? ''
       await nextTick()
       if (open) layoutNoteInput.value?.focus(); else screen.value?.focus()
@@ -416,6 +419,9 @@ export default defineComponent({
     const cursorPreview = computed(() => cursorMarkerPreview(effectiveDocument.value ?? {}, appearance.value, (['left', 'middle', 'right'] as const).find(button => simulator.pressedButtons.has(button)), simulator.mode))
     const clickPulse = ref(0)
     const scrollPulse = ref('')
+    let scrollPulseUntil = 0
+    const desktopBackdrop = ref<{ scrollBy: (x: number, y: number) => void } | null>(null)
+    const scrollMotion = new ScrollMotion(compileScrollSettings({}))
     const isMac = ref(false)
     const primaryCaption = computed(() => shortcutCaption(effectiveDocument.value ?? {}, 'primary', isMac.value)
       .replaceAll('LEFT ', locale.value === 'en' ? 'Left ' : '左 ').replaceAll('RIGHT ', locale.value === 'en' ? 'Right ' : '右 ')
@@ -443,6 +449,24 @@ export default defineComponent({
       return resolved
     })
     const normalTargetKeys = computed(() => targetingKeys(effectiveDocument.value ?? {}))
+    const scrollProfile = computed(() => compileScrollSettings(effectiveDocument.value ?? {}, isMac.value))
+    watch(scrollProfile, profile => scrollMotion.configure(profile), { immediate: true })
+
+    function applyPreviewScroll(delta: ScrollDelta): void {
+      if (delta.x || delta.y) desktopBackdrop.value?.scrollBy(delta.x, delta.y)
+    }
+    function showScroll(action: string, delta: ScrollDelta): void {
+      applyPreviewScroll(delta)
+      scrollPulse.value = action; scrollPulseUntil = performance.now() + 280
+      simulator.lastEvent = action
+    }
+    function startScrollAction(key: string, action: string): boolean {
+      const delta = scrollMotion.press(key, action, performance.now())
+      if (!delta) return false
+      if (isScrollAction(action)) showScroll(action, delta)
+      else simulator.lastEvent = action
+      return true
+    }
 
     const tomlPreview = computed(() => {
       if (!document.value) return ''
@@ -684,10 +708,9 @@ export default defineComponent({
         simulator.lastEvent = action
         return
       }
-      if (action.includes('wheel') || action.startsWith('scroll_')) {
-        scrollPulse.value = action
-        simulator.lastEvent = action
-        window.setTimeout(() => { scrollPulse.value = '' }, 280)
+      const scroll = scrollMotion.tap(action)
+      if (scroll) {
+        showScroll(action, scroll)
         return
       }
       simulator.lastEvent = `${action}（首版暂不模拟）`
@@ -725,7 +748,7 @@ export default defineComponent({
           const actions = Array.isArray(resolved.value) ? resolved.value.map(String) : [String(resolved.value)]
           if (!event.repeat) {
             heldCharacterActions.set(event.code, actions)
-            actions.forEach(action => { if (MOVEMENT_ACTIONS.has(action)) heldActions.add(action); else executeAction(action) })
+            actions.forEach(action => { if (startScrollAction(event.code, action)) return; if (MOVEMENT_ACTIONS.has(action)) heldActions.add(action); else executeAction(action) })
           }
         } else if (temporaryPhysicalKeys(effectiveDocument.value, 'text_input', pressed, isMac.value, temporaryEntryKeys).includes(physical)) {
           event.preventDefault()
@@ -749,6 +772,7 @@ export default defineComponent({
       if (event.key === 'Escape' && simulator.mode !== 'text_input' && !isWindowMode(simulator.mode)) {
         simulatorArmed.value = false
         heldActions.clear(); heldCharacterActions.clear()
+        scrollMotion.clear(); scrollPulse.value = ''
         return
       }
       const document = effectiveDocument.value
@@ -778,6 +802,7 @@ export default defineComponent({
             const actions = Array.isArray(resolved.value) ? resolved.value.map(String) : [String(resolved.value)]
             heldCharacterActions.set(event.code, actions)
             actions.forEach(action => {
+              if (startScrollAction(event.code, action)) return
               if (WINDOW_MOTION.has(action) || MOVEMENT_ACTIONS.has(action) && (simulator.mode !== 'window_tab' || simulator.window.temporary)) heldActions.add(action)
               executeAction(action)
             })
@@ -798,6 +823,7 @@ export default defineComponent({
       if (characterActions.length > 0) {
         event.preventDefault()
         characterActions.forEach(action => {
+          if (startScrollAction(event.code, action)) return
           if (MOVEMENT_ACTIONS.has(action)) heldActions.add(action)
           else executeAction(action)
         })
@@ -813,7 +839,9 @@ export default defineComponent({
       const actions = resolveAction(chord)
       if (actions.length === 0) return
       event.preventDefault()
+      heldCharacterActions.set(event.code, actions)
       actions.forEach((action) => {
+        if (startScrollAction(event.code, action)) return
         if (MOVEMENT_ACTIONS.has(action)) heldActions.add(action)
         else executeAction(action)
       })
@@ -823,6 +851,7 @@ export default defineComponent({
     const physicalKeys = reactive(new Set<string>())
     const temporaryEntryKeys = reactive(new Set<string>())
     watch(() => simulator.mode, () => {
+      scrollMotion.clear(); scrollPulse.value = ''
       temporaryEntryKeys.clear()
       physicalKeys.forEach(key => temporaryEntryKeys.add(key))
     }, { flush: 'sync' })
@@ -841,10 +870,11 @@ export default defineComponent({
       if (!isWindowMode(simulator.mode) || !effectiveDocument.value) return
       const pressed = currentPhysicalKeys(event)
       const active = temporaryPhysicalKeys(effectiveDocument.value, simulator.mode, pressed, isMac.value, temporaryEntryKeys).length > 0
-      if (active !== simulator.window.temporary) heldActions.clear()
+      if (active !== simulator.window.temporary) { heldActions.clear(); scrollMotion.clear(); scrollPulse.value = '' }
       temporaryWindow(simulator.window, active, effectiveDocument.value[simulator.mode] ?? {})
     }
     function onSimulatorKeyUp(event: KeyboardEvent): void {
+      scrollMotion.release(event.code)
       if (quickStarted && event.key.toLowerCase() === String(effectiveDocument.value?.quick_switch?.key ?? 'q')) {
         event.preventDefault()
         const shortPress = !quickVisible.value && !quickUsed
@@ -854,7 +884,7 @@ export default defineComponent({
       }
       physicalKeys.delete(physicalKey(event))
       if (simulator.mode === 'text_input' && effectiveDocument.value && /^(left_|right_)?(alt|ctrl|shift|cmd|win)$/.test(physicalKey(event))
-        && !temporaryPhysicalKeys(effectiveDocument.value, 'text_input', currentPhysicalKeys(event), isMac.value, temporaryEntryKeys).length) heldActions.clear()
+        && !temporaryPhysicalKeys(effectiveDocument.value, 'text_input', currentPhysicalKeys(event), isMac.value, temporaryEntryKeys).length) { heldActions.clear(); scrollMotion.clear(); scrollPulse.value = '' }
       temporaryEntryKeys.delete(physicalKey(event))
       updateTemporaryWindow(event)
       heldCharacterActions.get(event.code)?.forEach(action => heldActions.delete(action))
@@ -876,6 +906,8 @@ export default defineComponent({
         if (WINDOW_MOTION.has(action)) applyWindowAction(simulator, action, effectiveDocument.value?.[simulator.mode] ?? {}, Date.now(), delta / 1000)
         else movePointer(simulator, action, delta * 0.028)
       })
+      if (scrollMotion.active) applyPreviewScroll(scrollMotion.frame(timestamp))
+      else if (timestamp >= scrollPulseUntil) scrollPulse.value = ''
       animationFrame = requestAnimationFrame(animate)
     }
 
@@ -1063,7 +1095,7 @@ export default defineComponent({
               >
                 <div class="ks-preview-canvas" style={{ transform: `translate(-50%, -50%) scale(${canvasScale.value})` }}>
                 <div class="ks-screen-grid" />
-                {!isWindowMode(simulator.mode) && <DesktopBackdrop />}
+                {!isWindowMode(simulator.mode) && <DesktopBackdrop ref={desktopBackdrop} />}
                 {indicatorPreview.value.enabled && <div data-mode-indicator style={indicatorPreview.value.style}>{indicatorPreview.value.text}</div>}
                 {(isWindowMode(simulator.mode) || simulator.window.tabs.groups.length > 0) && <div class="ks-window-demo">
                   <div class="ks-window-screen-label">{t("示例屏幕 ")}{simulator.window.screen + 1} / 2</div>
@@ -1412,8 +1444,13 @@ const HintOverlay = defineComponent({
 
 const DesktopBackdrop = defineComponent({
   name: 'DesktopBackdrop',
-  setup() {
+  setup(_, { expose }) {
     const { t } = useStudioI18n()
+    const viewport = ref<HTMLElement | null>(null)
+    expose({ scrollBy(x: number, y: number): void {
+      if (!viewport.value) return
+      viewport.value.scrollLeft += x; viewport.value.scrollTop += y
+    } })
     return () => (
       <div class="ks-desktop-backdrop" aria-hidden="true">
         <div class="ks-desktop-window">
@@ -1427,7 +1464,7 @@ const DesktopBackdrop = defineComponent({
               <strong>KeySteer</strong>
               <span class="active">{t("概览")}</span><span>{t("项目")}</span><span>{t("日历")}</span><span>{t("收件箱")}</span><span>{t("设置")}</span>
             </aside>
-            <main>
+            <main ref={viewport} data-scroll-preview>
               <header><div><strong>{t("上午好")}</strong><small>{t("这里是今天需要处理的内容")}</small></div><button>{t("新建项目")}</button></header>
               <div class="ks-desktop-search">{t("搜索项目、任务或联系人…")}</div>
               <div class="ks-desktop-stats"><div><small>{t("进行中")}</small><b>12</b></div><div><small>{t("本周完成")}</small><b>28</b></div><div><small>{t("待处理")}</small><b>7</b></div></div>
@@ -1435,6 +1472,9 @@ const DesktopBackdrop = defineComponent({
                 <div class="ks-desktop-list"><strong>{t("最近任务")}</strong><p><i />{t("完成发布说明 ")}<button>{t("打开")}</button></p><p><i />{t("检查界面标注 ")}<button>{t("查看")}</button></p><p><i />{t("整理下周计划 ")}<button>{t("编辑")}</button></p></div>
                 <div class="ks-desktop-panel"><strong>{t("进度")}</strong><div class="ks-progress-ring">72%</div><small>{t("本周目标")}</small></div>
               </section>
+              <div class="ks-desktop-scroll-tail">
+                {Array.from({ length: 36 }, (_, index) => <p><b>{String(index + 1).padStart(2, '0')}</b><span>{t(['完成发布说明 ', '检查界面标注 ', '整理下周计划 '][index % 3])}</span></p>)}
+              </div>
             </main>
           </div>
         </div>
