@@ -5,6 +5,18 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.11.5
+
+优化 Windows 和 macOS 的 UIHint 响应，让标签显示更及时、多标签界面更流畅。下表三个规模的结果处理 CPU 耗时平均降低约 **48%**，最高降低约 **67%**。
+
+Improved UIHint responsiveness on Windows and macOS, with labels appearing more promptly and fewer pauses on screens with many targets. Across the three target counts below, CPU processing time dropped by **48% on average**, with a reduction of up to **67%**.
+
+| CPU 处理耗时（p50） / CPU processing time (p50) | 优化前 / Before | 优化后 / After | 降低 / Reduction |
+| --- | ---: | ---: | ---: |
+| UIHint（300 个目标） / UIHint (300 targets) | 0.3310 ms | 0.2642 ms | 20.2% |
+| UIHint（2000 个目标） / UIHint (2000 targets) | 4.9206 ms | 2.0797 ms | 57.7% |
+| UIHint（10000 个目标） / UIHint (10000 targets) | 60.0125 ms | 19.9858 ms | 66.7% |
+
 ## 0.11.4
 
 - 修复 Window 模式调整音量、切换静音或音频输出设备时的提示闪烁。

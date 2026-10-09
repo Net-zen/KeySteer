@@ -5,6 +5,16 @@ outline: false
 
 # Release notes
 
+## 0.11.5
+
+Improved UIHint responsiveness on Windows and macOS, with labels appearing more promptly and fewer pauses on screens with many targets. Across the three target counts below, CPU processing time dropped by **48% on average**, with a reduction of up to **67%**.
+
+| CPU processing time (p50) | Before | After | Reduction |
+| --- | ---: | ---: | ---: |
+| UIHint (300 targets) | 0.3310 ms | 0.2642 ms | 20.2% |
+| UIHint (2000 targets) | 4.9206 ms | 2.0797 ms | 57.7% |
+| UIHint (10000 targets) | 60.0125 ms | 19.9858 ms | 66.7% |
+
 ## 0.11.4
 
 - Fixed flickering feedback when adjusting volume, toggling mute, or switching audio output devices in Window mode.
