@@ -120,15 +120,22 @@ class PublishTests(unittest.TestCase):
 class CleanupEntryTests(unittest.TestCase):
     def setUp(self):
         self.run = {
-            "id": 123, "path": ".github/workflows/start.yml", "event": "push",
+            "id": 123, "path": ".github/workflows/build.yml", "event": "push",
             "head_sha": "a" * 40, "status": "completed", "conclusion": "success",
         }
         self.stages = {name: {"result": "success"} for name in (
-            "source", "windows", "macos", "release", "package-managers", "pages",
+            "source", "windows", "macos", "release", "pages",
         )}
+        self.stages["source"]["outputs"] = {"build_mode": "cross"}
+        for name in ("native-windows", "native-macos"):
+            self.stages[name] = {"result": "skipped"}
+        self.entry_jobs = {"total_count": 2, "jobs": [
+            {"name": "Prepare", "conclusion": "success"},
+            {"name": "Release", "conclusion": "skipped"},
+        ]}
 
     def test_only_corresponding_successful_entry_is_deleted(self):
-        with patch.object(cleanup_entry, "api", side_effect=[self.run, None]) as api:
+        with patch.object(cleanup_entry, "api", side_effect=[self.run, self.entry_jobs, None]) as api:
             cleanup_entry.cleanup("dccif/KeySteer", "123", "456", "a" * 40, self.stages)
         self.assertEqual(api.call_args_list[-1].kwargs, {"method": "DELETE"})
         self.assertEqual(api.call_args_list[-1].args, ("dccif/KeySteer", "123"))
@@ -151,13 +158,34 @@ class CleanupEntryTests(unittest.TestCase):
                     cleanup_entry.cleanup("dccif/KeySteer", entry, "456", "a" * 40, self.stages)
                 api.assert_not_called()
 
+    def test_same_workflow_actual_build_run_is_preserved(self):
+        jobs = {"total_count": 2, "jobs": [
+            {"name": "Prepare", "conclusion": "success"},
+            {"name": "Cross Windows x64 avx2", "conclusion": "success"},
+        ]}
+        with patch.object(cleanup_entry, "api", side_effect=[self.run, jobs]) as api:
+            with self.assertRaises(ValueError):
+                cleanup_entry.cleanup("dccif/KeySteer", "123", "456", "a" * 40, self.stages)
+            self.assertEqual(api.call_count, 2)
+
+    def test_native_success_and_cross_native_exclusion(self):
+        stages = {**self.stages, "source": {"result": "success", "outputs": {"build_mode": "native"}}}
+        for name in ("windows", "macos"):
+            stages[name] = {"result": "skipped"}
+        for name in ("native-windows", "native-macos"):
+            stages[name] = {"result": "success"}
+        self.assertTrue(cleanup_entry.stages_succeeded(stages))
+        for name in ("windows", "macos"):
+            self.assertFalse(cleanup_entry.stages_succeeded({**stages, name: {"result": "success"}}))
+        self.assertFalse(cleanup_entry.stages_succeeded({**stages, "native-macos": {"result": "failure"}}))
+
     def test_already_deleted_entry_is_safe_on_rerun(self):
         with patch.object(cleanup_entry, "api", return_value=None) as api:
             cleanup_entry.cleanup("dccif/KeySteer", "123", "456", "a" * 40, self.stages)
             self.assertEqual(api.call_count, 1)
 
     def test_any_failed_cancelled_or_unfinished_stage_preserves_entry(self):
-        for stage in self.stages:
+        for stage in ("source", "windows", "macos", "release", "pages"):
             for result in ("failure", "cancelled", "queued"):
                 with self.subTest(stage=stage, result=result), patch.object(cleanup_entry, "api") as api:
                     stages = {**self.stages, stage: {"result": result}}
@@ -166,14 +194,14 @@ class CleanupEntryTests(unittest.TestCase):
 
     def test_partial_build_only_run_can_clean_entry_after_pages(self):
         stages = {**self.stages, **{name: {"result": "skipped"} for name in (
-            "macos", "release", "package-managers",
+            "macos", "release",
         )}}
-        with patch.object(cleanup_entry, "api", side_effect=[self.run, None]) as api:
+        with patch.object(cleanup_entry, "api", side_effect=[self.run, self.entry_jobs, None]) as api:
             cleanup_entry.cleanup("dccif/KeySteer", "123", "456", "a" * 40, stages)
-            self.assertEqual(api.call_count, 2)
+            self.assertEqual(api.call_count, 3)
 
     def test_skipped_release_dependency_or_missing_results_preserve_entry(self):
-        for stages in ({}, {**self.stages, "package-managers": {"result": "skipped"}}):
+        for stages in ({}, {**self.stages, "macos": {"result": "skipped"}}):
             with patch.object(cleanup_entry, "api") as api:
                 cleanup_entry.cleanup("dccif/KeySteer", "123", "456", "a" * 40, stages)
                 api.assert_not_called()
@@ -185,8 +213,8 @@ class CleanupEntryTests(unittest.TestCase):
             "ENTRY_RUN_ID": "123", "ENTRY_SHA": "a" * 40,
             "STAGE_RESULTS": json.dumps(stages),
         }
-        for outcome, expected_calls in (("success", 2), ("failure", 0)):
-            with self.subTest(outcome=outcome), patch.dict(cleanup_entry.os.environ, {**environment, "PAGES_RESULT": outcome}), patch.object(cleanup_entry, "api", side_effect=[self.run, None]) as api:
+        for outcome, expected_calls in (("success", 3), ("failure", 0)):
+            with self.subTest(outcome=outcome), patch.dict(cleanup_entry.os.environ, {**environment, "PAGES_RESULT": outcome}), patch.object(cleanup_entry, "api", side_effect=[self.run, self.entry_jobs, None]) as api:
                 cleanup_entry.main()
                 self.assertEqual(api.call_count, expected_calls)
 

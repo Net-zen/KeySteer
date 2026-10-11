@@ -75,42 +75,44 @@ application-settle window, not a readiness metric.
 
 ## GitHub releases
 
-CI calls the platform packaging scripts. The native workflow publishes four
-platform ZIPs; the cross-build workflow publishes six, including compatible
-and AVX-512 Windows x64 builds. Both compose release notes with
-`tools/compose-release-notes.sh`. Optional macOS signing secrets are documented
-in `.github/workflows/build.yml` and `macos/README-cross.md`.
-
-Five workflows cover the independent entry points. Platform builds and release
-jobs stay in their owning build workflow; shared publication logic lives in
-`.github/scripts/release.py`:
+CI calls the platform packaging scripts through two workflows:
 
 | Name | File | Responsibility |
 | --- | --- | --- |
-| Start | `start.yml` | Tag push or manual entry; dispatch Cross on the default branch |
-| Cross | `cross-build.yml` | Resolve the commit, build Windows/macOS matrices, publish, and call Packages/Pages |
-| Packages | `package-managers.yml` | Update the Homebrew tap and Scoop bucket |
-| Pages | `pages.yml` | Build and deploy documentation, then clean the successful Start run |
-| Native | `build.yml` | Optional native builds and publication using the shared release script |
+| Build | `build.yml` | Tag/manual entry, cross or native compilation, Release publication, Homebrew/Scoop synchronization |
+| Pages | `pages.yml` | Build and deploy documentation; clean a successful forwarding entry |
 
-Use Start when manually selecting another branch or tag; direct Cross runs must
-select the default branch. Source checkout remains pinned to the chosen commit.
-New tags must include this workflow layout. Historical tags retain the trigger
+Build defaults to `build_mode=cross`; explicitly choose `native` to compile on
+Windows 2025 and macOS 26. `platform` accepts windows, macos or all. Publishing
+builds every supported platform: four ZIPs for native, six for cross (including
+compatible and AVX-512 Windows x64). With publication disabled, only the selected
+platforms build. Unselected compilation jobs are skipped without starting runners.
+Both modes use `.github/scripts/release.py` and `tools/compose-release-notes.sh`.
+Optional macOS signing secrets are documented in `macos/README-cross.md`.
+
+Tag pushes default to cross publication. Tags and manually selected non-default
+refs enter the same Build workflow, whose Prepare job dispatches Build once on
+the default branch. The default-branch run resolves the selected source commit
+and builds directly, retaining the shared cache scope. Deleted tags do not build.
+New tags must include this workflow layout; historical tags retain the trigger
 definitions stored in their own commits.
-Cross keeps the default-branch context and existing runner matrices. Combining
-workflow files does not add runner jobs. A complete tag release uses 11 runner
-jobs instead of the previous 12:
-Start, source resolution, four Windows builds, two macOS builds, Release,
-Packages, and Pages. Cleanup is a final step on the Pages runner.
 
-The shared release script validates platform archives, composes notes, and
-preserves existing tag objects. It verifies their commit before changing
-release assets; it creates a tag only when absent. Cross may replace an existing
-Release; Native still rejects duplicate Releases. After successful builds,
-publication, manifest synchronization and Pages deployment, cleanup removes only
-the corresponding successful Start run. Failures and cancellations retain it;
-the version tag and Cross run always remain. Cleanup uses `actions: write` and
-checks the entry's workflow path, run ID, commit and completed status.
+A complete cross tag release uses 10 runner jobs: entry, source resolution, four
+Windows builds, two macOS builds, publication/manifests and Pages. Manifest
+synchronization shares the publication runner; cleanup shares the Pages runner.
+The shared script validates archives, composes notes and preserves existing tag
+objects. It verifies their commit before changing release assets and creates a
+tag only when absent. Cross may replace an existing Release; native rejects
+duplicate Releases. Publication runs share one concurrency group, while entry
+runs use separate groups to avoid cancelling their actual builds.
+
+After successful compilation, publication, manifest synchronization and Pages
+deployment, cleanup removes only the corresponding completed entry run. Since
+entries and builds share `build.yml`, cleanup also checks that the entry only
+executed Prepare and skipped all remaining jobs. Failures, cancellations and
+runs containing actual builds/deployments are retained. Version tags and actual
+Build records remain. Cleanup uses `actions: write` and checks the workflow path,
+run ID, commit, completed status and job list.
 
 Validate the release and cleanup policies locally with:
 
@@ -124,11 +126,11 @@ This repository also hosts `Casks/keysteer.rb` and `bucket/keysteer.json`.
 Use the explicit Git URL when registering it; no separate repository or token
 is required. Installation and upgrade commands are in the project READMEs.
 
-After either publisher succeeds, `package-managers.yml` reads the latest stable
+After publication succeeds, the same Build job reads the latest stable
 GitHub Release, downloads ZIPs, verifies their SHA256 digests, and commits both
 manifests to the default branch with `GITHUB_TOKEN`. Pre-releases do not replace
-the stable package version. The job can also be run manually to synchronize an
-existing release. Branch rules must allow the bot's metadata commit; otherwise
+the stable package version. Use the generator below for manual synchronization.
+Branch rules must allow the bot's metadata commit; otherwise
 generate and submit the manifests through the normal review process.
 
 For manual generation, save the official release API response as JSON and run:

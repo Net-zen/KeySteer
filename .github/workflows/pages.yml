@@ -2,7 +2,7 @@ name: Pages
 run-name: Pages · ${{ inputs.release_tag }}
 
 on:
-  # Cross calls Pages from the default branch and waits for deployment.
+  # Build calls Pages from the default branch and waits for deployment.
   workflow_call:
     inputs:
       release_tag:
@@ -146,7 +146,7 @@ jobs:
         uses: actions/deploy-pages@v5
 
       # Reuse the deployment runner; never allocate a cleanup-only runner.
-      - name: Clean Start
+      - name: Clean entry
         if: ${{ inputs.entry_run_id != '' && steps.deployment.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
