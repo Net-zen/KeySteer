@@ -38,6 +38,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 正式产物走 `packaging/` 脚本和 `.github/workflows/`，检查应用身份、资源和签名。纯文档修改验证链接、代码路径和 `git diff --check` 即可。
 
+仓库根目录的 `Casks/keysteer.rb` 和 `bucket/keysteer.json` 分别作为自定义 Homebrew tap 与 Scoop bucket，安装时显式提供当前仓库 Git URL。`packaging/package-managers/generate.py` 从正式 Release 元数据生成四架构的下载 URL 与 SHA256；提供本地附件时重新计算并核对摘要，缺包、非法来源、草稿和预发布均拒绝写入。Scoop x64 固定选择无后缀的默认 AVX2 包，兼容版／AVX-512 附件不会覆盖默认选包。Scoop 升级／卸载前用 hooks 备份用户 TOML 和 `workspace.ksw`，安装前还原；避免原子保存替换文件后破坏持久化硬链接，默认配置和程序每次使用新包。macOS 沿用 Application Support 目录。
+
+两个发布工作流在 Release 成功后调用 `.github/workflows/package-managers.yml`，串行读取当前 latest 正式版、下载附件、验摘要并将清单提交到默认分支；预发布不会成为清单版本。工作流提供手动同步入口，需要 `GITHUB_TOKEN` 的 `contents: write` 且默认分支允许 bot 提交，受保护分支需按仓库规则处理。包管理测试入口为 `python -m unittest discover -s packaging/package-managers -p 'test_*.py'`；PowerShell 可用时执行真实的配置升级 hooks。
+
 两个发布工作流都调用 `tools/compose-release-notes.sh`，从 `docs/releases/index.md` 提取当前版本，再追加 `.github/release-notes.md` 的通用 Windows 默认／兼容下载与自动选包说明、macOS 安装提醒；长期有效的安装／兼容说明维护在该模板中，每次发布自动附带。
 
 `.github/workflows/cross-build.yml` 在 Linux 上交叉构建 Windows MSVC x64/ARM64 和 macOS Intel/Apple Silicon。手动运行提供平台选择、发布开关（默认开启）和 release/pre-release 选项；发布必须全部六包成功（Windows x64 兼容／AVX2／AVX-512、Windows ARM64、两个 macOS 架构）。推送或强制更新任意 tag 自动转发到默认分支（main）的 `workflow_dispatch`，构建并发布全部六包，删除 tag 不构建。非默认分支的手动运行也转发，保留平台和发布选项。所有实际构建在默认分支运行，使下载缓存归属并复用于 main；checkout 单独固定为启动时所选提交，不因 main 后续推进而发布错误源码。转发传递 `source_sha` 和 `release_tag`；默认分支手动填写 `release_tag` 时可省略 `source_sha`，直接解析该 tag。tag 必须与构建提交一致，且提交已包含在默认分支历史中。tag 发布沿用所选 tag，版本格式的预发布 tag（如 `v1.2.3-rc.1`）自动标记 pre-release；分支手动发布仍按 Cargo 版本生成 `v<version>` 或 `v<version>-pre`。发布先删除同名旧 Release 及全部附件，再删除远端旧 tag、在已解析的构建提交重建 tag，并创建全新 Release，保证同名 tag／相同正式或预发布版本以最新运行产物为准。正式版设为 Latest，预发布不占用 Latest。实际发布运行共用 concurrency 组，新运行取消旧运行，避免旧构建较晚完成后覆盖新发布；转发运行使用独立组，避免取消自己启动的构建。

@@ -2,6 +2,22 @@
 
 KeySteer 支持 macOS 14 及以上。将 `KeySteer.app` 移动到程序目录即可。
 
+## Homebrew 安装与升级
+
+```bash
+brew tap dccif/keysteer https://github.com/dccif/KeySteer.git
+brew install --cask dccif/keysteer/keysteer
+```
+
+自动选择 Apple Silicon 或 Intel 包。升级前退出 KeySteer，然后运行：
+
+```bash
+brew update
+brew upgrade --cask dccif/keysteer/keysteer
+```
+
+用户配置保存在下方的数据目录中，升级时保留。安装后仍需完成辅助功能与屏幕录制授权。
+
 ## GitHub Release 手动安装
 
 从 [官方 GitHub Releases](https://github.com/dccif/KeySteer/releases/latest) 下载对应架构的 ZIP，解压后将 `KeySteer.app` 移入 `/Applications`。如果 Gatekeeper 提示应用无法打开，请先确认下载来源，然后运行：

@@ -469,6 +469,12 @@ jobs:
             release-assets/*.zip
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+  package-managers:
+    needs: release
+    permissions:
+      contents: write
+    uses: ./.github/workflows/package-managers.yml
+
   pages:
     name: deploy documentation
     needs: [windows, macos, release]

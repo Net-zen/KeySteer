@@ -171,6 +171,34 @@ cargo run -- --doctor
 
 请从 [GitHub Releases](https://github.com/dccif/KeySteer/releases/latest) 下载与系统和 CPU 架构对应的 ZIP。Windows 解压后运行 `KeySteer.exe`；macOS 解压后将 `KeySteer.app` 移入 `/Applications`。
 
+也可以通过本仓库的 Homebrew tap 或 Scoop bucket 安装。升级前先退出 KeySteer。
+
+### macOS：Homebrew
+
+```bash
+brew tap dccif/keysteer https://github.com/dccif/KeySteer.git
+brew install --cask dccif/keysteer/keysteer
+
+# 升级
+brew update
+brew upgrade --cask dccif/keysteer/keysteer
+```
+
+自动选择 Apple Silicon 或 Intel 包，需要 macOS 14+。用户配置保存在 `~/Library/Application Support/KeySteer/`。
+
+### Windows：Scoop
+
+```powershell
+scoop bucket add keysteer https://github.com/dccif/KeySteer.git
+scoop install keysteer/keysteer
+
+# 升级
+scoop update
+scoop update keysteer
+```
+
+支持 x64 和 ARM64；x64 使用不带后缀的默认 AVX2 版。可从开始菜单或运行 `keysteer` 启动。升级时保留 `keysteer.<名称>.toml` 用户配置和 `workspace.ksw` 窗口布局，随包默认配置会更新。包管理器安装后，建议使用对应的命令升级。首次从手动安装迁移时，需自行复制用户配置和布局到 Scoop 安装目录。
+
 如果从 GitHub Release 手动安装的 macOS 应用被 Gatekeeper 提示无法打开，请确认文件来自上述官方发布页，然后运行：
 
 ```bash

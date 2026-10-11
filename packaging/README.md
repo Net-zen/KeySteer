@@ -75,9 +75,40 @@ application-settle window, not a readiness metric.
 
 ## GitHub releases
 
-CI calls the same scripts. A manual all-platform build creates the Cargo-versioned
-tag and publishes exactly the four platform ZIPs to a GitHub Release. Optional
-macOS signing secrets are documented by the variable names in
-`.github/workflows/build.yml`. The workflow prepends `.github/release-notes.md`
-to GitHub's automatically generated notes so the macOS manual-install command
-is present on every release page.
+CI calls the platform packaging scripts. The native workflow publishes four
+platform ZIPs; the cross-build workflow publishes six, including compatible
+and AVX-512 Windows x64 builds. Both compose release notes with
+`tools/compose-release-notes.sh`. Optional macOS signing secrets are documented
+in `.github/workflows/build.yml` and `macos/README-cross.md`.
+
+## Homebrew tap and Scoop bucket
+
+This repository also hosts `Casks/keysteer.rb` and `bucket/keysteer.json`.
+Use the explicit Git URL when registering it; no separate repository or token
+is required. Installation and upgrade commands are in the project READMEs.
+
+After either publisher succeeds, `package-managers.yml` reads the latest stable
+GitHub Release, downloads ZIPs, verifies their SHA256 digests, and commits both
+manifests to the default branch with `GITHUB_TOKEN`. Pre-releases do not replace
+the stable package version. The job can also be run manually to synchronize an
+existing release. Branch rules must allow the bot's metadata commit; otherwise
+generate and submit the manifests through the normal review process.
+
+For manual generation, save the official release API response as JSON and run:
+
+```bash
+python packaging/package-managers/generate.py release.json --assets-dir release-assets
+python -m unittest discover -s packaging/package-managers -p 'test_*.py'
+```
+
+`--assets-dir` hashes the downloaded archives and checks GitHub's digests when
+available. Without it, every selected asset must have a valid API SHA256 digest.
+Scoop selects the default AVX2 x64 build with no filename suffix, even when
+compatible and AVX-512 packages are present; ARM64 is separate. Exit the installed app before upgrading.
+
+Scoop hooks snapshot user TOML files and `workspace.ksw` to its persist directory
+before upgrade/uninstall, then restore them into the new version's directory.
+The executable and `keysteer.default.toml` always come from the new package.
+Deleted user configs are removed from the next snapshot. `scoop uninstall -p`
+purges the retained snapshot; ordinary uninstall allows a later reinstall to
+restore it. macOS configuration stays in Application Support across upgrades.
