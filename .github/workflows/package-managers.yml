@@ -1,0 +1,48 @@
+name: Update Homebrew and Scoop
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Both publishers refresh the current latest stable release. Serialize writes
+# across workflows; a pre-release must never replace the stable manifests.
+concurrency:
+  group: package-manager-manifests
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Generate manifests from the latest stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/release.json"
+          tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"])' "$RUNNER_TEMP/release.json")"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*.zip' --dir "$RUNNER_TEMP/package-assets"
+          python3 packaging/package-managers/generate.py "$RUNNER_TEMP/release.json" --assets-dir "$RUNNER_TEMP/package-assets"
+          python3 -m unittest discover -s packaging/package-managers -p 'test_*.py'
+
+      - name: Commit package manager metadata
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git add Casks/keysteer.rb bucket/keysteer.json
+          if git diff --cached --quiet; then
+            echo "Package manager manifests are already current."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: update Homebrew and Scoop manifests'
+          git pull --rebase origin "$DEFAULT_BRANCH"
+          git push origin "HEAD:$DEFAULT_BRANCH"
