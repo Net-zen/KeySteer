@@ -151,6 +151,16 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
     }
   }
   const point = (parsed.ui_hint as ConfigDocument | undefined)?.search_point
+  const highlight = (parsed.ui_hint as ConfigDocument | undefined)?.search_highlight
+  if (highlight !== undefined) {
+    if (!isRecord(highlight)) throw new Error('ui_hint.search_highlight must be a table')
+    for (const [key, value] of Object.entries(highlight)) {
+      const valid = key === 'border_width' ? typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 20
+        : ['background_color', 'text_color', 'border_color'].includes(key) && (typeof value === 'string' ? /^#[\da-f]{8}$/i.test(value)
+          : isRecord(value) && Object.keys(value).length === 2 && ['light', 'dark'].every(k => typeof value[k] === 'string' && /^#[\da-f]{8}$/i.test(value[k])))
+      if (!valid) throw new Error(`ui_hint.search_highlight.${key} is invalid`)
+    }
+  }
   if (point !== undefined) {
     if (!isRecord(point)) throw new Error('ui_hint.search_point must be a table')
     for (const [key, value] of Object.entries(point)) {

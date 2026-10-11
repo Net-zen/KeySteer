@@ -147,11 +147,15 @@ fields.ui_hint.advanced.push(
   { path: 'ui_hint.search_point.color_formats', label: '颜色格式顺序（首项为默认）', kind: 'choices', options: ['hex', 'rgb', 'hsl'], default: ['hex', 'rgb', 'hsl'] },
 )
 fields.ui_hint.colors.push(
+  { path: 'ui_hint.search_highlight.background_color', label: '当前标签背景色', kind: 'color' },
+  { path: 'ui_hint.search_highlight.text_color', label: '当前标签文字色', kind: 'color' },
+  { path: 'ui_hint.search_highlight.border_color', label: '当前标签边框色', kind: 'color' },
   { path: 'ui_hint.search_point.marker_color', label: '点位标记颜色', kind: 'color' },
   { path: 'ui_hint.search_point.input_background_color', label: 'Point 输入框背景色', kind: 'color' },
   { path: 'ui_hint.search_point.input_border_color', label: 'Point 输入框边框色（默认沿用搜索框）', kind: 'color' },
 )
 fields.ui_hint.layout.push(
+  { path: 'ui_hint.search_highlight.border_width', label: '当前标签边框宽度', kind: 'number', min: 0, max: 20, step: 0.5, default: 1.5 },
   { path: 'ui_hint.search_point.color_preview.enabled', label: '显示颜色预览色块', kind: 'boolean', default: true },
   { path: 'ui_hint.search_point.color_preview.width', label: '色块宽度', kind: 'number', min: 1, max: 64, step: 1, default: 16 },
   { path: 'ui_hint.search_point.color_preview.height', label: '色块高度', kind: 'number', min: 1, max: 64, step: 1, default: 16 },

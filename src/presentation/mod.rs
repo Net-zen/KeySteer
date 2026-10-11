@@ -31,6 +31,15 @@ pub(crate) fn label_scale(scale: f64) -> f64 {
 }
 
 impl Presenter for Composer {
+    fn warm_hint_scene(
+        &self,
+        cache: &crate::api::presentation::HintSceneCache,
+        style: crate::api::presentation::HintStyle<'_>,
+        context: &HostContext<'_>,
+        limit: usize,
+    ) -> bool {
+        hint::warm_scene(cache, style, context, limit)
+    }
     fn input_panel(
         &self,
         ui: &crate::api::style::CompiledSearchPanel,

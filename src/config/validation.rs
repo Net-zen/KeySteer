@@ -362,6 +362,19 @@ impl ConfigFile {
             ));
         }
         let point = &self.ui_hint.search_point;
+        let highlight = &self.ui_hint.search_highlight;
+        for (name, color) in [
+            ("background_color", highlight.background_color.as_ref()),
+            ("text_color", highlight.text_color.as_ref()),
+            ("border_color", highlight.border_color.as_ref()),
+        ] {
+            validate_optional_color(&format!("ui_hint.search_highlight.{name}"), color)?;
+        }
+        if !highlight.border_width.is_finite() || !(0.0..=20.0).contains(&highlight.border_width) {
+            return Err(bad(
+                "ui_hint.search_highlight.border_width must be 0..=20".into()
+            ));
+        }
         validate_optional_color(
             "ui_hint.search_point.input_background_color",
             point.input_background_color.as_ref(),

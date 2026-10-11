@@ -52,6 +52,7 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
         label_y_offset: config.ui_hint.label_y_offset,
         ui: config.ui_hint.ui.compile(),
         boundary_highlight: config.ui_hint.boundary_highlight.compile(),
+        search_highlight: config.ui_hint.search_highlight.compile(),
         search_input_ui: crate::api::style::CompiledSearchPanel::new(
             &config.ui_hint.search_input_ui,
             &config.palette(crate::api::Appearance::Light),

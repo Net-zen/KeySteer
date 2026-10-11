@@ -7,15 +7,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ROUNDED_RECT, D2D1CreateDevice, ID2D1DeviceContext,
-    ID2D1SolidColorBrush,
+    D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_ROUNDED_RECT, D2D1CreateDevice, ID2D1DeviceContext, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -97,6 +97,7 @@ fn draw_rounded_rectangle(
 /// A GPU-rendered overlay. COM interface wrappers release themselves; the
 /// window wrapper below provides the same single-owner rule for HWND.
 pub(super) struct GpuOverlay {
+    paint_index: Option<Box<crate::platform::common::overlay_damage::PaintIndex>>,
     class_registered: bool,
     d2d: ID2D1DeviceContext,
     dcomp: IDCompositionDevice,
@@ -158,6 +159,7 @@ struct SurfaceDrawGuard {
     d2d: ID2D1DeviceContext,
     surface: IDCompositionSurface,
     d2d_started: bool,
+    clipped: bool,
     finished: bool,
 }
 
@@ -167,6 +169,7 @@ impl SurfaceDrawGuard {
             d2d: d2d.clone(),
             surface: surface.clone(),
             d2d_started: false,
+            clipped: false,
             finished: false,
         }
     }
@@ -195,6 +198,10 @@ impl SurfaceDrawGuard {
         // reports an error; the D2D target is always detached before return.
         let (d2d_result, surface_result) = unsafe {
             let d2d_result = if self.d2d_started {
+                if self.clipped {
+                    self.d2d.PopAxisAlignedClip();
+                    self.clipped = false;
+                }
                 let result = self.d2d.EndDraw(None, None);
                 self.d2d.SetTarget(None);
                 result.map_err(|error| format!("Direct2D EndDraw failed: {error}"))
@@ -275,6 +282,7 @@ impl GpuOverlay {
         let dwrite: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }
             .map_err(|error| format!("DWriteCreateFactory failed: {error}"))?;
         Ok(Self {
+            paint_index: None,
             class_registered: false,
             d2d,
             dcomp,
@@ -318,7 +326,19 @@ impl GpuOverlay {
                 .as_ref()
                 .and_then(|content| content.static_surface.clone());
             if let Some(static_surface) = static_surface {
-                self.draw_static(&static_surface, scene.as_ref(), area)?;
+                let previous = self
+                    .content
+                    .as_ref()
+                    .and_then(|content| content.last_scene.clone());
+                if !area_changed
+                    && let Some(previous) = previous.as_deref().filter(|previous| {
+                        crate::platform::common::overlay_damage::same_source(previous, &scene)
+                    })
+                {
+                    self.draw_damage(&static_surface, previous, &scene, area)?;
+                } else {
+                    self.draw_static(&static_surface, scene.as_ref(), area)?;
+                }
             }
         }
         if changes.cursor_changed {
@@ -400,6 +420,7 @@ impl GpuOverlay {
     /// needed before reading desktop pixels, while an ordinary mode exit must
     /// not wait for the compositor.
     pub(super) fn dismiss(&mut self) -> Result<(), String> {
+        self.paint_index = None;
         self.edit_layout = None;
         // Keep the ordinary warm text buffer, but release exceptional title peaks
         // when leaving the overlay, outside the render hot path.
@@ -487,6 +508,9 @@ impl GpuOverlay {
         width: u32,
         height: u32,
     ) -> Result<(), String> {
+        if !required {
+            self.paint_index = None;
+        }
         let Some(content) = self.content.as_mut() else {
             return Err("DirectComposition content was not retained".into());
         };
@@ -541,11 +565,23 @@ impl GpuOverlay {
         clear: Option<Color>,
         draw: impl FnOnce(&mut Self, Point) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.draw_surface_region(surface, coordinate_origin, clear, None, draw)
+    }
+
+    fn draw_surface_region(
+        &mut self,
+        surface: &IDCompositionSurface,
+        coordinate_origin: Point,
+        clear: Option<Color>,
+        update: Option<RECT>,
+        draw: impl FnOnce(&mut Self, Point) -> Result<(), String>,
+    ) -> Result<(), String> {
         let mut offset = POINT::default();
         // SAFETY: the update offset is a valid out-parameter and the returned
         // interface is explicitly requested as IDXGISurface.
-        let dxgi: IDXGISurface = unsafe { surface.BeginDraw(None, &mut offset) }
-            .map_err(|error| format!("DirectComposition BeginDraw failed: {error}"))?;
+        let dxgi: IDXGISurface =
+            unsafe { surface.BeginDraw(update.as_ref().map(std::ptr::from_ref), &mut offset) }
+                .map_err(|error| format!("DirectComposition BeginDraw failed: {error}"))?;
         let mut draw_guard = SurfaceDrawGuard::new(&self.d2d, surface);
         let properties = D2D1_BITMAP_PROPERTIES1 {
             pixelFormat: D2D1_PIXEL_FORMAT {
@@ -570,13 +606,28 @@ impl GpuOverlay {
         }
         draw_guard.begin_d2d(&bitmap);
         let origin = Point::new(
-            coordinate_origin.x - f64::from(offset.x),
-            coordinate_origin.y - f64::from(offset.y),
+            coordinate_origin.x + update.map_or(0.0, |rect| f64::from(rect.left))
+                - f64::from(offset.x),
+            coordinate_origin.y + update.map_or(0.0, |rect| f64::from(rect.top))
+                - f64::from(offset.y),
         );
+        let clip = update.map(|update| D2D_RECT_F {
+            left: offset.x as f32,
+            top: offset.y as f32,
+            right: (offset.x + update.right - update.left) as f32,
+            bottom: (offset.y + update.bottom - update.top) as f32,
+        });
         let clear = clear.map(d2d_color);
         // SAFETY: drawing is active and the optional local color stays live
         // for the duration of the call.
-        unsafe { self.d2d.Clear(clear.as_ref().map(std::ptr::from_ref)) };
+        unsafe {
+            if let Some(clip) = &clip {
+                self.d2d
+                    .PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
+                draw_guard.clipped = true;
+            }
+            self.d2d.Clear(clear.as_ref().map(std::ptr::from_ref));
+        };
         let draw_result = draw(self, origin);
         draw_result.and(draw_guard.finish())
     }
@@ -587,11 +638,31 @@ impl GpuOverlay {
         scene: &OverlayScene,
         area: Rect,
     ) -> Result<(), String> {
-        self.draw_surface(
+        let mut index = scene.retained.as_ref().map(|retained| {
+            self.paint_index
+                .take()
+                .filter(|index| Arc::ptr_eq(&index.source, &retained.scene))
+                .unwrap_or_else(|| {
+                    Box::new(crate::platform::common::overlay_damage::PaintIndex::new(
+                        retained.scene.clone(),
+                    ))
+                })
+        });
+        let result = self.draw_surface(
             surface,
             Point::new(area.x, area.y),
             scene.backdrop,
             |renderer, origin| {
+                if let Some(retained) = &scene.retained {
+                    for shape in &retained.scene.shapes {
+                        renderer.draw_shape(shape, origin)?;
+                    }
+                    for (i, label) in retained.scene.labels.iter().enumerate() {
+                        if retained.omitted_label != Some(i) {
+                            renderer.draw_label(label, origin)?;
+                        }
+                    }
+                }
                 for shape in &scene.shapes {
                     renderer.draw_shape(shape, origin)?;
                 }
@@ -600,7 +671,84 @@ impl GpuOverlay {
                 }
                 Ok(())
             },
-        )
+        );
+        self.paint_index = index.take();
+        result
+    }
+
+    fn draw_damage(
+        &mut self,
+        surface: &IDCompositionSurface,
+        previous: &OverlayScene,
+        scene: &OverlayScene,
+        area: Rect,
+    ) -> Result<(), String> {
+        use crate::platform::common::overlay_damage::{damage, label_bounds, shape_bounds};
+        let Some(retained) = scene.retained.as_ref() else {
+            return self.draw_static(surface, scene, area);
+        };
+        let mut index = self
+            .paint_index
+            .take()
+            .filter(|index| Arc::ptr_eq(&index.source, &retained.scene))
+            .unwrap_or_else(|| {
+                Box::new(crate::platform::common::overlay_damage::PaintIndex::new(
+                    retained.scene.clone(),
+                ))
+            });
+        let result = (|| {
+            for region in damage(previous, scene, area) {
+                let update = RECT {
+                    left: (region.x - area.x).floor().max(0.0) as i32,
+                    top: (region.y - area.y).floor().max(0.0) as i32,
+                    right: (region.right() - area.x).ceil().min(area.width.round()) as i32,
+                    bottom: (region.bottom() - area.y).ceil().min(area.height.round()) as i32,
+                };
+                if update.left >= update.right || update.top >= update.bottom {
+                    continue;
+                }
+                let region = Rect::new(
+                    area.x + f64::from(update.left),
+                    area.y + f64::from(update.top),
+                    f64::from(update.right - update.left),
+                    f64::from(update.bottom - update.top),
+                );
+                index.query(region);
+                self.draw_surface_region(
+                    surface,
+                    Point::new(area.x, area.y),
+                    scene.backdrop,
+                    Some(update),
+                    |renderer, origin| {
+                        let base = &retained.scene;
+                        for &hit in &index.hits {
+                            if hit < base.shapes.len() {
+                                renderer.draw_shape(&base.shapes[hit], origin)?;
+                            } else {
+                                let i = hit - base.shapes.len();
+                                if retained.omitted_label != Some(i) {
+                                    renderer.draw_label(&base.labels[i], origin)?;
+                                }
+                            }
+                        }
+                        for shape in &scene.shapes {
+                            if shape_bounds(shape).intersect(&region).is_some() {
+                                renderer.draw_shape(shape, origin)?;
+                            }
+                        }
+                        for label in &scene.labels {
+                            if label_bounds(label).intersect(&region).is_some() {
+                                renderer.draw_label(label, origin)?;
+                            }
+                        }
+                        Ok(())
+                    },
+                )?;
+            }
+            Ok(())
+        })();
+        self.paint_index = Some(index);
+        result
     }
 
     fn draw_cursor(
@@ -1203,6 +1351,7 @@ fn ensure_layer_surface(
 
 fn static_scene_eq(left: &OverlayScene, right: &OverlayScene) -> bool {
     left.backdrop == right.backdrop
+        && left.retained == right.retained
         && left.clip == right.clip
         && left.shapes == right.shapes
         && left.labels == right.labels
@@ -1258,7 +1407,10 @@ fn scene_changes(
 }
 
 fn scene_has_static_content(scene: &OverlayScene) -> bool {
-    scene.backdrop.is_some() || !scene.shapes.is_empty() || !scene.labels.is_empty()
+    scene.retained.is_some()
+        || scene.backdrop.is_some()
+        || !scene.shapes.is_empty()
+        || !scene.labels.is_empty()
 }
 
 fn create_window(area: Rect) -> Result<OwnedWindow, String> {
@@ -1367,6 +1519,94 @@ mod tests {
     use super::*;
     use std::process::Command;
     use std::time::Instant;
+
+    #[test]
+    #[ignore = "requires an interactive Windows compositor; disposable overlay pixel comparison"]
+    fn native_retained_damage_matches_full_redraw() -> Result<(), String> {
+        use crate::api::overlay::RetainedOverlay;
+        crate::platform::windows::screens::enable_dpi_awareness()?;
+        let area = Rect::new(40.0, 40.0, 480.0, 240.0);
+        let mut renderer = GpuOverlay::new()?;
+        let mut capture = crate::platform::windows::native::PreparedCapture::new(480, 240)?;
+        let mut base = OverlayScene::new();
+        base.clip = Some(area);
+        for (text, x) in [("aa", 80.0), ("ab", 95.0), ("ac", 380.0)] {
+            base.labels.push(
+                OverlayLabel::new(text, Rect::new(x, 75.0, 48.0, 32.0), LabelStyle::default())
+                    .with_z_index(2),
+            );
+        }
+        let base = Arc::new(base);
+        let mut previous: Option<Arc<OverlayScene>> = None;
+        for transparent in [false, true] {
+            for selected in [Some(0), Some(1), Some(2), Some(0), None] {
+                let mut frame = OverlayScene::new();
+                frame.clip = Some(area);
+                frame.backdrop = Some(Color::rgb(245, 245, 245));
+                frame.retained = Some(RetainedOverlay {
+                    scene: base.clone(),
+                    omitted_label: selected,
+                });
+                if let Some(index) = selected {
+                    let mut label = base.labels[index].clone();
+                    let style = label.style.make_mut();
+                    style.background = if transparent {
+                        Color::rgba(0, 180, 80, 60)
+                    } else {
+                        Color::rgb(0, 180, 80)
+                    };
+                    style.border_width = 4.0;
+                    style.text_color = Color::rgb(180, 0, 120);
+                    label.z_index = 3;
+                    frame.labels.push(label);
+                }
+                frame.shapes.push(OverlayShape::fill(
+                    Rect::new(65.0, 180.0, 350.0, 65.0),
+                    Color::rgb(20, 30, 40),
+                ));
+                frame.labels.push(
+                    OverlayLabel::new(
+                        format!("Selected: {selected:?}"),
+                        Rect::new(70.0, 185.0, 320.0, 40.0),
+                        LabelStyle::default(),
+                    )
+                    .with_z_index(10_001),
+                );
+                let frame = Arc::new(frame);
+                let started = renderer.begin_draws;
+                renderer.present(frame.clone(), area)?;
+                if previous.is_some() {
+                    assert!(
+                        renderer.begin_draws - started >= 2,
+                        "use separate dirty regions"
+                    );
+                }
+                crate::platform::windows::native::wait_for_dwm_frame()
+                    .map_err(|e| e.to_string())?;
+                let partial =
+                    capture.capture_with(40, 40, 480, 240, |bytes, _, _| Ok(bytes.to_vec()))?;
+                renderer.content.as_mut().unwrap().last_scene = None;
+                renderer.present(frame.clone(), area)?;
+                crate::platform::windows::native::wait_for_dwm_frame()
+                    .map_err(|e| e.to_string())?;
+                let full =
+                    capture.capture_with(40, 40, 480, 240, |bytes, _, _| Ok(bytes.to_vec()))?;
+                let difference = partial.iter().zip(&full).filter(|(a, b)| a != b).count();
+                assert_eq!(
+                    difference, 0,
+                    "selection={selected:?} transparent={transparent}"
+                );
+                previous = Some(frame);
+            }
+        }
+        renderer.present(Arc::new(OverlayScene::new()), area)?;
+        assert!(
+            renderer.paint_index.is_none(),
+            "empty frames release the old spatial index"
+        );
+        renderer.dismiss()?;
+        Ok(())
+    }
 
     fn percentiles(mut samples: Vec<u128>) -> (u128, u128, u128) {
         samples.sort_unstable();

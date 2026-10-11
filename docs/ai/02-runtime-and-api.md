@@ -14,6 +14,8 @@ Mode → HostContext::present(View) → presentation → OverlayScene
 
 跨层词汇在 `src/api/backend.rs`、`src/api/command.rs`；原生对象不进入模式。
 
+`OverlayScene.retained` 描述不可变的背景图元和可省略的普通标签槽位，前景仍使用常规 labels／shapes；它不携带 Hint 状态或原生资源。`materialized()` 提供完整场景兼容视图，原生后端可按共享身份复用背景。会话的 `HintSceneCache` 只拥有已解析样式、场景及槽位索引，Presenter 负责构造并按有限份额预热，Mode 负责内容变化与退出失效。
+
 连续滚动通过 `Command::ScrollFrame` / `Backend::scroll_frame` 保留取消身份和每帧距离，runtime 在提交前应用滚动反向设置；离散 `Scroll` 不可替换。原生执行与积压策略由共享滚动执行器负责，见[平台后端](06-platform-backends.md)。
 
 ## 关键语义

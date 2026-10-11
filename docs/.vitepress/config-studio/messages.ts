@@ -2,6 +2,14 @@ export type StudioLocale = 'zh' | 'en'
 
 /** Display text only. Command values, paths and user content are never localized. */
 export const englishMessages: Record<string, string> = {
+  '当前标签高亮': 'Current label highlight',
+  '搜索预览和点位切换时突出当前标签，默认使用 Window 同款绿色。': 'Highlight the current search result or point with the same green as Window selection by default.',
+  '标签切换预览': 'Label cycling preview',
+  '切换当前标签（Tab）': 'Cycle current label (Tab)',
+  '当前标签背景色': 'Current label background',
+  '当前标签文字色': 'Current label text',
+  '当前标签边框色': 'Current label border',
+  '当前标签边框宽度': 'Current label border width',
   '点位调整切换键（单击）': 'Point adjustment toggle (tap)',
   '四个条目的复制键（按顺序，逗号分隔）': 'Copy shortcuts for four slots (in order, comma separated)',
   '请输入四个不同的复制组合键': 'Enter four distinct copy shortcuts',

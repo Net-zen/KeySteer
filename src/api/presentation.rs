@@ -16,6 +16,16 @@ pub use hint_cache::VisualLayerPlan;
 /// Stateless scene-composition port supplied by the host. Implementations must
 /// consume borrowed views within the call and keep native resources in Backend.
 pub trait Presenter: Send + Sync {
+    /// Bounded preparation after the first scene has been submitted.
+    fn warm_hint_scene(
+        &self,
+        _cache: &HintSceneCache,
+        _style: HintStyle<'_>,
+        _context: &HostContext<'_>,
+        _limit: usize,
+    ) -> bool {
+        true
+    }
     fn input_panel(
         &self,
         ui: &CompiledSearchPanel,
@@ -32,6 +42,9 @@ pub trait Presenter: Send + Sync {
     );
 }
 
+// Views are synchronous borrowed descriptions. Boxing the largest variant
+// would add an allocation to every Hint frame just to reduce the enum's stack.
+#[allow(clippy::large_enum_variant)]
 pub enum View<'a> {
     Empty,
     Grid(GridView<'a>),
@@ -135,6 +148,7 @@ pub struct HintStyle<'a> {
     pub label_y_offset: i32,
     pub boundary_highlight: &'a BoundaryHighlight,
     pub search_input_ui: &'a CompiledSearchPanel,
+    pub search_highlight: &'a super::style::compiled::SearchHighlightUi,
 }
 
 #[derive(Clone, Copy)]
@@ -151,12 +165,62 @@ pub struct HintContent<'a> {
 }
 
 pub struct HintView<'a> {
+    pub cache: Option<&'a HintSceneCache>,
     pub point: Option<HintPointView<'a>>,
     pub info: Option<HintInfoView<'a>>,
     pub window_bounds: &'a Option<Rect>,
     pub content: HintContent<'a>,
     pub layers: &'a VisualLayerPlan,
     pub active_layer: Option<usize>,
+}
+
+/// Session-owned portable presentation data, never native drawing resources.
+#[derive(Default)]
+pub struct HintSceneCache {
+    pub(crate) state: std::cell::RefCell<HintSceneState>,
+}
+
+#[derive(Default)]
+pub(crate) struct HintSceneState {
+    pub scene: Option<std::sync::Arc<OverlayScene>>,
+    pub palette: Option<super::Palette>,
+    pub scale: u64,
+    pub active_layer: Option<usize>,
+    pub prefix: String,
+    pub highlighted: Option<super::overlay::SharedLabelStyle>,
+    pub positions: rustc_hash::FxHashMap<smol_str::SmolStr, usize>,
+    pub prepared: usize,
+}
+
+impl HintSceneCache {
+    pub fn clear(&mut self) {
+        *self.state.get_mut() = HintSceneState::default();
+    }
+    pub fn needs_warm(&self) -> bool {
+        let state = self.state.borrow();
+        state
+            .scene
+            .as_ref()
+            .is_some_and(|scene| state.prepared < scene.labels.len() || state.highlighted.is_none())
+    }
+    #[inline(never)]
+    pub fn capture(
+        &self,
+        scene: std::sync::Arc<OverlayScene>,
+        palette: &super::Palette,
+        scale: f64,
+        active_layer: Option<usize>,
+        prefix: &str,
+    ) {
+        *self.state.borrow_mut() = HintSceneState {
+            scene: Some(scene),
+            palette: Some(palette.clone()),
+            scale: scale.to_bits(),
+            active_layer,
+            prefix: prefix.into(),
+            ..Default::default()
+        };
+    }
 }
 
 pub struct HintInfoView<'a> {

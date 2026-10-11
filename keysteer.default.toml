@@ -754,6 +754,14 @@ padding_y = -1
 # matched_text_color = "#E4B400FF"
 # border_color       = "#6E82D6FF"
 
+# Current search result / selected Point member uses Window-style green.
+# Optional overrides; defaults are not expanded when exporting configuration.
+# [ui_hint.search_highlight]
+# background_color = { light = "#E8F6F0FF", dark = "#284D44FF" }
+# text_color = { light = "#17327AFF", dark = "#E8EEFFFF" }
+# border_color = { light = "#60B49CFF", dark = "#85CDB8FF" }
+# border_width = 1.5 # 0 hides the current-label border.
+
 # Outline each hinted element.
 [ui_hint.boundary_highlight]
 enabled = false

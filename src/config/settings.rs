@@ -272,6 +272,8 @@ pub struct UiHint {
     pub search_input_ui: SearchInputUi,
     #[serde(deserialize_with = "deserialize_search_info_ui")]
     pub search_info_ui: SearchInputUi,
+    #[serde(skip_serializing_if = "crate::api::style::SearchHighlightUi::is_default")]
+    pub search_highlight: crate::api::style::SearchHighlightUi,
     /// Independent shortcuts for OCR, accessibility, coordinates and color.
     pub search_copy_keys: Vec<String>,
     /// Search-result preview groups, highest priority first; all three are required.
@@ -406,6 +408,7 @@ impl Default for UiHint {
                 ..Default::default()
             },
             search_edit_keys: crate::api::text_edit::default_keys(),
+            search_highlight: Default::default(),
             search_copy_keys: ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"]
                 .map(String::from)
                 .to_vec(),

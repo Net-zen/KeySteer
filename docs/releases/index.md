@@ -7,11 +7,13 @@ outline: false
 
 ## 0.11.7
 
+- 搜索时，当前标签用绿色底色和边框突出显示，按 `Tab` 更容易看清切到了哪一项；网页配置器可调整高亮颜色和边框。
 - UIHint 搜索有多个结果时，会自动显示最匹配结果的信息面板。默认按 `Tab` 切换，`Enter` 或 `/` 确认当前结果，`Esc` 取消；按键均可修改。
 - 搜索会优先展示更符合输入的结果。匹配程度相同时，默认按「简拼 → 文字 → 标签」选择，也可以在配置中调整顺序。
 - 新增 22 秒中英双语演示，快速了解简拼搜索、切换结果、复制信息、微调点位与取色。
 
 - UIHint search now automatically previews the best match when several results are found. By default, press `Tab` to switch, `Enter` or `/` to confirm the current result, or `Esc` to cancel. These keys are customizable.
+- The current search label now has a green background and border, making `Tab` cycling easier to follow. Customize its colors and border in the web editor.
 - Search shows the closest matches first. Equally close matches default to Chinese initials → text → labels; you can change this order in settings.
 - Added a 22-second bilingual demo covering pinyin initials, result cycling, copying information, point adjustment, and color picking. 
 

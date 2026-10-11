@@ -5,6 +5,39 @@ use crate::api::binding::{Button, Direction, ScrollAmount, Speed};
 use crate::api::{ButtonAction, ModeId, MouseButton, VisionOptions};
 
 #[test]
+fn search_highlight_defaults_overrides_and_validation_roundtrip() {
+    assert!(
+        !Config::default()
+            .to_toml()
+            .unwrap()
+            .contains("[ui_hint.search_highlight]")
+    );
+    let source = "[ui_hint.search_highlight]\nbackground_color = { light = '#E8F6F080', dark = '#284D4480' }\ntext_color = '#123456FF'\nborder_color = '#68BCA380'\nborder_width = 0.0";
+    let config = Config::parse(source).unwrap();
+    config.validate().unwrap();
+    let restored = Config::parse(&config.to_toml().unwrap()).unwrap();
+    assert_eq!(
+        restored.ui_hint.search_highlight,
+        config.ui_hint.search_highlight
+    );
+    for invalid in [
+        "background_color = 'bad'",
+        "text_color = { light = '#000000FF' }",
+        "border_color = 'bad'",
+        "border_width = -1",
+        "border_width = 21",
+        "border_width = nan",
+        "unknown = 1",
+    ] {
+        let result = Config::parse(&format!("[ui_hint.search_highlight]\n{invalid}"));
+        assert!(
+            result.is_err() || result.unwrap().validate().is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 fn recursive_grid_font_size_is_read_from_flat_ui_config() {
     for size in [17, 20, 36] {
         let config = Config::parse(&format!("[recursive_grid.ui]\nfont_size = {size}")).unwrap();

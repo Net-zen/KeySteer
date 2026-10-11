@@ -43,6 +43,8 @@ Press `/` to search text, Chinese pinyin initials, or label codes. Matching resu
 
 Press `Ctrl+1/2/3/4` to copy text, accessibility information, coordinates, or color, respectively. Tap `Ctrl` to edit the point, adjust the sampling position with `H/J/K/L`, and use `Ctrl+Shift+4` to cycle through HEX, RGB, and HSL. All these keys are configurable.
 
+The current preview or individually selected point uses Window's green background and border, appearing above overlapping labels. Adjust its background, text, border color, and border width under **UI Hint → Appearance → Current label highlight** in the web editor, or use `background_color`, `text_color`, `border_color`, and `border_width` in `[ui_hint.search_highlight]`. No individual label is highlighted while multiple points remain at their average center. Leaving search restores the normal style.
+
 Confirmation, cancellation, and input editing use key = action entries in `[ui_hint.search_edit_keys]`, such as `"enter / primary+q" = "accept"` and `"primary+v" = "paste"`. Separate alternative keys with spaces on the left. Omitted actions keep their defaults. Legacy tables remain readable; exports use the new format.
 
 The cycling key uses the existing `point_next` action in `[ui_hint.search_bindings]` and accepts a different key or chord. During point adjustment it still cycles selected points. Space-separated multi-selection and concatenated fields retain their existing behavior.

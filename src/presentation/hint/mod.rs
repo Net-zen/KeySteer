@@ -245,6 +245,24 @@ fn prepare_hint_plan(
 
 impl HintView<'_> {
     pub(crate) fn scene(&self, ctx: &HostContext<'_>) -> OverlayScene {
+        if let Some(cache) = self.cache
+            && (self.content.search.is_some() || self.point.is_some())
+            && cache.state.borrow().scene.as_ref().is_some_and(|base| {
+                let state = cache.state.borrow();
+                state.palette.as_ref() == Some(ctx.palette)
+                    && state.scale == ctx.scale().to_bits()
+                    && state.active_layer == self.active_layer
+                    && state.prefix == self.content.prefix
+                    && base.clip
+                        == self
+                            .content
+                            .scan_bounds
+                            .or_else(|| Some(ctx.active_bounds()))
+            })
+            && let Some(scene) = self.cached_scene(cache, ctx)
+        {
+            return scene;
+        }
         let palette = ctx.palette;
         let visible_count = if self.content.prefix.is_empty() {
             self.content.hints.len()
@@ -333,7 +351,30 @@ impl HintView<'_> {
         // Detach shared storage once for the whole batch, not for every label.
         // Hint labels carry no window-placement annotations.
         let labels: &mut Vec<OverlayLabel> = &mut scene.labels;
-        if let Some(layer) = active_overlap_layer.filter(|_| self.layers.is_canonical_stack()) {
+        let current = self.info.as_ref().and_then(|info| {
+            if info.multiple {
+                self.point.as_ref().and_then(|point| {
+                    point
+                        .position
+                        .checked_sub(1)
+                        .and_then(|index| info.hints.get(index))
+                })
+            } else {
+                info.hints.first()
+            }
+        });
+        if let Some(current) = current.filter(|_| self.cache.is_none()) {
+            self.append_highlighted_labels(
+                labels,
+                &label_style,
+                uniform_width,
+                current,
+                (first_z, final_z),
+                palette,
+            );
+        } else if let Some(layer) =
+            active_overlap_layer.filter(|_| self.layers.is_canonical_stack())
+        {
             self.append_stack_labels(
                 labels,
                 &label_style,
@@ -363,8 +404,18 @@ impl HintView<'_> {
             }
         }
 
+        if let Some(cache) = self.cache
+            && (self.content.search.is_some() || self.point.is_some())
+        {
+            return self.retain_scene(scene, cache, ctx);
+        }
+        self.append_dynamic(&mut scene, ctx);
+        scene
+    }
+
+    fn append_dynamic(&self, scene: &mut OverlayScene, ctx: &HostContext<'_>) {
         if self.content.search.is_some() {
-            self.append_search(&mut scene, ctx);
+            self.append_search(scene, ctx);
         }
 
         if let Some(point) = &self.point {
@@ -386,7 +437,196 @@ impl HintView<'_> {
                 z_index: SEARCH_INPUT_Z_INDEX + 3,
             });
         }
-        scene
+    }
+
+    // These cache-building temporaries must not enlarge the ordinary first
+    // scene's stack frame or prevent its label loop from being optimized.
+    #[inline(never)]
+    fn retain_scene(
+        &self,
+        scene: OverlayScene,
+        cache: &crate::api::presentation::HintSceneCache,
+        ctx: &HostContext<'_>,
+    ) -> OverlayScene {
+        let base = std::sync::Arc::new(scene);
+        cache.capture(
+            base.clone(),
+            ctx.palette,
+            ctx.scale(),
+            self.active_layer,
+            self.content.prefix,
+        );
+        // Query/geometry changes already rebuild the visible label batch.
+        // Prepare its index once here; subsequent Tab events touch no batch.
+        warm_scene(cache, self.content.style, ctx, usize::MAX);
+        self.cached_scene(cache, ctx).unwrap_or_else(|| {
+            let mut scene = base.as_ref().clone();
+            self.append_dynamic(&mut scene, ctx);
+            scene
+        })
+    }
+
+    #[inline(never)]
+    fn cached_scene(
+        &self,
+        cache: &crate::api::presentation::HintSceneCache,
+        ctx: &HostContext<'_>,
+    ) -> Option<OverlayScene> {
+        warm_scene(cache, self.content.style, ctx, 0);
+        let state = cache.state.borrow();
+        let base = state.scene.as_ref()?;
+        let highlighted = state.highlighted.as_ref()?;
+        let current = self.info.as_ref().and_then(|info| {
+            if info.multiple {
+                self.point.as_ref().and_then(|point| {
+                    point
+                        .position
+                        .checked_sub(1)
+                        .and_then(|i| info.hints.get(i))
+                })
+            } else {
+                info.hints.first()
+            }
+        });
+        let index = current.and_then(|hint| {
+            state
+                .positions
+                .get(hint.label.as_str())
+                .copied()
+                .or_else(|| {
+                    (state.prepared < base.labels.len())
+                        .then(|| {
+                            base.labels
+                                .iter()
+                                .position(|label| label.text.as_str() == hint.label.as_str())
+                        })
+                        .flatten()
+                })
+        });
+        let mut scene = OverlayScene::with_capacity(3, 14);
+        scene.clip = base.clip;
+        scene.retained = Some(crate::api::overlay::RetainedOverlay {
+            scene: base.clone(),
+            omitted_label: index,
+        });
+        if let Some(index) = index {
+            let mut label = base.labels[index].clone();
+            label.style = highlighted.clone();
+            label.z_index = base
+                .labels
+                .last()
+                .map_or(2, |label| label.z_index)
+                .saturating_add(1);
+            scene.labels.push(label);
+        }
+        drop(state);
+        self.append_dynamic(&mut scene, ctx);
+        Some(scene)
+    }
+
+    // Emit the current result last on the first pass. Do not search or rotate
+    // the completed overlay batch, and keep this frame out of ordinary hints.
+    #[inline(never)]
+    fn append_highlighted_labels(
+        &self,
+        labels: &mut Vec<OverlayLabel>,
+        style: &SharedLabelStyle,
+        uniform_width: Option<f64>,
+        current: &CompactHint<usize>,
+        (first_z, final_z): (i32, i32),
+        palette: &Palette,
+    ) {
+        let matched_prefix_len = self.content.prefix.chars().count().min(u32::MAX as usize) as u32;
+        let hints = self.content.hints;
+        // An unfiltered scan normally retains its target-index order. Verify
+        // identity before using that O(1) slot; filtered/streamed views fall back
+        // to their current label codes, never to a retained vector position.
+        let focused_index = hints
+            .get(current.value)
+            .filter(|hint| hint.value == current.value && hint.label == current.label)
+            .map(|_| current.value)
+            .or_else(|| hints.iter().position(|hint| hint.label == current.label))
+            .filter(|&index| {
+                self.content.prefix.is_empty()
+                    || hints[index].label.as_str().starts_with(self.content.prefix)
+            });
+        // Two borrowed ranges avoid a per-label selection test or moving the
+        // completed buffer. Offsets keep the original overlap-plan indices.
+        let ranges = focused_index.map_or([(0, hints), (hints.len(), &[][..])], |index| {
+            [(0, &hints[..index]), (index + 1, &hints[index + 1..])]
+        });
+        let mut append = |hint: &CompactHint<usize>, z_index| {
+            let rect = placed_hint_rect(&self.content.style, hint, style, uniform_width);
+            labels.push(OverlayLabel {
+                matched_prefix_len,
+                z_index,
+                ..OverlayLabel::new(hint.label.as_str(), rect, style.clone())
+            });
+        };
+        if let Some(layer) = self
+            .active_layer
+            .filter(|_| self.layers.is_canonical_stack())
+        {
+            let top = self.layers.layer_count();
+            let mut overlap_top = None;
+            for (offset, range) in ranges {
+                for (index, hint) in range.iter().enumerate().filter(|(_, hint)| {
+                    self.content.prefix.is_empty()
+                        || hint.label.as_str().starts_with(self.content.prefix)
+                }) {
+                    let rank = self.layers.draw_rank(offset + index, layer).unwrap_or(1);
+                    if rank == top {
+                        overlap_top = Some(hint);
+                    } else {
+                        append(
+                            hint,
+                            HINT_LAYER_Z_BASE
+                                .saturating_add(i32::try_from(rank).unwrap_or(i32::MAX)),
+                        );
+                    }
+                }
+            }
+            if let Some(hint) = overlap_top {
+                append(
+                    hint,
+                    HINT_LAYER_Z_BASE.saturating_add(i32::try_from(top).unwrap_or(i32::MAX)),
+                );
+            }
+        } else {
+            for z_index in first_z..=final_z {
+                for (offset, range) in ranges {
+                    for (index, hint) in range.iter().enumerate().filter(|(_, hint)| {
+                        self.content.prefix.is_empty()
+                            || hint.label.as_str().starts_with(self.content.prefix)
+                    }) {
+                        let rank = self
+                            .active_layer
+                            .and_then(|layer| self.layers.draw_rank(offset + index, layer))
+                            .and_then(|rank| i32::try_from(rank).ok())
+                            .map_or(HINT_LAYER_Z_BASE + 1, |rank| {
+                                HINT_LAYER_Z_BASE.saturating_add(rank)
+                            });
+                        if rank == z_index {
+                            append(hint, z_index);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(index) = focused_index {
+            let hint = &hints[index];
+            let rect = placed_hint_rect(&self.content.style, hint, style, uniform_width);
+            let mut highlighted = (**style).clone();
+            self.content
+                .style
+                .search_highlight
+                .apply(&mut highlighted, palette);
+            labels.push(OverlayLabel {
+                matched_prefix_len,
+                z_index: final_z.saturating_add(1),
+                ..OverlayLabel::new(hint.label.as_str(), rect, highlighted)
+            });
+        }
     }
 
     // A verified clique keeps source order except for one raised item. Keep
@@ -681,6 +921,35 @@ impl HintView<'_> {
             }
         }
     }
+}
+
+#[inline(never)]
+pub(crate) fn warm_scene(
+    cache: &crate::api::presentation::HintSceneCache,
+    style: HintStyle<'_>,
+    ctx: &HostContext<'_>,
+    limit: usize,
+) -> bool {
+    let mut state = cache.state.borrow_mut();
+    let Some(base) = state.scene.clone() else {
+        return true;
+    };
+    if state.highlighted.is_none() {
+        let mut highlighted = base.labels.first().map_or_else(
+            || resolved_hint_label_style(&style, ctx.palette),
+            |label| (*label.style).clone(),
+        );
+        style.search_highlight.apply(&mut highlighted, ctx.palette);
+        state.highlighted = Some(highlighted.into());
+    }
+    let end = state.prepared.saturating_add(limit).min(base.labels.len());
+    for index in state.prepared..end {
+        state
+            .positions
+            .insert(base.labels[index].text.as_str().into(), index);
+    }
+    state.prepared = end;
+    end == base.labels.len()
 }
 impl HintSelectionView<'_> {
     pub(crate) fn scene(&self, ctx: &HostContext<'_>) -> OverlayScene {

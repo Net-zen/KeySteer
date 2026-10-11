@@ -92,6 +92,7 @@ pub struct Settings {
     pub boundary_highlight: BoundaryHighlight,
     pub search_input_ui: CompiledSearchPanel,
     pub search_info_ui: CompiledSearchPanel,
+    pub search_highlight: crate::api::style::compiled::SearchHighlightUi,
     pub search_copy_keys: std::sync::Arc<[KeyChord]>,
     pub search_edit_keys: std::sync::Arc<[(KeyChord, crate::api::text_edit::EditAction)]>,
     pub search_match_priority: crate::api::hint::CompiledSearchPriority,
@@ -140,6 +141,7 @@ impl Input {
 }
 
 pub struct HintMode {
+    scene_cache: crate::api::presentation::HintSceneCache,
     pending_view: Option<PendingView>,
     inspection: Option<Box<point::Inspection>>,
     sample_serial: u64,
@@ -161,6 +163,7 @@ pub struct HintMode {
 impl HintMode {
     pub fn new(config: Settings) -> Self {
         Self {
+            scene_cache: Default::default(),
             pending_view: None,
             inspection: None,
             sample_serial: 0,
@@ -183,6 +186,7 @@ impl HintMode {
     }
 
     fn clear_scan_results(&mut self) {
+        self.scene_cache.clear();
         self.session.clear_results();
         self.overlap_plan.release_retained();
         self.wide_placements = None;
@@ -600,6 +604,7 @@ impl HintMode {
     }
 
     fn rebuild_overlap_plan(&mut self, ctx: &HostContext<'_>) -> bool {
+        self.scene_cache.clear();
         let content = hint_content(
             &self.config,
             &self.session.hints,
@@ -711,6 +716,7 @@ impl HintMode {
             })
         } else {
             View::Hints(HintView {
+                cache: Some(&self.scene_cache),
                 point: self
                     .inspection
                     .as_ref()
@@ -769,6 +775,23 @@ impl HintMode {
             .iter()
             .position(|command| matches!(command, Command::SamplePoint(_) | Command::CopyText(_)));
         let scene = ctx.present(view);
+        if matches!(pending, PendingView::Hints)
+            && self.session.active
+            && !self.session.scanned.is_empty()
+            && !self.session.finished
+            && self.inspection.is_none()
+            && matches!(self.input, Input::Labels(_))
+            && let Command::ShowOverlay(content) = &scene
+            && content.retained.is_none()
+        {
+            self.scene_cache.capture(
+                content.clone(),
+                ctx.palette,
+                ctx.scale(),
+                self.active_overlap_layer(),
+                self.input.text(),
+            );
+        }
         if let Some(index) = before_async {
             commands.insert(index, scene);
         } else {
@@ -778,7 +801,7 @@ impl HintMode {
             && self.session.active
             && !self.session.finished
             && !self.session.scanned.is_empty()
-            && !self.session.search_names_initialized
+            && (!self.session.search_names_initialized || self.scene_cache.needs_warm())
         {
             // Engine flushes this scene before firing due timers in the same
             // turn, so the renderer can start before search preprocessing.
@@ -1171,6 +1194,7 @@ fn hint_style(config: &Settings) -> HintStyle<'_> {
         label_x_offset: config.label_x_offset,
         label_y_offset: config.label_y_offset,
         boundary_highlight: &config.boundary_highlight,
+        search_highlight: &config.search_highlight,
         search_input_ui: &config.search_input_ui,
     }
 }
@@ -1472,6 +1496,7 @@ impl HintMode {
             }
             ModeEvent::FinishRequested { .. } if self.session.finished => CommandBatch::new(),
             ModeEvent::FinishRequested { .. } => {
+                self.scene_cache.clear();
                 self.session.finished = true;
                 self.redraw()
             }
@@ -1524,7 +1549,23 @@ impl HintMode {
                     && !self.session.finished
                     && !self.session.scanned.is_empty() =>
             {
-                if self.session.prepare_search_names(SEARCH_PREWARM_TARGETS) {
+                let style = hint_content(
+                    &self.config,
+                    &[],
+                    &self.input,
+                    self.session.scan_bounds,
+                    self.session.search_selection,
+                    self.uniform_label_chars(),
+                )
+                .style;
+                let scene_ready = ctx.presenter.warm_hint_scene(
+                    &self.scene_cache,
+                    style,
+                    ctx,
+                    SEARCH_PREWARM_TARGETS,
+                );
+                let names_ready = self.session.prepare_search_names(SEARCH_PREWARM_TARGETS);
+                if scene_ready && names_ready {
                     CommandBatch::new()
                 } else {
                     // The scheduler snapshots due timers once per turn. A new
@@ -1610,7 +1651,10 @@ mod tests {
             Command::ShowOverlay(scene) => Some(scene),
             _ => None,
         });
-        assert_eq!(scenes.next().unwrap().as_ref(), &mode.scene(&env.ctx()));
+        assert_eq!(
+            scenes.next().unwrap().materialized(),
+            mode.scene(&env.ctx())
+        );
         assert!(
             scenes.next().is_none(),
             "one event must compose only one final scene"
@@ -1651,7 +1695,7 @@ mod tests {
                 }
                 mode.session.search_query = query.into();
                 let out = press(&mut mode, &env, "/");
-                let actual = scene_of(&out).clone();
+                let actual = scene_of(&out).materialized();
                 mode.relabel(&env.ctx());
                 assert_eq!(
                     actual,
@@ -2876,6 +2920,348 @@ mod tests {
     }
 
     #[test]
+    fn search_current_label_is_highlighted_raised_and_restored_on_cancel() {
+        for appearance in [crate::api::Appearance::Light, crate::api::Appearance::Dark] {
+            let mut env = Env::new();
+            env.palette.appearance = appearance;
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            // Full overlap exercises promotion above the cached visual layers.
+            deliver(
+                &mut mode,
+                &env,
+                vec![
+                    target("alpha", 0.0),
+                    target("bravo", 0.0),
+                    target("charlie", 0.0),
+                ],
+            );
+            let ordinary = mode.scene(&env.ctx());
+            press(&mut mode, &env, "/");
+            mode.handle(&ModeEvent::TextChanged("button".into()), &env.ctx());
+            let background = if appearance == crate::api::Appearance::Light {
+                Color::rgb(0xE8, 0xF6, 0xF0)
+            } else {
+                Color::rgb(0x28, 0x4D, 0x44)
+            };
+            let first = mode.search_info().unwrap().hints[0].label.clone();
+            for cycle in 0..=3 {
+                let current = mode.search_info().unwrap().hints[0].label.clone();
+                if cycle == 3 {
+                    assert_eq!(current, first);
+                }
+                let scene = mode.scene(&env.ctx());
+                let labels: Vec<_> = scene
+                    .labels
+                    .iter()
+                    .filter(|label| ordinary.labels.iter().any(|base| base.text == label.text))
+                    .collect();
+                assert_eq!(labels.len(), ordinary.labels.len());
+                let active = labels
+                    .iter()
+                    .find(|label| label.text.as_str() == current.as_str())
+                    .unwrap();
+                assert_eq!(active.style.background, background);
+                assert_eq!(active.style.border_width, 1.5);
+                for other in labels
+                    .iter()
+                    .filter(|label| label.text.as_str() != current.as_str())
+                {
+                    assert!(active.z_index > other.z_index);
+                    let base = ordinary
+                        .labels
+                        .iter()
+                        .find(|base| base.text == other.text)
+                        .unwrap();
+                    assert_eq!(other.style, base.style);
+                    assert_eq!(other.rect, base.rect);
+                }
+                let out = mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+                assert!(
+                    !out.iter()
+                        .any(|command| matches!(command, Command::WarpPointer { .. }))
+                );
+            }
+            press(&mut mode, &env, "esc");
+            assert_eq!(mode.scene(&env.ctx()), ordinary);
+        }
+    }
+
+    #[test]
+    fn search_highlight_keeps_other_labels_in_their_original_layer_order() {
+        for positions in [
+            [0.0, 100.0, 200.0, 300.0, 400.0, 500.0],
+            [0.0; 6],
+            [0.0, 0.0, 100.0, 100.0, 200.0, 200.0],
+        ] {
+            let env = Env::new();
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            deliver(
+                &mut mode,
+                &env,
+                positions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, x)| target(&format!("Control {index}"), x))
+                    .collect(),
+            );
+            let ordinary = mode.scene(&env.ctx());
+            press(&mut mode, &env, "/");
+            mode.handle(&ModeEvent::TextChanged("button".into()), &env.ctx());
+            for _ in 0..positions.len() {
+                let current = &mode.search_info().unwrap().hints[0].label;
+                let scene = mode.scene(&env.ctx());
+                let labels: Vec<_> = scene
+                    .labels
+                    .iter()
+                    .filter(|label| label.z_index < 10_000)
+                    .collect();
+                assert_eq!(labels.len(), ordinary.labels.len());
+                assert_eq!(labels.last().unwrap().text.as_str(), current.as_str());
+                let expected: Vec<_> = ordinary
+                    .labels
+                    .iter()
+                    .filter(|label| label.text.as_str() != current.as_str())
+                    .collect();
+                let actual: Vec<_> = labels
+                    .into_iter()
+                    .filter(|label| label.text.as_str() != current.as_str())
+                    .collect();
+                assert_eq!(
+                    actual, expected,
+                    "other labels keep their geometry, style and order"
+                );
+                mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+            }
+        }
+    }
+
+    #[test]
+    fn retained_search_prepares_after_first_scene_and_reuses_the_base_and_style_on_tab() {
+        let mut env = Env::new();
+        env.screens[0].bounds = Rect::new(0.0, 0.0, 100_000.0, 100_000.0);
+        env.screens[0].work_area = env.screens[0].bounds;
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        let first = mode.handle_owned(
+            ModeEvent::UiScanned(UiScanResult {
+                id: mode.session.scan_id,
+                retired: Vec::new(),
+                status: UiScanStatus::Partial,
+                targets: (0..800)
+                    .map(|i| target(&format!("Control {i}"), i as f64 * 100.0))
+                    .collect(),
+            }),
+            &env.ctx(),
+        );
+        assert!(
+            scene_of(&first).retained.is_none(),
+            "first scene uses the ordinary path"
+        );
+        {
+            let state = mode.scene_cache.state.borrow();
+            assert_eq!(state.prepared, 0);
+            assert!(state.positions.is_empty());
+            assert!(
+                state.highlighted.is_none(),
+                "no preparation before first scene"
+            );
+        }
+        let timer = ModeEvent::Timer {
+            id: SEARCH_PREWARM_TIMER_ID.into(),
+            elapsed: Duration::ZERO,
+        };
+        let warm = mode.handle(&timer, &env.ctx());
+        assert!(
+            !warm
+                .iter()
+                .any(|command| matches!(command, Command::ShowOverlay(_)))
+        );
+        assert_eq!(
+            mode.scene_cache.state.borrow().prepared,
+            SEARCH_PREWARM_TARGETS
+        );
+        while mode.scene_cache.needs_warm() {
+            mode.handle(&timer, &env.ctx());
+        }
+        press(&mut mode, &env, "/");
+        let query = mode.handle(&ModeEvent::TextChanged("button".into()), &env.ctx());
+        let frame = scene_of(&query);
+        let source = frame.retained.as_ref().unwrap().scene.clone();
+        let selected_style = frame.labels[0].style.identity();
+        assert_eq!(source.labels.len(), 800);
+        for _ in 0..10 {
+            let out = mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+            let frame = scene_of(&out);
+            let retained = frame.retained.as_ref().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&source, &retained.scene));
+            assert_eq!(frame.labels[0].style.identity(), selected_style);
+            assert_eq!(
+                frame.labels.iter().filter(|l| l.z_index < 10_000).count(),
+                1
+            );
+            assert!(frame.labels.len() <= 14);
+            assert!(retained.omitted_label.is_some());
+            let View::Hints(mut view) = mode.view() else {
+                panic!("hint view")
+            };
+            view.cache = None;
+            assert_eq!(
+                frame.materialized(),
+                env.ctx().presenter.compose(View::Hints(view), &env.ctx())
+            );
+        }
+        // Theme and DPI changes cannot reuse old geometry/style snapshots.
+        env.palette = env.config.palette(crate::api::Appearance::Light);
+        env.screens[0].scale = 1.5;
+        let out = mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+        let new_source = &scene_of(&out).retained.as_ref().unwrap().scene;
+        assert!(!std::sync::Arc::ptr_eq(&source, new_source));
+        let id = mode.session.scan_id;
+        let out = mode.handle_owned(
+            ModeEvent::UiScanned(UiScanResult {
+                id,
+                targets: vec![target("Control added", 100_000.0)],
+                retired: vec![mode.session.scanned[0].rect],
+                status: UiScanStatus::Partial,
+            }),
+            &env.ctx(),
+        );
+        assert_eq!(scene_of(&out).materialized(), mode.scene(&env.ctx()));
+        assert!(!std::sync::Arc::ptr_eq(
+            new_source,
+            &scene_of(&out).retained.as_ref().unwrap().scene
+        ));
+        mode.handle(&ModeEvent::Deactivated, &env.ctx());
+        assert!(mode.scene_cache.state.borrow().scene.is_none());
+    }
+
+    #[test]
+    fn search_highlight_relocates_filtered_members_and_does_not_draw_hidden_members() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(
+            &mut mode,
+            &env,
+            (0..10)
+                .map(|index| {
+                    target(
+                        &format!(
+                            "{} {index}",
+                            if index % 3 == 2 { "keep" } else { "discard" }
+                        ),
+                        index as f64 * 100.0,
+                    )
+                })
+                .collect(),
+        );
+        press(&mut mode, &env, "/");
+        mode.handle(&ModeEvent::TextChanged("keep".into()), &env.ctx());
+        assert_eq!(mode.session.hints.len(), 3);
+        for _ in 0..3 {
+            let current = &mode.search_info().unwrap().hints[0];
+            assert!(
+                !mode
+                    .session
+                    .hints
+                    .get(current.value)
+                    .is_some_and(|hint| hint.label == current.label)
+            );
+            let scene = mode.scene(&env.ctx());
+            let labels: Vec<_> = scene
+                .labels
+                .iter()
+                .filter(|label| label.z_index < 10_000)
+                .collect();
+            assert_eq!(labels.len(), 3);
+            assert_eq!(labels.last().unwrap().text.as_str(), current.label.as_str());
+            mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+        }
+        let current = &mode.search_info().unwrap().hints[0].label;
+        let other = mode
+            .session
+            .hints
+            .iter()
+            .find(|hint| hint.label != *current)
+            .unwrap();
+        let View::Hints(mut view) = mode.view() else {
+            panic!("hint view")
+        };
+        // A stale preview outside the visible prefix must never add a label.
+        view.content.prefix = other.label.as_str();
+        let scene = env
+            .ctx()
+            .presenter
+            .compose(View::Hints(view), &env.ctx())
+            .materialized();
+        let labels: Vec<_> = scene
+            .labels
+            .iter()
+            .filter(|label| label.z_index < 10_000)
+            .collect();
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].text.as_str(), other.label.as_str());
+        let normal = crate::presentation::hint::resolved_hint_label_style(
+            &hint_style(&mode.config),
+            &env.palette,
+        );
+        assert_eq!(labels[0].style.background, normal.background);
+    }
+
+    #[test]
+    fn point_cycle_highlights_only_the_current_member_and_supports_custom_style() {
+        let mut config = Config::default();
+        config.ui_hint.search_highlight.background_color =
+            Some(crate::api::theme::ThemedColor::Both("#11223380".into()));
+        config.ui_hint.search_highlight.text_color =
+            Some(crate::api::theme::ThemedColor::Both("#ABCDEFff".into()));
+        config.ui_hint.search_highlight.border_width = 0.0;
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(&mut mode, &env, point_text_targets());
+        press(&mut mode, &env, "/");
+        mode.handle(&ModeEvent::TextChanged("alpha bravo".into()), &env.ctx());
+        let custom = Color::rgba(0x11, 0x22, 0x33, 0x80);
+        assert!(
+            !mode
+                .scene(&env.ctx())
+                .labels
+                .iter()
+                .any(|label| label.style.background == custom)
+        );
+        mode.handle(&ModeEvent::TogglePointAdjustment, &env.ctx());
+        for _ in 0..3 {
+            mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+            let point = mode.inspection.as_ref().unwrap();
+            let expected = &mode.search_info().unwrap().hints[point.position - 1].label;
+            let scene = mode.scene(&env.ctx());
+            let highlighted: Vec<_> = scene
+                .labels
+                .iter()
+                .filter(|label| label.style.background == custom)
+                .collect();
+            assert_eq!(highlighted.len(), 1);
+            assert_eq!(highlighted[0].text.as_str(), expected.as_str());
+            assert_eq!(
+                highlighted[0].style.text_color,
+                Color::rgb(0xAB, 0xCD, 0xEF)
+            );
+            assert_eq!(highlighted[0].style.border_width, 0.0);
+        }
+        mode.handle(&ModeEvent::TextChanged("missing".into()), &env.ctx());
+        assert!(
+            !mode
+                .scene(&env.ctx())
+                .labels
+                .iter()
+                .any(|label| label.style.background == custom)
+        );
+    }
+
+    #[test]
     fn search_preview_keeps_identity_when_full_view_indices_shift() {
         let env = Env::new();
         let mut mode = crate::app::mode_catalog::hint(&env.config);
@@ -3393,7 +3779,7 @@ mod tests {
     use crate::presentation::hint::visually_stacked;
     impl HintMode {
         fn scene(&self, ctx: &HostContext<'_>) -> OverlayScene {
-            ctx.presenter.compose(self.view(), ctx)
+            ctx.presenter.compose(self.view(), ctx).materialized()
         }
         fn resolved_hint_label_style(&self, palette: &Palette) -> LabelStyle {
             crate::presentation::hint::resolved_hint_label_style(&hint_style(&self.config), palette)
@@ -5655,7 +6041,7 @@ mod tests {
         let filtered = press(&mut mode, &env, "a");
         assert_eq!(mode.session.hints.len(), 2);
         assert_eq!(mode.overlap_plan.len(), 2);
-        let scene = scene_of(&filtered);
+        let scene = scene_of(&filtered).materialized();
         assert_eq!(
             scene
                 .labels
@@ -5676,13 +6062,21 @@ mod tests {
         assert_eq!(mode.session.search_selected[0].label.as_str(), "a");
 
         let cycled = press(&mut mode, &env, "left_shift");
+        let cycled_scene = scene_of(&cycled).materialized();
+        let hint_labels: Vec<_> = cycled_scene
+            .labels
+            .iter()
+            .filter(|label| label.z_index < 10_000)
+            .collect();
+        assert_eq!(hint_labels.len(), 2);
         assert_eq!(
-            scene_of(&cycled)
-                .labels
+            hint_labels
                 .iter()
-                .filter(|label| label.z_index == 3)
-                .count(),
-            1
+                .max_by_key(|label| label.z_index)
+                .unwrap()
+                .text
+                .as_str(),
+            mode.search_info().unwrap().hints[0].label.as_str()
         );
     }
 

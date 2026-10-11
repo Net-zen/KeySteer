@@ -47,6 +47,8 @@ https://github.com/user-attachments/assets/84d0872d-81f6-4e42-aa7f-767061cef646
 
 按 `Ctrl+1/2/3/4` 分别复制文字、辅助信息、坐标或颜色。轻按 `Ctrl` 进入点编辑模式，用 `H/J/K/L` 微调取色位置，`Ctrl+Shift+4` 切换 HEX、RGB、HSL。以上按键均可配置。
 
+当前预览或正在调整的标签会显示 Window 同款绿色底色和边框，重叠时显示在其他标签上方。可在网页配置器的「界面定位 · UI Hint → 外观 → 当前标签高亮」修改底色、文字色、边框色和宽度，也可在 `[ui_hint.search_highlight]` 中配置 `background_color`、`text_color`、`border_color`、`border_width`。多点仍在平均中心时不突出单个标签；退出搜索后恢复普通样式。
+
 确认、取消及搜索框编辑键统一使用 `[ui_hint.search_edit_keys]` 的“按键 = 动作”格式，例如 `"enter / primary+q" = "accept"`、`"primary+v" = "paste"`。左侧用空格分隔多个按键，省略的动作保留默认键；旧格式仍可读取，导出使用新格式。
 
 切换键沿用 `[ui_hint.search_bindings]` 的 `point_next`，可改为其他按键或组合键。进入点位调整后，该键仍切换已选点；空格分隔的多选和信息栏拼接规则保持不变。
