@@ -178,6 +178,14 @@ brew upgrade --cask dccif/keysteer/keysteer
 
 Selects the Apple Silicon or Intel package automatically; requires macOS 14+. User configuration stays in `~/Library/Application Support/KeySteer/`.
 
+If Gatekeeper prevents a manually installed macOS application from opening, first confirm that it came from the official release page above, then run:
+
+```bash
+sudo xattr -cr /Applications/KeySteer.app
+```
+
+Grant Accessibility and Screen Recording permissions before opening the app.
+
 ### Windows: Scoop
 
 ```powershell
@@ -190,14 +198,6 @@ scoop update keysteer
 ```
 
 Supports x64 and ARM64; x64 uses the default AVX2 build with no filename suffix. Launch from the Start menu or run `keysteer`. Upgrades retain user configurations named `keysteer.<name>.toml` and saved layouts in `workspace.ksw`, while refreshing shipped defaults. Use the package manager to upgrade a managed installation. When migrating from a manual installation, copy your user configurations and layouts into the Scoop installation directory.
-
-If Gatekeeper prevents a manually installed macOS application from opening, first confirm that it came from the official release page above, then run:
-
-```bash
-sudo xattr -cr /Applications/KeySteer.app
-```
-
-Grant Accessibility and Screen Recording permissions before opening the app.
 
 ## Development and packaging
 
