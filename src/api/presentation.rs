@@ -20,7 +20,8 @@ pub trait Presenter: Send + Sync {
     fn warm_hint_scene(
         &self,
         _cache: &HintSceneCache,
-        _style: HintStyle<'_>,
+        _content: HintContent<'_>,
+        _layers: &VisualLayerPlan,
         _context: &HostContext<'_>,
         _limit: usize,
     ) -> bool {
@@ -188,13 +189,30 @@ pub(crate) struct HintSceneState {
     pub active_layer: Option<usize>,
     pub prefix: String,
     pub highlighted: Option<super::overlay::SharedLabelStyle>,
-    pub positions: rustc_hash::FxHashMap<smol_str::SmolStr, usize>,
+    pub warm_cursor: usize,
+    pub rank_offsets: Vec<usize>,
     pub prepared: usize,
+    /// Scene slots follow hints with monotonically increasing target indices.
+    /// Filtered hints themselves serve as the index; no second map is needed.
+    pub target_order: bool,
+    /// Target-to-slot positions recorded during emission or bounded prewarming. Empty
+    /// for ordinary first scenes and directly addressable, unstacked results.
+    pub draw_slots: Vec<usize>,
 }
 
 impl HintSceneCache {
     pub fn clear(&mut self) {
         *self.state.get_mut() = HintSceneState::default();
+    }
+    /// Invalidate content within a scan without reallocating its lookup buffer
+    /// or recompiling the same highlight style on the next filtered scene.
+    pub(crate) fn invalidate(&mut self) {
+        let state = self.state.get_mut();
+        state.scene = None;
+        state.warm_cursor = 0;
+        state.rank_offsets.clear();
+        state.draw_slots.clear();
+        state.prepared = 0;
     }
     pub fn needs_warm(&self) -> bool {
         let state = self.state.borrow();
@@ -211,15 +229,23 @@ impl HintSceneCache {
         scale: f64,
         active_layer: Option<usize>,
         prefix: &str,
+        target_order: bool,
     ) {
-        *self.state.borrow_mut() = HintSceneState {
-            scene: Some(scene),
-            palette: Some(palette.clone()),
-            scale: scale.to_bits(),
-            active_layer,
-            prefix: prefix.into(),
-            ..Default::default()
-        };
+        let mut state = self.state.borrow_mut();
+        if state.palette.as_ref() != Some(palette) {
+            state.palette = Some(palette.clone());
+            state.highlighted = None;
+        }
+        state.scene = Some(scene);
+        state.scale = scale.to_bits();
+        state.active_layer = active_layer;
+        state.prefix.clear();
+        state.prefix.push_str(prefix);
+        state.target_order = target_order;
+        state.warm_cursor = 0;
+        state.rank_offsets.clear();
+        state.draw_slots.clear();
+        state.prepared = 0;
     }
 }
 

@@ -431,137 +431,18 @@ impl HintMode {
     }
 
     fn relabel_with_refresh(&mut self, ctx: &HostContext<'_>, refresh: bool) -> bool {
-        let mut matches_changed = false;
+        let mut display_changed = false;
         self.session.apply_deferred();
+        let previous_visible = self.session.hints.len();
         let query = match &self.input {
             // Key names are normalized to lowercase before Mode delivery, so
             // the accumulated search query is already canonical.
             Input::Search(query) => Some(query.as_str()),
             Input::Labels(_) => None,
         };
-        if query.is_some_and(|query| !query.is_empty()) {
-            self.session.ensure_search_names();
-        }
-
         let result = if let Some(query) = query {
-            let query = if !query.chars().any(char::is_uppercase) {
-                std::borrow::Cow::Borrowed(query)
-            } else {
-                std::borrow::Cow::Owned(query.to_lowercase())
-            };
-            let multiple = query.chars().any(char::is_whitespace);
-            let show_all = query.is_empty()
-                || multiple && query.ends_with(char::is_whitespace)
-                || query.split_whitespace().next_back() == Some("@");
-            let previous_len = self.session.search_matches.len();
-            let previous_selected = self.session.search_selected.len();
-            let mut matched = 0;
-            let mut selected = 0;
-            self.session.search_cycle.clear();
-            self.session.search_seen.clear();
-            // Each space-separated item runs the same search against original labels.
-            // Union in item order; the first occurrence owns each target's position.
-            self.session.search_terms.prepare(&query);
-            let needs_dedup = self.session.search_terms.needs_dedup();
-            if needs_dedup {
-                self.session
-                    .search_seen
-                    .resize(self.session.scanned.len(), false);
-            }
-            for term in self.session.search_terms.iter(&query) {
-                let term = search::Term::new(term);
-                let mut buckets = [None; search::RANK_COUNT];
-                let (mut exact, mut last_match, mut term_matches) = (None, None, 0);
-                for (hint_index, hint) in self.session.search_hints.iter().enumerate() {
-                    if let Some(rank) = self.session.search_text.get(hint.value).and_then(|text| {
-                        term.rank(
-                            text,
-                            hint.label.as_str(),
-                            &self.config.search_match_priority,
-                        )
-                    }) {
-                        if hint.label.as_str() == term.code {
-                            exact = Some(hint);
-                        }
-                        last_match = Some(hint);
-                        term_matches += 1;
-                        if needs_dedup {
-                            if self.session.search_seen[hint.value] {
-                                continue;
-                            }
-                            self.session.search_seen[hint.value] = true;
-                        }
-                        if let Some(previous) = self.session.search_matches.get_mut(matched) {
-                            matches_changed |= *previous != hint_index;
-                            *previous = hint_index;
-                        } else {
-                            self.session.search_matches.push(hint_index);
-                        }
-                        // Candidate order keeps indices only. Update the displayed
-                        // labels in place, without a second full clone pass.
-                        let display_index = if show_all { hint_index } else { matched };
-                        if let Some(previous) = self.session.hints.get_mut(display_index) {
-                            if previous.value != hint.value
-                                || previous.label != hint.label
-                                || previous.bounds != hint.bounds
-                            {
-                                matches_changed = true;
-                                if !show_all {
-                                    previous.clone_from(hint);
-                                }
-                            }
-                        } else if !show_all {
-                            self.session.hints.push(hint.clone());
-                        }
-                        self.session.search_cycle.push(rank, &mut buckets);
-                        matched += 1;
-                    }
-                }
-                self.session.search_cycle.append(buckets);
-                // A completed label takes priority over semantic collisions.
-                // Other search terms select a point only after disambiguation.
-                let resolved = exact.or_else(|| {
-                    last_match.filter(|hint| {
-                        term_matches == 1
-                            && !term.labels_only
-                            && self.session.search_text[hint.value].matches_text(term.code)
-                    })
-                });
-                if let Some(hint) = resolved
-                    && !self.session.search_selected[..selected]
-                        .iter()
-                        .any(|previous| previous.value == hint.value)
-                {
-                    if let Some(previous) = self.session.search_selected.get_mut(selected) {
-                        matches_changed |= previous.value != hint.value
-                            || previous.label != hint.label
-                            || previous.bounds != hint.bounds;
-                        previous.clone_from(hint);
-                    } else {
-                        self.session.search_selected.push(hint.clone());
-                    }
-                    selected += 1;
-                }
-            }
-            matches_changed |= matched != previous_len;
-            matches_changed |= selected != previous_selected;
-            self.session.search_matches.truncate(matched);
-            self.session.search_focus = self.session.search_focus.take().and_then(|mut focused| {
-                focused.index = self.session.search_matches.iter().position(|&index| {
-                    let hint = &self.session.search_hints[index];
-                    hint.label == focused.label && hint.bounds == focused.bounds
-                })?;
-                Some(focused)
-            });
-            self.session.search_selected.truncate(selected);
-            if show_all {
-                self.session.hints.clear();
-                self.session
-                    .hints
-                    .extend(self.session.search_hints.iter().cloned());
-            } else {
-                self.session.hints.truncate(matched);
-            }
+            display_changed =
+                search::filter(&mut self.session, query, &self.config.search_match_priority);
             Ok(())
         } else {
             hints::assign_compact_into(
@@ -591,7 +472,7 @@ impl HintMode {
         if refresh {
             self.refresh_overlap_plan(ctx);
         }
-        matches_changed
+        display_changed || previous_visible != self.session.hints.len()
     }
 
     fn uniform_label_chars(&self) -> Option<usize> {
@@ -604,7 +485,7 @@ impl HintMode {
     }
 
     fn rebuild_overlap_plan(&mut self, ctx: &HostContext<'_>) -> bool {
-        self.scene_cache.clear();
+        self.scene_cache.invalidate();
         let content = hint_content(
             &self.config,
             &self.session.hints,
@@ -790,6 +671,7 @@ impl HintMode {
                 ctx.scale(),
                 self.active_overlap_layer(),
                 self.input.text(),
+                self.active_overlap_layer().is_none() && self.input.text().is_empty(),
             );
         }
         if let Some(index) = before_async {
@@ -1425,13 +1307,6 @@ impl HintMode {
                 }
                 let pending = self.session.pending_relabel;
                 self.session.search_focus = None;
-                let old_fields = self.search_info().map(|info| info.field_count());
-                let shows_all = |query: &str| {
-                    query.is_empty()
-                        || query.ends_with(char::is_whitespace)
-                        || query.split_whitespace().next_back() == Some("@")
-                };
-                let old_all = shows_all(self.input.text());
                 if let Input::Search(query) = &mut self.input {
                     let end = text.char_indices().nth(4096).map_or(text.len(), |(i, _)| i);
                     query.clear();
@@ -1440,16 +1315,12 @@ impl HintMode {
                     self.session.search_selection.anchor = query.len();
                 }
                 let changed = self.relabel_with_refresh(ctx, false);
-                let unchanged = !pending
-                    && !changed
-                    && old_all == shows_all(self.input.text())
-                    && old_fields == self.search_info().map(|info| info.field_count());
-                if unchanged {
-                    self.redraw()
-                } else {
+                // Preview, ranking and panel fields are foreground state. Only
+                // changed visible identities/geometry invalidate the label layer.
+                if pending || changed {
                     self.refresh_overlap_plan(ctx);
-                    self.redraw()
                 }
+                self.redraw()
             }
             ModeEvent::TextSubmitted(text) if matches!(self.input, Input::Search(_)) => {
                 if let Some(text) = text
@@ -1549,18 +1420,18 @@ impl HintMode {
                     && !self.session.finished
                     && !self.session.scanned.is_empty() =>
             {
-                let style = hint_content(
+                let content = hint_content(
                     &self.config,
-                    &[],
+                    &self.session.hints,
                     &self.input,
                     self.session.scan_bounds,
                     self.session.search_selection,
                     self.uniform_label_chars(),
-                )
-                .style;
+                );
                 let scene_ready = ctx.presenter.warm_hint_scene(
                     &self.scene_cache,
-                    style,
+                    content,
+                    &self.overlap_plan,
                     ctx,
                     SEARCH_PREWARM_TARGETS,
                 );
@@ -1830,13 +1701,19 @@ mod tests {
             Command::CancelPointSample | Command::CancelTimer { .. } | Command::SetTimer { .. }
         )));
         let changed = mode.handle(&ModeEvent::TextChanged("bravo alpha".into()), &env.ctx());
-        assert!(!changed.iter().any(|command| matches!(
-            command,
+        assert!(!changed.iter().any(|command| match command {
+            Command::SetTimer {
+                id,
+                delay,
+                repeating,
+            } => {
+                id != SEARCH_PREWARM_TIMER_ID || !delay.is_zero() || *repeating
+            }
             Command::SetFrameClock(_)
-                | Command::SetPointAdjustment { .. }
-                | Command::SetTimer { .. }
-                | Command::CancelTimer { .. }
-        )));
+            | Command::SetPointAdjustment { .. }
+            | Command::CancelTimer { .. } => true,
+            _ => false,
+        }));
         let unique = mode.handle(&ModeEvent::TextChanged("alpha".into()), &env.ctx());
         sample_request(&unique);
         assert!(
@@ -3038,6 +2915,143 @@ mod tests {
     }
 
     #[test]
+    fn filtered_overlap_records_emitted_slots_without_a_second_index_pass() {
+        for stacked in [false, true] {
+            let env = Env::new();
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            deliver(
+                &mut mode,
+                &env,
+                (0..18)
+                    .map(|i| {
+                        target(
+                            if i / 2 % 3 == 0 { "discard" } else { "keep" },
+                            if stacked { 0.0 } else { (i / 2) as f64 * 100.0 },
+                        )
+                        // Distinct names retain coincident targets through scan deduplication.
+                    })
+                    .enumerate()
+                    .map(|(i, mut target)| {
+                        target.name = format!("{} {i}", target.name);
+                        target
+                    })
+                    .collect(),
+            );
+            mode.session.ensure_search_names();
+            press(&mut mode, &env, "/");
+            for query in ["keep", "discard", "keep discard", "discard keep", "keep"] {
+                mode.handle(&ModeEvent::TextChanged(query.into()), &env.ctx());
+                {
+                    let state = mode.scene_cache.state.borrow();
+                    assert!(!state.draw_slots.is_empty());
+                    assert!(state.rank_offsets.is_empty());
+                    assert_eq!(state.prepared, state.scene.as_ref().unwrap().labels.len());
+                }
+                assert!(!mode.scene_cache.needs_warm());
+                for _ in 0..mode.session.hints.len() {
+                    let View::Hints(mut view) = mode.view() else {
+                        panic!("hints")
+                    };
+                    view.cache = None;
+                    let reference = env.ctx().present(View::Hints(view));
+                    let Command::ShowOverlay(reference) = reference else {
+                        panic!("scene")
+                    };
+                    assert_eq!(mode.scene(&env.ctx()), *reference);
+                    mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+                }
+            }
+            mode.handle(&ModeEvent::Deactivated, &env.ctx());
+            assert_eq!(mode.scene_cache.state.borrow().draw_slots.capacity(), 0);
+        }
+    }
+
+    #[test]
+    fn overlap_prewarm_reuses_layer_runs_and_early_tab_and_shift_remain_correct() {
+        for clique in [false, true] {
+            let mut env = Env::new();
+            env.screens[0].bounds = Rect::new(0.0, 0.0, 100_000.0, 100_000.0);
+            env.screens[0].work_area = env.screens[0].bounds;
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            mode.handle_owned(
+                ModeEvent::UiScanned(UiScanResult {
+                    id: mode.session.scan_id,
+                    retired: Vec::new(),
+                    status: UiScanStatus::Success,
+                    targets: (0..600)
+                        .map(|i| {
+                            target(
+                                &format!("{} {i}", if i / 2 % 3 == 0 { "discard" } else { "keep" }),
+                                if clique { 0.0 } else { (i / 2) as f64 * 100.0 },
+                            )
+                        })
+                        .collect(),
+                }),
+                &env.ctx(),
+            );
+            assert!(mode.scene_cache.state.borrow().draw_slots.is_empty());
+            let timer = ModeEvent::Timer {
+                id: SEARCH_PREWARM_TIMER_ID.into(),
+                elapsed: Duration::ZERO,
+            };
+            mode.handle(&timer, &env.ctx());
+            assert_eq!(
+                mode.scene_cache.state.borrow().prepared,
+                SEARCH_PREWARM_TARGETS
+            );
+            assert!(mode.scene_cache.needs_warm());
+            press(&mut mode, &env, "/");
+            mode.handle(&ModeEvent::TextChanged("button".into()), &env.ctx());
+            // Visit a not-yet-prepared target before any further timer dispatch.
+            for _ in 0..300 {
+                mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+            }
+            let compare = |mode: &HintMode| {
+                let View::Hints(mut view) = mode.view() else {
+                    panic!("hints")
+                };
+                view.cache = None;
+                assert_eq!(
+                    mode.scene(&env.ctx()),
+                    env.ctx().presenter.compose(View::Hints(view), &env.ctx())
+                );
+            };
+            compare(&mode);
+            while mode.scene_cache.needs_warm() {
+                mode.handle(&timer, &env.ctx());
+            }
+            compare(&mode);
+            let base = mode.scene_cache.state.borrow().scene.clone().unwrap();
+            for hint in &mode.session.hints {
+                let index = mode.scene_cache.state.borrow().draw_slots[hint.value];
+                assert_eq!(base.labels[index].text.as_str(), hint.label.as_str());
+            }
+            mode.handle(&ModeEvent::TextChanged("keep".into()), &env.ctx());
+            let layer = mode.active_overlap_layer();
+            press(&mut mode, &env, "shift");
+            assert_ne!(mode.active_overlap_layer(), layer);
+            compare(&mode);
+            mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
+            compare(&mode);
+            mode.handle(
+                &ModeEvent::Key {
+                    key: Key::new("shift").unwrap(),
+                    state: KeyState::Up,
+                    repeat: false,
+                },
+                &env.ctx(),
+            );
+            assert_eq!(mode.active_overlap_layer(), layer);
+            compare(&mode);
+            mode.handle(&ModeEvent::Deactivated, &env.ctx());
+            assert_eq!(mode.scene_cache.state.borrow().rank_offsets.capacity(), 0);
+            assert_eq!(mode.scene_cache.state.borrow().draw_slots.capacity(), 0);
+        }
+    }
+
+    #[test]
     fn retained_search_prepares_after_first_scene_and_reuses_the_base_and_style_on_tab() {
         let mut env = Env::new();
         env.screens[0].bounds = Rect::new(0.0, 0.0, 100_000.0, 100_000.0);
@@ -3062,7 +3076,7 @@ mod tests {
         {
             let state = mode.scene_cache.state.borrow();
             assert_eq!(state.prepared, 0);
-            assert!(state.positions.is_empty());
+            assert!(state.rank_offsets.is_empty());
             assert!(
                 state.highlighted.is_none(),
                 "no preparation before first scene"
@@ -3080,8 +3094,11 @@ mod tests {
         );
         assert_eq!(
             mode.scene_cache.state.borrow().prepared,
-            SEARCH_PREWARM_TARGETS
+            800,
+            "target-ordered labels need no per-label index preparation"
         );
+        assert!(mode.scene_cache.state.borrow().rank_offsets.is_empty());
+        assert_eq!(mode.session.search_text.len(), SEARCH_PREWARM_TARGETS);
         while mode.scene_cache.needs_warm() {
             mode.handle(&timer, &env.ctx());
         }
@@ -3138,6 +3155,111 @@ mod tests {
     }
 
     #[test]
+    fn explicit_labels_work_before_text_prewarm_and_mixed_queries_complete_it() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        mode.handle_owned(
+            ModeEvent::UiScanned(UiScanResult {
+                id: mode.session.scan_id,
+                retired: Vec::new(),
+                targets: vec![
+                    target("Control alpha", 10.0),
+                    target("Control bravo", 100.0),
+                ],
+                status: UiScanStatus::Partial,
+            }),
+            &env.ctx(),
+        );
+        let code = mode.session.hints[0].label.as_str().to_owned();
+        press(&mut mode, &env, "/");
+        let out = mode.handle(&ModeEvent::TextChanged(format!("@{code}")), &env.ctx());
+        assert!(mode.session.search_text.is_empty());
+        assert!(!mode.session.search_names_initialized);
+        assert_eq!(mode.search_info().unwrap().hints[0].value, 0);
+        assert_eq!(scene_of(&out).materialized(), mode.scene(&env.ctx()));
+        mode.handle(
+            &ModeEvent::TextChanged(format!("{code}@ control")),
+            &env.ctx(),
+        );
+        assert!(mode.session.search_names_initialized);
+        assert_eq!(mode.session.search_matches.len(), 2);
+        assert_eq!(mode.session.search_selected.len(), 1);
+    }
+
+    #[test]
+    fn search_reuses_labels_when_ranking_preview_and_panel_change_without_filtering() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        activate(&mut mode, &env);
+        deliver(
+            &mut mode,
+            &env,
+            vec![target("alpha bravoX", 10.0), target("alphaX bravo", 100.0)],
+        );
+        let base = mode.scene_cache.state.borrow().scene.clone().unwrap();
+        let codes: Vec<_> = mode
+            .session
+            .hints
+            .iter()
+            .map(|hint| format!("@{}", hint.label.as_str()))
+            .collect();
+        press(&mut mode, &env, "/");
+        for (query, current) in [
+            ("alpha", Some(0)),
+            ("bravo", Some(1)),
+            ("bravo ", Some(1)),
+            ("@", None),
+            ("", None),
+        ] {
+            let out = mode.handle(&ModeEvent::TextChanged(query.into()), &env.ctx());
+            let frame = scene_of(&out);
+            assert!(std::sync::Arc::ptr_eq(
+                &base,
+                &frame.retained.as_ref().unwrap().scene
+            ));
+            assert_eq!(
+                mode.search_info()
+                    .and_then(|info| info.hints.first().map(|hint| hint.value)),
+                current
+            );
+            let View::Hints(mut view) = mode.view() else {
+                panic!("hint view")
+            };
+            view.cache = None;
+            assert_eq!(
+                frame.materialized(),
+                env.ctx().presenter.compose(View::Hints(view), &env.ctx())
+            );
+        }
+        let out = mode.handle(&ModeEvent::TextChanged(codes.join(" ")), &env.ctx());
+        assert!(std::sync::Arc::ptr_eq(
+            &base,
+            &scene_of(&out).retained.as_ref().unwrap().scene
+        ));
+        assert_eq!(mode.session.search_selected.len(), 2);
+        mode.handle(&ModeEvent::TextChanged("alpha".into()), &env.ctx());
+        let out = mode.handle(&ModeEvent::TextInserted(' '), &env.ctx());
+        assert!(std::sync::Arc::ptr_eq(
+            &base,
+            &scene_of(&out).retained.as_ref().unwrap().scene
+        ));
+        let out = mode.handle(&ModeEvent::TextChanged(codes[0].clone()), &env.ctx());
+        let filtered = scene_of(&out).retained.as_ref().unwrap().scene.clone();
+        assert!(!std::sync::Arc::ptr_eq(&base, &filtered));
+        assert_eq!(filtered.labels.len(), 1);
+        let out = mode.handle(&ModeEvent::TextChanged("@".into()), &env.ctx());
+        assert_eq!(
+            scene_of(&out).retained.as_ref().unwrap().scene.labels.len(),
+            2
+        );
+        assert!(!std::sync::Arc::ptr_eq(
+            &filtered,
+            &scene_of(&out).retained.as_ref().unwrap().scene
+        ));
+    }
+
+    #[test]
     fn search_highlight_relocates_filtered_members_and_does_not_draw_hidden_members() {
         let env = Env::new();
         let mut mode = crate::app::mode_catalog::hint(&env.config);
@@ -3158,8 +3280,21 @@ mod tests {
                 .collect(),
         );
         press(&mut mode, &env, "/");
+        let highlight = mode.scene_cache.state.borrow().highlighted.clone().unwrap();
         mode.handle(&ModeEvent::TextChanged("keep".into()), &env.ctx());
         assert_eq!(mode.session.hints.len(), 3);
+        assert!(
+            highlight.ptr_eq(
+                mode.scene_cache
+                    .state
+                    .borrow()
+                    .highlighted
+                    .as_ref()
+                    .unwrap()
+            )
+        );
+        assert_eq!(mode.scene_cache.state.borrow().prepared, 3);
+        assert!(mode.scene_cache.state.borrow().rank_offsets.is_empty());
         for _ in 0..3 {
             let current = &mode.search_info().unwrap().hints[0];
             assert!(
@@ -3179,6 +3314,25 @@ mod tests {
             assert_eq!(labels.last().unwrap().text.as_str(), current.label.as_str());
             mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
         }
+        let source = mode.scene_cache.state.borrow().scene.clone().unwrap();
+        let warmed = mode.handle(
+            &ModeEvent::Timer {
+                id: SEARCH_PREWARM_TIMER_ID.into(),
+                elapsed: Duration::ZERO,
+            },
+            &env.ctx(),
+        );
+        assert!(
+            !warmed
+                .iter()
+                .any(|command| matches!(command, Command::ShowOverlay(_)))
+        );
+        assert_eq!(mode.scene_cache.state.borrow().prepared, 3);
+        assert!(mode.scene_cache.state.borrow().rank_offsets.is_empty());
+        assert!(std::sync::Arc::ptr_eq(
+            &source,
+            mode.scene_cache.state.borrow().scene.as_ref().unwrap()
+        ));
         let current = &mode.search_info().unwrap().hints[0].label;
         let other = mode
             .session
@@ -4275,12 +4429,12 @@ mod tests {
         assert_eq!(mode.session.scanned.capacity(), 0);
         assert_eq!(mode.session.search_text.capacity(), 0);
         assert_eq!(mode.session.seen_targets.capacity(), 0);
-        assert_eq!(mode.session.hints.capacity(), 0);
+        assert_eq!(mode.session.hints.capacity(), 1_024);
         assert_eq!(mode.overlap_plan.retained_capacity(), INLINE_LABELS);
     }
 
     #[test]
-    fn deactivation_releases_small_container_capacity_too() {
+    fn deactivation_reuses_empty_label_storage_but_releases_target_data() {
         let env = Env::new();
         let mut mode = crate::app::mode_catalog::hint(&env.config);
         activate(&mut mode, &env);
@@ -4301,7 +4455,7 @@ mod tests {
         assert!(mode.session.seen_targets.is_empty());
         assert_eq!(mode.session.seen_targets.capacity(), 0);
         assert!(mode.session.hints.is_empty());
-        assert_eq!(mode.session.hints.capacity(), 0);
+        assert!(mode.session.hints.capacity() >= 100);
         assert!(mode.overlap_plan.retained_capacity() <= INLINE_LABELS);
     }
 
@@ -5662,7 +5816,8 @@ mod tests {
             )));
             mode.handle(&ModeEvent::Deactivated, &env.ctx());
             assert_eq!(mode.session.scanned.capacity(), 0);
-            assert_eq!(mode.session.hints.capacity(), 0);
+            assert!(mode.session.hints.is_empty());
+            assert!(mode.session.hints.capacity() <= 16_384);
             assert_eq!(mode.session.search_text.capacity(), 0);
             assert!(mode.wide_placements.is_none());
         }

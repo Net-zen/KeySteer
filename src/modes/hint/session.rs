@@ -82,7 +82,13 @@ impl ScanSession {
         self.search_terms = Default::default();
         self.search_names_initialized = false;
         self.release_scan_index();
-        self.hints = Vec::new();
+        // Keep only bounded, empty label storage between scans. Target names,
+        // indices and scene contents still belong exclusively to one scan.
+        if self.hints.capacity() > 16_384 {
+            self.hints = Vec::new();
+        } else {
+            self.hints.clear();
+        }
         self.label_plan_count = 0;
         self.next_label_index = 0;
         self.pending_relabel = false;
@@ -605,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_scans_release_all_result_capacity() {
+    fn repeated_scans_release_target_and_search_data() {
         let mut session = ScanSession::default();
         for count in [24, 512, 2000, 24, 10000, 1].into_iter().cycle().take(30) {
             session.append_targets(
@@ -630,6 +636,21 @@ mod tests {
             assert_eq!(session.deferred_targets.capacity(), 0);
             assert_eq!(session.deferred_retired.capacity(), 0);
         }
+    }
+
+    #[test]
+    fn empty_label_buffer_reuse_is_bounded_and_drops_previous_contents() {
+        let alphabet = ['a', 's', 'd'];
+        let mut session = labeled_session(2_000, &alphabet, LabelDirection::Normal);
+        let storage = session.hints.as_ptr();
+        session.clear_results();
+        assert!(session.hints.is_empty());
+        assert_eq!(session.hints.as_ptr(), storage);
+        session.clear_results();
+        assert_eq!(session.hints.as_ptr(), storage);
+        session.hints.reserve(16_385);
+        session.clear_results();
+        assert_eq!(session.hints.capacity(), 0);
     }
 
     #[test]

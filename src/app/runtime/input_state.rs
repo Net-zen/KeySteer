@@ -589,17 +589,19 @@ impl Engine {
     }
 
     fn point_input_event(&mut self, input: &crate::api::input::InputEvent) -> Option<ModeEvent> {
-        let (_, prompt) = self.scheduler.text_prompt.as_ref()?;
+        let (owner, prompt) = self.scheduler.text_prompt.as_ref()?;
         let keys = prompt.point_keys.as_ref()?;
-        let pressed = self.prompt_pressed(&input.key);
-        let state = &mut self.scheduler.point_input;
-        let matches = |chord: &KeyChord| {
-            chord.activation_matches(&input.key)
-                && chord.keys().len() == pressed.len()
-                && chord.matches_pressed(&pressed)
-        };
         match input.state {
             KeyState::Down if !input.repeat => {
+                // Only chord presses need a pressed-key snapshot. Releases use
+                // the recorded tap/held owner and must not resolve chords again.
+                let pressed = self.prompt_pressed(&input.key);
+                let state = &mut self.scheduler.point_input;
+                let matches = |chord: &KeyChord| {
+                    chord.activation_matches(&input.key)
+                        && chord.keys().len() == pressed.len()
+                        && chord.matches_pressed(&pressed)
+                };
                 state.tap = if state.available
                     && keys.iter().any(|(key, action)| {
                         *action == crate::api::point_sample::Action::PointToggle && matches(key)
@@ -629,6 +631,7 @@ impl Engine {
                 }
             }
             KeyState::Up => {
+                let state = &mut self.scheduler.point_input;
                 if state.tap.take().as_ref() == Some(&input.key) {
                     return Some(ModeEvent::TogglePointAdjustment);
                 }
@@ -663,7 +666,22 @@ impl Engine {
                 state: input.state,
             });
         }
-        None
+        // Reuse this prompt route for unhandled mode-owned modifiers. Tab and
+        // point actions already returned above; no second pass in handle_key_inner.
+        (!input.repeat
+            && input.key.is_modifier()
+            && prompt.live_style.is_some()
+            && (input.state == KeyState::Up
+                || (self.scheduler.point_input.tap.as_ref() != Some(&input.key)
+                    && self
+                        .registry
+                        .get(owner)
+                        .is_some_and(|mode| mode.claims_key(&input.key)))))
+        .then(|| ModeEvent::Key {
+            key: input.key.clone(),
+            state: input.state,
+            repeat: input.repeat,
+        })
     }
 
     fn point_operation_binding(
@@ -789,52 +807,55 @@ impl Engine {
         {
             if prompt.live_style.is_some() {
                 let owner = owner.clone();
-                let pressed = self.prompt_pressed(&input.key);
-                let matches = |chord: &crate::api::KeyChord| {
-                    chord.activation_matches(&input.key)
-                        && chord.keys().len() == pressed.len()
-                        && chord.matches_pressed(&pressed)
-                };
-                let event = if input.state != KeyState::Down {
+                // The prompt route already checked copy/edit precedence before
+                // resolving point actions. Reuse its result instead of matching
+                // the same pressed keys a second time (notably for Tab).
+                let event = if input.state != KeyState::Down || point_event.is_some() {
                     point_event
-                } else if let Some(index) = prompt.copy_keys.iter().position(matches) {
-                    (!input.repeat).then_some(ModeEvent::CopyTextField(index))
-                } else if point_event.is_some() {
-                    point_event
-                } else if let Some((_, action)) =
-                    prompt.edit_keys.iter().find(|(key, _)| matches(key))
-                {
-                    Some(ModeEvent::TextEdit(*action))
-                } else if self.scheduler.point_input.tap.as_ref() == Some(&input.key)
-                    || self.scheduler.point_input.adjusting
-                {
-                    None
                 } else {
-                    let alt = self
-                        .input
-                        .pressed
-                        .iter()
-                        .any(|key| matches!(key.as_str(), "left_alt" | "right_alt"));
-                    let command = self.input.pressed.iter().any(|key| {
-                        matches!(key.as_str(), "left_win" | "right_win")
-                            || (!alt && matches!(key.as_str(), "left_ctrl" | "right_ctrl"))
-                    });
-                    if command {
+                    let pressed = self.prompt_pressed(&input.key);
+                    let matches = |chord: &crate::api::KeyChord| {
+                        chord.activation_matches(&input.key)
+                            && chord.keys().len() == pressed.len()
+                            && chord.matches_pressed(&pressed)
+                    };
+                    if let Some(index) = prompt.copy_keys.iter().position(matches) {
+                        (!input.repeat).then_some(ModeEvent::CopyTextField(index))
+                    } else if let Some((_, action)) =
+                        prompt.edit_keys.iter().find(|(key, _)| matches(key))
+                    {
+                        Some(ModeEvent::TextEdit(*action))
+                    } else if self.scheduler.point_input.tap.as_ref() == Some(&input.key)
+                        || self.scheduler.point_input.adjusting
+                    {
                         None
                     } else {
-                        input
-                            .character
-                            .or_else(|| {
-                                if alt {
-                                    None
-                                } else if input.key.as_str() == "space" {
-                                    Some(' ')
-                                } else {
-                                    input.key.as_char()
-                                }
-                            })
-                            .filter(|c| !c.is_control())
-                            .map(ModeEvent::TextInserted)
+                        let alt = self
+                            .input
+                            .pressed
+                            .iter()
+                            .any(|key| matches!(key.as_str(), "left_alt" | "right_alt"));
+                        let command = self.input.pressed.iter().any(|key| {
+                            matches!(key.as_str(), "left_win" | "right_win")
+                                || (!alt && matches!(key.as_str(), "left_ctrl" | "right_ctrl"))
+                        });
+                        if command {
+                            None
+                        } else {
+                            input
+                                .character
+                                .or_else(|| {
+                                    if alt {
+                                        None
+                                    } else if input.key.as_str() == "space" {
+                                        Some(' ')
+                                    } else {
+                                        input.key.as_char()
+                                    }
+                                })
+                                .filter(|c| !c.is_control())
+                                .map(ModeEvent::TextInserted)
+                        }
                     }
                 };
                 // Acknowledge before clipboard access, filtering or painting.

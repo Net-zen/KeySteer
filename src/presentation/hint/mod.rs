@@ -351,6 +351,14 @@ impl HintView<'_> {
         // Detach shared storage once for the whole batch, not for every label.
         // Hint labels carry no window-placement annotations.
         let labels: &mut Vec<OverlayLabel> = &mut scene.labels;
+        let mut draw_slots = if let Some(cache) = self.cache
+            && (self.content.search.is_some() || self.point.is_some())
+            && self.active_layer.is_some()
+        {
+            Some(self.take_draw_slots(cache))
+        } else {
+            None
+        };
         let current = self.info.as_ref().and_then(|info| {
             if info.multiple {
                 self.point.as_ref().and_then(|point| {
@@ -381,6 +389,7 @@ impl HintView<'_> {
                 uniform_width,
                 matched_prefix_len,
                 layer,
+                draw_slots.as_deref_mut(),
             );
         } else {
             for z_index in first_z..=final_z {
@@ -395,6 +404,9 @@ impl HintView<'_> {
                     }
                     let rect =
                         placed_hint_rect(&self.content.style, hint, &label_style, uniform_width);
+                    if let Some(slots) = &mut draw_slots {
+                        slots[hint.value] = labels.len();
+                    }
                     labels.push(OverlayLabel {
                         matched_prefix_len,
                         z_index,
@@ -407,10 +419,25 @@ impl HintView<'_> {
         if let Some(cache) = self.cache
             && (self.content.search.is_some() || self.point.is_some())
         {
-            return self.retain_scene(scene, cache, ctx);
+            return self.retain_scene(scene, cache, ctx, draw_slots);
         }
         self.append_dynamic(&mut scene, ctx);
         scene
+    }
+
+    #[inline(never)]
+    fn take_draw_slots(&self, cache: &crate::api::presentation::HintSceneCache) -> Vec<usize> {
+        let mut slots = std::mem::take(&mut cache.state.borrow_mut().draw_slots);
+        let len = self
+            .content
+            .hints
+            .iter()
+            .map(|hint| hint.value)
+            .max()
+            .map_or(0, |last| last + 1);
+        slots.clear();
+        slots.resize(len, usize::MAX);
+        slots
     }
 
     fn append_dynamic(&self, scene: &mut OverlayScene, ctx: &HostContext<'_>) {
@@ -447,6 +474,7 @@ impl HintView<'_> {
         scene: OverlayScene,
         cache: &crate::api::presentation::HintSceneCache,
         ctx: &HostContext<'_>,
+        draw_slots: Option<Vec<usize>>,
     ) -> OverlayScene {
         let base = std::sync::Arc::new(scene);
         cache.capture(
@@ -455,10 +483,17 @@ impl HintView<'_> {
             ctx.scale(),
             self.active_layer,
             self.content.prefix,
+            self.active_layer.is_none()
+                && self.content.prefix.is_empty()
+                && self.content.hints.iter().map(|hint| hint.value).is_sorted(),
         );
-        // Query/geometry changes already rebuild the visible label batch.
-        // Prepare its index once here; subsequent Tab events touch no batch.
-        warm_scene(cache, self.content.style, ctx, usize::MAX);
+        if let Some(slots) = draw_slots {
+            let mut state = cache.state.borrow_mut();
+            state.draw_slots = slots;
+            state.prepared = base.labels.len();
+        }
+        // Recorded draw slots are already ready. Other scenes submit before
+        // any required fallback index is prepared by the bounded warm timer.
         self.cached_scene(cache, ctx).unwrap_or_else(|| {
             let mut scene = base.as_ref().clone();
             self.append_dynamic(&mut scene, ctx);
@@ -472,7 +507,7 @@ impl HintView<'_> {
         cache: &crate::api::presentation::HintSceneCache,
         ctx: &HostContext<'_>,
     ) -> Option<OverlayScene> {
-        warm_scene(cache, self.content.style, ctx, 0);
+        warm_scene(cache, self.content.style, ctx, 0, None);
         let state = cache.state.borrow();
         let base = state.scene.as_ref()?;
         let highlighted = state.highlighted.as_ref()?;
@@ -489,19 +524,43 @@ impl HintView<'_> {
             }
         });
         let index = current.and_then(|hint| {
-            state
-                .positions
-                .get(hint.label.as_str())
-                .copied()
-                .or_else(|| {
-                    (state.prepared < base.labels.len())
-                        .then(|| {
-                            base.labels
-                                .iter()
-                                .position(|label| label.text.as_str() == hint.label.as_str())
-                        })
-                        .flatten()
-                })
+            if !state.draw_slots.is_empty() {
+                let index = state.draw_slots.get(hint.value).copied().filter(|&index| {
+                    base.labels
+                        .get(index)
+                        .is_some_and(|label| label.text.as_str() == hint.label.as_str())
+                });
+                if index.is_some() || state.prepared == base.labels.len() {
+                    return index;
+                }
+            }
+            // Full unfiltered scenes already use target order. Validate identity
+            // before using the slot; filtered and reordered scenes still work.
+            if base
+                .labels
+                .get(hint.value)
+                .is_some_and(|label| label.text.as_str() == hint.label.as_str())
+            {
+                return Some(hint.value);
+            }
+            // A filtered scene in target order already has a compact sorted
+            // index: the visible hints themselves. No duplicate hash table or
+            // post-query warm pass is needed. Check the scene identity too.
+            if state.target_order {
+                return self
+                    .content
+                    .hints
+                    .binary_search_by_key(&hint.value, |h| h.value)
+                    .ok()
+                    .filter(|&index| {
+                        base.labels
+                            .get(index)
+                            .is_some_and(|label| label.text.as_str() == hint.label.as_str())
+                    });
+            }
+            base.labels
+                .iter()
+                .position(|label| label.text.as_str() == hint.label.as_str())
         });
         let mut scene = OverlayScene::with_capacity(3, 14);
         scene.clip = base.clip;
@@ -639,11 +698,15 @@ impl HintView<'_> {
         uniform_width: Option<f64>,
         matched_prefix_len: u32,
         selected_layer: usize,
+        mut draw_slots: Option<&mut [usize]>,
     ) {
         let top = self.layers.layer_count();
         let mut selected = None;
         let mut append = |hint: &CompactHint<usize>, rank: usize| {
             let rect = placed_hint_rect(&self.content.style, hint, style, uniform_width);
+            if let Some(slots) = &mut draw_slots {
+                slots[hint.value] = labels.len();
+            }
             labels.push(OverlayLabel {
                 matched_prefix_len,
                 z_index: HINT_LAYER_Z_BASE.saturating_add(i32::try_from(rank).unwrap_or(i32::MAX)),
@@ -929,28 +992,83 @@ pub(crate) fn warm_scene(
     style: HintStyle<'_>,
     ctx: &HostContext<'_>,
     limit: usize,
+    source: Option<(HintContent<'_>, &VisualLayerPlan)>,
 ) -> bool {
     let mut state = cache.state.borrow_mut();
-    let Some(base) = state.scene.clone() else {
+    let crate::api::presentation::HintSceneState {
+        scene,
+        highlighted,
+        prepared,
+        target_order,
+        draw_slots,
+        warm_cursor,
+        rank_offsets,
+        active_layer,
+        prefix,
+        ..
+    } = &mut *state;
+    let Some(base) = scene.as_ref() else {
         return true;
     };
-    if state.highlighted.is_none() {
-        let mut highlighted = base.labels.first().map_or_else(
+    if highlighted.is_none() {
+        let mut style_value = base.labels.first().map_or_else(
             || resolved_hint_label_style(&style, ctx.palette),
             |label| (*label.style).clone(),
         );
-        style.search_highlight.apply(&mut highlighted, ctx.palette);
-        state.highlighted = Some(highlighted.into());
+        style.search_highlight.apply(&mut style_value, ctx.palette);
+        *highlighted = Some(style_value.into());
     }
-    let end = state.prepared.saturating_add(limit).min(base.labels.len());
-    for index in state.prepared..end {
-        state
-            .positions
-            .insert(base.labels[index].text.as_str().into(), index);
+    if *target_order || base.labels.len() <= 1 {
+        *prepared = base.labels.len();
     }
-    state.prepared = end;
-    end == base.labels.len()
+    if *prepared == base.labels.len() {
+        return true;
+    }
+    let Some((content, layers)) = source.filter(|_| limit > 0) else {
+        return false;
+    };
+    if *warm_cursor == 0 {
+        let len = content
+            .hints
+            .iter()
+            .map(|hint| hint.value)
+            .max()
+            .map_or(0, |last| last + 1);
+        draw_slots.resize(len, usize::MAX);
+        if active_layer.is_none() || !layers.is_canonical_stack() {
+            rank_offsets.resize(layers.layer_count().max(1) + 1, usize::MAX);
+        }
+    }
+    let end = warm_cursor.saturating_add(limit).min(content.hints.len());
+    for (index, hint) in content.hints[*warm_cursor..end].iter().enumerate() {
+        if !prefix.is_empty() && !hint.label.as_str().starts_with(prefix.as_str()) {
+            continue;
+        }
+        let rank = active_layer
+            .and_then(|layer| layers.draw_rank(*warm_cursor + index, layer))
+            .unwrap_or(1);
+        let slot = if active_layer.is_some() && layers.is_canonical_stack() {
+            // A verified clique has exactly one label at each rank.
+            rank - 1
+        } else {
+            let offset = &mut rank_offsets[rank];
+            if *offset == usize::MAX {
+                // The emitted scene already has stable z order. Find each
+                // rank's first slot once, then consume that run in source order.
+                let z = HINT_LAYER_Z_BASE.saturating_add(i32::try_from(rank).unwrap_or(i32::MAX));
+                *offset = base.labels.partition_point(|label| label.z_index < z);
+            }
+            let slot = *offset;
+            *offset += 1;
+            slot
+        };
+        draw_slots[hint.value] = slot;
+        *prepared += 1;
+    }
+    *warm_cursor = end;
+    *prepared == base.labels.len()
 }
+
 impl HintSelectionView<'_> {
     pub(crate) fn scene(&self, ctx: &HostContext<'_>) -> OverlayScene {
         let mut scene = OverlayScene::new();

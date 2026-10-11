@@ -14,7 +14,7 @@ Mode → HostContext::present(View) → presentation → OverlayScene
 
 跨层词汇在 `src/api/backend.rs`、`src/api/command.rs`；原生对象不进入模式。
 
-`OverlayScene.retained` 描述不可变的背景图元和可省略的普通标签槽位，前景仍使用常规 labels／shapes；它不携带 Hint 状态或原生资源。`materialized()` 提供完整场景兼容视图，原生后端可按共享身份复用背景。会话的 `HintSceneCache` 只拥有已解析样式、场景及槽位索引，Presenter 负责构造并按有限份额预热，Mode 负责内容变化与退出失效。
+`OverlayScene.retained` 描述不可变的背景图元和可省略的普通标签槽位，前景仍使用常规 labels／shapes；它不携带 Hint 状态或原生资源。`materialized()` 提供完整场景兼容视图，原生后端可按共享身份复用背景。会话的 `HintSceneCache` 只拥有已解析样式、场景及必要的槽位索引；完整目标顺序、保持目标顺序的过滤结果和唯一标签不另建索引，分别使用直接位置或已有 hints 的二分定位，并核对标签身份；搜索重叠场景在实际按层序输出时记录槽位整数，复用容量并跳过后续文字建表；首次普通重叠场景提交后，Mode 向 Presenter 借用传递现有 HintContent 和 VisualLayerPlan；Presenter 每份最多处理指定数量的源标签，利用已经排好层序的场景填充整数槽位，不重复排序或建立文字哈希表。未准备的成员保留即时查找回退，Mode 负责内容／层序变化与退出失效。
 
 连续滚动通过 `Command::ScrollFrame` / `Backend::scroll_frame` 保留取消身份和每帧距离，runtime 在提交前应用滚动反向设置；离散 `Scroll` 不可替换。原生执行与积压策略由共享滚动执行器负责，见[平台后端](06-platform-backends.md)。
 
@@ -32,7 +32,7 @@ Mode → HostContext::present(View) → presentation → OverlayScene
 
 UI 扫描的 UiScanActivationExpected 按 scan owner 路由，必须在对应原生焦点通知前送到模式，防止一次主动激活触发重复扫描。范围选择与跨平台激活策略见 [UI 扫描](05-ui-scanning.md)。
 
-UIHint live TextPrompt 仅建立共享输入路由，不调用原生 request_text_prompt。runtime 在任何编辑、剪贴板和绘制工作前确认按键处置；TextInserted／TextEdit／TextPasted 交给 Mode，原生备注仍走原有异步协议。
+UIHint live TextPrompt 仅建立共享输入路由，不调用原生 request_text_prompt。runtime 在任何编辑、剪贴板和绘制工作前确认按键处置；TextInserted／TextEdit／TextPasted 交给 Mode，原生备注仍走原有异步协议。 未被编辑／复制／点位快捷键处理的修饰键，按 Mode 的 claims_key 交还给输入 owner；松键也交还，避免会话内状态变化丢失释放。搜索期间保留配置的重叠换层键，当前预览高亮仍置顶。 已解析的点位／换层事件直接复用，外层不重复构造按键集合或匹配复制快捷键；松键仅使用已有 tap／held 记录，组合键匹配只在按下时执行。
 
 模式自有编辑面板通过 `Mode::keyboard_prompt_supported` 声明稳定能力，Registry 在注册／替换实例时采样并缓存；只有声明支持的实例才逐键查询活动状态与上下文绑定，不能为多选输入给普通模式增加动态面板调用。活动面板优先于借用模式和普通绑定，快捷键帮助仍使用静态路由。
 

@@ -119,8 +119,19 @@ impl<'a> Term<'a> {
             labels_only,
             // Every convertible character is replaced when building initials.
             // A query containing one cannot occur in that representation.
-            initials_possible: code.is_ascii() || code.chars().all(|ch| ch.to_pinyin().is_none()),
+            initials_possible: if code.is_ascii() {
+                // Transliteration only introduces letters. A digit/punctuation
+                // query absent from the literal text cannot appear in initials.
+                code.bytes().any(|byte| byte.is_ascii_alphabetic())
+            } else {
+                code.chars().all(|ch| ch.to_pinyin().is_none())
+            },
         }
+    }
+
+    pub(super) fn label_rank(&self, label: &str) -> Option<u8> {
+        (!self.code.is_empty() && label.starts_with(self.code))
+            .then_some(u8::from(label.len() != self.code.len()) * 3)
     }
 
     /// Match each representation once and use the compiled quality/priority table.
@@ -130,16 +141,14 @@ impl<'a> Term<'a> {
         label: &str,
         priority: &crate::api::hint::CompiledSearchPriority,
     ) -> Option<u8> {
-        let label_quality = if label == self.code {
-            0
-        } else if label.starts_with(self.code) {
-            1
+        if self.labels_only {
+            return self.label_rank(label);
+        }
+        let label_quality = if label.starts_with(self.code) {
+            u8::from(label.len() != self.code.len())
         } else {
             3
         };
-        if self.labels_only {
-            return (!self.code.is_empty() && label_quality < 3).then_some(label_quality * 3);
-        }
         if label_quality == 0 && priority.label_first() {
             return Some(0);
         }
@@ -179,7 +188,7 @@ fn match_quality(text: &str, word: &str) -> u8 {
         return 3;
     }
     let boundary = |ch: char| !ch.is_alphanumeric() && ch != '_';
-    let (remaining, offset, mut best) = if let Some(remaining) = text.strip_prefix(word) {
+    let (remaining, offset, best) = if let Some(remaining) = text.strip_prefix(word) {
         if remaining.chars().next().is_none_or(boundary) {
             return 0;
         }
@@ -188,20 +197,46 @@ fn match_quality(text: &str, word: &str) -> u8 {
     } else {
         (text, 0, 3)
     };
-    // Boolean substring matching rejects misses without constructing a full
-    // occurrence iterator; detailed boundary checks only visit actual matches.
+    // The char pattern scans an ASCII byte directly, avoiding a substring
+    // searcher for the common first keystroke or a single-digit query.
+    if let [byte] = word.as_bytes() {
+        return quality_positions(
+            text,
+            offset,
+            1,
+            best,
+            remaining
+                .match_indices(char::from(*byte))
+                .map(|(index, _)| index),
+        );
+    }
+    // Boolean substring matching cheaply rejects multi-byte misses.
     if !remaining.contains(word) {
         return best;
     }
-    for (start, matched) in remaining.match_indices(word) {
+    quality_positions(
+        text,
+        offset,
+        word.len(),
+        best,
+        remaining.match_indices(word).map(|(index, _)| index),
+    )
+}
+
+#[inline]
+fn quality_positions(
+    text: &str,
+    offset: usize,
+    width: usize,
+    mut best: u8,
+    positions: impl Iterator<Item = usize>,
+) -> u8 {
+    let boundary = |ch: char| !ch.is_alphanumeric() && ch != '_';
+    for start in positions {
         let start = start + offset;
         let left = text[..start].chars().next_back().is_none_or(boundary);
         let quality = if left {
-            if text[start + matched.len()..]
-                .chars()
-                .next()
-                .is_none_or(boundary)
-            {
+            if text[start + width..].chars().next().is_none_or(boundary) {
                 return 0;
             }
             1
@@ -329,9 +364,175 @@ fn role_terms(role: SemanticRole) -> (&'static str, &'static str) {
     }
 }
 
+/// Keep query normalization, ranking and candidate storage off the first-label path.
+#[inline(never)]
+pub(super) fn filter(
+    session: &mut super::session::ScanSession,
+    query: &str,
+    priority: &crate::api::hint::CompiledSearchPriority,
+) -> bool {
+    if query
+        .split_whitespace()
+        .any(|word| !word.starts_with('@') && !word.ends_with('@'))
+    {
+        session.ensure_search_names();
+    }
+    let mut display_changed = false;
+    let query = if !query.chars().any(char::is_uppercase) {
+        std::borrow::Cow::Borrowed(query)
+    } else {
+        std::borrow::Cow::Owned(query.to_lowercase())
+    };
+    let multiple = query.chars().any(char::is_whitespace);
+    let show_all = query.is_empty()
+        || multiple && query.ends_with(char::is_whitespace)
+        || query.split_whitespace().next_back() == Some("@");
+    let mut matched = 0;
+    let mut selected = 0;
+    session.search_cycle.clear();
+    session.search_seen.clear();
+    // Each space-separated item runs the same search against original labels.
+    // Union in item order; the first occurrence owns each target's position.
+    session.search_terms.prepare(&query);
+    let needs_dedup = session.search_terms.needs_dedup();
+    if needs_dedup {
+        session.search_seen.resize(session.scanned.len(), false);
+    }
+    for term in session.search_terms.iter(&query) {
+        let term = Term::new(term);
+        let mut buckets = [None; RANK_COUNT];
+        let (mut exact, mut last_match, mut term_matches) = (None, None, 0);
+        for (hint_index, hint) in session.search_hints.iter().enumerate() {
+            let rank = if term.labels_only {
+                term.label_rank(hint.label.as_str())
+            } else {
+                session
+                    .search_text
+                    .get(hint.value)
+                    .and_then(|text| term.rank(text, hint.label.as_str(), priority))
+            };
+            if let Some(rank) = rank {
+                if hint.label.as_str() == term.code {
+                    exact = Some(hint);
+                }
+                last_match = Some(hint);
+                term_matches += 1;
+                if needs_dedup {
+                    if session.search_seen[hint.value] {
+                        continue;
+                    }
+                    session.search_seen[hint.value] = true;
+                }
+                if let Some(previous) = session.search_matches.get_mut(matched) {
+                    *previous = hint_index;
+                } else {
+                    session.search_matches.push(hint_index);
+                }
+                // Candidate order keeps indices only. Update the displayed
+                // labels in place, without a second full clone pass.
+                if !show_all {
+                    if let Some(previous) = session.hints.get_mut(matched) {
+                        if previous.value != hint.value
+                            || previous.label != hint.label
+                            || previous.bounds != hint.bounds
+                        {
+                            display_changed = true;
+                            previous.clone_from(hint);
+                        }
+                    } else {
+                        display_changed = true;
+                        session.hints.push(hint.clone());
+                    }
+                }
+                session.search_cycle.push(rank, &mut buckets);
+                matched += 1;
+            }
+        }
+        session.search_cycle.append(buckets);
+        // A completed label takes priority over semantic collisions.
+        // Other search terms select a point only after disambiguation.
+        let resolved = exact.or_else(|| {
+            last_match.filter(|hint| {
+                term_matches == 1
+                    && !term.labels_only
+                    && session.search_text[hint.value].matches_text(term.code)
+            })
+        });
+        if let Some(hint) = resolved
+            && !session.search_selected[..selected]
+                .iter()
+                .any(|previous| previous.value == hint.value)
+        {
+            if let Some(previous) = session.search_selected.get_mut(selected) {
+                previous.clone_from(hint);
+            } else {
+                session.search_selected.push(hint.clone());
+            }
+            selected += 1;
+        }
+    }
+    session.search_matches.truncate(matched);
+    session.search_focus = session.search_focus.take().and_then(|mut focused| {
+        focused.index = session.search_matches.iter().position(|&index| {
+            let hint = &session.search_hints[index];
+            hint.label == focused.label && hint.bounds == focused.bounds
+        })?;
+        Some(focused)
+    });
+    session.search_selected.truncate(selected);
+    if show_all {
+        for (index, hint) in session.search_hints.iter().enumerate() {
+            if let Some(previous) = session.hints.get_mut(index) {
+                if previous.value != hint.value
+                    || previous.label != hint.label
+                    || previous.bounds != hint.bounds
+                {
+                    display_changed = true;
+                    previous.clone_from(hint);
+                }
+            } else {
+                session.hints.push(hint.clone());
+            }
+        }
+        session.hints.truncate(session.search_hints.len());
+    } else {
+        session.hints.truncate(matched);
+    }
+    display_changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn numeric_shortcut_preserves_initials_matching_and_ranking() {
+        let priority = crate::api::hint::CompiledSearchPriority::new(
+            crate::api::hint::DEFAULT_SEARCH_MATCH_PRIORITY,
+        );
+        for name in [
+            "设置 123",
+            "第1项",
+            "12设置34",
+            "1_2",
+            "１２ 12",
+            "!设置!",
+            "Control 123",
+        ] {
+            let text = SearchText::new(name, SemanticRole::Button);
+            for query in ["1", "12", "34", "!", "_", "1_2", "23", "1x", "sz"] {
+                let term = Term::new(query);
+                let full = Term {
+                    initials_possible: true,
+                    ..Term::new(query)
+                };
+                assert_eq!(
+                    term.rank(&text, "12", &priority),
+                    full.rank(&text, "12", &priority),
+                    "{name}/{query}"
+                );
+            }
+        }
+    }
     #[test]
     fn fixed_role_initials_preserve_every_normalized_representation() {
         for role in SemanticRole::ALL {
@@ -374,6 +575,12 @@ mod tests {
             ("关于设置", "设置", 2),
             ("σ δ", "σ", 0),
             ("foo_bar", "bar", 2),
+            ("11 1", "1", 0),
+            ("1111", "1", 1),
+            ("a1b", "1", 2),
+            ("界1", "1", 2),
+            ("1界", "1", 1),
+            ("_1", "1", 2),
             ("foo", "missing", 3),
             ("foo", "", 3),
         ] {
