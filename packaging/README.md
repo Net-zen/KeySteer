@@ -81,29 +81,30 @@ and AVX-512 Windows x64 builds. Both compose release notes with
 `tools/compose-release-notes.sh`. Optional macOS signing secrets are documented
 in `.github/workflows/build.yml` and `macos/README-cross.md`.
 
-The workflows have short display names and separate responsibilities:
+Five workflows cover the independent entry points. Platform builds and release
+jobs stay in their owning build workflow; shared publication logic lives in
+`.github/scripts/release.py`:
 
 | Name | File | Responsibility |
 | --- | --- | --- |
 | Start | `start.yml` | Tag push or manual entry; dispatch Cross on the default branch |
-| Cross | `cross-build.yml` | Resolve the selected commit and coordinate the cross-build pipeline |
-| Windows | `windows.yml` | Reusable Linux-to-Windows build matrix |
-| macOS | `macos.yml` | Reusable Linux-to-macOS build matrix |
-| Release | `release.yml` | Validate the archives and publish the GitHub Release |
+| Cross | `cross-build.yml` | Resolve the commit, build Windows/macOS matrices, publish, and call Packages/Pages |
 | Packages | `package-managers.yml` | Update the Homebrew tap and Scoop bucket |
 | Pages | `pages.yml` | Build and deploy documentation, then clean the successful Start run |
-| Native | `build.yml` | Optional native builds using the same Release workflow |
+| Native | `build.yml` | Optional native builds and publication using the shared release script |
 
 Use Start when manually selecting another branch or tag; direct Cross runs must
 select the default branch. Source checkout remains pinned to the chosen commit.
 New tags must include this workflow layout. Historical tags retain the trigger
 definitions stored in their own commits.
-Reusable workflows keep the caller's default-branch context and existing runner
-matrices. A complete tag release uses 11 runner jobs instead of the previous 12:
+Cross keeps the default-branch context and existing runner matrices. Combining
+workflow files does not add runner jobs. A complete tag release uses 11 runner
+jobs instead of the previous 12:
 Start, source resolution, four Windows builds, two macOS builds, Release,
 Packages, and Pages. Cleanup is a final step on the Pages runner.
 
-Release preserves existing tag objects and verifies their commit before changing
+The shared release script validates platform archives, composes notes, and
+preserves existing tag objects. It verifies their commit before changing
 release assets; it creates a tag only when absent. Cross may replace an existing
 Release; Native still rejects duplicate Releases. After successful builds,
 publication, manifest synchronization and Pages deployment, cleanup removes only

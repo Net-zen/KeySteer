@@ -14,7 +14,7 @@ def load(name):
     return module
 
 
-release_tag = load("release_tag")
+release_tag = load("release")
 cleanup_entry = load("cleanup_entry")
 
 
@@ -61,6 +61,60 @@ class ReleaseTagTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release_tag.ensure_tag("v1.2.3", self.git("rev-parse", "HEAD"), self.repo)
         self.assertEqual(self.git("ls-remote", "origin", "refs/tags/v1.2.3"), before)
+
+
+class PublishTests(unittest.TestCase):
+    def test_release_names_and_latest_policy(self):
+        identity = release_tag.release_identity
+        self.assertEqual(identity("1.2.3", "", "release", "cross", "7"),
+                         ("v1.2.3", "KeySteer v1.2.3", False, ["--latest"]))
+        self.assertEqual(identity("1.2.3", "", "pre-release", "native", "7"),
+                         ("v1.2.3-pre.7", "KeySteer v1.2.3 pre-release #7", True, ["--latest=false"]))
+        self.assertEqual(identity("1.2.3", "v1.2.3-beta", "release", "cross", "7"),
+                         ("v1.2.3-beta", "KeySteer v1.2.3-beta", True, ["--latest=false"]))
+        self.assertEqual(identity("1.2.3", "", "release", "native", "7")[-1], [])
+
+    def test_incomplete_unexpected_and_empty_archives_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc",
+                       "aarch64-apple-darwin", "x86_64-apple-darwin"]
+            for target in targets:
+                (directory / f"KeySteer-v1.2.3-{target}.zip").write_bytes(b"archive")
+            self.assertEqual(len(release_tag.verify_assets(directory, "1.2.3", "native")), 4)
+            with self.assertRaises(ValueError):
+                release_tag.verify_assets(directory, "1.2.3", "cross")
+            for suffix in ("compatible", "avx512"):
+                (directory / f"KeySteer-v1.2.3-x86_64-pc-windows-msvc-{suffix}.zip").write_bytes(b"archive")
+            self.assertEqual(len(release_tag.verify_assets(directory, "1.2.3", "cross")), 6)
+            for filename in ("unexpected.zip", "checksum.sha256"):
+                path = directory / filename
+                path.write_bytes(b"extra")
+                with self.assertRaises(ValueError):
+                    release_tag.verify_assets(directory, "1.2.3", "cross")
+                path.unlink()
+            next(directory.glob("*.zip")).write_bytes(b"")
+            with self.assertRaises(ValueError):
+                release_tag.verify_assets(directory, "1.2.3", "cross")
+
+    def test_tag_mismatch_prevents_all_release_changes(self):
+        with patch.object(release_tag, "ensure_tag", side_effect=ValueError("wrong commit")), patch.object(release_tag.subprocess, "run") as run:
+            with self.assertRaises(ValueError):
+                release_tag.publish_release("v1.2.3", "a" * 40, "Release", False, [], [], True)
+            run.assert_not_called()
+
+    def test_native_duplicate_is_preserved_and_cross_replaces_only_release(self):
+        for replace in (False, True):
+            with self.subTest(replace=replace), patch.object(release_tag, "ensure_tag"), patch.object(release_tag.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                if replace:
+                    release_tag.publish_release("v1.2.3", "a" * 40, "Release", False, ["--latest"], [Path("archive.zip")], True)
+                    self.assertEqual(run.call_args_list[1].args[0], ["gh", "release", "delete", "v1.2.3", "--yes"])
+                    self.assertIn("--verify-tag", run.call_args_list[2].args[0])
+                    self.assertIn("archive.zip", run.call_args_list[2].args[0])
+                else:
+                    with self.assertRaises(ValueError):
+                        release_tag.publish_release("v1.2.3", "a" * 40, "Release", False, [], [], False)
+                    self.assertEqual(run.call_count, 1)
 
 
 class CleanupEntryTests(unittest.TestCase):

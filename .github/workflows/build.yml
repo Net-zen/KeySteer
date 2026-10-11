@@ -142,12 +142,40 @@ jobs:
     needs: [windows, macos]
     permissions:
       contents: write
-    uses: ./.github/workflows/release.yml
-    with:
-      source_sha: ${{ github.sha }}
-      release_type: ${{ inputs.release_type }}
-      package_set: native
-      replace_release: false
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: workflow-tools
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: KeySteer-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ''
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          PACKAGE_SET: native
+          REPLACE_RELEASE: 'false'
+        run: python3 workflow-tools/.github/scripts/release.py
 
   package-managers:
     name: Packages
