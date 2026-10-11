@@ -7,15 +7,13 @@ outline: false
 
 ## 0.11.7
 
-- 搜索时，当前标签用绿色底色和边框突出显示，按 `Tab` 更容易看清切到了哪一项；网页配置器可调整高亮颜色和边框。
+- ⚠️ **配置升级提醒：** `[ui_hint.search_edit_keys]` 已改为「按键 = 动作」格式。新旧格式混用或按键冲突可能导致程序无法启动。请从新版 `keysteer.default.toml` 中复制完整的 `[ui_hint.search_edit_keys]` 段，**替换用户配置中的旧段，不要直接追加**，再按需修改按键。
 - UIHint 搜索有多个结果时，会自动显示最匹配结果的信息面板。默认按 `Tab` 切换，`Enter` 或 `/` 确认当前结果，`Esc` 取消；按键均可修改。
 - 搜索会优先展示更符合输入的结果。匹配程度相同时，默认按「简拼 → 文字 → 标签」选择，也可以在配置中调整顺序。
-- 新增 22 秒中英双语演示，快速了解简拼搜索、切换结果、复制信息、微调点位与取色。
 
+- ⚠️ **Configuration migration:** `[ui_hint.search_edit_keys]` now uses `key = action`. Mixing old and new formats or conflicting key bindings may prevent KeySteer from starting. Copy the entire `[ui_hint.search_edit_keys]` section from the new `keysteer.default.toml` and **replace the old section in your user configuration; do not append it**. Then customize the keys as needed.
 - UIHint search now automatically previews the best match when several results are found. By default, press `Tab` to switch, `Enter` or `/` to confirm the current result, or `Esc` to cancel. These keys are customizable.
-- The current search label now has a green background and border, making `Tab` cycling easier to follow. Customize its colors and border in the web editor.
 - Search shows the closest matches first. Equally close matches default to Chinese initials → text → labels; you can change this order in settings.
-- Added a 22-second bilingual demo covering pinyin initials, result cycling, copying information, point adjustment, and color picking. 
 
 https://github.com/user-attachments/assets/84d0872d-81f6-4e42-aa7f-767061cef646
 

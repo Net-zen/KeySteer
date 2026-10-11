@@ -7,10 +7,9 @@ outline: false
 
 ## 0.11.7
 
-- The current search label now has a green background and border, making `Tab` cycling easier to follow. Customize its colors and border in the web editor.
+- ⚠️ **Configuration migration:** `[ui_hint.search_edit_keys]` now uses `key = action`. Mixing old and new formats or conflicting key bindings may prevent KeySteer from starting. Copy the entire `[ui_hint.search_edit_keys]` section from the new `keysteer.default.toml` and **replace the old section in your user configuration; do not append it**. Then customize the keys as needed.
 - UIHint search now automatically previews the best match when several results are found. By default, press `Tab` to switch, `Enter` or `/` to confirm the current result, or `Esc` to cancel. These keys are customizable.
 - Search shows the closest matches first. Equally close matches default to Chinese initials → text → labels; you can change this order in settings.
-- Added a 22-second bilingual demo covering pinyin initials, result cycling, copying information, point adjustment, and color picking.
 
 https://github.com/user-attachments/assets/84d0872d-81f6-4e42-aa7f-767061cef646
 
