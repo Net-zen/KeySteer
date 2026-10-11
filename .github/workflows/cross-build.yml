@@ -1,9 +1,7 @@
-name: Cross build and publish
+name: Cross
+run-name: Cross · ${{ inputs.release_tag || inputs.source_sha || github.ref_name }}
 
 on:
-  push:
-    tags:
-      - '**'
   workflow_dispatch:
     inputs:
       platform:
@@ -34,7 +32,17 @@ on:
         default: ''
         type: string
       source_sha:
-        description: Source commit forwarded to the default-branch build (empty = selected ref)
+        description: Source commit (empty = selected ref)
+        required: false
+        default: ''
+        type: string
+      entry_run_id:
+        description: Start run to remove after success (empty = retain all runs)
+        required: false
+        default: ''
+        type: string
+      entry_sha:
+        description: Commit recorded by the Start run
         required: false
         default: ''
         type: string
@@ -43,51 +51,26 @@ permissions:
   contents: read
 
 concurrency:
-  # Publish runs share a group across refs so an older build cannot publish
-  # after a newer build of the same package version.
-  # Forwarders must not cancel the default-branch build they dispatch.
-  group: cross-build-${{ github.repository }}-${{ (github.event_name == 'push' || github.ref != format('refs/heads/{0}', github.event.repository.default_branch)) && format('dispatch-{0}', github.run_id) || (inputs.publish && 'publish' || github.ref) }}
+  group: cross-build-${{ github.repository }}-${{ inputs.publish && 'publish' || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  dispatch:
-    name: Forward build to the default branch
-    if: ${{ !github.event.deleted && (github.event_name == 'push' || github.ref != format('refs/heads/{0}', github.event.repository.default_branch)) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: write
-    steps:
-      - name: Dispatch cross-build from the default branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUILD_BRANCH: ${{ github.event.repository.default_branch }}
-          BUILD_PLATFORM: ${{ inputs.platform || 'all' }}
-          BUILD_PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
-          RELEASE_TYPE: ${{ inputs.release_type || 'release' }}
-          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
-          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
-        run: |
-          test -n "$BUILD_BRANCH"
-          gh workflow run cross-build.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$BUILD_BRANCH" \
-            --raw-field "platform=$BUILD_PLATFORM" \
-            --raw-field "publish=$BUILD_PUBLISH" \
-            --raw-field "release_type=$RELEASE_TYPE" \
-            --raw-field "release_tag=$RELEASE_TAG" \
-            --raw-field "source_sha=$SOURCE_SHA"
-          echo "Cross-build dispatched from $BUILD_BRANCH for $SOURCE_SHA ($RELEASE_TAG)"
-
   source:
     name: Resolve build commit
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       sha: ${{ steps.source.outputs.sha }}
     steps:
+      - name: Require the default branch
+        env:
+          BUILD_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/$BUILD_BRANCH" ]]; then
+            echo 'Run Start for another ref, or select the default branch for Cross.' >&2
+            exit 1
+          fi
+
       - name: Checkout source
         uses: actions/checkout@v7
         with:
@@ -111,398 +94,62 @@ jobs:
           echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
 
   windows:
-    name: Windows ${{ matrix.arch }} ${{ matrix.variant }}
+    name: Windows
     needs: source
     if: ${{ inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            variant: compatible
-            target: x86_64-pc-windows-msvc
-            xwin_arch: x86_64
-            cpu: x86-64
-            cl_flags: /clang:-march=x86-64
-            artifact: KeySteer-Windows-x64-Compatible
-          - arch: x64
-            variant: avx2
-            target: x86_64-pc-windows-msvc
-            xwin_arch: x86_64
-            cpu: x86-64-v3
-            cl_flags: /clang:-march=x86-64-v3
-            artifact: KeySteer-Windows-x64
-          - arch: x64
-            variant: avx512
-            target: x86_64-pc-windows-msvc
-            xwin_arch: x86_64
-            cpu: x86-64-v4
-            cl_flags: /clang:-march=x86-64-v4
-            artifact: KeySteer-Windows-x64-AVX512
-          - arch: ARM64
-            target: aarch64-pc-windows-msvc
-            xwin_arch: aarch64
-            cpu: generic
-            cl_flags: ""
-            artifact: KeySteer-Windows-ARM64
-    env:
-      KEYSTEER_CROSS_WINDOWS: "1"
-      # Pin every x64 instruction-set level; runner CPU changes must never
-      # silently change the requirements of any published package.
-      # ARM64 retains its architecture-appropriate generic CPU.
-      RUSTFLAGS: -C link-arg=/Brepro -C target-cpu=${{ matrix.cpu }}
-      RC_PATH: llvm-rc
-      # winresource probes a GNU prefix even for MSVC; bypass the misleading
-      # ARM64 warning. MSVC resources are still compiled with RC_PATH above.
-      CROSS_COMPILE: ""
-      XWIN_ARCH: ${{ matrix.xwin_arch }}
-    steps:
-      - name: Initialize runtime cache path
-        # runner context is unavailable in job-level env. RUNNER_TEMP exists
-        # once the runner starts, and GITHUB_ENV exposes this to later steps.
-        run: echo "XWIN_CACHE_DIR=$RUNNER_TEMP/keysteer-xwin" >> "$GITHUB_ENV"
-
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.source.outputs.sha }}
-
-      - name: Resolve latest stable cargo-xwin
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          xwin_tag="$(gh api repos/rust-cross/cargo-xwin/releases/latest --jq '.tag_name')"
-          xwin_version="${xwin_tag#v}"
-          [[ "$xwin_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          echo "CARGO_XWIN_VERSION=$xwin_version" >> "$GITHUB_ENV"
-          echo "Selected cargo-xwin $xwin_version from rust-cross/cargo-xwin"
-
-      - name: Set up release Rust
-        uses: ./.github/actions/setup-rust
-        with:
-          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc,aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Set up LLVM and system tools
-        uses: ./.github/actions/setup-llvm
-        with:
-          windows-tools: 'true'
-
-      - name: Restore cargo-xwin executable
-        id: xwin-tool
-        uses: actions/cache@v6
-        with:
-          # One host executable serves both Windows target architectures.
-          path: ~/.cargo/bin/cargo-xwin
-          key: cargo-xwin-prebuilt-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_XWIN_VERSION }}
-
-      - name: Install cargo-xwin
-        if: steps.xwin-tool.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-xwin@${{ env.CARGO_XWIN_VERSION }}
-          # Use checked upstream binaries; never fall back to a third-party
-          # binary provider or an unexpected source build.
-          fallback: none
-
-      - name: Restore Windows SDK and CRT
-        id: sdk-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ env.XWIN_CACHE_DIR }}
-          key: xwin-sdk-v1-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-${{ matrix.target }}
-
-      - name: Prepare Windows SDK and CRT
-        timeout-minutes: 15
-        run: cargo xwin cache xwin
-
-      - name: Save Windows SDK and CRT
-        if: steps.sdk-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ env.XWIN_CACHE_DIR }}
-          key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
-
-      - name: Build complete Windows executable
-        env:
-          # cargo-xwin merges CL_FLAGS into its generated target CFLAGS.
-          CL_FLAGS: ${{ matrix.cl_flags }}
-        run: |
-          rustc -Vv
-          clang-cl --version
-          lld-link --version
-          cargo xwin --version
-          cargo xwin build --locked --release --bin keysteer --no-default-features --target ${{ matrix.target }}
-
-      - name: Sign and package Windows executable
-        env:
-          SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
-          KEYSTEER_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
-          KEYSTEER_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
-        run: bash packaging/windows/package-cross.sh ${{ matrix.target }} ${{ matrix.variant }}
-
-      - name: Upload Windows package
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.target }}/*.zip
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
+    uses: ./.github/workflows/windows.yml
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+    secrets: inherit
 
   macos:
-    name: macOS ${{ matrix.arch }}
+    name: macOS
     needs: source
     if: ${{ inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: Apple Silicon
-            target: aarch64-apple-darwin
-            artifact: KeySteer-macOS-Apple-Silicon
-          - arch: Intel
-            target: x86_64-apple-darwin
-            artifact: KeySteer-macOS-Intel
-    env:
-      KEYSTEER_CROSS_MACOS: '1'
-      MACOSX_DEPLOYMENT_TARGET: '14.0'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.source.outputs.sha }}
-
-      - name: Resolve SDK source
-        id: sdk
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MACOS_SDK_URL: ${{ vars.MACOS_SDK_URL }}
-          MACOS_SDK_SHA256: ${{ vars.MACOS_SDK_SHA256 }}
-        run: python3 packaging/macos/resolve-sdk.py
-
-      - name: Set up release Rust
-        uses: ./.github/actions/setup-rust
-        with:
-          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc,aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Set up LLVM and system tools
-        uses: ./.github/actions/setup-llvm
-
-      - name: Initialize SDK path
-        run: echo "MACOS_SDK_DIR=$RUNNER_TEMP/keysteer-macos-sdk" >> "$GITHUB_ENV"
-
-      - name: Restore Apple SDK
-        id: apple-sdk
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ env.MACOS_SDK_DIR }}
-          key: macos-sdk-v1-Linux-${{ steps.sdk.outputs.sha256 }}
-
-      - name: Download and extract Apple SDK
-        if: steps.apple-sdk.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MACOS_SDK_URL: ${{ steps.sdk.outputs.url }}
-          MACOS_SDK_SHA256: ${{ steps.sdk.outputs.sha256 }}
-          MACOS_SDK_TAG: ${{ steps.sdk.outputs.tag }}
-        run: |
-          archive="$RUNNER_TEMP/macos-sdk.tar"
-          if [[ -n "$MACOS_SDK_TAG" ]]; then
-            gh release download "$MACOS_SDK_TAG" --repo joseluisq/macosx-sdks \
-              --pattern "MacOSX$MACOS_SDK_TAG.sdk.tar.xz" --output "$archive"
-          else
-            curl --fail --location --proto '=https' --proto-redir '=https' \
-              --retry 3 --connect-timeout 30 --max-time 900 "$MACOS_SDK_URL" -o "$archive"
-          fi
-          printf '%s  %s\n' "$MACOS_SDK_SHA256" "$archive" | sha256sum --check --strict
-          python3 packaging/macos/prepare-sdk.py "$archive"
-
-      - name: Activate Apple SDK
-        run: python3 packaging/macos/prepare-sdk.py
-
-      - name: Save Apple SDK
-        if: steps.apple-sdk.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ env.MACOS_SDK_DIR }}
-          key: ${{ steps.apple-sdk.outputs.cache-primary-key }}
-
-      - name: Configure macOS compiler and linker
-        run: bash packaging/macos/configure-cross.sh ${{ matrix.target }}
-
-      - name: Build complete macOS executable
-        run: cargo build --locked --release --bin keysteer --no-default-features --target ${{ matrix.target }}
-
-      - name: Set up macOS signing tool
-        uses: ./.github/actions/setup-rcodesign
-
-      - name: Sign and package macOS executable
-        env:
-          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
-          MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
-          MACOS_NOTARY_KEY_JSON_BASE64: ${{ secrets.MACOS_NOTARY_KEY_JSON_BASE64 }}
-        run: python3 packaging/macos/package-cross.py ${{ matrix.target }}
-
-      - name: Upload macOS package
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.target }}/*.zip
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
+    uses: ./.github/workflows/macos.yml
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+    secrets: inherit
 
   release:
-    # A public release must contain every supported platform. Partial manual
-    # builds still retain their downloadable workflow artifacts.
+    name: Release
     if: ${{ inputs.publish }}
     needs: [source, windows, macos]
-    outputs:
-      tag: ${{ steps.publish.outputs.tag }}
-    # Keep release tooling stable across GitHub's ubuntu-latest migrations.
-    runs-on: ubuntu-24.04
     permissions:
       contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.source.outputs.sha }}
-
-      - name: Read package version
-        id: version
-        shell: bash
-        run: |
-          version="$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n 1)"
-          test -n "$version"
-          echo "value=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Compose current release notes
-        env:
-          VERSION: ${{ steps.version.outputs.value }}
-        shell: bash
-        run: |
-          bash tools/compose-release-notes.sh "$VERSION" release-body.md
-          cat release-body.md
-
-      - name: Download release assets
-        uses: actions/download-artifact@v8
-        with:
-          pattern: KeySteer-*
-          path: release-assets
-          merge-multiple: true
-
-      - name: Verify release assets
-        shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.value }}
-        run: |
-          shopt -s nullglob
-          packages=(release-assets/*.zip)
-          checksums=(release-assets/*.sha256)
-          test "${#packages[@]}" -eq 6
-          test "${#checksums[@]}" -eq 0
-          for package in \
-            "KeySteer-v$VERSION-x86_64-pc-windows-msvc.zip" \
-            "KeySteer-v$VERSION-x86_64-pc-windows-msvc-compatible.zip" \
-            "KeySteer-v$VERSION-x86_64-pc-windows-msvc-avx512.zip" \
-            "KeySteer-v$VERSION-aarch64-pc-windows-msvc.zip" \
-            "KeySteer-v$VERSION-aarch64-apple-darwin.zip" \
-            "KeySteer-v$VERSION-x86_64-apple-darwin.zip"; do
-            test -s "release-assets/$package"
-            printf '%s\n' "$package"
-          done
-
-      - name: Replace tag and GitHub Release
-        id: publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TYPE: ${{ inputs.release_type }}
-          VERSION: ${{ steps.version.outputs.value }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SOURCE_SHA: ${{ needs.source.outputs.sha }}
-        shell: bash
-        run: |
-          prerelease=false
-          if [[ -n "$RELEASE_TAG" ]]; then
-            tag="$RELEASE_TAG"
-            title="KeySteer $tag"
-            if [[ "$RELEASE_TYPE" == "pre-release" || "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+- ]]; then
-              prerelease=true
-            fi
-          elif [[ "$RELEASE_TYPE" == "pre-release" ]]; then
-            tag="v$VERSION-pre"
-            title="KeySteer v$VERSION pre-release"
-            prerelease=true
-          else
-            tag="v$VERSION"
-            title="KeySteer v$VERSION"
-          fi
-
-          # Delete the old release and every attached asset before recreating
-          # the tag at this build's commit. GITHUB_TOKEN prevents trigger loops.
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release delete "$tag" --yes
-          fi
-          remote_tag="$(git ls-remote origin "refs/tags/$tag")"
-          if [[ -n "$remote_tag" ]]; then
-            git push origin ":refs/tags/$tag"
-          fi
-          git push origin "$SOURCE_SHA:refs/tags/$tag"
-
-          latest_flag=(--latest)
-          if [[ "$prerelease" == "true" ]]; then
-            latest_flag=(--latest=false)
-          fi
-          gh release create "$tag" \
-            --verify-tag \
-            --target "$SOURCE_SHA" \
-            --title "$title" \
-            --prerelease="$prerelease" \
-            "${latest_flag[@]}" \
-            --generate-notes \
-            --notes-file release-body.md \
-            release-assets/*.zip
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+    uses: ./.github/workflows/release.yml
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+      release_tag: ${{ inputs.release_tag }}
+      release_type: ${{ inputs.release_type }}
+      package_set: cross
+      replace_release: true
 
   package-managers:
+    name: Packages
     needs: release
     permissions:
       contents: write
     uses: ./.github/workflows/package-managers.yml
 
   pages:
-    name: deploy documentation
-    needs: [windows, macos, release]
-    # Partial build-only runs may skip one platform and the release job.
-    # Failed or cancelled builds/publications must never deploy the website.
+    name: Pages
+    needs: [source, windows, macos, release, package-managers]
     if: >-
-      ${{ !cancelled() && !github.event.deleted &&
+      ${{ !cancelled() &&
           (needs.windows.result == 'success' || needs.macos.result == 'success') &&
           (needs.windows.result == 'success' || needs.windows.result == 'skipped') &&
           (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
-          (needs.release.result == 'success' || needs.release.result == 'skipped') }}
-    # Keep Pages in its own default-branch run; the release tag is only an
-    # input selecting which published packages the documentation links to.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
+          (needs.release.result == 'success' || needs.release.result == 'skipped') &&
+          (needs.package-managers.result == 'success' || needs.package-managers.result == 'skipped') }}
     permissions:
       contents: read
+      pages: write
+      id-token: write
       actions: write
-    steps:
-      - name: Dispatch Pages from the default branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PAGES_BRANCH: ${{ github.event.repository.default_branch }}
-          RELEASE_TAG: ${{ needs.release.outputs.tag || 'latest' }}
-        run: |
-          test -n "$PAGES_BRANCH"
-          gh workflow run pages.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$PAGES_BRANCH" \
-            --raw-field "release_tag=$RELEASE_TAG"
-          echo "Pages workflow dispatched from $PAGES_BRANCH for $RELEASE_TAG"
+    uses: ./.github/workflows/pages.yml
+    with:
+      release_tag: ${{ needs.release.outputs.tag || 'latest' }}
+      entry_run_id: ${{ inputs.entry_run_id }}
+      entry_sha: ${{ inputs.entry_sha }}
+      stage_results: ${{ toJSON(needs) }}

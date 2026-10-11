@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      release_tag:
+        default: ''
+        type: string
+      release_type:
+        default: release
+        type: string
+      package_set:
+        required: true
+        type: string
+      replace_release:
+        default: false
+        type: boolean
+    outputs:
+      tag:
+        value: ${{ jobs.release.outputs.tag }}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # A public release must contain every supported platform. Partial manual
+    # builds still retain their downloadable workflow artifacts.
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+    # Keep release tooling stable across GitHub's ubuntu-latest migrations.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - name: Checkout workflow tools
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: workflow-tools
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Read package version
+        id: version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test -n "$version"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Compose current release notes
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          bash tools/compose-release-notes.sh "$VERSION" release-body.md
+          cat release-body.md
+
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: KeySteer-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify release assets
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          PACKAGE_SET: ${{ inputs.package_set }}
+        run: |
+          shopt -s nullglob
+          packages=(release-assets/*.zip)
+          checksums=(release-assets/*.sha256)
+          expected=(
+            "KeySteer-v$VERSION-x86_64-pc-windows-msvc.zip"
+            "KeySteer-v$VERSION-aarch64-pc-windows-msvc.zip"
+            "KeySteer-v$VERSION-aarch64-apple-darwin.zip"
+            "KeySteer-v$VERSION-x86_64-apple-darwin.zip"
+          )
+          if [[ "$PACKAGE_SET" == "cross" ]]; then
+            expected+=(
+              "KeySteer-v$VERSION-x86_64-pc-windows-msvc-compatible.zip"
+              "KeySteer-v$VERSION-x86_64-pc-windows-msvc-avx512.zip"
+            )
+          else
+            test "$PACKAGE_SET" = "native"
+          fi
+          test "${#packages[@]}" -eq "${#expected[@]}"
+          test "${#checksums[@]}" -eq 0
+          for package in "${expected[@]}"; do
+            test -s "release-assets/$package"
+            printf '%s\n' "$package"
+          done
+
+      - name: Publish GitHub Release
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          VERSION: ${{ steps.version.outputs.value }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PACKAGE_SET: ${{ inputs.package_set }}
+          REPLACE_RELEASE: ${{ inputs.replace_release }}
+        shell: bash
+        run: |
+          prerelease=false
+          if [[ -n "$RELEASE_TAG" ]]; then
+            tag="$RELEASE_TAG"
+            title="KeySteer $tag"
+            if [[ "$RELEASE_TYPE" == "pre-release" || "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+- ]]; then
+              prerelease=true
+            fi
+          elif [[ "$RELEASE_TYPE" == "pre-release" ]]; then
+            tag="v$VERSION-pre"
+            if [[ "$PACKAGE_SET" == "native" ]]; then
+              tag="$tag.$GITHUB_RUN_NUMBER"
+              title="KeySteer v$VERSION pre-release #$GITHUB_RUN_NUMBER"
+            else
+              title="KeySteer $tag"
+            fi
+            prerelease=true
+          else
+            tag="v$VERSION"
+            title="KeySteer v$VERSION"
+          fi
+
+          # Keep the existing tag object (including annotations/signatures).
+          # Check its commit before replacing any release or assets.
+          python3 workflow-tools/.github/scripts/release_tag.py "$tag" "$SOURCE_SHA"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            if [[ "$REPLACE_RELEASE" != "true" ]]; then
+              echo "release already exists: $tag" >&2
+              exit 1
+            fi
+            gh release delete "$tag" --yes
+          fi
+
+          latest_flag=()
+          if [[ "$prerelease" == "true" ]]; then
+            latest_flag=(--latest=false)
+          elif [[ "$PACKAGE_SET" == "cross" ]]; then
+            latest_flag=(--latest)
+          fi
+          gh release create "$tag" \
+            --verify-tag \
+            --target "$SOURCE_SHA" \
+            --title "$title" \
+            --prerelease="$prerelease" \
+            "${latest_flag[@]}" \
+            --generate-notes \
+            --notes-file release-body.md \
+            release-assets/*.zip
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"

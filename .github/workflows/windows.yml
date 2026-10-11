@@ -1,0 +1,151 @@
+name: Windows
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows ${{ matrix.arch }} ${{ matrix.variant }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            variant: compatible
+            target: x86_64-pc-windows-msvc
+            xwin_arch: x86_64
+            cpu: x86-64
+            cl_flags: /clang:-march=x86-64
+            artifact: KeySteer-Windows-x64-Compatible
+          - arch: x64
+            variant: avx2
+            target: x86_64-pc-windows-msvc
+            xwin_arch: x86_64
+            cpu: x86-64-v3
+            cl_flags: /clang:-march=x86-64-v3
+            artifact: KeySteer-Windows-x64
+          - arch: x64
+            variant: avx512
+            target: x86_64-pc-windows-msvc
+            xwin_arch: x86_64
+            cpu: x86-64-v4
+            cl_flags: /clang:-march=x86-64-v4
+            artifact: KeySteer-Windows-x64-AVX512
+          - arch: ARM64
+            target: aarch64-pc-windows-msvc
+            xwin_arch: aarch64
+            cpu: generic
+            cl_flags: ""
+            artifact: KeySteer-Windows-ARM64
+    env:
+      KEYSTEER_CROSS_WINDOWS: "1"
+      # Pin every x64 instruction-set level; runner CPU changes must never
+      # silently change the requirements of any published package.
+      # ARM64 retains its architecture-appropriate generic CPU.
+      RUSTFLAGS: -C link-arg=/Brepro -C target-cpu=${{ matrix.cpu }}
+      RC_PATH: llvm-rc
+      # winresource probes a GNU prefix even for MSVC; bypass the misleading
+      # ARM64 warning. MSVC resources are still compiled with RC_PATH above.
+      CROSS_COMPILE: ""
+      XWIN_ARCH: ${{ matrix.xwin_arch }}
+    steps:
+      - name: Initialize runtime cache path
+        # runner context is unavailable in job-level env. RUNNER_TEMP exists
+        # once the runner starts, and GITHUB_ENV exposes this to later steps.
+        run: echo "XWIN_CACHE_DIR=$RUNNER_TEMP/keysteer-xwin" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - name: Resolve latest stable cargo-xwin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          xwin_tag="$(gh api repos/rust-cross/cargo-xwin/releases/latest --jq '.tag_name')"
+          xwin_version="${xwin_tag#v}"
+          [[ "$xwin_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "CARGO_XWIN_VERSION=$xwin_version" >> "$GITHUB_ENV"
+          echo "Selected cargo-xwin $xwin_version from rust-cross/cargo-xwin"
+
+      - name: Set up release Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc,aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Set up LLVM and system tools
+        uses: ./.github/actions/setup-llvm
+        with:
+          windows-tools: 'true'
+
+      - name: Restore cargo-xwin executable
+        id: xwin-tool
+        uses: actions/cache@v6
+        with:
+          # One host executable serves both Windows target architectures.
+          path: ~/.cargo/bin/cargo-xwin
+          key: cargo-xwin-prebuilt-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_XWIN_VERSION }}
+
+      - name: Install cargo-xwin
+        if: steps.xwin-tool.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-xwin@${{ env.CARGO_XWIN_VERSION }}
+          # Use checked upstream binaries; never fall back to a third-party
+          # binary provider or an unexpected source build.
+          fallback: none
+
+      - name: Restore Windows SDK and CRT
+        id: sdk-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.XWIN_CACHE_DIR }}
+          key: xwin-sdk-v1-${{ runner.os }}-${{ env.CARGO_XWIN_VERSION }}-${{ matrix.target }}
+
+      - name: Prepare Windows SDK and CRT
+        timeout-minutes: 15
+        run: cargo xwin cache xwin
+
+      - name: Save Windows SDK and CRT
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.XWIN_CACHE_DIR }}
+          key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
+
+      - name: Build complete Windows executable
+        env:
+          # cargo-xwin merges CL_FLAGS into its generated target CFLAGS.
+          CL_FLAGS: ${{ matrix.cl_flags }}
+        run: |
+          rustc -Vv
+          clang-cl --version
+          lld-link --version
+          cargo xwin --version
+          cargo xwin build --locked --release --bin keysteer --no-default-features --target ${{ matrix.target }}
+
+      - name: Sign and package Windows executable
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          KEYSTEER_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+          KEYSTEER_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        run: bash packaging/windows/package-cross.sh ${{ matrix.target }} ${{ matrix.variant }}
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.target }}/*.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

@@ -81,6 +81,42 @@ and AVX-512 Windows x64 builds. Both compose release notes with
 `tools/compose-release-notes.sh`. Optional macOS signing secrets are documented
 in `.github/workflows/build.yml` and `macos/README-cross.md`.
 
+The workflows have short display names and separate responsibilities:
+
+| Name | File | Responsibility |
+| --- | --- | --- |
+| Start | `start.yml` | Tag push or manual entry; dispatch Cross on the default branch |
+| Cross | `cross-build.yml` | Resolve the selected commit and coordinate the cross-build pipeline |
+| Windows | `windows.yml` | Reusable Linux-to-Windows build matrix |
+| macOS | `macos.yml` | Reusable Linux-to-macOS build matrix |
+| Release | `release.yml` | Validate the archives and publish the GitHub Release |
+| Packages | `package-managers.yml` | Update the Homebrew tap and Scoop bucket |
+| Pages | `pages.yml` | Build and deploy documentation, then clean the successful Start run |
+| Native | `build.yml` | Optional native builds using the same Release workflow |
+
+Use Start when manually selecting another branch or tag; direct Cross runs must
+select the default branch. Source checkout remains pinned to the chosen commit.
+New tags must include this workflow layout. Historical tags retain the trigger
+definitions stored in their own commits.
+Reusable workflows keep the caller's default-branch context and existing runner
+matrices. A complete tag release uses 11 runner jobs instead of the previous 12:
+Start, source resolution, four Windows builds, two macOS builds, Release,
+Packages, and Pages. Cleanup is a final step on the Pages runner.
+
+Release preserves existing tag objects and verifies their commit before changing
+release assets; it creates a tag only when absent. Cross may replace an existing
+Release; Native still rejects duplicate Releases. After successful builds,
+publication, manifest synchronization and Pages deployment, cleanup removes only
+the corresponding successful Start run. Failures and cancellations retain it;
+the version tag and Cross run always remain. Cleanup uses `actions: write` and
+checks the entry's workflow path, run ID, commit and completed status.
+
+Validate the release and cleanup policies locally with:
+
+```bash
+python -B -m unittest discover -s .github/scripts -p 'test_*.py'
+```
+
 ## Homebrew tap and Scoop bucket
 
 This repository also hosts `Casks/keysteer.rb` and `bucket/keysteer.json`.

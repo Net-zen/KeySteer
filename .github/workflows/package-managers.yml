@@ -1,4 +1,4 @@
-name: Update Homebrew and Scoop
+name: Packages
 
 on:
   workflow_call:
