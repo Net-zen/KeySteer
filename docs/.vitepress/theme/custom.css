@@ -1661,6 +1661,23 @@
 .ks-binding-actions button:hover:not(:disabled) { border-color: var(--vp-c-brand-1); color: var(--vp-c-brand-1); }
 .ks-binding-actions button:disabled { opacity: .45; cursor: default; }
 .ks-classified .ks-mapping-editor .ks-binding-panel { padding: 10px; }
+.ks-binding-kind { display: inline-flex; gap: 3px; padding: 3px; margin-bottom: 14px; border-radius: 9px; background: var(--vp-c-bg-soft); }
+.ks-binding-kind button { padding: 6px 14px; border-radius: 6px; color: var(--vp-c-text-2); font-size: 12px; }
+.ks-binding-kind button[aria-pressed="true"] { color: var(--vp-c-brand-1); background: var(--vp-c-bg); box-shadow: 0 1px 4px #0000000d; }
+.ks-key-recorder { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 54px; padding: 12px; border: 1px solid var(--vp-c-divider); border-radius: 9px; background: var(--vp-c-bg); text-align: left; }
+.ks-key-recorder:hover:not(:disabled), .ks-key-recorder[aria-pressed="true"] { border-color: var(--vp-c-brand-1); background: var(--vp-c-brand-soft); }
+.ks-key-recorder:focus-visible { outline: 2px solid var(--vp-c-brand-1); outline-offset: 2px; }
+.ks-key-recorder:disabled, .ks-key-mapping-presets button:disabled { opacity: .45; cursor: not-allowed; }
+.ks-recorder-value { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: var(--vp-font-family-mono); font-size: 14px; }
+.ks-key-recorder small { flex-shrink: 0; color: var(--vp-c-text-2); font-size: 11px; }
+.ks-recording-dot { flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--vp-c-text-3); }
+.ks-key-recorder[aria-pressed="true"] .ks-recording-dot { background: var(--vp-c-brand-1); box-shadow: 0 0 0 4px var(--vp-c-brand-soft); }
+.ks-key-mapping-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.ks-key-mapping-presets button { min-width: 34px; padding: 5px 9px; border: 1px solid var(--vp-c-divider); border-radius: 6px; background: var(--vp-c-bg); color: var(--vp-c-text-1); font-size: 12px; }
+.ks-key-mapping-presets button:hover, .ks-key-mapping-presets button[aria-pressed="true"] { border-color: var(--vp-c-brand-1); color: var(--vp-c-brand-1); background: var(--vp-c-brand-soft); }
+.ks-key-mapping p { margin: 9px 0 0; font-size: 12px; line-height: 1.6; }
+.ks-key-mapping p.ks-mapping-error { color: var(--vp-c-danger-1); }
+.ks-key-mapping p.ks-key-mapping-note { margin-top: 4px; color: var(--vp-c-text-3); font-size: 11px; }
 .ks-action-search { display: flex; gap: 6px; margin-bottom: 10px; }
 .ks-action-search input { min-width: 0; flex: 1; }
 .ks-action-search input, .ks-action-search select { padding: 9px 10px; border: 1px solid var(--vp-c-divider); border-radius: 8px; background: var(--vp-c-bg); font-size: 12px; }

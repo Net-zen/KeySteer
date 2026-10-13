@@ -5,6 +5,12 @@ outline: false
 
 # Release notes
 
+## 0.11.8
+
+- Improved UIHint recognition in the desktop app, reducing incorrectly merged or missing text targets in lists and tables.
+- Labels stay more stable as recognition results arrive, with fewer label changes and unnecessary redraws.
+- The web configuration simulator now supports direct key remapping, such as mapping `T` to `Home` or a key combination.
+
 ## 0.11.7
 
 - ⚠️ **Configuration migration:** `[ui_hint.search_edit_keys]` now uses `key = action`. Mixing old and new formats or conflicting key bindings may prevent KeySteer from starting. Copy the entire `[ui_hint.search_edit_keys]` section from the new `keysteer.default.toml` and **replace the old section in your user configuration; do not append it**. Then customize the keys as needed.

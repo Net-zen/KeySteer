@@ -5,6 +5,16 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.11.8
+
+- 改进桌面程序的 UIHint 识别，减少列表、表格中文字被错误合并或漏掉的情况
+- 识别结果陆续补全时，已有标签更稳定，减少标签跳变和重复刷新。
+- 网页配置模拟器支持直接映射按键，例如将 `T` 映射为 `Home`，也可映射为组合键。
+
+- Improved UIHint recognition in the desktop app, reducing incorrectly merged or missing text targets in lists and tables.
+- Labels stay more stable as recognition results arrive, with fewer label changes and unnecessary redraws.
+- The web configuration simulator now supports direct key remapping, such as mapping `T` to `Home` or a key combination.
+
 ## 0.11.7
 
 - ⚠️ **配置升级提醒：** `[ui_hint.search_edit_keys]` 已改为「按键 = 动作」格式。新旧格式混用或按键冲突可能导致程序无法启动。请从新版 `keysteer.default.toml` 中复制完整的 `[ui_hint.search_edit_keys]` 段，**替换用户配置中的旧段，不要直接追加**，再按需修改按键。

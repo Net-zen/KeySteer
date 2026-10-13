@@ -2,6 +2,18 @@ export type StudioLocale = 'zh' | 'en'
 
 /** Display text only. Command values, paths and user content are never localized. */
 export const englishMessages: Record<string, string> = {
+  '选择按键，为它设置动作或映射到另一个按键。': 'Select a key to assign an action or map it to another key.',
+  '当前绑定': 'Current binding', '绑定类型': 'Binding type', '动作': 'Action',
+  '映射到按键': 'Map to key', '常用目标键': 'Common target keys',
+  '录制目标按键': 'Record target key', '点击录制按键': 'Click to record a key', '点击录制': 'Click to record',
+  '请按下目标按键…': 'Press a key or shortcut…', '录制中 · 点击取消': 'Recording · Click to cancel',
+  '暂不支持这个按键，请重试或选择下方常用键。': 'This key is not supported. Try again or choose a common key below.',
+  '请再加一个普通按键，例如 Ctrl + C。': 'Include a non-modifier key, such as Ctrl + C.',
+  '按下单键或组合键，松开后自动应用。Esc 取消录制。': 'Press a key or shortcut and release to apply. Esc cancels recording.',
+  '点击录制后直接按键；被浏览器拦截的快捷键可在下方点选。': 'Click to record and press your keys. Choose a preset below if the browser intercepts a shortcut.',
+  '先在上方选择要修改的按键。': 'Select the key you want to change above.',
+  '程序会将目标按键发送给当前应用；网页预览仅显示发送结果。': 'KeySteer sends the target key to the active app. The web preview only displays the result.',
+  '发送按键：{0}（网页演示）': 'Send key: {0} (web demo)',
   '当前标签高亮': 'Current label highlight',
   '搜索预览和点位切换时突出当前标签，默认使用 Window 同款绿色。': 'Highlight the current search result or point with the same green as Window selection by default.',
   '标签切换预览': 'Label cycling preview',

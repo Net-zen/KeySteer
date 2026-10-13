@@ -1015,37 +1015,45 @@ pub(crate) fn enrich_replacements(
     previous: &[UiTarget],
     retired: &[Rect],
 ) {
-    if retired.is_empty() {
+    let needs_description = |target: &UiTarget| {
+        matches!(
+            target.role,
+            crate::api::SemanticRole::ListItem
+                | crate::api::SemanticRole::Image
+                | crate::api::SemanticRole::StaticText
+        ) && !(target.role == crate::api::SemanticRole::StaticText
+            && target.details.as_ref().is_some_and(|d| {
+                !d.ocr.is_empty() && d.accessibility.is_empty() && d.ocr == target.name
+            }))
+    };
+    if retired.is_empty() || !targets.iter().any(needs_description) {
         return;
     }
     // Filter once per delta, not once per replacement. Large refinements used
     // to repeat a linear retired lookup for every target/previous pair.
     let key =
         |r: Rect| [r.x, r.y, r.width, r.height].map(|v| if v == 0.0 { 0 } else { v.to_bits() });
-    let keys: rustc_hash::FxHashSet<_> = retired.iter().map(|&r| key(r)).collect();
-    let descriptions: Vec<_> = previous
+    let keys = (retired.len() > 8).then(|| {
+        retired
+            .iter()
+            .map(|&r| key(r))
+            .collect::<rustc_hash::FxHashSet<_>>()
+    });
+    let descriptions: smallvec::SmallVec<[&UiTarget; 8]> = previous
         .iter()
-        .filter(|old| !old.name.is_empty() && keys.contains(&key(old.rect)))
+        .filter(|old| {
+            !old.name.is_empty()
+                && keys.as_ref().map_or_else(
+                    || retired.contains(&old.rect),
+                    |keys| keys.contains(&key(old.rect)),
+                )
+        })
         .collect();
     if descriptions.is_empty() {
         return;
     }
-    for target in targets.iter_mut().filter(|t| {
-        matches!(
-            t.role,
-            crate::api::SemanticRole::ListItem
-                | crate::api::SemanticRole::Image
-                | crate::api::SemanticRole::StaticText
-        )
-    }) {
+    for target in targets.iter_mut().filter(|t| needs_description(t)) {
         // Scan evidence already supplied authoritative OCR seam reconstruction.
-        if target.role == crate::api::SemanticRole::StaticText
-            && target.details.as_ref().is_some_and(|d| {
-                !d.ocr.is_empty() && d.accessibility.is_empty() && d.ocr == target.name
-            })
-        {
-            continue;
-        }
         let inherit_descriptions =
             target.name.is_empty() || target.role == crate::api::SemanticRole::StaticText;
         for old in &descriptions {

@@ -161,6 +161,24 @@ pub struct HintMode {
 }
 
 impl HintMode {
+    #[cfg(feature = "benchmark-hooks")]
+    pub(crate) fn benchmark_targets(&self) -> &[crate::api::UiTarget] {
+        &self.session.scanned
+    }
+
+    #[cfg(feature = "benchmark-hooks")]
+    pub(crate) fn benchmark_labels(
+        &self,
+    ) -> impl Iterator<Item = (&crate::api::UiTarget, &str, Rect)> {
+        self.session.hints.iter().map(|hint| {
+            (
+                &self.session.scanned[hint.value],
+                hint.label.as_str(),
+                hint.bounds,
+            )
+        })
+    }
+
     pub fn new(config: Settings) -> Self {
         Self {
             scene_cache: Default::default(),
@@ -326,29 +344,43 @@ impl HintMode {
             }
             std::mem::swap(&mut self.session.hints, &mut self.session.search_hints);
         }
-        // Once the user starts typing, preserve the labels they can already
-        // see and select. With no input, every partial remains visible. A
-        // source-agnostic plan is rebuilt from the merged UIA/Vision labels at
-        // each published batch, so overlap input never pays graph-build latency.
-        let labels_changed =
-            if added && (self.input.text().is_empty() || matches!(self.input, Input::Search(_))) {
-                if stable_labels && !searching {
+        // Metadata does not change a plain label scene. Keep its geometry and
+        // cache; search and visible point information still consume new content.
+        let keep_scene = added
+            && stable_labels
+            && self.session.metadata_only
+            && !searching
+            && self.inspection.is_none()
+            && status == UiScanStatus::Partial;
+        let labels_changed = if keep_scene {
+            false
+        } else if added && (self.input.text().is_empty() || matches!(self.input, Input::Search(_)))
+        {
+            if stable_labels && !searching {
+                if !self.session.metadata_only {
                     self.refresh_overlap_plan(ctx);
-                } else {
-                    self.relabel(ctx);
                 }
-                true
             } else {
-                if added {
-                    self.session.pending_relabel = true;
-                }
-                false
-            };
+                self.relabel(ctx);
+            }
+            true
+        } else {
+            if added {
+                self.session.pending_relabel = true;
+            }
+            false
+        };
 
         if status == UiScanStatus::Partial {
             self.session.status = None;
             return if labels_changed {
                 self.redraw()
+            } else if keep_scene && !self.session.search_names_initialized {
+                CommandBatch::one(Command::SetTimer {
+                    id: SEARCH_PREWARM_TIMER_ID.into(),
+                    delay: Duration::ZERO,
+                    repeating: false,
+                })
             } else {
                 CommandBatch::new()
             };
@@ -1516,6 +1548,8 @@ impl HintMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod scan_replay;
 
     fn assert_fresh_scene(mode: &HintMode, env: &Env, out: &CommandBatch) {
         let mut scenes = out.iter().filter_map(|command| match command {

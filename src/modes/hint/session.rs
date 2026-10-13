@@ -48,6 +48,8 @@ pub(super) struct ScanSession {
     pub(super) retry_pending: bool,
     pub(super) scan_bounds: Option<Rect>,
     pub(super) pending_relabel: bool,
+    /// Last applied delta changed target content without changing label geometry.
+    pub(super) metadata_only: bool,
     deferred_targets: Vec<UiTarget>,
     deferred_retired: Vec<Rect>,
     pub(super) selected: Option<usize>,
@@ -92,6 +94,7 @@ impl ScanSession {
         self.label_plan_count = 0;
         self.next_label_index = 0;
         self.pending_relabel = false;
+        self.metadata_only = false;
         self.deferred_targets = Vec::new();
         self.deferred_retired = Vec::new();
     }
@@ -111,6 +114,7 @@ impl ScanSession {
     }
 
     pub(super) fn apply_update(&mut self, mut targets: Vec<UiTarget>, retired: &[Rect]) -> bool {
+        self.metadata_only = false;
         crate::api::command::enrich_replacements(&mut targets, &self.scanned, retired);
         let before = self.scanned.len();
         crate::api::command::remove_retired_targets(&mut self.scanned, retired);
@@ -134,12 +138,14 @@ impl ScanSession {
         direction: LabelDirection,
         preserve_anchors: bool,
     ) -> (bool, bool) {
+        self.metadata_only = false;
         if targets.is_empty() && retired.is_empty() {
             return (false, true);
         }
         crate::api::command::enrich_replacements(&mut targets, &self.scanned, retired);
         let mut removed_hints = Vec::new();
         let before = self.scanned.len();
+        let mut first_changed = before;
         if !retired.is_empty() {
             self.ensure_scan_index();
             // Existing semantic-key buckets identify exact removals without
@@ -157,6 +163,7 @@ impl ScanSession {
                     }
                 }
             }
+            first_changed = self.replace_same_regions(&mut targets, &mut remap);
             let mut old = 0;
             let mut kept = 0;
             self.scanned.retain(|_| {
@@ -182,11 +189,15 @@ impl ScanSession {
                 }));
                 self.rebuild_target_lookup();
                 self.invalidate_search_names();
+            } else if first_changed < before {
+                self.search_text.truncate(first_changed);
+                self.search_names_initialized = false;
             }
         }
         let retained = self.scanned.len();
-        let changed = self.append_targets(targets) || retained != before;
+        let changed = self.append_targets(targets) || retained != before || first_changed < before;
         let added = self.scanned.len() - retained;
+        self.metadata_only = first_changed < before && retained == before && added == 0;
         let Some(plan) = super::labeling::LabelPlan::for_stream(
             self.label_plan_count,
             alphabet.len(),
@@ -292,6 +303,67 @@ impl ScanSession {
             });
         }
         (changed, true)
+    }
+
+    /// Metadata for an unambiguous, unchanged rectangle belongs in its existing
+    /// slot. It must not compete with a newly added field for the old label.
+    /// Reuse the retirement map; ambiguous old or incoming geometry falls back
+    /// to the existing removal/association path.
+    #[inline(never)]
+    fn replace_same_regions(&mut self, targets: &mut Vec<UiTarget>, remap: &mut [usize]) -> usize {
+        const AMBIGUOUS: usize = usize::MAX - 1;
+        for (incoming, target) in targets.iter().enumerate() {
+            let Some(&head) = self.seen_targets.get(&rect_hash(target.rect)) else {
+                continue;
+            };
+            let mut index = head;
+            let mut found = None;
+            while index != usize::MAX {
+                if self.scanned[index].rect == target.rect && found.replace(index).is_some() {
+                    found = None;
+                    break;
+                }
+                index = self.next_same_rect[index];
+            }
+            if let Some(index) = found {
+                remap[index] = match remap[index] {
+                    0 => 0,
+                    usize::MAX => incoming + 1,
+                    _ => AMBIGUOUS,
+                };
+            }
+        }
+        let mut consumed = SmallVec::<[usize; 8]>::new();
+        let mut first_changed = self.scanned.len();
+        for (index, marker) in remap.iter_mut().enumerate() {
+            match *marker {
+                0 | usize::MAX => continue,
+                AMBIGUOUS => {
+                    *marker = usize::MAX;
+                    continue;
+                }
+                _ => {}
+            }
+            let incoming = *marker - 1;
+            if self.scanned[index] != targets[incoming] {
+                std::mem::swap(&mut self.scanned[index], &mut targets[incoming]);
+                first_changed = first_changed.min(index);
+            }
+            *marker = 0;
+            consumed.push(incoming);
+        }
+        if !consumed.is_empty() {
+            consumed.sort_unstable();
+            let mut incoming = 0;
+            let mut next = 0;
+            targets.retain(|_| {
+                let keep = consumed.get(next) != Some(&incoming);
+                next += usize::from(!keep);
+                incoming += 1;
+                keep
+            });
+        }
+        first_changed
     }
 
     fn rebuild_target_lookup(&mut self) {
@@ -754,6 +826,88 @@ mod tests {
             (true, true)
         );
         assert_eq!(session.hints.last().unwrap().bounds, rect);
+    }
+
+    #[test]
+    fn metadata_and_new_field_keep_existing_slots_labels_and_search_prefix() {
+        let alphabet: Vec<_> = "asdfghjkl".chars().collect();
+        let mut session = labeled_session(8, &alphabet, LabelDirection::Normal);
+        session.ensure_search_names();
+        let original: Vec<_> = session
+            .hints
+            .iter()
+            .map(|hint| (hint.label.clone(), hint.bounds, hint.value))
+            .collect();
+        let mut update = session.scanned[3].clone();
+        update.name = "updated row".into();
+        let field = UiTarget::recognized_text(
+            Rect::new(update.rect.x + 1., update.rect.y + 1., 10., 10.),
+            "field".into(),
+        );
+        assert_eq!(
+            session.apply_stable_update(
+                vec![field, update.clone()],
+                &[update.rect],
+                &alphabet,
+                LabelDirection::Normal,
+                true
+            ),
+            (true, true)
+        );
+        assert_eq!(session.scanned[3], update);
+        assert_eq!(session.search_text.len(), 3);
+        assert_eq!(
+            session.hints[..8]
+                .iter()
+                .map(|hint| (hint.label.clone(), hint.bounds, hint.value))
+                .collect::<Vec<_>>(),
+            original
+        );
+        assert_ne!(session.hints[8].label, session.hints[3].label);
+        session.ensure_search_names();
+        assert!(session.search_text[3].matches("updated", ""));
+    }
+
+    #[test]
+    fn ambiguous_metadata_geometry_uses_normal_retirement() {
+        let alphabet: Vec<_> = "asdfghjkl".chars().collect();
+        for ambiguous_old in [false, true] {
+            let mut session = labeled_session(2, &alphabet, LabelDirection::Normal);
+            if ambiguous_old {
+                session.scanned[1].rect = session.scanned[0].rect;
+                session.hints[1].bounds = session.scanned[0].rect;
+                session.rebuild_target_lookup();
+            }
+            let rect = session.scanned[0].rect;
+            let targets = vec![
+                UiTarget {
+                    rect,
+                    role: SemanticRole::Button,
+                    name: "action".into(),
+                    details: None,
+                },
+                UiTarget::recognized_text(rect, "caption".into()),
+            ];
+            assert_eq!(
+                session.apply_stable_update(
+                    targets.clone(),
+                    &[rect],
+                    &alphabet,
+                    LabelDirection::Normal,
+                    true
+                ),
+                (true, true)
+            );
+            for target in targets {
+                assert!(session.scanned.iter().any(|actual| {
+                    actual.rect == target.rect
+                        && actual.role == target.role
+                        && actual.name.contains(&target.name)
+                }));
+            }
+            assert_eq!(session.scanned.len(), if ambiguous_old { 2 } else { 3 });
+            assert_eq!(session.hints.len(), session.scanned.len());
+        }
     }
 
     #[test]
