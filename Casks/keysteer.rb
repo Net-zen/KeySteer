@@ -2,11 +2,11 @@
 cask "keysteer" do
   arch arm: "aarch64", intel: "x86_64"
 
-  version "0.11.8"
-  sha256 arm:   "0a81b0dbf9f2fafc52a4adf05b2d2dc337b329328d8296f773af4c82337b2f79",
-         intel: "4c72c78ca1f5dee7f75c799f48a76ae6912d5b5d008e64b68228f338ad4d7cf7"
+  version "0.11.9"
+  sha256 arm:   "3030fb642e908d3c391ba9cae5e134650b27800a7e70e5ca1bf6d30100657460",
+         intel: "68ffd630a998d7157736ee19922e5e5212805b0ae2bca7fdfd66e751ea346e28"
 
-  url "https://github.com/dccif/KeySteer/releases/download/v0.11.8/KeySteer-v#{version}-#{arch}-apple-darwin.zip"
+  url "https://github.com/dccif/KeySteer/releases/download/v0.11.9/KeySteer-v#{version}-#{arch}-apple-darwin.zip"
   name "KeySteer"
   desc "Keyboard-driven mouse control and window management"
   homepage "https://github.com/dccif/KeySteer"
