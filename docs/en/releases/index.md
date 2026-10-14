@@ -5,6 +5,11 @@ outline: false
 
 # Release notes
 
+## 0.11.9
+
+- Added support for reading and saving configuration files through symbolic links.
+- Fixed leftover console windows when launching with arguments on Windows.
+
 ## 0.11.8
 
 - Improved UIHint recognition in the desktop app, reducing incorrectly merged or missing text targets in lists and tables.

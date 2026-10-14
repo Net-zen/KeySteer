@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+pub(crate) mod filesystem;
+
 use super::*;
 use crate::api::binding::{Button, Direction, ScrollAmount, Speed};
 use crate::api::{ButtonAction, ModeId, MouseButton, VisionOptions};
@@ -259,6 +261,100 @@ fn portable_discovery_is_filtered_and_deterministic() {
     );
 
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn symlink_profiles_share_filename_priority_and_keep_the_logical_source_path() {
+    use filesystem::{TestDirectory, symlink_file};
+
+    let directory = TestDirectory::new("symlink-discovery");
+    let dotfiles = directory.0.join("dotfiles");
+    std::fs::create_dir(&dotfiles).unwrap();
+    std::fs::write(
+        dotfiles.join("real.toml"),
+        "[pointer]\ninitial_speed = 33\n",
+    )
+    .unwrap();
+    let link = directory.0.join("keysteer.zulu.toml");
+    symlink_file(&Path::new("dotfiles").join("real.toml"), &link);
+    let ordinary = directory.0.join("keysteer.alpha.toml");
+    std::fs::write(&ordinary, "[pointer]\ninitial_speed = 44\n").unwrap();
+    let default = directory.0.join("keysteer.default.toml");
+    std::fs::write(&default, "").unwrap();
+
+    assert_eq!(
+        Config::discover_in(&directory.0).unwrap(),
+        Some(ordinary.clone())
+    );
+    std::fs::remove_file(&ordinary).unwrap();
+    assert_eq!(
+        Config::discover_in(&directory.0).unwrap(),
+        Some(link.clone())
+    );
+    let loaded = Config::load_with_source(&link).unwrap();
+    assert_eq!(loaded.path, link);
+    assert_eq!(loaded.config.pointer.initial_speed, 33.0);
+
+    let later = directory.0.join("keysteer.zzz.toml");
+    std::fs::write(&later, "").unwrap();
+    assert_eq!(
+        Config::discover_in(&directory.0).unwrap(),
+        Some(link.clone())
+    );
+    std::fs::remove_file(&link).unwrap();
+    assert_eq!(
+        Config::discover_in(&directory.0).unwrap(),
+        Some(later.clone())
+    );
+    std::fs::remove_file(&later).unwrap();
+    assert_eq!(Config::discover_in(&directory.0).unwrap(), Some(default));
+}
+
+#[test]
+fn discovery_ignores_directory_links_and_diagnoses_selected_broken_links() {
+    use filesystem::{TestDirectory, symlink_dir, symlink_file};
+
+    let directory = TestDirectory::new("invalid-config-links");
+    let child = directory.0.join("child");
+    std::fs::create_dir(&child).unwrap();
+    symlink_dir(&child, &directory.0.join("keysteer.aaa.toml"));
+    symlink_file(
+        Path::new("missing.toml"),
+        &directory.0.join("unrelated.toml"),
+    );
+    let ordinary = directory.0.join("keysteer.profile.toml");
+    std::fs::write(&ordinary, "").unwrap();
+    let broken = directory.0.join("keysteer.zulu.toml");
+    symlink_file(Path::new("missing.toml"), &broken);
+
+    assert_eq!(
+        Config::discover_in(&directory.0).unwrap(),
+        Some(ordinary.clone())
+    );
+    std::fs::remove_file(ordinary).unwrap();
+    let error = Config::discover_in(&directory.0).unwrap_err().to_string();
+    assert!(error.contains("keysteer.zulu.toml"));
+    assert!(
+        std::fs::symlink_metadata(&broken)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn discovery_reports_a_symlink_cycle() {
+    use filesystem::{TestDirectory, symlink_file};
+
+    let directory = TestDirectory::new("cyclic-config-discovery");
+    let link = directory.0.join("keysteer.cyclic.toml");
+    symlink_file(Path::new("other.link"), &link);
+    symlink_file(
+        Path::new("keysteer.cyclic.toml"),
+        &directory.0.join("other.link"),
+    );
+    let error = Config::discover_in(&directory.0).unwrap_err().to_string();
+    assert!(error.contains("keysteer.cyclic.toml"));
 }
 
 #[test]

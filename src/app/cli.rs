@@ -1,36 +1,30 @@
 //! Command-line parsing and user-facing help.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-/// A Windows GUI-subsystem binary has no console when started by double-click.
-/// Attach one only when command-line options explicitly request CLI behaviour.
-#[cfg(target_os = "windows")]
-pub fn prepare_console_for_cli() {
-    let first = std::env::args_os().nth(1);
-    if first.is_none()
-        || matches!(
-            first.as_deref(),
-            Some(value)
-                if value == std::ffi::OsStr::new("--internal-wechat-ocr-helper")
-                    || value == std::ffi::OsStr::new("--internal-apply-update")
-                    || value == std::ffi::OsStr::new(super::restart::ARGUMENT)
-        )
-    {
-        return;
-    }
-    crate::platform::prepare_console_for_cli();
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn prepare_console_for_cli() {}
-
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct CliOptions {
     pub(crate) config: Option<PathBuf>,
-    pub(crate) check_only: bool,
-    pub(crate) dump_config: bool,
-    pub(crate) doctor: bool,
+    pub(crate) command: CliCommand,
+}
+
+// Diagnostic order preserves the existing dump > check > doctor precedence.
+// Startup options only modify CliOptions; Run never requests a console.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum CliCommand {
+    #[default]
+    Run,
+    Doctor,
+    Check,
+    DumpConfig,
+    Help,
+    Version,
+}
+
+fn needs_console(args: &Result<CliOptions, String>) -> bool {
+    !matches!(args, Ok(options) if options.command == CliCommand::Run)
 }
 
 pub fn run_cli() -> ExitCode {
@@ -61,6 +55,17 @@ pub fn run_cli() -> ExitCode {
     if let Some(exit) = run_internal_wechat_helper() {
         return exit;
     }
+    let args = if restart_snapshot.is_some() {
+        Ok(CliOptions::default())
+    } else {
+        parse_args(std::env::args_os().skip(1))
+    };
+    // Internal helpers have already returned. Parse once before preparing any
+    // output so GUI options, including their values, never allocate a console.
+    if needs_console(&args) {
+        #[cfg(target_os = "windows")]
+        crate::platform::prepare_console_for_cli();
+    }
     let log_path = match crate::support::logging::init(log_candidates()) {
         Ok(path) => Some(path.to_path_buf()),
         Err(error) => {
@@ -71,7 +76,17 @@ pub fn run_cli() -> ExitCode {
     crate::support::logging::install_panic_hook();
     let result = match restart_snapshot {
         Some(snapshot) => super::bootstrap::resume(snapshot),
-        None => parse_args().and_then(|args| args.map_or(Ok(None), super::bootstrap::run)),
+        None => args.and_then(|args| match args.command {
+            CliCommand::Help => {
+                print_help();
+                Ok(None)
+            }
+            CliCommand::Version => {
+                println!("KeySteer {}", env!("CARGO_PKG_VERSION"));
+                Ok(None)
+            }
+            _ => super::bootstrap::run(args),
+        }),
     };
     match result {
         Ok(restart) => {
@@ -111,38 +126,33 @@ fn log_candidates() -> Vec<PathBuf> {
     paths
 }
 
-fn parse_args() -> Result<Option<CliOptions>, String> {
-    let mut args = CliOptions {
-        config: None,
-        check_only: false,
-        dump_config: false,
-        doctor: false,
-    };
-    let mut iter = std::env::args().skip(1);
+fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOptions, String> {
+    let mut args = CliOptions::default();
+    let mut iter = arguments.into_iter();
 
     while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                print_help();
-                return Ok(None);
+        match arg.to_str() {
+            Some("-h" | "--help") => {
+                args.command = CliCommand::Help;
+                break;
             }
-            "-V" | "--version" => {
-                println!("KeySteer {}", env!("CARGO_PKG_VERSION"));
-                return Ok(None);
+            Some("-V" | "--version") => {
+                args.command = CliCommand::Version;
+                break;
             }
-            "-c" | "--config" => {
+            Some("-c" | "--config") => {
                 let path = iter
                     .next()
-                    .ok_or_else(|| format!("{arg} requires a path"))?;
+                    .ok_or_else(|| format!("{} requires a path", arg.to_string_lossy()))?;
                 args.config = Some(PathBuf::from(path));
             }
-            "--check" => args.check_only = true,
-            "--dump-config" => args.dump_config = true,
-            "--doctor" => args.doctor = true,
-            other => return Err(format!("unknown argument: {other}")),
+            Some("--check") => args.command = args.command.max(CliCommand::Check),
+            Some("--dump-config") => args.command = args.command.max(CliCommand::DumpConfig),
+            Some("--doctor") => args.command = args.command.max(CliCommand::Doctor),
+            _ => return Err(format!("unknown argument: {}", arg.to_string_lossy())),
         }
     }
-    Ok(Some(args))
+    Ok(args)
 }
 
 #[cfg(target_os = "windows")]
@@ -221,8 +231,10 @@ IN NORMAL MODE:
 
 CONFIGURATION:
     Configuration is optional. Without one, KeySteer uses built-in defaults.
-    It selects the first file, sorted by name, matching:
+    User profiles take precedence over keysteer.default.toml. Regular files
+    and symbolic links to files share the same name ordering, matching:
       keysteer.<name>.toml
+    Reload reads the current link target; config edits preserve the link.
 
     A packaged macOS app reads and writes configuration and keysteer.log in:
       ~/Library/Application Support/KeySteer/
@@ -249,6 +261,76 @@ CONFIGURATION:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(arguments: &[&str]) -> Result<CliOptions, String> {
+        parse_args(arguments.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn gui_launch_options_and_option_values_do_not_request_a_console() {
+        for arguments in [
+            vec![],
+            vec!["-c", "keysteer.mine.toml"],
+            vec!["--config", "D:/dotfiles/keysteer.mine.toml"],
+            vec!["--config", "--doctor"],
+        ] {
+            let request = parse(&arguments);
+            assert!(!needs_console(&request), "{arguments:?}");
+            let options = request.unwrap();
+            assert_eq!(options.command, CliCommand::Run);
+            assert_eq!(options.config, arguments.last().map(PathBuf::from));
+        }
+    }
+
+    #[test]
+    fn output_commands_request_a_console_regardless_of_argument_order() {
+        for option in [
+            "--help",
+            "-h",
+            "--version",
+            "-V",
+            "--check",
+            "--dump-config",
+            "--doctor",
+        ] {
+            for arguments in [
+                vec![option],
+                vec!["--config", "keysteer.mine.toml", option],
+                vec![option, "--config", "keysteer.mine.toml"],
+            ] {
+                let parsed = parse(&arguments);
+                assert!(parsed.is_ok(), "{arguments:?}");
+                assert!(needs_console(&parsed), "{arguments:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostics_keep_the_config_path_and_existing_combined_options() {
+        for commands in [
+            ["--doctor", "--dump-config", "--check"],
+            ["--dump-config", "--check", "--doctor"],
+            ["--check", "--doctor", "--dump-config"],
+        ] {
+            let mut arguments = vec!["-c", "keysteer.mine.toml"];
+            arguments.extend(commands);
+            let options = parse(&arguments).unwrap();
+            assert_eq!(options.config, Some(PathBuf::from("keysteer.mine.toml")));
+            assert_eq!(options.command, CliCommand::DumpConfig);
+        }
+        for arguments in [["--check", "--doctor"], ["--doctor", "--check"]] {
+            assert_eq!(parse(&arguments).unwrap().command, CliCommand::Check);
+        }
+    }
+
+    #[test]
+    fn malformed_arguments_request_a_console_for_the_error() {
+        for arguments in [vec!["--unknown"], vec!["-c"], vec!["--config"]] {
+            let request = parse(&arguments);
+            assert!(request.is_err());
+            assert!(needs_console(&request));
+        }
+    }
 
     #[test]
     fn application_log_precedes_the_emergency_fallback() {

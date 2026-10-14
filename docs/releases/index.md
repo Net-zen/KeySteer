@@ -5,6 +5,14 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.11.9
+
+- 支持读取和保存符号链接配置文件。
+- 修复 Windows 带参数启动时残留命令行窗口的问题。
+
+- Added support for reading and saving configuration files through symbolic links.
+- Fixed leftover console windows when launching with arguments on Windows.
+
 ## 0.11.8
 
 - 改进桌面程序的 UIHint 识别，减少列表、表格中文字被错误合并或漏掉的情况

@@ -4,7 +4,7 @@ use crate::api::Key;
 use crate::config::{Config, ConfigStore};
 use crate::platform;
 
-use super::cli::CliOptions;
+use super::cli::{CliCommand, CliOptions};
 use super::runtime::Engine;
 
 pub(crate) fn run(
@@ -16,15 +16,7 @@ pub(crate) fn run(
 pub(crate) fn resume(
     snapshot: super::restart::Snapshot,
 ) -> Result<Option<Box<dyn super::runtime::PreparedRestart>>, String> {
-    run_with_snapshot(
-        CliOptions {
-            config: None,
-            check_only: false,
-            dump_config: false,
-            doctor: false,
-        },
-        Some(snapshot),
-    )
+    run_with_snapshot(CliOptions::default(), Some(snapshot))
 }
 
 fn run_with_snapshot(
@@ -124,7 +116,7 @@ fn run_with_snapshot(
 
     log_debug_configuration(&config, config_path.as_deref());
 
-    if args.dump_config {
+    if args.command == CliCommand::DumpConfig {
         print!("{}", config.to_toml().map_err(|error| error.to_string())?);
         return Ok(None);
     }
@@ -139,7 +131,7 @@ fn run_with_snapshot(
         }
     }
 
-    if args.check_only {
+    if args.command == CliCommand::Check {
         config.validate().map_err(|e| e.to_string())?;
         if config.normal.targeting.is_some() {
             super::configuration::compile(&config)?;
@@ -147,7 +139,7 @@ fn run_with_snapshot(
         println!("ok");
         return Ok(None);
     }
-    if args.doctor {
+    if args.command == CliCommand::Doctor {
         return doctor(&config).map(|()| None);
     }
 
