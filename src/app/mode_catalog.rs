@@ -52,6 +52,7 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
         label_y_offset: config.ui_hint.label_y_offset,
         ui: config.ui_hint.ui.compile(),
         boundary_highlight: config.ui_hint.boundary_highlight.compile(),
+        search_highlight: config.ui_hint.search_highlight.compile(),
         search_input_ui: crate::api::style::CompiledSearchPanel::new(
             &config.ui_hint.search_input_ui,
             &config.palette(crate::api::Appearance::Light),
@@ -88,6 +89,9 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
                 )
             })
             .collect(),
+        search_match_priority: crate::api::hint::CompiledSearchPriority::new(
+            config.ui_hint.search_match_priority,
+        ),
         search_titles: ["OCR", "Accessibility", "Coordinates", "Color"].map(String::from),
         search_point: modes::hint::PointSettings {
             field_modes: config.ui_hint.search_point.field_modes,

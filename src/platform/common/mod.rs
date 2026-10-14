@@ -14,6 +14,8 @@ pub(crate) mod contour;
 pub(crate) mod disposition_mailbox;
 pub(crate) mod event_queue;
 pub(crate) mod image_tiles;
+#[cfg(any(target_os = "windows", test))]
+pub(crate) mod overlay_damage;
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod overlay_reconcile;
 #[cfg(any(target_os = "macos", test))]

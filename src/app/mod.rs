@@ -12,4 +12,4 @@ mod restart;
 #[allow(dead_code, unused_imports)]
 pub(crate) mod runtime;
 
-pub use cli::{prepare_console_for_cli, run_cli};
+pub use cli::run_cli;

@@ -5,6 +5,46 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.11.9
+
+- 支持读取和保存符号链接配置文件。
+- 修复 Windows 带参数启动时残留命令行窗口的问题。
+
+- Added support for reading and saving configuration files through symbolic links.
+- Fixed leftover console windows when launching with arguments on Windows.
+
+## 0.11.8
+
+- 改进桌面程序的 UIHint 识别，减少列表、表格中文字被错误合并或漏掉的情况
+- 识别结果陆续补全时，已有标签更稳定，减少标签跳变和重复刷新。
+- 网页配置模拟器支持直接映射按键，例如将 `T` 映射为 `Home`，也可映射为组合键。
+
+- Improved UIHint recognition in the desktop app, reducing incorrectly merged or missing text targets in lists and tables.
+- Labels stay more stable as recognition results arrive, with fewer label changes and unnecessary redraws.
+- The web configuration simulator now supports direct key remapping, such as mapping `T` to `Home` or a key combination.
+
+## 0.11.7
+
+- ⚠️ **配置升级提醒：** `[ui_hint.search_edit_keys]` 已改为「按键 = 动作」格式。新旧格式混用或按键冲突可能导致程序无法启动。请从新版 `keysteer.default.toml` 中复制完整的 `[ui_hint.search_edit_keys]` 段，**替换用户配置中的旧段，不要直接追加**，再按需修改按键。
+- UIHint 搜索有多个结果时，会自动显示最匹配结果的信息面板。默认按 `Tab` 切换，`Enter` 或 `/` 确认当前结果，`Esc` 取消；按键均可修改。
+- 搜索会优先展示更符合输入的结果。匹配程度相同时，默认按「简拼 → 文字 → 标签」选择，也可以在配置中调整顺序。
+
+- ⚠️ **Configuration migration:** `[ui_hint.search_edit_keys]` now uses `key = action`. Mixing old and new formats or conflicting key bindings may prevent KeySteer from starting. Copy the entire `[ui_hint.search_edit_keys]` section from the new `keysteer.default.toml` and **replace the old section in your user configuration; do not append it**. Then customize the keys as needed.
+- UIHint search now automatically previews the best match when several results are found. By default, press `Tab` to switch, `Enter` or `/` to confirm the current result, or `Esc` to cancel. These keys are customizable.
+- Search shows the closest matches first. Equally close matches default to Chinese initials → text → labels; you can change this order in settings.
+
+https://github.com/user-attachments/assets/84d0872d-81f6-4e42-aa7f-767061cef646
+
+## 0.11.6
+
+- Windows 提供三种 x64 构建：默认 AVX2（x86-64-v3）版、旧 CPU 兼容版、AVX-512（x86-64-v4）版。固定编译指令集，避免构建机器变化导致启动即退出。
+- 一般下载默认版即可；无法启动时尝试兼容版。网页与发布说明提供简明提醒，启动后交给「检查更新」自动选包。
+- 无论最初下载兼容版、AVX2 版还是 AVX-512 版，「检查更新」都会自动选择 CPU 和系统支持的最高等级。同一版本也可切换构建，无需自行判断；保留签名校验、安装与失败回滚，网络回退统一使用 gh-proxy。
+
+- Windows x64 now offers three builds: the default AVX2 (x86-64-v3) build, a compatible build for older CPUs, and an AVX-512 (x86-64-v4) build. Fixed instruction-set targets prevent startup crashes caused by changes to the build machine.
+- Use the default build for most PCs; if it will not start, try the compatible build. The website and release notes offer brief guidance: once running, let Check for Updates choose the build automatically.
+- Regardless of the initially downloaded build, Check for Updates automatically selects the highest level supported by your CPU and OS, including switching builds within the same version. Signature verification, installation, and rollback on failure remain in place. Network fallback consistently uses gh-proxy.
+
 ## 0.11.5
 
 优化 Windows 和 macOS 的 UIHint 响应，让标签显示更及时、多标签界面更流畅。下表三个规模的结果处理 CPU 耗时平均降低约 **48%**，最高降低约 **67%**。

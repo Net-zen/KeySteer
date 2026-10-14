@@ -15,6 +15,7 @@ pub(crate) struct ScanAccumulator {
     search_targets: Vec<Option<UiTarget>>,
     ocr_scratch: OcrScratch,
     search_spatial: super::spatial_index::SpatialIndex,
+    has_layout_containers: bool,
 }
 
 pub(crate) struct ScanUpdate {
@@ -33,6 +34,7 @@ impl ScanAccumulator {
             search_targets: Vec::new(),
             ocr_scratch: OcrScratch::default(),
             search_spatial: super::spatial_index::SpatialIndex::new(64.0, 8.0, 2.0),
+            has_layout_containers: false,
         }
     }
 
@@ -95,10 +97,21 @@ impl ScanAccumulator {
                 }
             }
         }
-        targets.retain_mut(|target| {
-            self.index.stitch_text(target, source);
-            self.index.insert(target, source, threshold)
-        });
+        self.has_layout_containers |= source == TargetSource::Accessibility
+            && targets.iter().any(|target| {
+                matches!(
+                    target.role,
+                    SemanticRole::ListItem
+                        | SemanticRole::TreeItem
+                        | SemanticRole::Row
+                        | SemanticRole::Cell
+                )
+            });
+        if self.has_layout_containers {
+            self.insert_targets::<true>(&mut targets, source, threshold);
+        } else {
+            self.insert_targets::<false>(&mut targets, source, threshold);
+        }
         debug_assert!(self.index.len() <= MAX_UI_SCAN_TARGETS);
         let mut retired = self.index.take_retired();
         if !retired.is_empty() {
@@ -165,11 +178,13 @@ impl ScanAccumulator {
         // Metadata is a same-geometry delta, so OCR arriving after AX enriches
         // the original semantic target rather than creating an extra label.
         if has_text {
-            let mut changed = std::collections::BTreeSet::new();
-            for text in &self.visual_text[text_start..] {
-                self.search_spatial.any_match(text.rect, |index, _, _| {
-                    if !changed.contains(&index)
-                        && let Some(target) = &mut self.search_targets[index]
+            let mut changed = SmallVec::<[usize; 16]>::new();
+            // All new text is already indexed. Rebuild each affected target
+            // once for this batch, including targets whose metadata is unchanged.
+            self.search_spatial.for_each_candidate(
+                self.visual_text[text_start..].iter().map(|text| text.rect),
+                |index, _| {
+                    if let Some(target) = &mut self.search_targets[index]
                         && attach_ocr(
                             target,
                             &self.visual_text,
@@ -177,11 +192,11 @@ impl ScanAccumulator {
                             &mut self.text_spatial,
                         )
                     {
-                        changed.insert(index);
+                        changed.push(index);
                     }
-                    false
-                });
-            }
+                },
+            );
+            changed.sort_unstable();
             for index in changed {
                 if let Some(target) = &self.search_targets[index] {
                     retired.push(target.rect);
@@ -194,12 +209,6 @@ impl ScanAccumulator {
         }
         for batch in &mut batches {
             for target in batch {
-                attach_ocr(
-                    target,
-                    &self.visual_text,
-                    &mut self.ocr_scratch,
-                    &mut self.text_spatial,
-                );
                 let mut existing = None;
                 self.search_spatial
                     .any_match(target.rect, |index, rect, _| {
@@ -214,6 +223,19 @@ impl ScanAccumulator {
                             false
                         }
                     });
+                // The late-text pass has already refreshed cached metadata.
+                // Its exact clone needs neither a second OCR reconstruction
+                // nor another owned copy in the search cache.
+                if existing.is_some_and(|index| self.search_targets[index].as_ref() == Some(target))
+                {
+                    continue;
+                }
+                attach_ocr(
+                    target,
+                    &self.visual_text,
+                    &mut self.ocr_scratch,
+                    &mut self.text_spatial,
+                );
                 if let Some(index) = existing {
                     self.search_targets[index] = Some(target.clone());
                 } else if self.search_targets.len() < MAX_UI_SCAN_TARGETS * 2
@@ -228,6 +250,50 @@ impl ScanAccumulator {
             batches,
             retired,
         }
+    }
+
+    /// Specialize once per ready batch. Scans without layout containers use
+    /// the original geometric matcher without caption lookup in its hot loop.
+    fn insert_targets<const CHECK_LAYOUT: bool>(
+        &mut self,
+        targets: &mut Vec<UiTarget>,
+        source: TargetSource,
+        threshold: f64,
+    ) {
+        let cached = &self.search_targets;
+        let cache_spatial = &mut self.search_spatial;
+        // Prior batches are already in the search cache. Only a native batch
+        // containing text can need an unpublished owner's caption temporarily.
+        let cache_native_captions = CHECK_LAYOUT
+            && source == TargetSource::Accessibility
+            && targets
+                .iter()
+                .any(|target| target.role == SemanticRole::StaticText);
+        targets.retain_mut(|target| {
+            self.index.stitch_text(target, source);
+            self.index.insert_with_caption_lookup::<CHECK_LAYOUT>(
+                target,
+                source,
+                threshold,
+                cache_native_captions,
+                |rect, role, query| {
+                    let mut name = None;
+                    cache_spatial.any_match(query, |index, old, _| {
+                        if old == rect
+                            && let Some(target) = &cached[index]
+                            && target.role == role
+                        {
+                            name = Some(target.name.as_str());
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    name
+                },
+            )
+        });
+        self.index.clear_batch_captions();
     }
 
     pub(crate) fn finish(&mut self) -> Option<Vec<UiTarget>> {
@@ -252,6 +318,11 @@ fn attach_ocr(
     scratch: &mut OcrScratch,
     spatial: &mut super::spatial_index::SpatialIndex,
 ) -> bool {
+    // Contours and accessibility can publish the first scene before OCR is
+    // ready. There is no description to attach yet, so skip empty grid queries.
+    if text.is_empty() {
+        return false;
+    }
     let OcrScratch {
         text: scratch,
         runs,
@@ -273,6 +344,17 @@ fn attach_ocr(
     });
     if runs.is_empty() {
         return false;
+    }
+    if runs.len() == 1 {
+        let value = text[runs[0]].name.trim();
+        if target.details.as_ref().is_some_and(|details| {
+            details.ocr == value
+                && (target.role != SemanticRole::StaticText
+                    || !details.accessibility.is_empty()
+                    || target.name == value)
+        }) {
+            return false;
+        }
     }
     runs.sort_unstable_by(|&a, &b| {
         let (a, b) = (&text[a], &text[b]);

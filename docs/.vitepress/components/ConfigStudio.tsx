@@ -7,6 +7,8 @@ import ConfigDiff from '../config-studio/ConfigDiff'
 import PaneDivider from '../config-studio/PaneDivider'
 import FittedKeyboard from '../config-studio/FittedKeyboard'
 import NormalTargetingControls from '../config-studio/NormalTargetingControls'
+import KeyMappingEditor from '../config-studio/KeyMappingEditor'
+import { keyMappingTarget } from '../simulator/key-mapping'
 import { gridRegion } from '../simulator/grid-region'
 import { commonSearchFields, styleSearchFields } from '../config-studio/fields'
 import { pages, tabLabels, searchSettings, utilitySearchFields, type SettingsTab, type SearchEntry } from '../config-studio/navigation'
@@ -295,6 +297,7 @@ export default defineComponent({
     const dragTarget = ref('')
     const actionQuery = ref('')
     const actionCategory = ref('')
+    const bindingKind = ref<'action' | 'key'>('action')
     const fullKeyboard = ref(true)
     let actionDragStart: { x: number; y: number; action: string } | undefined
     let suppressActionClick = false
@@ -487,10 +490,18 @@ export default defineComponent({
       }
     })
 
-    const selectedAction = computed(() => {
+    const selectedBinding = computed(() => {
       if (!effectiveDocument.value || !selectedChord.value) return ''
-      const value = displayedBindings(effectiveDocument.value, activeMode.value, temporaryHeld()).get(selectedChord.value)?.value
+      return resolveBinding(effectiveDocument.value, activeMode.value, selectedChord.value)?.value
+    })
+    const selectedAction = computed(() => {
+      const value = selectedBinding.value
       return Array.isArray(value) ? value.join(' → ') : String(value ?? '')
+    })
+    watch(() => [selectedChord.value, selectedBinding.value, activeMode.value], () => {
+      if (keyMappingTarget(selectedBinding.value, effectiveDocument.value ?? {}, isMac.value)) bindingKind.value = 'key'
+      else if (selectedBinding.value || !selectedChord.value) bindingKind.value = 'action'
+      customAction.value = selectedAction.value
     })
 
     const targetingVisual = computed(() => targetingAppearance(effectiveDocument.value, simulator.mode, appearance.value))
@@ -713,7 +724,10 @@ export default defineComponent({
         showScroll(action, scroll)
         return
       }
-      simulator.lastEvent = `${action}（首版暂不模拟）`
+      const mappedKey = keyMappingTarget(action, effectiveDocument.value ?? {}, isMac.value)
+      simulator.lastEvent = mappedKey
+        ? `发送按键：${shortcutCaption(effectiveDocument.value ?? {}, mappedKey, isMac.value)}（网页演示）`
+        : `${action}（首版暂不模拟）`
     }
 
     function onSimulatorKeyDown(event: KeyboardEvent): void {
@@ -989,7 +1003,7 @@ export default defineComponent({
           <div class="ks-toolbar ks-compact-toolbar">
             <div>
               <h2>{t("按键映射")}</h2>
-              <p>{t("先选按键再选动作，也可以把动作拖到键帽上。")}</p>
+              <p>{t("选择按键，为它设置动作或映射到另一个按键。")}</p>
             </div>
             <button class="ks-button" aria-pressed={fullKeyboard.value} onClick={() => fullKeyboard.value = !fullKeyboard.value}>{fullKeyboard.value ? t("切换主键区") : t("显示完整键盘")}</button>
           </div>
@@ -1025,8 +1039,8 @@ export default defineComponent({
           <section class="ks-binding-details ks-mapping-editor">
             <div class="ks-mapping-selection" aria-live="polite">
               <div><small>{t("当前按键 · ")}{activeMode.value}</small><strong>{selectedChord.value || t("请选择键帽")}</strong></div>
-              <div><small>{t("当前动作")}</small><code>{selectedAction.value === 'none' ? t("已取消绑定（none）") : selectedAction.value || t("未绑定")}</code>
-                {selectedAction.value && <small>{resolveBinding(effectiveDocument.value!, activeMode.value, selectedChord.value)?.source === activeMode.value ? t("当前模式绑定") : t("继承自 {0}", [resolveBinding(effectiveDocument.value!, activeMode.value, selectedChord.value)?.source])}{t(" · 选择新动作将覆盖此键")}</small>}
+              <div><small>{t("当前绑定")}</small><code>{selectedAction.value === 'none' ? t("已取消绑定（none）") : selectedAction.value || t("未绑定")}</code>
+                {selectedAction.value && <small>{resolveBinding(effectiveDocument.value!, activeMode.value, selectedChord.value)?.source === activeMode.value ? t("当前模式绑定") : t("继承自 {0}", [resolveBinding(effectiveDocument.value!, activeMode.value, selectedChord.value)?.source])}</small>}
               </div>
               {selectedChord.value && <div class="ks-binding-actions">
                 <div>
@@ -1038,6 +1052,12 @@ export default defineComponent({
             </div>
             {pendingAction.value && <p class="ks-pending-action">{t("已选择 ")}{pendingAction.value}{t("，请点击目标键帽。")}<button onClick={() => pendingAction.value = ''}>{t("取消")}</button></p>}
             <div class="ks-binding-panel">
+              <div class="ks-binding-kind" role="group" aria-label={t('绑定类型')}>
+                <button aria-pressed={bindingKind.value === 'action'} onClick={() => { bindingKind.value = 'action'; pendingAction.value = '' }}>{t('动作')}</button>
+                <button aria-pressed={bindingKind.value === 'key'} onClick={() => { bindingKind.value = 'key'; pendingAction.value = '' }}>{t('映射到按键')}</button>
+              </div>
+              {bindingKind.value === 'key' ? <KeyMappingEditor chord={selectedChord.value} action={selectedAction.value}
+                document={effectiveDocument.value ?? {}} isMac={isMac.value} onApply={setAction} /> : <>
               <div class="ks-action-search"><input aria-label={t("搜索映射动作")} placeholder={t("搜索动作，例如 点击、屏幕、move_left")} value={actionQuery.value} onInput={event => actionQuery.value = (event.target as HTMLInputElement).value} />
                 <select aria-label={t("动作分类")} value={actionCategory.value} onChange={event => actionCategory.value = (event.target as HTMLSelectElement).value}><option value="">{t("全部动作")}</option>{actionGroups.map(group => <option value={group.name}>{t(group.name)}</option>)}</select>
               </div>
@@ -1069,6 +1089,7 @@ export default defineComponent({
                 <button disabled={!selectedChord.value || !customAction.value.trim()} onClick={() => setAction(customAction.value.trim())}>{t("应用")}</button>
               </div>
               </details>
+              </>}
             </div>
           </section>
         </section>

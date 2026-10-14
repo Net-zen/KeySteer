@@ -631,17 +631,13 @@ fn search_completion_error_and_capture_loss_retire_input_before_owner_is_dropped
 #[test]
 fn search_accept_alternatives_close_capture_and_keep_uihint() {
     for binding in ["enter", "/", "primary+q", "f9"] {
-        let mut config = Config::default();
-        if binding == "f9" {
-            config.ui_hint.search_edit_keys.insert(crate::api::text_edit::EditAction::Accept, "f9".into());
-        }
+        let config = if binding == "f9" { Config::parse("[ui_hint.search_edit_keys]\nf9 = 'accept'").unwrap() } else { Config::default() };
         let primary = if cfg!(target_os = "macos") { "left_win" } else if cfg!(target_os = "windows") { "left_alt" } else { "left_ctrl" };
-        let mut engine = text_input_engine(config);
-        let (mut backend, log) = FakeBackend::new(Vec::new());
-        engine.screens = backend.screens().unwrap();
-        engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
-        for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
-        assert!(engine.scheduler.text_prompt.is_some());
+        let (mut engine, mut backend, log) = point_search_fixture(config);
+        let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+        engine.handle_backend_event(BackendEvent::TextPromptChanged { id, text: "button".into() }, &mut backend).unwrap();
+        point_keys(&mut engine, &mut backend, &["tab"]);
+        assert!(log.lock().unwrap().warps.is_empty());
         let modified = binding == "primary+q";
         if modified { engine.handle_backend_event(key_down(primary), &mut backend).unwrap(); }
         let key = if modified { "q" } else { binding };
@@ -650,9 +646,72 @@ fn search_accept_alternatives_close_capture_and_keep_uihint() {
         assert!(engine.scheduler.text_prompt.is_none(), "{binding}");
         assert!(!log.lock().unwrap().text_capture, "{binding}");
         assert_eq!(engine.active_mode(), &ModeId::ui_hint());
+        assert_eq!(log.lock().unwrap().warps, [Point::new(40.0, 20.0)], "{binding}");
     }
 }
 
+
+#[test]
+fn live_search_routes_overlap_modifiers_and_preserves_preview_on_top() {
+    for (configured, left, right) in [
+        ("shift", "left_shift", "right_shift"),
+        ("alt", "left_alt", "right_alt"),
+    ] {
+        let mut config = Config::default();
+        config.ui_hint.overlap_cycle_key = configured.into();
+        let mut engine = text_input_engine(config);
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
+        let id = log.lock().unwrap().scan_requests.last().unwrap().id;
+        engine.handle_backend_event(BackendEvent::UiScanned(crate::api::UiScanResult {
+            id, status: UiScanStatus::Success, retired: Vec::new(),
+            targets: ["keep one", "keep two", "keep three", "other"].into_iter().map(|name| crate::api::UiTarget {
+                rect: Rect::new(100.0, 100.0, 80.0, 30.0), name: name.into(),
+                role: crate::api::SemanticRole::Button, details: None,
+            }).collect(),
+        }), &mut backend).unwrap();
+        let codes: Vec<_> = log.lock().unwrap().scenes.last().unwrap().labels.iter()
+            .filter(|label| label.z_index < 100).map(|label| label.text.clone()).collect();
+        assert_eq!(codes.len(), 4);
+        let labels = |base: bool| {
+            let record = log.lock().unwrap();
+            let scene = record.scenes.last().unwrap();
+            let scene = if base { scene.retained.as_ref().map_or_else(|| scene.clone(), |r| r.scene.as_ref().clone()) } else { scene.materialized() };
+            scene.labels.iter().filter(|label| codes.contains(&label.text))
+                .map(|label| (label.text.clone(), label.z_index)).collect::<Vec<_>>()
+        };
+        point_keys(&mut engine, &mut backend, &["/"]);
+        for query in ["", "button", "keep"] {
+            let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+            engine.handle_backend_event(BackendEvent::TextPromptChanged { id, text: query.into() }, &mut backend).unwrap();
+            let initial = labels(true);
+            assert_eq!(initial.len(), if query == "keep" { 3 } else { 4 });
+            let preview = labels(false).last().unwrap().0.clone();
+            engine.handle_backend_event(key_down(left), &mut backend).unwrap();
+            let switched = labels(true);
+            assert_ne!(switched, initial, "{configured}: {query}");
+            if !query.is_empty() { assert_eq!(labels(false).last().unwrap().0, preview); }
+            let mut repeat = key_down(left);
+            if let BackendEvent::Input(input) = &mut repeat { input.repeat = true; }
+            engine.handle_backend_event(repeat, &mut backend).unwrap();
+            assert_eq!(labels(true), switched, "repeat must not cycle");
+            engine.handle_backend_event(key_down(right), &mut backend).unwrap();
+            engine.handle_backend_event(key_up(left), &mut backend).unwrap();
+            assert_eq!(labels(true), switched, "other side still held");
+            engine.handle_backend_event(key_up(right), &mut backend).unwrap();
+            assert_eq!(labels(true), initial, "last release restores layer");
+            if !query.is_empty() {
+                point_keys(&mut engine, &mut backend, &["tab"]);
+                assert_ne!(labels(false).last().unwrap().0, preview, "Tab raises the next result");
+            }
+            assert!(engine.scheduler.text_prompt.is_some());
+        }
+        assert!(log.lock().unwrap().dispositions.iter().all(|d| *d == KeyDisposition::Consume));
+        point_keys(&mut engine, &mut backend, &["esc"]);
+        assert!(!log.lock().unwrap().text_capture);
+    }
+}
 
 fn point_search_fixture(mut config: Config) -> (Engine, FakeBackend, Arc<Mutex<Recorder>>) {
     config.pointer.tap_distance = 20.0;
@@ -670,7 +729,7 @@ fn point_search_fixture(mut config: Config) -> (Engine, FakeBackend, Arc<Mutex<R
     }), &mut backend).unwrap();
     assert!(log.lock().unwrap().point_requests.is_empty(), "label scanning must not sample pixels");
     point_keys(&mut engine, &mut backend, &["/"]);
-    assert!(log.lock().unwrap().point_requests.is_empty(), "multiple search results must not sample pixels");
+    assert!(log.lock().unwrap().point_requests.is_empty(), "empty search must not sample pixels");
     let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
     engine.handle_backend_event(BackendEvent::TextPromptChanged { id, text: "alpha".into() }, &mut backend).unwrap();
     (engine, backend, log)
@@ -695,6 +754,57 @@ fn ordinary_modes_and_empty_search_do_not_touch_native_sampling() {
     }
     assert!(log.lock().unwrap().point_requests.is_empty());
     assert_eq!(log.lock().unwrap().point_cancels, 0);
+}
+
+#[test]
+fn ambiguous_search_shows_first_panel_and_routes_configured_cycles_while_editing() {
+    for (source, next) in [
+        ("", vec!["tab"]),
+        ("[ui_hint.search_bindings]\nctrl = 'point_toggle'\nf9 = 'point_next'", vec!["f9"]),
+        ("[ui_hint.search_bindings]\nctrl = 'point_toggle'\n'alt+f9' = 'point_next'", vec!["left_alt", "f9"]),
+    ] {
+        let (mut engine, mut backend, log) = point_search_fixture(Config::parse(source).unwrap());
+        let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+        engine.handle_backend_event(BackendEvent::TextPromptChanged { id, text: "button".into() }, &mut backend).unwrap();
+        assert!(engine.scheduler.point_input.available);
+        assert_eq!(log.lock().unwrap().point_requests.last().unwrap().point, Point::new(20.0, 20.0));
+        let before_empty = log.lock().unwrap().point_requests.len();
+        engine.handle_backend_event(BackendEvent::TextPromptChanged { id, text: "".into() }, &mut backend).unwrap();
+        point_keys(&mut engine, &mut backend, &next);
+        assert_eq!(log.lock().unwrap().point_requests.len(), before_empty);
+        engine.handle_backend_event(BackendEvent::TextPromptChanged { id, text: "button".into() }, &mut backend).unwrap();
+        for (expected, name) in [(Point::new(40.0, 20.0), "bravo"), (Point::new(20.0, 20.0), "alpha$"), (Point::new(40.0, 20.0), "bravo")] {
+            point_keys(&mut engine, &mut backend, &next);
+            assert!(engine.scheduler.point_input.available);
+            assert!(!engine.scheduler.point_input.adjusting);
+            let recorder = log.lock().unwrap();
+            assert_eq!(recorder.point_requests.last().unwrap().point, expected);
+            assert!(recorder.scenes.last().unwrap().labels.iter().any(|label| label.text.as_str() == name));
+            assert!(recorder.warps.is_empty());
+        }
+        if next == ["tab"] {
+            let requests = log.lock().unwrap().point_requests.len();
+            point_keys(&mut engine, &mut backend, &["left_ctrl", "tab"]);
+            let mut repeat = key_down("tab");
+            if let BackendEvent::Input(input) = &mut repeat { input.repeat = true; }
+            engine.handle_backend_event(repeat, &mut backend).unwrap();
+            engine.handle_backend_event(key_up("tab"), &mut backend).unwrap();
+            assert_eq!(log.lock().unwrap().point_requests.len(), requests);
+        }
+        point_keys(&mut engine, &mut backend, &next);
+        point_keys(&mut engine, &mut backend, &["left_ctrl", "1"]);
+        assert_eq!(log.lock().unwrap().copied_text, ["alpha$"]);
+        assert!(engine.scheduler.text_prompt.is_none());
+        // Result browsing does not enter point adjustment or accept on copy.
+        assert!(log.lock().unwrap().warps.is_empty());
+        point_keys(&mut engine, &mut backend, &["/"]);
+        let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+        engine.handle_backend_event(BackendEvent::TextPromptChanged { id, text: "button".into() }, &mut backend).unwrap();
+        point_keys(&mut engine, &mut backend, &next);
+        point_keys(&mut engine, &mut backend, &["x"]);
+        assert!(!engine.scheduler.point_input.available);
+        assert!(log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|label| label.edit.is_some() && label.text.as_str() == "buttonx"));
+    }
 }
 
 #[test]

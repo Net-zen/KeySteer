@@ -1,8 +1,43 @@
 #![cfg(test)]
 
+pub(crate) mod filesystem;
+
 use super::*;
 use crate::api::binding::{Button, Direction, ScrollAmount, Speed};
 use crate::api::{ButtonAction, ModeId, MouseButton, VisionOptions};
+
+#[test]
+fn search_highlight_defaults_overrides_and_validation_roundtrip() {
+    assert!(
+        !Config::default()
+            .to_toml()
+            .unwrap()
+            .contains("[ui_hint.search_highlight]")
+    );
+    let source = "[ui_hint.search_highlight]\nbackground_color = { light = '#E8F6F080', dark = '#284D4480' }\ntext_color = '#123456FF'\nborder_color = '#68BCA380'\nborder_width = 0.0";
+    let config = Config::parse(source).unwrap();
+    config.validate().unwrap();
+    let restored = Config::parse(&config.to_toml().unwrap()).unwrap();
+    assert_eq!(
+        restored.ui_hint.search_highlight,
+        config.ui_hint.search_highlight
+    );
+    for invalid in [
+        "background_color = 'bad'",
+        "text_color = { light = '#000000FF' }",
+        "border_color = 'bad'",
+        "border_width = -1",
+        "border_width = 21",
+        "border_width = nan",
+        "unknown = 1",
+    ] {
+        let result = Config::parse(&format!("[ui_hint.search_highlight]\n{invalid}"));
+        assert!(
+            result.is_err() || result.unwrap().validate().is_err(),
+            "{invalid}"
+        );
+    }
+}
 
 #[test]
 fn recursive_grid_font_size_is_read_from_flat_ui_config() {
@@ -226,6 +261,85 @@ fn portable_discovery_is_filtered_and_deterministic() {
     );
 
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn symlink_profiles_share_filename_priority_and_keep_the_logical_source_path() {
+    use filesystem::{TestDirectory, symlink_file};
+
+    let directory = TestDirectory::new("symlink-discovery");
+    let dotfiles = directory.0.join("dotfiles");
+    std::fs::create_dir(&dotfiles).unwrap();
+    std::fs::write(
+        dotfiles.join("real.toml"),
+        "[pointer]\ninitial_speed = 33\n",
+    )
+    .unwrap();
+    let link = directory.0.join("keysteer.zulu.toml");
+    symlink_file(&Path::new("dotfiles").join("real.toml"), &link);
+    let ordinary = directory.0.join("keysteer.alpha.toml");
+    std::fs::write(&ordinary, "[pointer]\ninitial_speed = 44\n").unwrap();
+    let default = directory.0.join("keysteer.default.toml");
+    std::fs::write(&default, "").unwrap();
+
+    assert_eq!(
+        Config::discover_in(&directory.0).unwrap(),
+        Some(ordinary.clone())
+    );
+    std::fs::remove_file(&ordinary).unwrap();
+    assert_eq!(
+        Config::discover_in(&directory.0).unwrap(),
+        Some(link.clone())
+    );
+    let loaded = Config::load_with_source(&link).unwrap();
+    assert_eq!(loaded.path, link);
+    assert_eq!(loaded.config.pointer.initial_speed, 33.0);
+
+    let later = directory.0.join("keysteer.zzz.toml");
+    std::fs::write(&later, "").unwrap();
+    assert_eq!(
+        Config::discover_in(&directory.0).unwrap(),
+        Some(link.clone())
+    );
+    std::fs::remove_file(&link).unwrap();
+    assert_eq!(
+        Config::discover_in(&directory.0).unwrap(),
+        Some(later.clone())
+    );
+    std::fs::remove_file(&later).unwrap();
+    assert_eq!(Config::discover_in(&directory.0).unwrap(), Some(default));
+}
+
+#[test]
+fn discovery_ignores_directory_links_and_diagnoses_selected_broken_links() {
+    use filesystem::{TestDirectory, symlink_dir, symlink_file};
+
+    let directory = TestDirectory::new("invalid-config-links");
+    let child = directory.0.join("child");
+    std::fs::create_dir(&child).unwrap();
+    symlink_dir(&child, &directory.0.join("keysteer.aaa.toml"));
+    symlink_file(
+        Path::new("missing.toml"),
+        &directory.0.join("unrelated.toml"),
+    );
+    let ordinary = directory.0.join("keysteer.profile.toml");
+    std::fs::write(&ordinary, "").unwrap();
+    let broken = directory.0.join("keysteer.zulu.toml");
+    symlink_file(Path::new("missing.toml"), &broken);
+
+    assert_eq!(
+        Config::discover_in(&directory.0).unwrap(),
+        Some(ordinary.clone())
+    );
+    std::fs::remove_file(ordinary).unwrap();
+    let error = Config::discover_in(&directory.0).unwrap_err().to_string();
+    assert!(error.contains("keysteer.zulu.toml"));
+    assert!(
+        std::fs::symlink_metadata(&broken)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 #[test]
@@ -2008,6 +2122,43 @@ input_border_color = { light = "#99AABBCC", dark = "#DDEEFFAA" }
             Config::parse(&format!("[ui_hint.search_point]\n{field} = 'invalid'"))
                 .and_then(|c| c.validate())
                 .is_err()
+        );
+    }
+}
+
+#[test]
+fn search_match_priority_defaults_compiles_and_round_trips_with_strict_validation() {
+    use crate::api::hint::SearchMatchKind::{Label, Pinyin, Text};
+    assert_eq!(
+        Config::default().ui_hint.search_match_priority,
+        [Pinyin, Text, Label]
+    );
+    let config =
+        Config::parse("[ui_hint]\nsearch_match_priority = ['label', 'text', 'pinyin']").unwrap();
+    config.validate().unwrap();
+    assert_eq!(
+        crate::app::mode_catalog::hint_settings(&config).search_match_priority,
+        crate::api::hint::CompiledSearchPriority::new([Label, Text, Pinyin])
+    );
+    assert_eq!(
+        Config::parse(&config.to_toml().unwrap())
+            .unwrap()
+            .ui_hint
+            .search_match_priority,
+        [Label, Text, Pinyin]
+    );
+    for values in [
+        "[]",
+        "['label']",
+        "['label', 'text', 'pinyin', 'label']",
+        "['label', 'label', 'pinyin']",
+        "['label', 'text', 'unknown']",
+    ] {
+        assert!(
+            Config::parse(&format!("[ui_hint]\nsearch_match_priority = {values}"))
+                .and_then(|config| config.validate())
+                .is_err(),
+            "{values}"
         );
     }
 }

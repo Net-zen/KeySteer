@@ -164,6 +164,8 @@ struct Surface {
 }
 
 struct WindowContent {
+    foreground_labels: Vec<LabelLayers>,
+    foreground_shapes: Vec<Retained<CAShapeLayer>>,
     window: Retained<OverlayPanel>,
     root_view: Retained<NSView>,
     root_layer: Retained<CALayer>,
@@ -244,6 +246,7 @@ struct LabelSpec<'a> {
 #[derive(Clone, Copy)]
 enum LabelSlot {
     Static(usize),
+    Foreground(usize),
     Indicator(usize),
 }
 
@@ -353,7 +356,12 @@ impl Surface {
                 .ok_or("macOS overlay window was not retained after creation")?;
             let _transaction = DisabledActions::begin();
             if changes.static_content {
-                content.update_static(self.scene.as_deref(), scene.as_ref(), area);
+                content.update_static(
+                    self.scene.as_deref(),
+                    scene.as_ref(),
+                    area,
+                    area_changed || window_changes.created || window_changes.scale,
+                );
             }
             content.update_dynamic(scene.as_ref(), area, changes);
             if !was_visible {
@@ -477,6 +485,8 @@ impl Surface {
         root_layer.addSublayer(&indicator_root);
         let scale = window.backingScaleFactor().max(1.0);
         self.content = Some(WindowContent {
+            foreground_labels: Vec::new(),
+            foreground_shapes: Vec::new(),
             window,
             root_view,
             root_layer,
@@ -505,7 +515,108 @@ impl Default for Surface {
 }
 
 impl WindowContent {
-    fn update_static(&mut self, previous: Option<&OverlayScene>, scene: &OverlayScene, area: Rect) {
+    fn update_static(
+        &mut self,
+        previous: Option<&OverlayScene>,
+        scene: &OverlayScene,
+        area: Rect,
+        force: bool,
+    ) {
+        if let Some(retained) = &scene.retained {
+            let same = !force
+                && previous
+                    .and_then(|previous| previous.retained.as_ref())
+                    .is_some_and(|old| Arc::ptr_eq(&old.scene, &retained.scene));
+            if !same {
+                let old_base = previous.map(|old| {
+                    old.retained
+                        .as_ref()
+                        .map_or(old, |retained| retained.scene.as_ref())
+                });
+                self.update_flat_static(old_base, &retained.scene, area);
+            } else if let Some(index) = previous
+                .and_then(|old| old.retained.as_ref())
+                .and_then(|old| old.omitted_label)
+                && let Some(label) = self.labels.get(index)
+            {
+                label.base.setHidden(false);
+            }
+            if !same || previous.is_none_or(|old| old.backdrop != scene.backdrop) {
+                let backdrop = scene.backdrop.map(|color| self.color(color));
+                self.root_layer.setBackgroundColor(
+                    backdrop.as_ref().map(|color| color.core_graphics.as_ref()),
+                );
+            }
+            if let Some(index) = retained.omitted_label
+                && let Some(label) = self.labels.get(index)
+            {
+                label.base.setHidden(true);
+            }
+            while self.foreground_shapes.len() < scene.shapes.len() {
+                let layer = CAShapeLayer::layer();
+                self.root_layer.addSublayer(&layer);
+                self.foreground_shapes.push(layer);
+            }
+            for (index, shape) in scene.shapes.iter().enumerate() {
+                if !same || previous.and_then(|old| old.shapes.get(index)) != Some(shape) {
+                    self.configure_shape_layer(self.foreground_shapes[index].clone(), shape, area);
+                }
+            }
+            for shape in self.foreground_shapes.iter().skip(scene.shapes.len()) {
+                shape.setHidden(true);
+            }
+            while self.foreground_labels.len() < scene.labels.len() {
+                self.foreground_labels
+                    .push(LabelLayers::new(&self.root_layer, self.scale));
+            }
+            for (index, label) in scene.labels.iter().enumerate() {
+                let old = same
+                    .then(|| previous.and_then(|old| old.labels.get(index)))
+                    .flatten();
+                if old == Some(label) {
+                    continue;
+                }
+                let rebuild = old.is_none_or(|old| !label_text_content_eq(old, label));
+                let spec = LabelSpec {
+                    text: &label.text,
+                    rect: effective_label_rect(label),
+                    style: &label.style,
+                    analysis: label.text_analysis(),
+                    fixed_bounds: label.fixed_bounds,
+                    edit: label.edit.map(Into::into),
+                    scroll_to_cursor: label.scroll_to_cursor,
+                    trailing_text_len: label.trailing_text_len,
+                    z_index: label.z_index,
+                };
+                self.configure_label(LabelSlot::Foreground(index), spec, area, rebuild);
+            }
+            for label in self.foreground_labels.iter().skip(scene.labels.len()) {
+                label.base.setHidden(true);
+            }
+        } else {
+            // Leaving search releases its compact foreground pool. Existing
+            // ordinary label slots are reconciled with the retained base.
+            for label in self.foreground_labels.drain(..) {
+                label.detach();
+            }
+            for shape in self.foreground_shapes.drain(..) {
+                shape.removeFromSuperlayer();
+            }
+            let old = previous.map(|old| {
+                old.retained
+                    .as_ref()
+                    .map_or(old, |retained| retained.scene.as_ref())
+            });
+            self.update_flat_static(old, scene, area);
+        }
+    }
+
+    fn update_flat_static(
+        &mut self,
+        previous: Option<&OverlayScene>,
+        scene: &OverlayScene,
+        area: Rect,
+    ) {
         let backdrop = scene.backdrop.map(|color| self.color(color));
         self.root_layer
             .setBackgroundColor(backdrop.as_ref().map(|color| color.core_graphics.as_ref()));
@@ -648,6 +759,12 @@ impl WindowContent {
     }
 
     fn teardown(&mut self) {
+        for label in self.foreground_labels.drain(..) {
+            label.detach();
+        }
+        for shape in self.foreground_shapes.drain(..) {
+            shape.removeFromSuperlayer();
+        }
         self.window.orderOut(None);
         self.trim_shapes(0);
         self.trim_labels(0);
@@ -667,6 +784,15 @@ impl WindowContent {
 
     fn configure_shape(&mut self, index: usize, shape: &OverlayShape, area: Rect) {
         let layer = self.shapes[index].clone();
+        self.configure_shape_layer(layer, shape, area);
+    }
+
+    fn configure_shape_layer(
+        &mut self,
+        layer: Retained<CAShapeLayer>,
+        shape: &OverlayShape,
+        area: Rect,
+    ) {
         layer.setContentsScale(self.scale);
         layer.setHidden(false);
         match shape {
@@ -743,6 +869,7 @@ impl WindowContent {
     ) {
         let configured = match slot {
             LabelSlot::Static(index) => self.labels[index].configured,
+            LabelSlot::Foreground(index) => self.foreground_labels[index].configured,
             LabelSlot::Indicator(index) => self.indicator_labels[index].configured,
         };
         let rebuild_text = rebuild_text || !configured;
@@ -775,6 +902,7 @@ impl WindowContent {
         });
         let layer = match slot {
             LabelSlot::Static(index) => &mut self.labels[index],
+            LabelSlot::Foreground(index) => &mut self.foreground_labels[index],
             LabelSlot::Indicator(index) => &mut self.indicator_labels[index],
         };
         let frame = to_window_rect(spec.rect, area);
@@ -1214,6 +1342,7 @@ impl Drop for DisabledActions {
 
 fn static_scene_eq(left: &OverlayScene, right: &OverlayScene) -> bool {
     left.backdrop == right.backdrop
+        && left.retained == right.retained
         && left.clip == right.clip
         && left.shapes == right.shapes
         && left.labels == right.labels

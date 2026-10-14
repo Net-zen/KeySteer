@@ -5,8 +5,9 @@ import CardPositionEditor from './CardPositionEditor'
 import CardStylePreview from './CardStylePreview'
 import { selectedCardStyle } from '../simulator/window-card-style'
 import { searchPanelColors } from '../simulator/search-input-style'
+import { searchHighlightStyle } from '../simulator/search-highlight-style'
 import { parseSplitRatios } from '../simulator/window-ratios.ts'
-import { computed, defineComponent } from 'vue'
+import { computed, defineComponent, ref } from 'vue'
 import {
   cloneConfigDocument,
   deleteConfigPath,
@@ -35,6 +36,9 @@ export default defineComponent({
     const positionRoot = computed(() => props.mode === 'window_editor' ? 'window_editor.card' : 'window.card')
     const colorPreview = computed(() => ({ enabled: true, width: 16, height: 16, x_offset: 4, y_offset: 0, border_width: 1, ...getConfigPath(props.effectiveDocument, 'ui_hint.search_point.color_preview') as Record<string, number | boolean> }))
     const inputColors = computed(() => searchPanelColors(props.effectiveDocument, props.appearance))
+    const currentLabel = ref(0)
+    const highlightColors = computed(() => searchHighlightStyle(props.effectiveDocument, props.appearance))
+    const isHighlightField = (field: StyleField) => field.path.startsWith('ui_hint.search_highlight.')
     const previewPanelStyle = (block: 'search_input_ui' | 'search_info_ui') => {
       const ui = { width: block === 'search_input_ui' ? 280 : 520, font_size: 14,
         padding_y: block === 'search_input_ui' ? 6 : 16, ...props.effectiveDocument.ui_hint?.[block] }
@@ -58,6 +62,11 @@ export default defineComponent({
       ((field.path.startsWith('window.card.') || field.path.startsWith('window_editor.card.')) || /^window(?:_\w+)?\.ui\./.test(field.path))
     const fieldValue = (field: StyleField): unknown => {
       const configured = getConfigPath(props.effectiveDocument, field.path)
+      if (configured === undefined && isHighlightField(field)) {
+        if (field.kind !== 'color') return field.default
+        const key = field.path.endsWith('background_color') ? 'background' : field.path.endsWith('border_color') ? 'border' : 'text'
+        return Object.fromEntries(['light', 'dark'].map(appearance => [appearance, searchHighlightStyle(props.effectiveDocument, appearance)[key]]))
+      }
       if (configured === undefined && field.kind === 'color' && /^ui_hint\.(search_(input|info)_ui\.|search_point\.input_)/.test(field.path)) {
         const block = field.path.includes('.search_info_ui.') ? 'search_info_ui' : 'search_input_ui'
         const key = field.path.includes('.search_point.') ? field.path.split('.').at(-1)!.replace('input_', 'point_') : field.path.split('.').at(-1)!
@@ -101,6 +110,11 @@ export default defineComponent({
       const table = { ...getConfigPath(props.effectiveDocument, field.path) as Record<string, string> }
       for (const [key, action] of Object.entries(table)) if (action === field.action) delete table[key]
       for (const key of String(value).trim().split(/\s+/).filter(Boolean)) table[key] = field.action!
+      if (field.path === 'ui_hint.search_edit_keys' && !String(value).trim()) {
+        let key = ''
+        while (key in table) key += ' '
+        table[key] = field.action!
+      }
       update(field.path, table)
     }
 
@@ -141,6 +155,24 @@ export default defineComponent({
             </div>
           </div>
           {props.page === 'window_editor' && props.tab === 'appearance' && <p>{t("卡片颜色与字体继承窗口共用外观；此处只覆盖布局编辑的位置与当前模式标记。")}</p>}
+          {props.page === 'ui_hint' && props.tab === 'appearance' && <section class="ks-style-section ks-settings-section" aria-label={t('当前标签高亮')}>
+            <header class="ks-settings-section-heading">
+              <h2>{t('当前标签高亮')}</h2>
+              <p>{t('搜索预览和点位切换时突出当前标签，默认使用 Window 同款绿色。')}</p>
+            </header>
+            <div class="ks-settings-section-body">
+              <div class="ks-search-highlight-samples" aria-label={t('标签切换预览')}>
+                {['a', 's', 'd'].map((label, index) => <kbd data-current-label={currentLabel.value === index ? 'true' : 'false'} style={currentLabel.value === index ? {
+                  background: highlightColors.value.background, color: highlightColors.value.text,
+                  borderColor: highlightColors.value.border, borderWidth: `${highlightColors.value.borderWidth}px`,
+                } : undefined}>{label}</kbd>)}
+                <button type="button" onClick={() => currentLabel.value = (currentLabel.value + 1) % 3} onKeydown={event => {
+                  if (event.key === 'Tab' && !event.shiftKey) { event.preventDefault(); currentLabel.value = (currentLabel.value + 1) % 3 }
+                }}>{t('切换当前标签（Tab）')}</button>
+              </div>
+              {renderFields([...modeFields.value.colors, ...modeFields.value.layout].filter(isHighlightField))}
+            </div>
+          </section>}
           {props.page === 'ui_hint' && props.tab === 'appearance' && <section class="ks-style-section ks-settings-section ks-search-preview-section" aria-label={t('输入框状态预览')}>
             <header class="ks-settings-section-heading">
               <h2>{t('输入框状态预览')}</h2>
@@ -207,11 +239,11 @@ export default defineComponent({
           </div>
           <div class="ks-style-section" hidden={props.tab !== 'appearance'}>
             <span class="ks-style-section-label">{t("模式颜色")}</span>
-            {renderFields(modeFields.value.colors.filter(field => !isCardField(field) && !isSearchInputField(field)))}
+            {renderFields(modeFields.value.colors.filter(field => !isCardField(field) && !isSearchInputField(field) && !isHighlightField(field)))}
           </div>
           <div class="ks-style-section">
             <span class="ks-style-section-label">{t("常用布局")}</span>
-            {renderFields(modeFields.value.layout.filter(field => !isCardField(field) && !isColorPreviewField(field)))}
+            {renderFields(modeFields.value.layout.filter(field => !isCardField(field) && !isColorPreviewField(field) && !isHighlightField(field)))}
           </div>
           {props.tab === 'behavior' && modeFields.value.advanced.some(field => field.path.includes('.lifecycle.')) && <section class="ks-style-section ks-settings-section">
             <header class="ks-settings-section-heading">
@@ -299,8 +331,8 @@ export const StyleControl = defineComponent({
             <input value={Array.isArray(value) ? value.join(', ') : String(value)} onChange={event => {
               const input = event.target as HTMLInputElement
               const values = input.value.split(',').map(part => part.trim().toLowerCase())
-              if (!values.length || new Set(values).size !== values.length || values.some(value => !field.options?.includes(value))) {
-                input.setCustomValidity(t('请输入不重复的颜色格式：hex, rgb, hsl')); input.reportValidity(); return
+              if (!values.length || new Set(values).size !== values.length || values.some(value => !field.options?.includes(value)) || field.requireAll && values.length !== field.options?.length) {
+                input.setCustomValidity(field.requireAll ? t('请按优先级填写全部选项且不重复：{0}', [field.options?.join(', ') ?? '']) : t('请输入不重复的颜色格式：hex, rgb, hsl')); input.reportValidity(); return
               }
               input.setCustomValidity(''); props.onUpdate(values)
             }} />

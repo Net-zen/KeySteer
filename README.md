@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/dccif/KeySteer/actions/workflows/pages.yml"><img alt="Page status" src="https://img.shields.io/github/actions/workflow/status/dccif/KeySteer/pages.yml?branch=main&amp;label=Page&amp;style=flat&amp;logo=github&amp;logoColor=white"></a>
-  <a href="https://github.com/dccif/KeySteer/actions/workflows/cross-build.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/dccif/KeySteer/cross-build.yml?branch=main&amp;label=Build&amp;style=flat&amp;logo=github&amp;logoColor=white"></a>
+  <a href="https://github.com/dccif/KeySteer/actions/workflows/build.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/dccif/KeySteer/build.yml?branch=main&amp;label=Build&amp;style=flat&amp;logo=github&amp;logoColor=white"></a>
   <a href="https://github.com/dccif/KeySteer/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/dccif/KeySteer?display_name=tag&amp;sort=semver&amp;label=Release&amp;style=flat"></a>
   <a href="rust-toolchain.toml"><img alt="Rust 1.99" src="https://img.shields.io/badge/Rust-1.99-dea584?style=flat&amp;logo=rust&amp;logoColor=white"></a>
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%2F11-0078D4?style=flat&amp;logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0iI2ZmZiIgZD0iTTEgMy4yIDEwLjYgMS44djkuNEgxVjMuMlptMTEgNy45VjEuNkwyMyAwdjExLjFIMTJaTTEgMTIuOGg5LjZ2OS40TDEgMjAuOHYtOFptMTEgMGgxMXYxMS4yTDEyIDIyLjR2LTkuNloiLz48L3N2Zz4%3D">
@@ -37,7 +37,7 @@ KeySteer 是 Windows 和 macOS 上的原生键盘操控工具。用 `hjkl` 移�
 - **长按,拖拽**：可将鼠标左/中/右键转为按下状态，适合拖拽。
 - **Grid**：快速定位二键组合。
 - **Recursive Grid**：区域持续递归细分。
-- **UI Hint**：辅助功能，OCR，并行异步扫描为按钮、链接、菜单和输入框显示可键入标签。
+- **UI Hint**：辅助功能、OCR 并行异步扫描，为按钮、链接、菜单和输入框显示可键入标签；支持文字／简拼搜索、信息复制与取色。
 - **多显示器**：`Primary+S` 切换到下一块显示器。
 - **外观与配置**：`Grid`/`Hint` 标签样式、指示器等可通过 TOML 调整。
 
@@ -123,6 +123,16 @@ https://github.com/user-attachments/assets/cb399755-5cde-40a0-ba64-d00c7e581cc6
 
 https://github.com/user-attachments/assets/71efcae3-eb11-46d0-aba4-0a5df5e9c80c
 
+### UI Hint 搜索：简拼、复制与取色
+
+- **搜索与预览**：按 `/` 输入文字或中文简拼，例如用 `sz` 搜索“设置”。自动显示最匹配结果的信息面板，按 `Tab` 切换结果。
+- **复制信息**：`Ctrl+1/2/3/4` 分别复制文字、辅助信息、坐标或颜色。
+- **点编辑与取色**：轻按 `Ctrl` 进入点编辑模式，用 `H/J/K/L` 微调取色位置，`Ctrl+Shift+4` 切换 HEX、RGB、HSL。
+
+https://github.com/user-attachments/assets/84d0872d-81f6-4e42-aa7f-767061cef646
+
+[完整操作说明](https://dccif.github.io/KeySteer/modes/ui-hint#%E6%90%9C%E7%B4%A2%E4%B8%8E%E7%BB%93%E6%9E%9C%E9%A2%84%E8%A7%88)
+
 ## 默认按键
 
 先按 `Primary+E` 进入 `Normal`。默认配置中的 `Primary` 为：macOS `Command`、Windows 左 `Alt`；可在 `[key_aliases]` 改成自己的习惯。
@@ -161,12 +171,40 @@ cargo run -- --doctor
 
 请从 [GitHub Releases](https://github.com/dccif/KeySteer/releases/latest) 下载与系统和 CPU 架构对应的 ZIP。Windows 解压后运行 `KeySteer.exe`；macOS 解压后将 `KeySteer.app` 移入 `/Applications`。
 
+也可以通过本仓库的 Homebrew tap 或 Scoop bucket 安装。升级前先退出 KeySteer。
+
+### macOS：Homebrew
+
+```bash
+brew tap dccif/keysteer https://github.com/dccif/KeySteer.git
+brew install --cask dccif/keysteer/keysteer
+
+# 升级
+brew update
+brew upgrade --cask dccif/keysteer/keysteer
+```
+
+自动选择 Apple Silicon 或 Intel 包，需要 macOS 14+。用户配置保存在 `~/Library/Application Support/KeySteer/`。
+
 如果从 GitHub Release 手动安装的 macOS 应用被 Gatekeeper 提示无法打开，请确认文件来自上述官方发布页，然后运行：
 
 ```bash
 sudo xattr -cr /Applications/KeySteer.app
 ```
 建议先授予“辅助功能”和“屏幕录制”权限后再打开
+
+### Windows：Scoop
+
+```powershell
+scoop bucket add keysteer https://github.com/dccif/KeySteer.git
+scoop install keysteer/keysteer
+
+# 升级
+scoop update
+scoop update keysteer
+```
+
+支持 x64 和 ARM64；x64 使用不带后缀的默认 AVX2 版。可从开始菜单或运行 `keysteer` 启动。升级时保留 `keysteer.<名称>.toml` 用户配置和 `workspace.ksw` 窗口布局，随包默认配置会更新。包管理器安装后，建议使用对应的命令升级。首次从手动安装迁移时，需自行复制用户配置和布局到 Scoop 安装目录。
 
 ## 运行与打包
 

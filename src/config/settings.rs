@@ -272,12 +272,19 @@ pub struct UiHint {
     pub search_input_ui: SearchInputUi,
     #[serde(deserialize_with = "deserialize_search_info_ui")]
     pub search_info_ui: SearchInputUi,
+    #[serde(skip_serializing_if = "crate::api::style::SearchHighlightUi::is_default")]
+    pub search_highlight: crate::api::style::SearchHighlightUi,
     /// Independent shortcuts for OCR, accessibility, coordinates and color.
     pub search_copy_keys: Vec<String>,
+    /// Search-result preview groups, highest priority first; all three are required.
+    pub search_match_priority: [crate::api::hint::SearchMatchKind; 3],
     pub search_bindings: std::collections::BTreeMap<String, crate::api::point_sample::Action>,
     #[serde(skip_serializing_if = "SearchPoint::is_default")]
     pub search_point: SearchPoint,
-    #[serde(deserialize_with = "deserialize_search_edit_keys")]
+    #[serde(
+        deserialize_with = "deserialize_search_edit_keys",
+        serialize_with = "serialize_search_edit_keys"
+    )]
     pub search_edit_keys: std::collections::BTreeMap<crate::api::text_edit::EditAction, String>,
     pub inherits: Vec<String>,
     pub temporary_mode: Option<String>,
@@ -401,9 +408,11 @@ impl Default for UiHint {
                 ..Default::default()
             },
             search_edit_keys: crate::api::text_edit::default_keys(),
+            search_highlight: Default::default(),
             search_copy_keys: ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"]
                 .map(String::from)
                 .to_vec(),
+            search_match_priority: crate::api::hint::DEFAULT_SEARCH_MATCH_PRIORITY,
             search_point: SearchPoint::default(),
             search_bindings: std::collections::BTreeMap::from([
                 ("ctrl".into(), crate::api::point_sample::Action::PointToggle),
@@ -784,8 +793,54 @@ impl Default for SearchPoint {
 fn deserialize_search_edit_keys<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<std::collections::BTreeMap<crate::api::text_edit::EditAction, String>, D::Error> {
-    let overrides = <std::collections::BTreeMap<crate::api::text_edit::EditAction, String> as serde::Deserialize>::deserialize(deserializer)?;
+    use crate::api::text_edit::EditAction;
+    let table = toml::Table::deserialize(deserializer)?;
+    // Public tables use key = action. Group alternatives by action only while
+    // loading, so the existing compilation and input paths remain unchanged.
+    let bindings = table
+        .clone()
+        .try_into::<std::collections::BTreeMap<String, EditAction>>();
+    let overrides = if let Ok(bindings) = bindings {
+        let mut actions: std::collections::BTreeMap<EditAction, String> = Default::default();
+        for (alternatives, action) in bindings {
+            actions
+                .entry(action)
+                .and_modify(|keys| {
+                    keys.push(' ');
+                    keys.push_str(&alternatives);
+                })
+                .or_insert(alternatives);
+        }
+        actions
+    } else {
+        // Preserve existing action = keys configurations during migration.
+        table.try_into().map_err(serde::de::Error::custom)?
+    };
     let mut keys = crate::api::text_edit::default_keys();
     keys.extend(overrides);
     Ok(keys)
+}
+
+fn serialize_search_edit_keys<S: serde::Serializer>(
+    actions: &std::collections::BTreeMap<crate::api::text_edit::EditAction, String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+    let mut table = serializer.serialize_map(Some(actions.len()))?;
+    let mut used = std::collections::BTreeSet::new();
+    for (action, keys) in actions {
+        // Empty legacy bindings disable an action. Distinct empty groups keep
+        // that behavior representable when exporting several disabled actions.
+        let mut keys = std::borrow::Cow::Borrowed(keys.as_str());
+        while !used.insert(keys.to_string()) {
+            if !keys.trim().is_empty() {
+                return Err(serde::ser::Error::custom(
+                    "duplicate search editing key group",
+                ));
+            }
+            keys.to_mut().push(' ');
+        }
+        table.serialize_entry(keys.as_ref(), action)?;
+    }
+    table.end()
 }

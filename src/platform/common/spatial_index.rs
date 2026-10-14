@@ -67,11 +67,32 @@ impl SpatialIndex {
     pub(super) fn any_match(
         &mut self,
         rect: Rect,
-        mut matches: impl FnMut(usize, Rect, Rect) -> bool,
+        matches: impl FnMut(usize, Rect, Rect) -> bool,
     ) -> bool {
+        self.next_query_generation();
+        self.query(rect, matches)
+    }
+
+    /// Visit the union of grid candidates once, even when several query boxes
+    /// touch the same target. The callback must check against the whole batch,
+    /// since grid membership is conservative, not an intersection proof.
+    pub(super) fn for_each_candidate(
+        &mut self,
+        rects: impl IntoIterator<Item = Rect>,
+        mut visit: impl FnMut(usize, Rect),
+    ) {
+        self.next_query_generation();
+        for rect in rects {
+            self.query(rect, |index, candidate, _| {
+                visit(index, candidate);
+                false
+            });
+        }
+    }
+
+    fn query(&mut self, rect: Rect, mut matches: impl FnMut(usize, Rect, Rect) -> bool) -> bool {
         let range = self.covered_cells(rect);
         let oversize = Self::oversize_range(range);
-        self.next_query_generation();
         let generation = self.query_generation;
         let rects = &self.rects;
         let marks = &mut self.marks;
@@ -176,7 +197,17 @@ struct Evidence {
 }
 
 impl Evidence {
-    fn priority(self) -> u8 {
+    fn is_layout_container(&self) -> bool {
+        matches!(
+            self.role,
+            SemanticRole::ListItem
+                | SemanticRole::TreeItem
+                | SemanticRole::Row
+                | SemanticRole::Cell
+        )
+    }
+
+    fn priority(&self) -> u8 {
         match self.source {
             TargetSource::Accessibility
                 if !matches!(
@@ -202,6 +233,7 @@ impl Evidence {
 pub(crate) struct TargetIndex {
     spatial: SpatialIndex,
     evidence: Vec<Evidence>,
+    captions: FxHashMap<usize, smol_str::SmolStr>,
     active: usize,
     retired: Vec<Rect>,
 }
@@ -211,6 +243,7 @@ impl TargetIndex {
         Self {
             spatial: SpatialIndex::new(64.0, 8.0, 2.0),
             evidence: Vec::new(),
+            captions: FxHashMap::default(),
             active: 0,
             retired: Vec::new(),
         }
@@ -270,11 +303,36 @@ impl TargetIndex {
         });
     }
 
+    #[cfg(test)]
     pub(crate) fn insert(
         &mut self,
         target: &UiTarget,
         source: TargetSource,
         threshold: f64,
+    ) -> bool {
+        let accepted =
+            self.insert_with_caption_lookup::<true>(target, source, threshold, true, |_, _, _| {
+                None
+            });
+        // Direct index tests have no accumulator-owned visual text cache.
+        if accepted
+            && source != TargetSource::Accessibility
+            && target.role == SemanticRole::StaticText
+            && !target.name.is_empty()
+        {
+            self.captions
+                .insert(self.evidence.len() - 1, target.name.as_str().into());
+        }
+        accepted
+    }
+
+    pub(crate) fn insert_with_caption_lookup<'a, const CHECK_LAYOUT: bool>(
+        &mut self,
+        target: &UiTarget,
+        source: TargetSource,
+        threshold: f64,
+        cache_native_captions: bool,
+        mut cached_caption: impl FnMut(Rect, SemanticRole, Rect) -> Option<&'a str>,
     ) -> bool {
         let rect = target.rect;
         if !self.spatial.usable(rect) {
@@ -285,11 +343,30 @@ impl TargetIndex {
             role: target.role,
             active: true,
         };
+        let candidate_layout =
+            source == TargetSource::Accessibility && candidate.is_layout_container();
+        let candidate_text = candidate.role == SemanticRole::StaticText;
         let evidence = &self.evidence;
+        let captions = &self.captions;
         let mut suppressed = SmallVec::<[usize; 8]>::new();
         let blocked = self.spatial.any_match(rect, |index, a, b| {
             let old = evidence[index];
             if !old.active || !evidence_matches(a, old, b, candidate, threshold) {
+                return false;
+            }
+            if CHECK_LAYOUT
+                && (candidate_layout && old.role == SemanticRole::StaticText
+                    || candidate_text
+                        && old.source == TargetSource::Accessibility
+                        && old.is_layout_container())
+                && distinct_container_field(
+                    (a, old.role),
+                    (b, target.name.as_str()),
+                    captions.get(&index).map(|text| text.as_str()),
+                    threshold,
+                    &mut cached_caption,
+                )
+            {
                 return false;
             }
             if old.priority() >= candidate.priority() {
@@ -360,25 +437,102 @@ impl TargetIndex {
             self.retired.push(self.spatial.rects[index]);
             self.active -= 1;
         }
+        if CHECK_LAYOUT
+            && cache_native_captions
+            && source == TargetSource::Accessibility
+            && !target.name.is_empty()
+            && (target.role == SemanticRole::StaticText || candidate.is_layout_container())
+        {
+            self.captions
+                .insert(self.evidence.len(), target.name.as_str().into());
+        }
         self.evidence.push(candidate);
         self.active += 1;
         // Bound stale grid entries during long, heavily refined scans. No
         // published ID depends on these internal indices.
         if self.evidence.len() > 512 && self.evidence.len() > self.active.saturating_mul(2) {
             let mut spatial = SpatialIndex::new(64.0, 8.0, 2.0);
+            let mut captions = FxHashMap::default();
             let mut index = 0;
             self.evidence.retain(|entry| {
                 let rect = self.spatial.rects[index];
+                let old_index = index;
                 index += 1;
                 if entry.active {
+                    if let Some(text) = self.captions.remove(&old_index) {
+                        captions.insert(spatial.len(), text);
+                    }
                     spatial.store(rect);
                 }
                 entry.active
             });
             self.spatial = spatial;
+            self.captions = captions;
         }
         true
     }
+
+    pub(crate) fn clear_batch_captions(&mut self) {
+        self.captions.clear();
+    }
+}
+
+/// Field text is a cold refinement of an already matching region pair. Keep
+/// its lookup and normalization out of ordinary contour/OCR insertion frames.
+#[inline(never)]
+fn distinct_container_field<'a>(
+    old: (Rect, SemanticRole),
+    new: (Rect, &str),
+    caption: Option<&str>,
+    threshold: f64,
+    cached_caption: &mut impl FnMut(Rect, SemanticRole, Rect) -> Option<&'a str>,
+) -> bool {
+    let (a, role) = old;
+    let (b, name) = new;
+    let old_container = matches!(
+        role,
+        SemanticRole::ListItem | SemanticRole::TreeItem | SemanticRole::Row | SemanticRole::Cell
+    );
+    let old_name = caption
+        .or_else(|| cached_caption(a, role, if old_container { b } else { a }))
+        .unwrap_or("");
+    if old_container {
+        distinct_field(a, b, old_name, name, threshold)
+    } else {
+        distinct_field(a, b, name, old_name, threshold)
+    }
+}
+
+/// Geometry establishes an eligible pair before any caption work. Most
+/// distinct fields differ at the first character, so normalization is lazy.
+#[inline]
+fn distinct_field(a: Rect, b: Rect, left: &str, text: &str, threshold: f64) -> bool {
+    if text.is_empty() || left == text {
+        return false;
+    }
+    let intersection = (a.right().min(b.right()) - a.x.max(b.x)).max(0.)
+        * (a.bottom().min(b.bottom()) - a.y.max(b.y)).max(0.);
+    if intersection
+        >= threshold.clamp(0., 1.) * (a.width * a.height + b.width * b.height - intersection)
+    {
+        return false;
+    }
+    if !left
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .eq(text.chars().filter(|c| !c.is_whitespace()))
+    {
+        return text
+            .chars()
+            .any(|c| !c.is_whitespace() || c == '\n' || c == '\r');
+    }
+    let normalize = |text: &str| {
+        let mut output = smol_str::SmolStrBuilder::new();
+        let _ = crate::api::presentation::write_ocr_text(&mut output, text);
+        output.finish()
+    };
+    let text = normalize(text);
+    !text.is_empty() && normalize(left) != text
 }
 
 fn evidence_matches(a: Rect, ae: Evidence, b: Rect, be: Evidence, threshold: f64) -> bool {
@@ -541,6 +695,75 @@ mod tests {
             rect,
             role,
             name: String::new(),
+        }
+    }
+
+    #[test]
+    fn enclosing_accessible_controls_preserve_distinct_visual_regions() {
+        for role in [
+            SemanticRole::ListItem,
+            SemanticRole::TreeItem,
+            SemanticRole::Row,
+            SemanticRole::Cell,
+        ] {
+            for owner_first in [false, true] {
+                let mut index = TargetIndex::new();
+                let mut owner = target(Rect::new(0., 0., 480., 88.), role);
+                owner.name = "Group, sender: preview, 6 unread, 20:21".into();
+                let icon = target(Rect::new(8., 12., 56., 56.), SemanticRole::Image);
+                let text = [
+                    Rect::new(80., 12., 240., 20.),
+                    Rect::new(388., 12., 68., 20.),
+                    Rect::new(80., 48., 64., 20.),
+                    Rect::new(156., 48., 210., 20.),
+                    Rect::new(404., 48., 40., 20.),
+                ];
+                if owner_first {
+                    assert!(index.insert(&owner, TargetSource::Accessibility, 0.5));
+                }
+                assert!(index.insert(&icon, TargetSource::Contour, 0.5));
+                for (rect, name) in text
+                    .into_iter()
+                    .zip(["Group", "20:21", "sender:", "preview", "6"])
+                {
+                    let mut text = target(rect, SemanticRole::StaticText);
+                    text.name = name.into();
+                    assert!(index.insert(&text, TargetSource::SystemOcr, 0.5));
+                }
+                if !owner_first {
+                    assert!(index.insert(&owner, TargetSource::Accessibility, 0.5));
+                }
+                assert_eq!(index.len(), 7, "{role:?} owner_first={owner_first}");
+                assert!(index.take_retired().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn matching_single_captions_and_button_fragments_keep_existing_deduplication() {
+        for role in [
+            SemanticRole::Button,
+            SemanticRole::ListItem,
+            SemanticRole::Cell,
+        ] {
+            for owner_first in [false, true] {
+                let mut index = TargetIndex::new();
+                let mut owner = target(Rect::new(0., 0., 200., 60.), role);
+                owner.name = "图片".into();
+                let mut text = target(Rect::new(70., 20., 60., 20.), SemanticRole::StaticText);
+                text.name = "图 片".into();
+                if owner_first {
+                    assert!(index.insert(&owner, TargetSource::Accessibility, 0.5));
+                }
+                assert_eq!(
+                    index.insert(&text, TargetSource::SystemOcr, 0.5),
+                    !owner_first
+                );
+                if !owner_first {
+                    assert!(index.insert(&owner, TargetSource::Accessibility, 0.5));
+                }
+                assert_eq!(index.len(), 1);
+            }
         }
     }
 
@@ -731,6 +954,43 @@ mod tests {
             TargetSource::Accessibility,
             0.5
         ));
+    }
+
+    #[test]
+    fn batch_queries_visit_the_complete_candidate_union_once() {
+        let mut index = SpatialIndex::new(64., 8., 2.);
+        for rect in [
+            Rect::new(-80., 5., 100., 25.),
+            Rect::new(0., 0., 700., 500.), // oversize storage
+            Rect::new(65., 10., 40., 20.),
+            Rect::new(900., 700., 40., 20.),
+        ] {
+            assert!(index.store(rect));
+        }
+        let queries = [
+            Rect::new(-30., 0., 70., 30.),
+            Rect::new(10., 5., 90., 20.),
+            Rect::new(895., 695., 60., 40.),
+        ];
+        let mut expected = std::collections::BTreeSet::new();
+        for query in queries {
+            index.any_match(query, |id, _, _| {
+                expected.insert(id);
+                false
+            });
+        }
+        // A later batch must revisit targets; an empty batch visits none.
+        for query_batch in [&queries[..], &[][..], &queries[..]] {
+            let mut visits = Vec::new();
+            index.for_each_candidate(query_batch.iter().copied(), |id, _| visits.push(id));
+            let unique: std::collections::BTreeSet<_> = visits.iter().copied().collect();
+            assert_eq!(visits.len(), unique.len());
+            if query_batch.is_empty() {
+                assert!(visits.is_empty());
+            } else {
+                assert_eq!(unique, expected);
+            }
+        }
     }
 
     #[test]

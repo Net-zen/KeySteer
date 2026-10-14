@@ -158,6 +158,7 @@ impl Engine {
     ) -> Result<(), String> {
         let starts_visible_session = !self.overlay.visible;
         let cursor_only = scene.clip.is_none()
+            && scene.retained.is_none()
             && scene.backdrop.is_none()
             && scene.labels.is_empty()
             && scene.shapes.is_empty()
@@ -167,6 +168,7 @@ impl Engine {
         let display_mode = self.display_mode();
         let mut dynamic = DynamicOverlayState {
             follows_cursor_screen: scene.clip.is_none()
+                && scene.retained.is_none()
                 && scene.backdrop.is_none()
                 && scene.labels.is_empty()
                 && scene.shapes.is_empty(),
@@ -207,6 +209,7 @@ impl Engine {
         // fast motion; keeping the panel fixed lets only its lightweight
         // cursor and indicator subviews move, matching grid-mode behaviour.
         if scene.clip.is_none()
+            && scene.retained.is_none()
             && scene.backdrop.is_none()
             && scene.labels.is_empty()
             && scene.shapes.is_empty()

@@ -905,6 +905,11 @@ fn deserialize_annotations<'de, D: Deserializer<'de>>(
 /// One complete frame for the backend to present.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OverlayScene {
+    /// Immutable primitives below this frame's changing foreground. The
+    /// optional omitted label is replaced by a foreground label, so transparent
+    /// styles do not blend with the old label underneath.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained: Option<RetainedOverlay>,
     /// Shapes are drawn beneath labels of equal z-index.
     pub shapes: OverlayItems<OverlayShape>,
     pub labels: OverlayItems<OverlayLabel>,
@@ -932,6 +937,7 @@ impl OverlayScene {
     /// mode rendering.
     pub fn with_capacity(shapes: usize, labels: usize) -> Self {
         Self {
+            retained: None,
             shapes: OverlayItems::with_capacity(shapes),
             labels: OverlayItems::with_capacity(labels),
             window_annotations: None,
@@ -1011,10 +1017,31 @@ impl OverlayScene {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.labels.is_empty()
+        self.retained.is_none()
+            && self.labels.is_empty()
             && self.shapes.is_empty()
             && self.cursor_marker.is_none()
             && self.indicator.is_none()
+    }
+
+    /// Materialize for consumers without retained-layer support. Native fast
+    /// paths keep the immutable source shared instead of calling this.
+    pub fn materialized(&self) -> Self {
+        let Some(retained) = &self.retained else {
+            return self.clone();
+        };
+        let mut result = retained.scene.materialized();
+        if let Some(index) = retained.omitted_label.filter(|&i| i < result.labels.len()) {
+            result.labels.remove(index);
+        }
+        result.shapes.extend(self.shapes.iter().cloned());
+        result.labels.extend(self.labels.iter().cloned());
+        result.clip = self.clip;
+        result.backdrop = self.backdrop;
+        result.cursor_marker = self.cursor_marker.clone();
+        result.indicator = self.indicator.clone();
+        result.sort_in_place();
+        result
     }
 
     /// Sort primitives by z-index so backends may draw them in order.
@@ -1059,6 +1086,34 @@ impl OverlayScene {
             self.labels.sort_by_key(|label| label.z_index);
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetainedOverlay {
+    #[serde(
+        serialize_with = "serialize_retained_scene",
+        deserialize_with = "deserialize_retained_scene"
+    )]
+    pub scene: Arc<OverlayScene>,
+    pub omitted_label: Option<usize>,
+}
+
+impl PartialEq for RetainedOverlay {
+    fn eq(&self, other: &Self) -> bool {
+        self.omitted_label == other.omitted_label
+            && (Arc::ptr_eq(&self.scene, &other.scene) || self.scene == other.scene)
+    }
+}
+fn serialize_retained_scene<S: Serializer>(
+    scene: &Arc<OverlayScene>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    scene.as_ref().serialize(serializer)
+}
+fn deserialize_retained_scene<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Arc<OverlayScene>, D::Error> {
+    OverlayScene::deserialize(deserializer).map(Arc::new)
 }
 
 #[cfg(test)]

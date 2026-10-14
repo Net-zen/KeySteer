@@ -17,9 +17,14 @@ use crate::api::hint::LabelDirection;
 #[derive(Default)]
 pub(super) struct ScanSession {
     pub(super) scanned: Vec<UiTarget>,
+    /// Prepared prefix of scanned; append preserves it, retirement invalidates it.
     pub(super) search_text: Vec<super::search::SearchText>,
     pub(super) search_hints: Vec<CompactHint<usize>>,
-    pub(super) search_matches: Vec<CompactHint<usize>>,
+    /// Positions in search_hints, rebuilt after each query or scan update.
+    pub(super) search_matches: Vec<usize>,
+    pub(super) search_cycle: super::search::SearchCycle,
+    /// Explicit keyboard preview, separate from resolved multi-selection.
+    pub(super) search_focus: Option<super::search::Focus>,
     /// Resolved input items, distinct from the broader search preview.
     pub(super) search_selected: Vec<CompactHint<usize>>,
     pub(super) search_seen: Vec<bool>,
@@ -43,6 +48,8 @@ pub(super) struct ScanSession {
     pub(super) retry_pending: bool,
     pub(super) scan_bounds: Option<Rect>,
     pub(super) pending_relabel: bool,
+    /// Last applied delta changed target content without changing label geometry.
+    pub(super) metadata_only: bool,
     deferred_targets: Vec<UiTarget>,
     deferred_retired: Vec<Rect>,
     pub(super) selected: Option<usize>,
@@ -68,6 +75,8 @@ impl ScanSession {
         self.search_text = Vec::new();
         self.search_hints = Vec::new();
         self.search_matches = Vec::new();
+        self.search_cycle = Default::default();
+        self.search_focus = None;
         self.search_selected = Vec::new();
         self.search_seen = Vec::new();
         self.search_preview = Default::default();
@@ -75,10 +84,17 @@ impl ScanSession {
         self.search_terms = Default::default();
         self.search_names_initialized = false;
         self.release_scan_index();
-        self.hints = Vec::new();
+        // Keep only bounded, empty label storage between scans. Target names,
+        // indices and scene contents still belong exclusively to one scan.
+        if self.hints.capacity() > 16_384 {
+            self.hints = Vec::new();
+        } else {
+            self.hints.clear();
+        }
         self.label_plan_count = 0;
         self.next_label_index = 0;
         self.pending_relabel = false;
+        self.metadata_only = false;
         self.deferred_targets = Vec::new();
         self.deferred_retired = Vec::new();
     }
@@ -98,6 +114,7 @@ impl ScanSession {
     }
 
     pub(super) fn apply_update(&mut self, mut targets: Vec<UiTarget>, retired: &[Rect]) -> bool {
+        self.metadata_only = false;
         crate::api::command::enrich_replacements(&mut targets, &self.scanned, retired);
         let before = self.scanned.len();
         crate::api::command::remove_retired_targets(&mut self.scanned, retired);
@@ -121,12 +138,14 @@ impl ScanSession {
         direction: LabelDirection,
         preserve_anchors: bool,
     ) -> (bool, bool) {
+        self.metadata_only = false;
         if targets.is_empty() && retired.is_empty() {
             return (false, true);
         }
         crate::api::command::enrich_replacements(&mut targets, &self.scanned, retired);
         let mut removed_hints = Vec::new();
         let before = self.scanned.len();
+        let mut first_changed = before;
         if !retired.is_empty() {
             self.ensure_scan_index();
             // Existing semantic-key buckets identify exact removals without
@@ -144,6 +163,7 @@ impl ScanSession {
                     }
                 }
             }
+            first_changed = self.replace_same_regions(&mut targets, &mut remap);
             let mut old = 0;
             let mut kept = 0;
             self.scanned.retain(|_| {
@@ -169,11 +189,15 @@ impl ScanSession {
                 }));
                 self.rebuild_target_lookup();
                 self.invalidate_search_names();
+            } else if first_changed < before {
+                self.search_text.truncate(first_changed);
+                self.search_names_initialized = false;
             }
         }
         let retained = self.scanned.len();
-        let changed = self.append_targets(targets) || retained != before;
+        let changed = self.append_targets(targets) || retained != before || first_changed < before;
         let added = self.scanned.len() - retained;
+        self.metadata_only = first_changed < before && retained == before && added == 0;
         let Some(plan) = super::labeling::LabelPlan::for_stream(
             self.label_plan_count,
             alphabet.len(),
@@ -281,6 +305,67 @@ impl ScanSession {
         (changed, true)
     }
 
+    /// Metadata for an unambiguous, unchanged rectangle belongs in its existing
+    /// slot. It must not compete with a newly added field for the old label.
+    /// Reuse the retirement map; ambiguous old or incoming geometry falls back
+    /// to the existing removal/association path.
+    #[inline(never)]
+    fn replace_same_regions(&mut self, targets: &mut Vec<UiTarget>, remap: &mut [usize]) -> usize {
+        const AMBIGUOUS: usize = usize::MAX - 1;
+        for (incoming, target) in targets.iter().enumerate() {
+            let Some(&head) = self.seen_targets.get(&rect_hash(target.rect)) else {
+                continue;
+            };
+            let mut index = head;
+            let mut found = None;
+            while index != usize::MAX {
+                if self.scanned[index].rect == target.rect && found.replace(index).is_some() {
+                    found = None;
+                    break;
+                }
+                index = self.next_same_rect[index];
+            }
+            if let Some(index) = found {
+                remap[index] = match remap[index] {
+                    0 => 0,
+                    usize::MAX => incoming + 1,
+                    _ => AMBIGUOUS,
+                };
+            }
+        }
+        let mut consumed = SmallVec::<[usize; 8]>::new();
+        let mut first_changed = self.scanned.len();
+        for (index, marker) in remap.iter_mut().enumerate() {
+            match *marker {
+                0 | usize::MAX => continue,
+                AMBIGUOUS => {
+                    *marker = usize::MAX;
+                    continue;
+                }
+                _ => {}
+            }
+            let incoming = *marker - 1;
+            if self.scanned[index] != targets[incoming] {
+                std::mem::swap(&mut self.scanned[index], &mut targets[incoming]);
+                first_changed = first_changed.min(index);
+            }
+            *marker = 0;
+            consumed.push(incoming);
+        }
+        if !consumed.is_empty() {
+            consumed.sort_unstable();
+            let mut incoming = 0;
+            let mut next = 0;
+            targets.retain(|_| {
+                let keep = consumed.get(next) != Some(&incoming);
+                next += usize::from(!keep);
+                incoming += 1;
+                keep
+            });
+        }
+        first_changed
+    }
+
     fn rebuild_target_lookup(&mut self) {
         self.seen_targets.clear();
         self.next_same_rect.clear();
@@ -353,23 +438,39 @@ impl ScanSession {
         self.scanned.reserve(incoming);
         self.seen_targets.reserve(incoming);
         self.next_same_rect.reserve(incoming);
-        if self.search_names_initialized {
-            self.search_text.reserve(incoming);
-        }
         for target in targets {
             self.append_target(target);
         }
-        self.scanned.len() != before
+        let changed = self.scanned.len() != before;
+        if changed {
+            // Publish new labels before normalizing their search text. The
+            // already prepared prefix remains valid even during prewarming.
+            self.search_names_initialized = false;
+        }
+        changed
+    }
+
+    /// Prepare a bounded prefix without discarding previous work. Returns true
+    /// once all current targets are indexed, including late scan additions.
+    pub(super) fn prepare_search_names(&mut self, limit: usize) -> bool {
+        if self.search_names_initialized {
+            return true;
+        }
+        let prepared = self.search_text.len();
+        debug_assert!(prepared <= self.scanned.len());
+        self.search_text.reserve(self.scanned.len() - prepared);
+        let end = prepared.saturating_add(limit).min(self.scanned.len());
+        self.search_text.extend(
+            self.scanned[prepared..end]
+                .iter()
+                .map(super::search::SearchText::target),
+        );
+        self.search_names_initialized = end == self.scanned.len();
+        self.search_names_initialized
     }
 
     pub(super) fn ensure_search_names(&mut self) {
-        if self.search_names_initialized {
-            return;
-        }
-        self.search_text.clear();
-        self.search_text
-            .extend(self.scanned.iter().map(super::search::SearchText::target));
-        self.search_names_initialized = true;
+        self.prepare_search_names(usize::MAX);
     }
 
     fn append_target(&mut self, target: UiTarget) -> bool {
@@ -389,10 +490,6 @@ impl ScanSession {
             return false;
         }
         let index = self.scanned.len();
-        if self.search_names_initialized {
-            self.search_text
-                .push(super::search::SearchText::target(&target));
-        }
         self.scanned.push(target);
         self.next_same_rect.push(head);
         entry.insert_entry(index);
@@ -586,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_scans_release_all_result_capacity() {
+    fn repeated_scans_release_target_and_search_data() {
         let mut session = ScanSession::default();
         for count in [24, 512, 2000, 24, 10000, 1].into_iter().cycle().take(30) {
             session.append_targets(
@@ -611,6 +708,21 @@ mod tests {
             assert_eq!(session.deferred_targets.capacity(), 0);
             assert_eq!(session.deferred_retired.capacity(), 0);
         }
+    }
+
+    #[test]
+    fn empty_label_buffer_reuse_is_bounded_and_drops_previous_contents() {
+        let alphabet = ['a', 's', 'd'];
+        let mut session = labeled_session(2_000, &alphabet, LabelDirection::Normal);
+        let storage = session.hints.as_ptr();
+        session.clear_results();
+        assert!(session.hints.is_empty());
+        assert_eq!(session.hints.as_ptr(), storage);
+        session.clear_results();
+        assert_eq!(session.hints.as_ptr(), storage);
+        session.hints.reserve(16_385);
+        session.clear_results();
+        assert_eq!(session.hints.capacity(), 0);
     }
 
     #[test]
@@ -717,6 +829,88 @@ mod tests {
     }
 
     #[test]
+    fn metadata_and_new_field_keep_existing_slots_labels_and_search_prefix() {
+        let alphabet: Vec<_> = "asdfghjkl".chars().collect();
+        let mut session = labeled_session(8, &alphabet, LabelDirection::Normal);
+        session.ensure_search_names();
+        let original: Vec<_> = session
+            .hints
+            .iter()
+            .map(|hint| (hint.label.clone(), hint.bounds, hint.value))
+            .collect();
+        let mut update = session.scanned[3].clone();
+        update.name = "updated row".into();
+        let field = UiTarget::recognized_text(
+            Rect::new(update.rect.x + 1., update.rect.y + 1., 10., 10.),
+            "field".into(),
+        );
+        assert_eq!(
+            session.apply_stable_update(
+                vec![field, update.clone()],
+                &[update.rect],
+                &alphabet,
+                LabelDirection::Normal,
+                true
+            ),
+            (true, true)
+        );
+        assert_eq!(session.scanned[3], update);
+        assert_eq!(session.search_text.len(), 3);
+        assert_eq!(
+            session.hints[..8]
+                .iter()
+                .map(|hint| (hint.label.clone(), hint.bounds, hint.value))
+                .collect::<Vec<_>>(),
+            original
+        );
+        assert_ne!(session.hints[8].label, session.hints[3].label);
+        session.ensure_search_names();
+        assert!(session.search_text[3].matches("updated", ""));
+    }
+
+    #[test]
+    fn ambiguous_metadata_geometry_uses_normal_retirement() {
+        let alphabet: Vec<_> = "asdfghjkl".chars().collect();
+        for ambiguous_old in [false, true] {
+            let mut session = labeled_session(2, &alphabet, LabelDirection::Normal);
+            if ambiguous_old {
+                session.scanned[1].rect = session.scanned[0].rect;
+                session.hints[1].bounds = session.scanned[0].rect;
+                session.rebuild_target_lookup();
+            }
+            let rect = session.scanned[0].rect;
+            let targets = vec![
+                UiTarget {
+                    rect,
+                    role: SemanticRole::Button,
+                    name: "action".into(),
+                    details: None,
+                },
+                UiTarget::recognized_text(rect, "caption".into()),
+            ];
+            assert_eq!(
+                session.apply_stable_update(
+                    targets.clone(),
+                    &[rect],
+                    &alphabet,
+                    LabelDirection::Normal,
+                    true
+                ),
+                (true, true)
+            );
+            for target in targets {
+                assert!(session.scanned.iter().any(|actual| {
+                    actual.rect == target.rect
+                        && actual.role == target.role
+                        && actual.name.contains(&target.name)
+                }));
+            }
+            assert_eq!(session.scanned.len(), if ambiguous_old { 2 } else { 3 });
+            assert_eq!(session.hints.len(), session.scanned.len());
+        }
+    }
+
+    #[test]
     fn nested_control_inherits_its_anchor_before_a_row_can_claim_it() {
         let alphabet: Vec<_> = "asdfghjkl".chars().collect();
         let mut session = labeled_session(2, &alphabet, LabelDirection::Normal);
@@ -785,6 +979,36 @@ mod tests {
     }
 
     #[test]
+    fn partial_search_index_survives_append_and_rebuilds_after_retirement() {
+        let alphabet = ['a', 's', 'd'];
+        let mut session = labeled_session(512, &alphabet, LabelDirection::Normal);
+        assert!(!session.prepare_search_names(128));
+        assert_eq!(session.search_text.len(), 128);
+        let first = session.search_text.as_ptr();
+        assert!(!session.append_targets(session.scanned.clone()));
+        assert_eq!(session.search_text.len(), 128);
+        assert_eq!(session.search_text.as_ptr(), first);
+        let mut added = session.scanned[0].clone();
+        added.name = "Added 搜索框".into();
+        added.rect.x += 20_000.0;
+        assert!(session.append_targets(vec![added]));
+        assert_eq!(session.search_text.len(), 128);
+        assert_eq!(session.search_text.as_ptr(), first);
+        assert!(!session.prepare_search_names(128));
+        assert_eq!(session.search_text.len(), 256);
+        let retired = session.scanned[7].rect;
+        assert!(session.apply_update(Vec::new(), &[retired]));
+        assert_eq!(session.search_text.len(), 0);
+        assert!(!session.prepare_search_names(128));
+        assert!(session.search_text[7].matches("8", ""));
+        session.ensure_search_names();
+        assert!(session.search_names_initialized);
+        assert_eq!(session.search_text.len(), session.scanned.len());
+        assert!(session.search_text.last().unwrap().matches("added", ""));
+        assert!(session.search_text.last().unwrap().matches("ssk", ""));
+    }
+
+    #[test]
     fn unmatched_retirements_preserve_search_index_and_labels() {
         let alphabet = ['a', 's', 'd'];
         for add_target in [false, true] {
@@ -818,7 +1042,9 @@ mod tests {
                 ),
                 (add_target, true)
             );
-            assert!(session.search_names_initialized);
+            assert_eq!(session.search_names_initialized, !add_target);
+            assert_eq!(session.search_text.len(), 20);
+            session.ensure_search_names();
             assert_eq!(session.search_text.len(), session.scanned.len());
             for (index, label) in labels.iter().enumerate() {
                 assert_eq!(&session.hints[index].label, label);
@@ -860,6 +1086,9 @@ mod tests {
             assert_eq!(session.search_text.len(), 511);
             session.release_scan_index();
             assert!(session.append_targets(vec![target]));
+            assert_eq!(session.search_text.len(), 511);
+            assert!(!session.search_names_initialized);
+            session.ensure_search_names();
             assert_eq!(session.search_text.len(), 512);
             session.clear_results();
             assert_eq!(session.seen_targets.capacity(), 0);

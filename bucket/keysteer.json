@@ -1,0 +1,48 @@
+{
+    "version": "0.11.9",
+    "description": "Keyboard-driven mouse control and window management",
+    "homepage": "https://github.com/dccif/KeySteer",
+    "license": "GPL-3.0-or-later",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/dccif/KeySteer/releases/download/v0.11.9/KeySteer-v0.11.9-x86_64-pc-windows-msvc.zip",
+            "hash": "381b287c3b912a0b7512c92c9ac2e1db01ecbe9af93729258628f629bfb9e3b3"
+        },
+        "arm64": {
+            "url": "https://github.com/dccif/KeySteer/releases/download/v0.11.9/KeySteer-v0.11.9-aarch64-pc-windows-msvc.zip",
+            "hash": "fd28273c6fdedb379cb895a01fe6fe6dc14ce663223c9485e32a26b077eb9508"
+        }
+    },
+    "extract_dir": "KeySteer",
+    "bin": [
+        [
+            "KeySteer.exe",
+            "keysteer"
+        ]
+    ],
+    "shortcuts": [
+        [
+            "KeySteer.exe",
+            "KeySteer"
+        ]
+    ],
+    "pre_install": [
+        "$data = Join-Path $persist_dir 'data'",
+        "if (Test-Path -LiteralPath $data) {",
+        "    Get-ChildItem -LiteralPath $data -File | Where-Object { ($_.Name -like 'keysteer.*.toml' -and $_.Name -ne 'keysteer.default.toml') -or $_.Name -eq 'workspace.ksw' } | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $dir -Force -ErrorAction Stop }",
+        "}"
+    ],
+    "pre_uninstall": [
+        "$appRoot = (Split-Path -Parent $dir) + [IO.Path]::DirectorySeparatorChar",
+        "$running = Get-Process KeySteer -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($appRoot, [StringComparison]::OrdinalIgnoreCase) }",
+        "if ($running) { throw 'Exit KeySteer before updating or uninstalling it.' }",
+        "$data = Join-Path $persist_dir 'data'",
+        "New-Item -ItemType Directory -Path $data -Force | Out-Null",
+        "Get-ChildItem -LiteralPath $data -File | Where-Object { $_.Name -like 'keysteer.*.toml' -or $_.Name -eq 'workspace.ksw' } | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop }",
+        "Get-ChildItem -LiteralPath $dir -File | Where-Object { ($_.Name -like 'keysteer.*.toml' -and $_.Name -ne 'keysteer.default.toml') -or $_.Name -eq 'workspace.ksw' } | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $data -Force -ErrorAction Stop }"
+    ],
+    "notes": [
+        "Exit KeySteer before updating. Use scoop update keysteer for package-managed upgrades.",
+        "User configurations and workspace.ksw are backed up on update/uninstall and restored on install."
+    ]
+}

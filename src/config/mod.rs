@@ -433,35 +433,31 @@ impl ConfigFile {
             let entry = entry.map_err(|error| {
                 ConfigError::Io(format!("cannot enumerate {}: {error}", directory.display()))
             })?;
-            let file_type = entry.file_type().map_err(|error| {
-                ConfigError::Io(format!(
-                    "cannot inspect {}: {error}",
-                    entry.path().display()
-                ))
+            if !Self::is_portable_config_name(&entry.file_name()) {
+                continue;
+            }
+            matches.push(entry.path());
+        }
+        matches.sort_by_cached_key(|path| {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_ascii_lowercase();
+            (name == "keysteer.default.toml", name, path.clone())
+        });
+        // Follow links only in selection order. An unused lower-priority link
+        // cannot prevent a valid profile from loading; a selected broken link
+        // is diagnosed instead of silently disappearing from discovery.
+        for path in matches {
+            let metadata = std::fs::metadata(&path).map_err(|error| {
+                ConfigError::Io(format!("cannot inspect config {}: {error}", path.display()))
             })?;
-            if file_type.is_file() && Self::is_portable_config_name(&entry.file_name()) {
-                matches.push(entry.path());
+            if metadata.is_file() {
+                return Ok(Some(path));
             }
         }
-        matches.sort_by(|left, right| {
-            let left_name = left
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_ascii_lowercase();
-            let right_name = right
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_ascii_lowercase();
-            let left_is_default = left_name == "keysteer.default.toml";
-            let right_is_default = right_name == "keysteer.default.toml";
-            left_is_default
-                .cmp(&right_is_default)
-                .then_with(|| left_name.cmp(&right_name))
-                .then_with(|| left.cmp(right))
-        });
-        Ok(matches.into_iter().next())
+        Ok(None)
     }
 
     pub(crate) fn is_portable_config_name(name: &std::ffi::OsStr) -> bool {

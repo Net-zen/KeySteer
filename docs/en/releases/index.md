@@ -5,6 +5,31 @@ outline: false
 
 # Release notes
 
+## 0.11.9
+
+- Added support for reading and saving configuration files through symbolic links.
+- Fixed leftover console windows when launching with arguments on Windows.
+
+## 0.11.8
+
+- Improved UIHint recognition in the desktop app, reducing incorrectly merged or missing text targets in lists and tables.
+- Labels stay more stable as recognition results arrive, with fewer label changes and unnecessary redraws.
+- The web configuration simulator now supports direct key remapping, such as mapping `T` to `Home` or a key combination.
+
+## 0.11.7
+
+- ⚠️ **Configuration migration:** `[ui_hint.search_edit_keys]` now uses `key = action`. Mixing old and new formats or conflicting key bindings may prevent KeySteer from starting. Copy the entire `[ui_hint.search_edit_keys]` section from the new `keysteer.default.toml` and **replace the old section in your user configuration; do not append it**. Then customize the keys as needed.
+- UIHint search now automatically previews the best match when several results are found. By default, press `Tab` to switch, `Enter` or `/` to confirm the current result, or `Esc` to cancel. These keys are customizable.
+- Search shows the closest matches first. Equally close matches default to Chinese initials → text → labels; you can change this order in settings.
+
+https://github.com/user-attachments/assets/84d0872d-81f6-4e42-aa7f-767061cef646
+
+## 0.11.6
+
+- Windows x64 now offers three builds: the default AVX2 (x86-64-v3) build, a compatible build for older CPUs, and an AVX-512 (x86-64-v4) build. Fixed instruction-set targets prevent startup crashes caused by changes to the build machine.
+- Use the default build for most PCs; if it will not start, try the compatible build. The website and release notes offer brief guidance: once running, let Check for Updates choose the build automatically.
+- Regardless of the initially downloaded build, Check for Updates automatically selects the highest level supported by your CPU and OS, including switching builds within the same version. Signature verification, installation, and rollback on failure remain in place. Network fallback consistently uses gh-proxy.
+
 ## 0.11.5
 
 Improved UIHint responsiveness on Windows and macOS, with labels appearing more promptly and fewer pauses on screens with many targets. Across the three target counts below, CPU processing time dropped by **48% on average**, with a reduction of up to **67%**.

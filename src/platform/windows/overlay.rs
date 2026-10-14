@@ -171,6 +171,13 @@ impl Overlay {
     /// The scene arrives fully resolved — concrete colors, rects and font
     /// sizes — so this is the only place Windows rendering needs completing.
     fn draw(&mut self, hwnd: HWND, scene: &OverlayScene, area: Rect) -> Result<(), String> {
+        let flattened;
+        let scene = if scene.retained.is_some() {
+            flattened = scene.materialized();
+            &flattened
+        } else {
+            scene
+        };
         let width = area.width.max(1.0).round() as usize;
         let height = area.height.max(1.0).round() as usize;
         let needs_surface = self
@@ -266,6 +273,8 @@ impl Overlay {
 /// rectangle and cap the scale so text cannot overflow it.
 #[derive(Default)]
 pub(super) struct DpiSceneCache {
+    retained_source: Option<Arc<OverlayScene>>,
+    retained_scaled: Option<Arc<OverlayScene>>,
     scale_bits: Option<u64>,
     source_labels: Option<OverlayItems<OverlayLabel>>,
     scaled_labels: Option<OverlayItems<OverlayLabel>>,
@@ -282,16 +291,46 @@ impl DpiSceneCache {
         scale: f64,
     ) -> Cow<'a, OverlayScene> {
         let scale = normalized_label_scale(scale);
-        if (scale - 1.0).abs() < f64::EPSILON || scene.labels.is_empty() {
+        if (scale - 1.0).abs() < f64::EPSILON
+            || (scene.labels.is_empty() && scene.retained.is_none())
+        {
             self.clear();
             return Cow::Borrowed(scene);
         }
 
         let mut scaled = scene.clone();
+        if let Some(retained) = &scene.retained {
+            let cached = self
+                .retained_source
+                .as_ref()
+                .zip(self.retained_scaled.as_ref())
+                .filter(|(source, _)| {
+                    self.scale_bits == Some(scale.to_bits()) && Arc::ptr_eq(source, &retained.scene)
+                })
+                .map(|(_, scaled)| scaled.clone());
+            let source = cached.unwrap_or_else(|| {
+                let mut base = retained.scene.materialized();
+                scale_labels(&mut base.labels, scale);
+                let base = Arc::new(base);
+                self.retained_source = Some(retained.scene.clone());
+                self.retained_scaled = Some(base.clone());
+                self.scale_bits = Some(scale.to_bits());
+                base
+            });
+            scaled.retained = Some(crate::api::overlay::RetainedOverlay {
+                scene: source,
+                omitted_label: retained.omitted_label,
+            });
+        } else {
+            self.retained_source = None;
+            self.retained_scaled = None;
+        }
         if scene.labels.is_empty() {
             // Entering a lightweight/empty scene must not leave the previous
             // high-DPI grid retained solely by this cache.
-            self.clear();
+            if scene.retained.is_none() {
+                self.clear();
+            }
         } else {
             let cached_labels = self
                 .source_labels
@@ -366,6 +405,7 @@ fn scene_matches_local(
 ) -> bool {
     let same_area = area == cached_area;
     scene.backdrop == cached.backdrop
+        && scene.retained == cached.retained
         && scene.shapes.len() == cached.shapes.len()
         && ((same_area && scene.shapes.shares_storage_with(&cached.shapes))
             || scene
@@ -1299,6 +1339,41 @@ extern "system" fn window_proc(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retained_dpi_scaling_reuses_the_background_and_invalidates_on_scale_change() {
+        use super::*;
+        let mut base = OverlayScene::new();
+        base.labels.push(OverlayLabel::new(
+            "a",
+            Rect::new(10.0, 10.0, 20.0, 20.0),
+            LabelStyle::default(),
+        ));
+        let base = Arc::new(base);
+        let mut frame = OverlayScene::new();
+        frame.retained = Some(crate::api::overlay::RetainedOverlay {
+            scene: base.clone(),
+            omitted_label: None,
+        });
+        let mut cache = DpiSceneCache::default();
+        let first = cache.scene_for_dpi(&frame, 1.5).into_owned();
+        frame.retained.as_mut().unwrap().omitted_label = Some(0);
+        let second = cache.scene_for_dpi(&frame, 1.5).into_owned();
+        assert!(Arc::ptr_eq(
+            &first.retained.as_ref().unwrap().scene,
+            &second.retained.as_ref().unwrap().scene
+        ));
+        assert!(
+            second.retained.as_ref().unwrap().scene.labels[0].rect.width
+                > base.labels[0].rect.width
+        );
+        let third = cache.scene_for_dpi(&frame, 2.0).into_owned();
+        assert!(!Arc::ptr_eq(
+            &second.retained.as_ref().unwrap().scene,
+            &third.retained.as_ref().unwrap().scene
+        ));
+        cache.clear();
+        assert!(cache.retained_source.is_none());
+    }
     #[test]
     #[ignore = "creates a small owned native window; requires an interactive Windows desktop"]
     fn native_cpu_overlay_reuses_one_owner_across_positions() -> Result<(), String> {

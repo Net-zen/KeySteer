@@ -25,7 +25,7 @@ KeySteer brings native keyboard control to Windows and macOS. Move and click wit
 - **Hold and drag**: hold or toggle the left, middle, or right mouse button for dragging.
 - **Grid**: quickly target a region with a two-key combination.
 - **Recursive Grid**: keep subdividing the current region for precise targeting.
-- **UI Hint**: type labels shown on buttons, links, menus, and inputs. macOS supports Accessibility Tree, Vision, and Hybrid strategies; Windows supports UI Automation, dual OCR visual recognition, and Hybrid.
+- **UI Hint**: type labels shown on buttons, links, menus, and inputs; search by text or Chinese pinyin initials, copy information, and sample colors. macOS supports Accessibility Tree, Vision, and Hybrid strategies; Windows supports UI Automation, dual OCR visual recognition, and Hybrid.
 - **Multiple displays**: use `Primary+S` to switch to the next display.
 - **Appearance and configuration**: customise Grid/Hint labels, indicators, and more with TOML.
 
@@ -47,7 +47,7 @@ On macOS, the Window entry is **Option+W**, not Command+W. From Window, use `A` 
 
 ## Video demonstrations
 
-Seven short, silent simulator recordings: **keys and the current action centred together at the bottom**, with Chinese and English captions. Play the videos below directly on GitHub. All bindings shown are configurable.
+Short, silent demonstrations with Chinese and English captions. All bindings shown are configurable.
 
 ### Window: control your workspace
 
@@ -115,6 +115,16 @@ Scan interface elements, filter labels, and target controls.
 
 https://github.com/user-attachments/assets/71efcae3-eb11-46d0-aba4-0a5df5e9c80c
 
+### UI Hint search: initials, copying, and color picking
+
+- **Search and preview**: press `/` to search text or Chinese pinyin initials, such as `sz` for “设置” (Settings). The best match opens its information panel automatically; press `Tab` to cycle through results.
+- **Copy information**: `Ctrl+1/2/3/4` copies text, accessibility information, coordinates, or color, respectively.
+- **Edit the point and pick colors**: tap `Ctrl` to enter point editing, adjust the sampling position with `H/J/K/L`, and use `Ctrl+Shift+4` to cycle through HEX, RGB, and HSL.
+
+https://github.com/user-attachments/assets/84d0872d-81f6-4e42-aa7f-767061cef646
+
+[Full usage guide](https://dccif.github.io/KeySteer/en/modes/ui-hint#search-and-result-previews)
+
 ## Default keys
 
 Press `Primary+E` to enter `Normal`. In the shipped configuration, `Primary` is `Command` on macOS and left `Alt` on Windows; you can change it in `[key_aliases]`.
@@ -153,6 +163,21 @@ See the [configuration reference](docs/en/reference/configuration.md) and [modes
 
 Download the ZIP matching your operating system and CPU architecture from [GitHub Releases](https://github.com/dccif/KeySteer/releases/latest). On Windows, extract it and run `KeySteer.exe`. On macOS, extract it and move `KeySteer.app` to `/Applications`.
 
+You can also install from this repository's Homebrew tap or Scoop bucket. Exit KeySteer before upgrading.
+
+### macOS: Homebrew
+
+```bash
+brew tap dccif/keysteer https://github.com/dccif/KeySteer.git
+brew install --cask dccif/keysteer/keysteer
+
+# Upgrade
+brew update
+brew upgrade --cask dccif/keysteer/keysteer
+```
+
+Selects the Apple Silicon or Intel package automatically; requires macOS 14+. User configuration stays in `~/Library/Application Support/KeySteer/`.
+
 If Gatekeeper prevents a manually installed macOS application from opening, first confirm that it came from the official release page above, then run:
 
 ```bash
@@ -160,6 +185,19 @@ sudo xattr -cr /Applications/KeySteer.app
 ```
 
 Grant Accessibility and Screen Recording permissions before opening the app.
+
+### Windows: Scoop
+
+```powershell
+scoop bucket add keysteer https://github.com/dccif/KeySteer.git
+scoop install keysteer/keysteer
+
+# Upgrade
+scoop update
+scoop update keysteer
+```
+
+Supports x64 and ARM64; x64 uses the default AVX2 build with no filename suffix. Launch from the Start menu or run `keysteer`. Upgrades retain user configurations named `keysteer.<name>.toml` and saved layouts in `workspace.ksw`, while refreshing shipped defaults. Use the package manager to upgrade a managed installation. When migrating from a manual installation, copy your user configurations and layouts into the Scoop installation directory.
 
 ## Development and packaging
 

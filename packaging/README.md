@@ -75,9 +75,79 @@ application-settle window, not a readiness metric.
 
 ## GitHub releases
 
-CI calls the same scripts. A manual all-platform build creates the Cargo-versioned
-tag and publishes exactly the four platform ZIPs to a GitHub Release. Optional
-macOS signing secrets are documented by the variable names in
-`.github/workflows/build.yml`. The workflow prepends `.github/release-notes.md`
-to GitHub's automatically generated notes so the macOS manual-install command
-is present on every release page.
+CI calls the platform packaging scripts through two workflows:
+
+| Name | File | Responsibility |
+| --- | --- | --- |
+| Build | `build.yml` | Tag/manual entry, cross or native compilation, Release publication, Homebrew/Scoop synchronization |
+| Pages | `pages.yml` | Build and deploy documentation; clean a successful forwarding entry |
+
+Build defaults to `build_mode=cross`; explicitly choose `native` to compile on
+Windows 2025 and macOS 26. `platform` accepts windows, macos or all. Publishing
+builds every supported platform: four ZIPs for native, six for cross (including
+compatible and AVX-512 Windows x64). With publication disabled, only the selected
+platforms build. Unselected compilation jobs are skipped without starting runners.
+Both modes use `.github/scripts/release.py` and `tools/compose-release-notes.sh`.
+Optional macOS signing secrets are documented in `macos/README-cross.md`.
+
+Tag pushes default to cross publication. Tags and manually selected non-default
+refs enter the same Build workflow, whose Prepare job dispatches Build once on
+the default branch. The default-branch run resolves the selected source commit
+and builds directly, retaining the shared cache scope. Deleted tags do not build.
+New tags must include this workflow layout; historical tags retain the trigger
+definitions stored in their own commits.
+
+A complete cross tag release uses 10 runner jobs: entry, source resolution, four
+Windows builds, two macOS builds, publication/manifests and Pages. Manifest
+synchronization shares the publication runner; cleanup shares the Pages runner.
+The shared script validates archives, composes notes and preserves existing tag
+objects. It verifies their commit before changing release assets and creates a
+tag only when absent. Cross may replace an existing Release; native rejects
+duplicate Releases. Publication runs share one concurrency group, while entry
+runs use separate groups to avoid cancelling their actual builds.
+
+After successful compilation, publication, manifest synchronization and Pages
+deployment, cleanup removes only the corresponding completed entry run. Since
+entries and builds share `build.yml`, cleanup also checks that the entry only
+executed Prepare and skipped all remaining jobs. Failures, cancellations and
+runs containing actual builds/deployments are retained. Version tags and actual
+Build records remain. Cleanup uses `actions: write` and checks the workflow path,
+run ID, commit, completed status and job list.
+
+Validate the release and cleanup policies locally with:
+
+```bash
+python -B -m unittest discover -s .github/scripts -p 'test_*.py'
+```
+
+## Homebrew tap and Scoop bucket
+
+This repository also hosts `Casks/keysteer.rb` and `bucket/keysteer.json`.
+Use the explicit Git URL when registering it; no separate repository or token
+is required. Installation and upgrade commands are in the project READMEs.
+
+After publication succeeds, the same Build job reads the latest stable
+GitHub Release, downloads ZIPs, verifies their SHA256 digests, and commits both
+manifests to the default branch with `GITHUB_TOKEN`. Pre-releases do not replace
+the stable package version. Use the generator below for manual synchronization.
+Branch rules must allow the bot's metadata commit; otherwise
+generate and submit the manifests through the normal review process.
+
+For manual generation, save the official release API response as JSON and run:
+
+```bash
+python packaging/package-managers/generate.py release.json --assets-dir release-assets
+python -m unittest discover -s packaging/package-managers -p 'test_*.py'
+```
+
+`--assets-dir` hashes the downloaded archives and checks GitHub's digests when
+available. Without it, every selected asset must have a valid API SHA256 digest.
+Scoop selects the default AVX2 x64 build with no filename suffix, even when
+compatible and AVX-512 packages are present; ARM64 is separate. Exit the installed app before upgrading.
+
+Scoop hooks snapshot user TOML files and `workspace.ksw` to its persist directory
+before upgrade/uninstall, then restore them into the new version's directory.
+The executable and `keysteer.default.toml` always come from the new package.
+Deleted user configs are removed from the next snapshot. `scoop uninstall -p`
+purges the retained snapshot; ordinary uninstall allows a later reinstall to
+restore it. macOS configuration stays in Application Support across upgrades.

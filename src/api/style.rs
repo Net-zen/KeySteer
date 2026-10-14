@@ -12,6 +12,69 @@ use crate::api::overlay::{Color, LabelStyle, Placement, SharedLabelStyle, TextAl
 
 use super::theme::{ColorValue, CompiledColor, Palette, ThemedColor};
 
+/// Current search result or individually selected Point member.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SearchHighlightUi<C: ColorValue = ThemedColor> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_color: Option<C>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_color: Option<C>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_color: Option<C>,
+    #[serde(skip_serializing_if = "is_default_selected_border_width")]
+    pub border_width: f64,
+}
+
+impl<C: ColorValue> Default for SearchHighlightUi<C> {
+    fn default() -> Self {
+        Self {
+            background_color: None,
+            text_color: None,
+            border_color: None,
+            border_width: 1.5,
+        }
+    }
+}
+
+impl SearchHighlightUi {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub fn compile(&self) -> SearchHighlightUi<CompiledColor> {
+        SearchHighlightUi {
+            background_color: self.background_color.as_ref().map(CompiledColor::from),
+            text_color: self.text_color.as_ref().map(CompiledColor::from),
+            border_color: self.border_color.as_ref().map(CompiledColor::from),
+            border_width: self.border_width,
+        }
+    }
+}
+
+impl<C: ColorValue> SearchHighlightUi<C> {
+    pub fn apply(&self, style: &mut LabelStyle, palette: &Palette) {
+        let (background, border) = selected_colors(palette.appearance);
+        style.background = resolve(
+            self.background_color.as_ref(),
+            palette.appearance,
+            background,
+        );
+        style.text_color = resolve(self.text_color.as_ref(), palette.appearance, palette.text);
+        style.matched_text_color = style.text_color;
+        style.border_color = resolve(self.border_color.as_ref(), palette.appearance, border);
+        style.border_width = self.border_width;
+    }
+}
+
+/// Shared selection palette for window cards and UI Hint search results.
+fn selected_colors(appearance: Appearance) -> (Color, Color) {
+    match appearance {
+        Appearance::Light => (Color::rgb(0xE8, 0xF6, 0xF0), Color::rgb(0x60, 0xB4, 0x9C)),
+        Appearance::Dark => (Color::rgb(0x28, 0x4D, 0x44), Color::rgb(0x85, 0xCD, 0xB8)),
+    }
+}
+
 /// Color chip beside the search information's Color heading, in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1504,10 +1567,8 @@ impl ResolvedWindowStyle {
         .into();
         // Compile selection colors once per theme; drawing only shares these styles.
         let mut selected = (*style).clone();
-        let (selected_background_color, selected_border_color) = match palette.appearance {
-            Appearance::Light => (Color::rgb(0xE8, 0xF6, 0xF0), Color::rgb(0x60, 0xB4, 0x9C)),
-            Appearance::Dark => (Color::rgb(0x28, 0x4D, 0x44), Color::rgb(0x85, 0xCD, 0xB8)),
-        };
+        let (selected_background_color, selected_border_color) =
+            selected_colors(palette.appearance);
         selected.background = resolve(
             card.selected_background_color.as_ref(),
             palette.appearance,
@@ -1727,6 +1788,7 @@ pub mod compiled {
     use super::CompiledColor;
     pub type ModeIndicator = super::ModeIndicator<CompiledColor>;
     pub type LabelUi = super::LabelUi<CompiledColor>;
+    pub type SearchHighlightUi = super::SearchHighlightUi<CompiledColor>;
     pub type BoundaryHighlight = super::BoundaryHighlight<CompiledColor>;
     pub type IndicatorUi = super::IndicatorUi<CompiledColor>;
     pub type KeyHelp = super::KeyHelp<CompiledColor>;

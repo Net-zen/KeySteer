@@ -5,6 +5,5 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    keysteer::app::prepare_console_for_cli();
     keysteer::app::run_cli()
 }
