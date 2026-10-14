@@ -6,14 +6,12 @@ pub(crate) struct TestDirectory(pub(crate) PathBuf);
 
 impl TestDirectory {
     pub(crate) fn new(label: &str) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "keysteer-{label}-{}-{timestamp}-{serial}",
+            "keysteer-{label}-{}-{timestamp}",
             std::process::id()
         ));
         std::fs::create_dir(&path).unwrap();

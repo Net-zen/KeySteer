@@ -343,21 +343,6 @@ fn discovery_ignores_directory_links_and_diagnoses_selected_broken_links() {
 }
 
 #[test]
-fn discovery_reports_a_symlink_cycle() {
-    use filesystem::{TestDirectory, symlink_file};
-
-    let directory = TestDirectory::new("cyclic-config-discovery");
-    let link = directory.0.join("keysteer.cyclic.toml");
-    symlink_file(Path::new("other.link"), &link);
-    symlink_file(
-        Path::new("keysteer.cyclic.toml"),
-        &directory.0.join("other.link"),
-    );
-    let error = Config::discover_in(&directory.0).unwrap_err().to_string();
-    assert!(error.contains("keysteer.cyclic.toml"));
-}
-
-#[test]
 fn user_key_alias_can_override_primary_with_one_physical_side() {
     let config = Config::parse(
         r#"

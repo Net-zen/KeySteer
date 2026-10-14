@@ -436,15 +436,7 @@ impl ConfigFile {
             if !Self::is_portable_config_name(&entry.file_name()) {
                 continue;
             }
-            let file_type = entry.file_type().map_err(|error| {
-                ConfigError::Io(format!(
-                    "cannot inspect {}: {error}",
-                    entry.path().display()
-                ))
-            })?;
-            if file_type.is_file() || file_type.is_symlink() {
-                matches.push(entry.path());
-            }
+            matches.push(entry.path());
         }
         matches.sort_by_cached_key(|path| {
             let name = path

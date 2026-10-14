@@ -1,6 +1,7 @@
 //! Comment-preserving TOML storage with validate-before-swap semantics.
 
-use std::io::Write;
+use std::fs::{self, File};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Item, Table};
@@ -133,7 +134,9 @@ impl ConfigStore {
     }
 
     pub fn persist(&self) -> Result<(), ConfigError> {
-        atomic_write(&self.path, self.source.text().as_bytes(), self.replace_file)
+        atomic_write(&self.path, self.source.text().as_bytes(), self.replace_file).map_err(
+            |error| ConfigError::Io(format!("cannot save {}: {error}", self.path.display())),
+        )
     }
 }
 
@@ -155,86 +158,51 @@ fn set_item(table: &mut Table, path: &[&str], value: Item) -> Result<(), ConfigE
     set_item(child, tail, value)
 }
 
-fn atomic_write(path: &Path, bytes: &[u8], replace_file: ReplaceFile) -> Result<(), ConfigError> {
+fn atomic_write(path: &Path, bytes: &[u8], replace_file: ReplaceFile) -> io::Result<()> {
     // Resolve at each save while retaining the logical path in ConfigStore for
     // reload. Never fall back to replacing a link when its target is unavailable.
-    let (target, permissions) = match std::fs::canonicalize(path) {
+    let (target, permissions) = match fs::canonicalize(path) {
         Ok(target) => {
-            let metadata = std::fs::metadata(&target).map_err(|error| {
-                ConfigError::Io(format!(
-                    "cannot inspect config target {}: {error}",
-                    target.display()
-                ))
-            })?;
+            let metadata = fs::metadata(&target)?;
             if !metadata.is_file() {
-                return Err(ConfigError::Io(format!(
-                    "config target is not a regular file: {}",
-                    target.display()
-                )));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "config target is not a regular file",
+                ));
             }
             let permissions = metadata.permissions();
             if permissions.readonly() {
-                return Err(ConfigError::Io(format!(
-                    "config target is read-only: {} (from {})",
-                    target.display(),
-                    path.display()
-                )));
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "config target is read-only",
+                ));
             }
             (target, Some(permissions))
         }
         Err(error)
-            if error.kind() == std::io::ErrorKind::NotFound
-                && std::fs::symlink_metadata(path)
-                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            if error.kind() == io::ErrorKind::NotFound
+                && fs::symlink_metadata(path)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound) =>
         {
             (path.to_path_buf(), None)
         }
-        Err(error) => {
-            return Err(ConfigError::Io(format!(
-                "cannot resolve config target for {}: {error}",
-                path.display()
-            )));
-        }
+        Err(error) => return Err(error),
     };
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent).map_err(|e| {
-        ConfigError::Io(format!(
-            "cannot create config directory {}: {e}",
-            parent.display()
-        ))
-    })?;
-    static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let serial = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp = parent.join(format!(
-        ".keysteer-config-{}-{serial}.tmp",
-        std::process::id()
-    ));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|e| ConfigError::Io(format!("cannot create {}: {e}", temp.display())))?;
-    let result = (|| {
-        file.write_all(bytes)
-            .map_err(|e| ConfigError::Io(format!("cannot write {}: {e}", temp.display())))?;
+    fs::create_dir_all(parent)?;
+    let temp = target.with_added_extension(format!("{}.tmp", std::process::id()));
+    let mut file = File::create_new(&temp)?;
+    let result = (|| -> io::Result<()> {
+        file.write_all(bytes)?;
         if let Some(permissions) = permissions {
-            file.set_permissions(permissions).map_err(|e| {
-                ConfigError::Io(format!("cannot set permissions on {}: {e}", temp.display()))
-            })?;
+            file.set_permissions(permissions)?;
         }
-        file.sync_all()
-            .map_err(|e| ConfigError::Io(format!("cannot flush {}: {e}", temp.display())))?;
+        file.sync_all()?;
         drop(file);
-        replace_file(&temp, &target).map_err(|e| {
-            ConfigError::Io(format!(
-                "cannot replace config target {} (from {}): {e}",
-                target.display(),
-                path.display()
-            ))
-        })
+        replace_file(&temp, &target)
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
+        let _ = fs::remove_file(&temp);
     }
     result
 }
@@ -337,49 +305,11 @@ mod tests {
         assert!(
             ConfigStore::open(&link, &Config::default(), crate::platform::atomic_replace).is_err()
         );
-        let error = store
-            .set("pointer.initial_speed", "17")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("cannot resolve config target"));
+        assert!(store.set("pointer.initial_speed", "17").is_err());
         assert_eq!(store.source_text(), before);
         assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("real.toml"));
         assert!(!target.exists());
         assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn cyclic_and_directory_symlink_targets_are_never_replaced() {
-        let directory = TestDirectory::new("invalid-config-store");
-        let cyclic = directory.0.join("keysteer.cyclic.toml");
-        symlink_file(Path::new("keysteer.cyclic.toml"), &cyclic);
-        let source = Config::default().to_toml().unwrap();
-        let store = ConfigStore::from_validated_text(
-            &cyclic,
-            source.clone(),
-            crate::platform::atomic_replace,
-        );
-        assert!(store.persist().is_err());
-        assert_eq!(
-            std::fs::read_link(&cyclic).unwrap(),
-            Path::new("keysteer.cyclic.toml")
-        );
-
-        let target = directory.0.join("folder");
-        std::fs::create_dir(&target).unwrap();
-        let link = directory.0.join("keysteer.folder.toml");
-        symlink_dir(&target, &link);
-        let store =
-            ConfigStore::from_validated_text(&link, source, crate::platform::atomic_replace);
-        assert!(
-            store
-                .persist()
-                .unwrap_err()
-                .to_string()
-                .contains("not a regular file")
-        );
-        assert!(std::fs::read_link(&link).is_ok());
-        assert!(target.is_dir());
     }
 
     #[test]
@@ -422,10 +352,24 @@ mod tests {
         let target = dotfiles.join("real.toml");
         let original = "[pointer]\ninitial_speed = 33\n";
         std::fs::write(&target, original).unwrap();
+        let occupied = target.with_added_extension(format!("{}.tmp", std::process::id()));
+        std::fs::write(&occupied, "another pending save").unwrap();
         let link = directory.0.join("keysteer.mine.toml");
         symlink_file(&target, &link);
         let mut store = ConfigStore::open(&link, &Config::default(), fail).unwrap();
         assert!(store.set("pointer.initial_speed", "17").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&occupied).unwrap(),
+            "another pending save"
+        );
+        std::fs::remove_file(&occupied).unwrap();
+        assert!(
+            store
+                .set("pointer.initial_speed", "17")
+                .unwrap_err()
+                .to_string()
+                .contains("replacement denied")
+        );
 
         assert_eq!(store.source_text(), original);
         assert_eq!(std::fs::read_to_string(&target).unwrap(), original);

@@ -10,9 +10,7 @@ pub(crate) struct CliOptions {
     pub(crate) command: CliCommand,
 }
 
-// Diagnostic order preserves the existing dump > check > doctor precedence.
-// Startup options only modify CliOptions; Run never requests a console.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CliCommand {
     #[default]
     Run,
@@ -21,10 +19,6 @@ pub(crate) enum CliCommand {
     DumpConfig,
     Help,
     Version,
-}
-
-fn needs_console(args: &Result<CliOptions, String>) -> bool {
-    !matches!(args, Ok(options) if options.command == CliCommand::Run)
 }
 
 pub fn run_cli() -> ExitCode {
@@ -62,8 +56,8 @@ pub fn run_cli() -> ExitCode {
     };
     // Internal helpers have already returned. Parse once before preparing any
     // output so GUI options, including their values, never allocate a console.
-    if needs_console(&args) {
-        #[cfg(target_os = "windows")]
+    #[cfg(target_os = "windows")]
+    if !matches!(&args, Ok(options) if options.command == CliCommand::Run) {
         crate::platform::prepare_console_for_cli();
     }
     let log_path = match crate::support::logging::init(log_candidates()) {
@@ -132,23 +126,17 @@ fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOption
 
     while let Some(arg) = iter.next() {
         match arg.to_str() {
-            Some("-h" | "--help") => {
-                args.command = CliCommand::Help;
-                break;
-            }
-            Some("-V" | "--version") => {
-                args.command = CliCommand::Version;
-                break;
-            }
+            Some("-h" | "--help") => args.command = CliCommand::Help,
+            Some("-V" | "--version") => args.command = CliCommand::Version,
             Some("-c" | "--config") => {
                 let path = iter
                     .next()
                     .ok_or_else(|| format!("{} requires a path", arg.to_string_lossy()))?;
                 args.config = Some(PathBuf::from(path));
             }
-            Some("--check") => args.command = args.command.max(CliCommand::Check),
-            Some("--dump-config") => args.command = args.command.max(CliCommand::DumpConfig),
-            Some("--doctor") => args.command = args.command.max(CliCommand::Doctor),
+            Some("--check") => args.command = CliCommand::Check,
+            Some("--dump-config") => args.command = CliCommand::DumpConfig,
+            Some("--doctor") => args.command = CliCommand::Doctor,
             _ => return Err(format!("unknown argument: {}", arg.to_string_lossy())),
         }
     }
@@ -203,6 +191,8 @@ OPTIONS:
         --dump-config    Print the effective configuration and exit
     -h, --help           Show this help
     -V, --version        Show the version
+
+    If multiple commands are given, only the last one runs.
 
 MODES:
     idle             Silent resting state; only listens for the keys that
@@ -262,73 +252,49 @@ CONFIGURATION:
 mod tests {
     use super::*;
 
-    fn parse(arguments: &[&str]) -> Result<CliOptions, String> {
-        parse_args(arguments.iter().map(OsString::from))
-    }
-
     #[test]
-    fn gui_launch_options_and_option_values_do_not_request_a_console() {
-        for arguments in [
-            vec![],
-            vec!["-c", "keysteer.mine.toml"],
-            vec!["--config", "D:/dotfiles/keysteer.mine.toml"],
-            vec!["--config", "--doctor"],
-        ] {
-            let request = parse(&arguments);
-            assert!(!needs_console(&request), "{arguments:?}");
-            let options = request.unwrap();
-            assert_eq!(options.command, CliCommand::Run);
-            assert_eq!(options.config, arguments.last().map(PathBuf::from));
-        }
-    }
-
-    #[test]
-    fn output_commands_request_a_console_regardless_of_argument_order() {
-        for option in [
-            "--help",
-            "-h",
-            "--version",
-            "-V",
-            "--check",
-            "--dump-config",
-            "--doctor",
-        ] {
-            for arguments in [
-                vec![option],
-                vec!["--config", "keysteer.mine.toml", option],
-                vec![option, "--config", "keysteer.mine.toml"],
-            ] {
-                let parsed = parse(&arguments);
-                assert!(parsed.is_ok(), "{arguments:?}");
-                assert!(needs_console(&parsed), "{arguments:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn diagnostics_keep_the_config_path_and_existing_combined_options() {
-        for commands in [
-            ["--doctor", "--dump-config", "--check"],
-            ["--dump-config", "--check", "--doctor"],
-            ["--check", "--doctor", "--dump-config"],
-        ] {
-            let mut arguments = vec!["-c", "keysteer.mine.toml"];
-            arguments.extend(commands);
-            let options = parse(&arguments).unwrap();
-            assert_eq!(options.config, Some(PathBuf::from("keysteer.mine.toml")));
-            assert_eq!(options.command, CliCommand::DumpConfig);
-        }
-        for arguments in [["--check", "--doctor"], ["--doctor", "--check"]] {
-            assert_eq!(parse(&arguments).unwrap().command, CliCommand::Check);
-        }
-    }
-
-    #[test]
-    fn malformed_arguments_request_a_console_for_the_error() {
-        for arguments in [vec!["--unknown"], vec!["-c"], vec!["--config"]] {
-            let request = parse(&arguments);
-            assert!(request.is_err());
-            assert!(needs_console(&request));
+    fn parses_startup_options_and_output_commands() {
+        let cases: &[(&[&str], Option<CliCommand>)] = &[
+            (&[], Some(CliCommand::Run)),
+            (&["-c", "keysteer.mine.toml"], Some(CliCommand::Run)),
+            (&["--config", "--doctor"], Some(CliCommand::Run)),
+            (&["--doctor"], Some(CliCommand::Doctor)),
+            (
+                &["--check", "-c", "keysteer.mine.toml"],
+                Some(CliCommand::Check),
+            ),
+            (
+                &["-c", "keysteer.mine.toml", "--dump-config"],
+                Some(CliCommand::DumpConfig),
+            ),
+            (
+                &["--doctor", "--dump-config", "--check"],
+                Some(CliCommand::Check),
+            ),
+            (
+                &["--check", "--dump-config", "--doctor"],
+                Some(CliCommand::Doctor),
+            ),
+            (
+                &["--check", "--doctor", "--dump-config"],
+                Some(CliCommand::DumpConfig),
+            ),
+            (&["--help"], Some(CliCommand::Help)),
+            (&["--version"], Some(CliCommand::Version)),
+            (&["--help", "--version"], Some(CliCommand::Version)),
+            (&["--version", "--help"], Some(CliCommand::Help)),
+            (&["--help", "--check"], Some(CliCommand::Check)),
+            (&["--check", "--help"], Some(CliCommand::Help)),
+            (&["--config"], None),
+            (&["--unknown"], None),
+        ];
+        for (arguments, expected) in cases {
+            let parsed = parse_args(arguments.iter().map(OsString::from));
+            assert_eq!(
+                parsed.ok().map(|options| options.command),
+                *expected,
+                "{arguments:?}"
+            );
         }
     }
 
