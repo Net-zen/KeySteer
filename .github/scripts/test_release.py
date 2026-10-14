@@ -1,4 +1,5 @@
 import importlib.util
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import subprocess
@@ -16,6 +17,7 @@ def load(name):
 
 release_tag = load("release")
 cleanup_entry = load("cleanup_entry")
+cleanup_caches = load("cleanup_caches")
 
 
 class ReleaseTagTests(unittest.TestCase):
@@ -217,6 +219,60 @@ class CleanupEntryTests(unittest.TestCase):
             with self.subTest(outcome=outcome), patch.dict(cleanup_entry.os.environ, {**environment, "PAGES_RESULT": outcome}), patch.object(cleanup_entry, "api", side_effect=[self.run, self.entry_jobs, None]) as api:
                 cleanup_entry.main()
                 self.assertEqual(api.call_count, expected_calls)
+
+
+class CleanupCacheTests(unittest.TestCase):
+    now = datetime(2026, 10, 14, 12, tzinfo=timezone.utc)
+    repository = "dccif/KeySteer"
+
+    def test_last_use_controls_retention_and_the_boundary_is_preserved(self):
+        caches = [
+            {"id": 1, "created_at": "2025-01-01T00:00:00Z",
+             "last_accessed_at": "2026-10-14T11:59:59Z"},
+            {"id": 2, "last_accessed_at": "2026-10-07T12:00:00.000Z"},
+            {"id": 3, "last_accessed_at": "2026-10-07T13:00:00+01:00"},
+            {"id": 4, "last_accessed_at": "2026-10-07T11:59:59Z"},
+            {"id": 5, "last_accessed_at": None},
+        ]
+        response = subprocess.CompletedProcess([], 0, json.dumps([{"actions_caches": caches}]))
+        with patch.object(cleanup_caches.subprocess, "run", return_value=response) as run:
+            self.assertEqual(cleanup_caches.cleanup(self.repository, 7, self.now), 1)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args.args[0],
+                             ["gh", "cache", "delete", "4", "--repo", self.repository])
+
+    def test_all_pages_are_listed_before_deleting_by_id(self):
+        recent = {"key": "same-key", "last_accessed_at": "2026-10-14T10:00:00Z"}
+        pages = [
+            {"actions_caches": [{**recent, "id": cache_id} for cache_id in range(1, 101)]},
+            {"actions_caches": [
+                {"id": 101, "key": "same-key", "ref": "refs/tags/v0.11.8",
+                 "last_accessed_at": "2026-10-01T00:00:00Z"},
+            ]},
+        ]
+        response = subprocess.CompletedProcess([], 0, json.dumps(pages))
+        with patch.object(cleanup_caches.subprocess, "run", return_value=response) as run:
+            self.assertEqual(cleanup_caches.cleanup(self.repository, 7, self.now), 1)
+            self.assertEqual(run.call_args_list[0].args[0], [
+                "gh", "api", "--paginate", "--slurp",
+                f"repos/{self.repository}/actions/caches?per_page=100",
+            ])
+            self.assertEqual(run.call_args_list[1].args[0],
+                             ["gh", "cache", "delete", "101", "--repo", self.repository])
+
+    def test_retention_can_be_shortened_and_zero_is_rejected(self):
+        pages = [{"actions_caches": [{"id": 1, "last_accessed_at": "2026-10-10T00:00:00Z"}]}]
+        response = subprocess.CompletedProcess([], 0, json.dumps(pages))
+        with patch.object(cleanup_caches.subprocess, "run", return_value=response) as run:
+            self.assertEqual(cleanup_caches.cleanup(self.repository, 7, self.now), 0)
+            self.assertEqual(run.call_count, 1)
+        with patch.object(cleanup_caches.subprocess, "run", return_value=response):
+            self.assertEqual(cleanup_caches.cleanup(self.repository, 3, self.now), 1)
+        for days in (0, -1):
+            with self.subTest(days=days), patch.object(cleanup_caches.subprocess, "run") as run:
+                with self.assertRaises(ValueError):
+                    cleanup_caches.cleanup(self.repository, days, self.now)
+                run.assert_not_called()
 
 
 if __name__ == "__main__":

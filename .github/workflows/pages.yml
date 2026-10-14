@@ -146,6 +146,14 @@ jobs:
         uses: actions/deploy-pages@v5
 
       # Reuse the deployment runner; never allocate a cleanup-only runner.
+      - name: Clean unused caches
+        if: ${{ steps.deployment.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_MAX_IDLE_DAYS: ${{ vars.ACTIONS_CACHE_MAX_IDLE_DAYS || '7' }}
+        run: python3 .github/scripts/cleanup_caches.py
+
       - name: Clean entry
         if: ${{ inputs.entry_run_id != '' && steps.deployment.outcome == 'success' }}
         env:

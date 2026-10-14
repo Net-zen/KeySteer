@@ -132,35 +132,41 @@ jobs:
   windows:
     needs: source
     if: ${{ needs.source.outputs.sha != '' && needs.source.outputs.build_mode == 'cross' && (inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all') }}
-    name: Cross Windows ${{ matrix.arch }} ${{ matrix.variant }}
+    # Static names also render correctly when the job is skipped before expansion.
+    name: Cross Windows
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
+        build: [x64 compatible, x64 avx2, x64 avx512, ARM64]
         include:
-          - arch: x64
+          - build: x64 compatible
+            arch: x64
             variant: compatible
             target: x86_64-pc-windows-msvc
             xwin_arch: x86_64
             cpu: x86-64
             cl_flags: /clang:-march=x86-64
             artifact: KeySteer-Windows-x64-Compatible
-          - arch: x64
+          - build: x64 avx2
+            arch: x64
             variant: avx2
             target: x86_64-pc-windows-msvc
             xwin_arch: x86_64
             cpu: x86-64-v3
             cl_flags: /clang:-march=x86-64-v3
             artifact: KeySteer-Windows-x64
-          - arch: x64
+          - build: x64 avx512
+            arch: x64
             variant: avx512
             target: x86_64-pc-windows-msvc
             xwin_arch: x86_64
             cpu: x86-64-v4
             cl_flags: /clang:-march=x86-64-v4
             artifact: KeySteer-Windows-x64-AVX512
-          - arch: ARM64
+          - build: ARM64
+            arch: ARM64
             target: aarch64-pc-windows-msvc
             xwin_arch: aarch64
             cpu: generic
@@ -273,12 +279,13 @@ jobs:
   macos:
     needs: source
     if: ${{ needs.source.outputs.sha != '' && needs.source.outputs.build_mode == 'cross' && (inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all') }}
-    name: Cross macOS ${{ matrix.arch }}
+    name: Cross macOS
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
+        arch: [Apple Silicon, Intel]
         include:
           - arch: Apple Silicon
             target: aarch64-apple-darwin
@@ -377,12 +384,13 @@ jobs:
 
   native-windows:
     needs: source
-    name: Native Windows ${{ matrix.arch }}
+    name: Native Windows
     if: ${{ needs.source.outputs.sha != '' && needs.source.outputs.build_mode == 'native' && (inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all') }}
     runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
+        arch: [x64, ARM64]
         include:
           - arch: x64
             target: x86_64-pc-windows-msvc
@@ -446,7 +454,7 @@ jobs:
 
   native-macos:
     needs: source
-    name: Native macOS ${{ matrix.arch }}
+    name: Native macOS
     if: ${{ needs.source.outputs.sha != '' && needs.source.outputs.build_mode == 'native' && (inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all') }}
     # Link against the current AppKit SDK so standard controls adopt macOS 26
     # styling. package.sh retains the macOS 14 deployment target.
@@ -454,6 +462,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        arch: [Apple Silicon, Intel]
         include:
           - arch: Apple Silicon
             target: aarch64-apple-darwin

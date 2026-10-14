@@ -18,9 +18,9 @@
 # ---------------------------------------------------------------------------
 # BINDINGS
 #
-# Every binding is `<chord> = "<what it does>"`. There is no `action` prefix:
-# the same vocabulary is used by the program internally, by this file, and by
-# plugins, so a verb, a mode and a plugin mode all read the same way.
+# Every binding is `<chord> = "<what it does>"`. The same vocabulary is used
+# by the program internally, by this file, and by plugins, so a verb, a mode
+# and a plugin mode all read the same way.
 #
 #   h        = "move_left"            a verb, handled by the active mode
 #   g        = "grid"                 enter a mode (built-in or plugin)
