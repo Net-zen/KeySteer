@@ -280,14 +280,6 @@ impl Worker {
             setup: Arc::new(setup),
         }
     }
-    #[cfg(feature = "benchmark-hooks")]
-    pub(crate) fn benchmark(maximum: usize) -> Self {
-        let mut worker = Self::default();
-        Arc::get_mut(&mut worker.shared)
-            .unwrap_or_else(|| panic!("fresh benchmark worker must be exclusively owned"))
-            .maximum = maximum.clamp(8, 512);
-        worker
-    }
     pub(crate) fn prepare(&mut self, generation: u64) -> Result<Handle, String> {
         if self.thread.is_none() {
             let receiver = self

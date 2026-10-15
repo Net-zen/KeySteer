@@ -66,8 +66,13 @@ use std::path::{Path, PathBuf};
 // thread-affine Win32 region aperture with explicit HRGN transfer/cleanup, and
 // one bounded macOS opaque-owner/four-byte FFI call. Both samplers reuse small
 // capture resources; portable routing and cancellation contain no unsafe code.
-const MAX_UNSAFE_EXPRESSIONS: usize = 405;
-const MAX_UNSAFE_FILES: usize = 41;
+// Workspace notifications replace periodic focus/appearance polling with three
+// audited boundaries: NSObject initialization, exact selector/KVO registration,
+// and paired removal before the retained main-thread observer is released.
+// Callbacks only invalidate an atomic cache and wake the loop; no raw context,
+// engine borrow, Send/Sync override or ownership transfer is introduced.
+const MAX_UNSAFE_EXPRESSIONS: usize = 408;
+const MAX_UNSAFE_FILES: usize = 42;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
     // with one bounded diagnostic callback into centralized logging.
@@ -88,6 +93,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // the retained main-thread status target; no new raw native calls or Send/Sync.
     ("src/platform/macos/status_item.rs", 10),
     ("src/platform/macos/event_loop.rs", 6),
+    ("src/platform/macos/workspace.rs", 3),
     ("src/platform/windows/text_prompt.rs", 17),
     ("src/platform/macos/vision.rs", 7),
     ("src/platform/windows/accessibility.rs", 30),

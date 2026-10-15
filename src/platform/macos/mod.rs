@@ -24,9 +24,6 @@ mod window_move;
 mod window_tabs;
 mod workspace;
 
-#[cfg(feature = "benchmark-hooks")]
-pub use input::{CharacterCaptureProbe, observe_character_unfiltered};
-
 use crate::platform::common::event_queue::{self, Receiver, Sender};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -158,7 +155,7 @@ impl MacOsBackend {
             Vec::new()
         });
         let display_watcher = screens::DisplayWatcher::new()?;
-        let workspace = workspace::Workspace::new();
+        let workspace = workspace::Workspace::new(mtm);
         let keyboard = input::KeyboardInjector::new();
         let hook = match hook_start.and_then(|startup| {
             startup.finish(hook_deadline.saturating_duration_since(Instant::now()))
@@ -218,6 +215,23 @@ impl MacOsBackend {
             item.maintain_icon_attachment();
         }
         let _ = self.refresh_screens();
+    }
+
+    fn native_timeout(&mut self, timeout: Duration) -> Duration {
+        let timeout = timeout.min(self.status_item.as_ref().map_or(
+            Duration::MAX,
+            status_item::StatusItem::time_until_icon_retry,
+        ));
+        let timeout = timeout.min(
+            self.display_watcher
+                .as_ref()
+                .map_or(Duration::MAX, screens::DisplayWatcher::time_until_retry),
+        );
+        if self.window_move.get_mut().is_some() {
+            timeout.min(window_move::POLL_INTERVAL)
+        } else {
+            timeout
+        }
     }
 
     fn refresh_screens(&mut self) -> Result<(), String> {
@@ -559,13 +573,7 @@ impl Backend for MacOsBackend {
         self.native_loop_running = true;
         let result = event_loop::run(menu.as_deref(), &mut || {
             let next = turn(self)?;
-            Ok(next.map(|timeout| {
-                if self.window_move.get_mut().is_some() {
-                    timeout.min(window_move::POLL_INTERVAL)
-                } else {
-                    timeout
-                }
-            }))
+            Ok(next.map(|timeout| self.native_timeout(timeout)))
         });
         self.native_loop_running = false;
         Some(result)
@@ -573,7 +581,7 @@ impl Backend for MacOsBackend {
 
     fn poll(&mut self, timeout: Duration) -> Result<Option<BackendEvent>, String> {
         self.reap_update_worker();
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now().checked_add(timeout);
         loop {
             if let Some(event) = self.try_event() {
                 return Ok(Some(event));
@@ -601,13 +609,13 @@ impl Backend for MacOsBackend {
             if let Some(event) = self.try_event() {
                 return Ok(Some(event));
             }
-            let mut remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.map_or(Duration::MAX, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
             if remaining.is_zero() || self.native_loop_running {
                 return Ok(None);
             }
-            if self.window_move.get_mut().is_some() {
-                remaining = remaining.min(window_move::POLL_INTERVAL);
-            }
+            let remaining = self.native_timeout(remaining);
             if self.frame_clock.is_running() {
                 if let Some(elapsed) = self.frame_clock.next(remaining) {
                     return Ok(Some(BackendEvent::Frame(elapsed)));

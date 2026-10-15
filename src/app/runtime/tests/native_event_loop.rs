@@ -1,4 +1,20 @@
 #[test]
+fn idle_wait_has_no_deadline_but_scheduled_work_still_wakes_on_time() {
+    let mut engine = Engine::new(Config::default(), Appearance::Dark);
+    assert_eq!(engine.next_timeout(), Duration::MAX);
+    let now = Instant::now();
+    engine.scheduler.timers.insert("soon".into(), Timer {
+        fires_at: now + Duration::from_millis(10), last_fired: now,
+        interval: None, owner: ModeId::idle(),
+    });
+    assert!(engine.next_timeout() <= Duration::from_millis(10));
+    engine.scheduler.timers.get_mut("soon").unwrap().fires_at = now;
+    assert_eq!(engine.next_timeout(), Duration::ZERO);
+    engine.scheduler.timers.clear();
+    assert_eq!(engine.next_timeout(), Duration::MAX);
+}
+
+#[test]
 fn native_event_loop_keeps_grid_selection_across_dispatch_boundaries() {
     for mode in ["grid", "recursive_grid"] {
         let mut config = blind_config("grid", "[]");

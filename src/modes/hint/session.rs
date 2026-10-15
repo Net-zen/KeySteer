@@ -17,8 +17,10 @@ use crate::api::hint::LabelDirection;
 #[derive(Default)]
 pub(super) struct ScanSession {
     pub(super) scanned: Vec<UiTarget>,
-    /// Prepared prefix of scanned; append preserves it, retirement invalidates it.
+    /// Prepared prefix of scanned; stable metadata updates invalidate only their slots.
     pub(super) search_text: Vec<super::search::SearchText>,
+    /// Each invalidated slot occurs once, regardless of updates before prewarming.
+    search_dirty: SmallVec<[usize; 8]>,
     pub(super) search_hints: Vec<CompactHint<usize>>,
     /// Positions in search_hints, rebuilt after each query or scan update.
     pub(super) search_matches: Vec<usize>,
@@ -33,6 +35,8 @@ pub(super) struct ScanSession {
     pub(super) search_terms: super::search::SearchTerms,
     pub(super) search_selection: crate::api::text_edit::Selection,
     pub(super) search_names_initialized: bool,
+    /// The current text query is waiting for cooperative index preparation.
+    pub(super) search_pending: bool,
     // One head per geometry; collision links are contiguous and need no bucket drops.
     next_same_rect: Vec<usize>,
     // Compact hash buckets; collision chains verify the full quantized geometry.
@@ -73,6 +77,7 @@ impl ScanSession {
         self.expected_activation = None;
         self.scanned = Vec::new();
         self.search_text = Vec::new();
+        self.search_dirty = SmallVec::new();
         self.search_hints = Vec::new();
         self.search_matches = Vec::new();
         self.search_cycle = Default::default();
@@ -83,6 +88,7 @@ impl ScanSession {
         self.search_query = String::new();
         self.search_terms = Default::default();
         self.search_names_initialized = false;
+        self.search_pending = false;
         self.release_scan_index();
         // Keep only bounded, empty label storage between scans. Target names,
         // indices and scene contents still belong exclusively to one scan.
@@ -190,7 +196,6 @@ impl ScanSession {
                 self.rebuild_target_lookup();
                 self.invalidate_search_names();
             } else if first_changed < before {
-                self.search_text.truncate(first_changed);
                 self.search_names_initialized = false;
             }
         }
@@ -348,6 +353,11 @@ impl ScanSession {
             if self.scanned[index] != targets[incoming] {
                 std::mem::swap(&mut self.scanned[index], &mut targets[incoming]);
                 first_changed = first_changed.min(index);
+                if let Some(text) = self.search_text.get_mut(index)
+                    && text.invalidate()
+                {
+                    self.search_dirty.push(index);
+                }
             }
             *marker = 0;
             consumed.push(incoming);
@@ -377,6 +387,7 @@ impl ScanSession {
 
     fn invalidate_search_names(&mut self) {
         self.search_text.clear();
+        self.search_dirty.clear();
         self.search_names_initialized = false;
     }
 
@@ -450,11 +461,18 @@ impl ScanSession {
         changed
     }
 
-    /// Prepare a bounded prefix without discarding previous work. Returns true
-    /// once all current targets are indexed, including late scan additions.
-    pub(super) fn prepare_search_names(&mut self, limit: usize) -> bool {
+    /// Repair changed slots, then extend the prepared prefix within one shared
+    /// work budget. Unchanged targets retain their text allocations.
+    pub(super) fn prepare_search_names(&mut self, mut limit: usize) -> bool {
         if self.search_names_initialized {
             return true;
+        }
+        while limit > 0 {
+            let Some(index) = self.search_dirty.pop() else {
+                break;
+            };
+            self.search_text[index] = super::search::SearchText::target(&self.scanned[index]);
+            limit -= 1;
         }
         let prepared = self.search_text.len();
         debug_assert!(prepared <= self.scanned.len());
@@ -465,7 +483,7 @@ impl ScanSession {
                 .iter()
                 .map(super::search::SearchText::target),
         );
-        self.search_names_initialized = end == self.scanned.len();
+        self.search_names_initialized = self.search_dirty.is_empty() && end == self.scanned.len();
         self.search_names_initialized
     }
 
@@ -829,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_and_new_field_keep_existing_slots_labels_and_search_prefix() {
+    fn metadata_and_new_field_keep_existing_slots_labels_and_search_index() {
         let alphabet: Vec<_> = "asdfghjkl".chars().collect();
         let mut session = labeled_session(8, &alphabet, LabelDirection::Normal);
         session.ensure_search_names();
@@ -855,7 +873,8 @@ mod tests {
             (true, true)
         );
         assert_eq!(session.scanned[3], update);
-        assert_eq!(session.search_text.len(), 3);
+        assert_eq!(session.search_text.len(), 8);
+        assert_eq!(session.search_dirty.as_slice(), &[3]);
         assert_eq!(
             session.hints[..8]
                 .iter()
@@ -864,8 +883,62 @@ mod tests {
             original
         );
         assert_ne!(session.hints[8].label, session.hints[3].label);
-        session.ensure_search_names();
+        assert!(!session.prepare_search_names(1));
         assert!(session.search_text[3].matches("updated", ""));
+        assert_eq!(session.search_text.len(), 8);
+        assert!(session.prepare_search_names(1));
+        assert!(session.search_text[8].matches("field", ""));
+    }
+
+    #[test]
+    fn repeated_metadata_changes_rebuild_only_dirty_slots_and_use_latest_text() {
+        let alphabet = ['a', 's', 'd'];
+        let mut session = labeled_session(512, &alphabet, LabelDirection::Normal);
+        session.ensure_search_names();
+        for name in ["first caption", "latest caption"] {
+            let mut update = session.scanned[0].clone();
+            update.name = name.into();
+            assert_eq!(
+                session.apply_stable_update(
+                    vec![update.clone()],
+                    &[update.rect],
+                    &alphabet,
+                    LabelDirection::Normal,
+                    true,
+                ),
+                (true, true)
+            );
+        }
+        assert_eq!(session.search_text.len(), 512);
+        // One unit repairs the changed target; the other 511 were never invalidated.
+        assert!(session.prepare_search_names(1));
+        assert!(session.search_text[0].matches("latest", ""));
+        assert!(!session.search_text[0].matches("first", ""));
+        assert!(session.search_text[511].matches("511", ""));
+
+        let mut update = session.scanned[1].clone();
+        update.name = "dirty before removal".into();
+        session.apply_stable_update(
+            vec![update.clone()],
+            &[update.rect],
+            &alphabet,
+            LabelDirection::Normal,
+            true,
+        );
+        let removed = session.scanned[0].rect;
+        session.apply_stable_update(
+            Vec::new(),
+            &[removed],
+            &alphabet,
+            LabelDirection::Normal,
+            true,
+        );
+        assert!(session.search_dirty.is_empty());
+        session.ensure_search_names();
+        assert!(session.search_text[0].matches("dirty", ""));
+        assert!(session.search_text[1].matches("2", ""));
+        session.clear_results();
+        assert_eq!(session.search_dirty.capacity(), 8);
     }
 
     #[test]

@@ -137,6 +137,7 @@ pub trait Backend {
     /// Invoke `turn` on the engine thread without retaining it after returning,
     /// without reentering it, and without holding another backend borrow.
     /// `Some(delay)` schedules the next nonblocking turn; `None` requests exit.
+    /// `Duration::MAX` means wait for an event without a deadline.
     /// Wake promptly for queued input/results even before that deadline. Errors
     /// must unwind native tracking and return so the engine can clean up.
     /// Return `None` without calling `turn` to use the ordinary polling loop.
@@ -178,6 +179,8 @@ pub trait Backend {
     ///
     /// Returning `Ok(None)` on timeout is how the engine gets its chance to
     /// run timers, so backends must honour the timeout even when idle.
+    /// `Duration::MAX` means wait for an event without a deadline. Do not add
+    /// this sentinel to an `Instant`; native maintenance may shorten the wait.
     fn poll(&mut self, timeout: std::time::Duration) -> Result<Option<BackendEvent>, String>;
 
     /// Tell the backend how to dispose of the key event it just delivered.

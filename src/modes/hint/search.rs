@@ -249,6 +249,12 @@ fn quality_positions(
 }
 
 impl SearchText {
+    /// Queue at most one rebuild for a changed target. A valid split can never
+    /// reach usize::MAX; keep the dirty marker in the existing index word.
+    pub(super) fn invalidate(&mut self) -> bool {
+        std::mem::replace(&mut self.initials_start, usize::MAX) != usize::MAX
+    }
+
     pub(super) fn target(target: &crate::api::UiTarget) -> Self {
         let Some(details) = target.details.as_deref() else {
             return Self::new(&target.name, target.role);
@@ -371,11 +377,25 @@ pub(super) fn filter(
     query: &str,
     priority: &crate::api::hint::CompiledSearchPriority,
 ) -> bool {
-    if query
+    let needs_names = query
         .split_whitespace()
-        .any(|word| !word.starts_with('@') && !word.ends_with('@'))
-    {
-        session.ensure_search_names();
+        .any(|word| !word.starts_with('@') && !word.ends_with('@'));
+    // Small lists complete more cheaply than showing a preparation scene and
+    // returning through the scheduler. Keep the large-list input budget small.
+    let budget = if session.scanned.len() <= 2_048 {
+        2_048
+    } else {
+        super::SEARCH_PREWARM_TARGETS
+    };
+    session.search_pending = needs_names && !session.prepare_search_names(budget);
+    if session.search_pending {
+        // Never expose old candidates as matches for new text. Keep the label
+        // storage for reuse; the mode displays preparation status until ready.
+        session.search_matches.clear();
+        session.search_cycle.clear();
+        session.search_focus = None;
+        session.search_selected.clear();
+        return false;
     }
     let mut display_changed = false;
     let query = if !query.chars().any(char::is_uppercase) {

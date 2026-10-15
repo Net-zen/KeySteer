@@ -22,6 +22,7 @@ Mode → HostContext::present(View) → presentation → OverlayScene
 
 - 同步 Hook 先取得 consume/forward 决定，再执行可能耗时的动作；不得让 Hook 与 Engine 互相等待。
 - 后端可通过 `Backend::run_event_loop` 驱动有界、非阻塞的引擎回合；不支持时使用普通 poll 循环。原生驱动必须在引擎／后端借用之外派发系统事件，回调不能重入或逃逸。输入、帧、异步结果和定时任务共用原有路由，菜单跟踪不暂停模式、不重启或清空选择。退出和错误先退出原生循环，再执行统一清理。
+- 没有定时任务时 `Duration::MAX` 表示无截止时间等待，由原生事件立即唤醒，不保留引擎心跳；有任务时使用最近的真实截止时间。后端不能把该哨兵直接加到 `Instant`；通知不可用时的降级轮询、尚未完成的原生确认及重试由后端提供期限。
 - Down/Up 保持配对；held release 交给按下时的 owner，不在松键时重新解释绑定。
 - 退出、暂停、捕获丢失及失败恢复都要清理合成保持状态；先尽力完成恢复，再统一记录错误。
 - 成功的合成 click/double-click 只发一次语义 `Clicked`；物理点击和 press/release/toggle 不发。

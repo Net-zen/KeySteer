@@ -114,13 +114,6 @@ impl Default for CharacterCapture {
     }
 }
 
-/// Expose the same production converter without candidate filtering for the
-/// standalone, uninstrumented release benchmark's conservative reference path.
-#[cfg(feature = "benchmark-hooks")]
-pub fn observe_character_unfiltered(vk: u32, scan: u32, pressed: [u64; 4]) -> Option<char> {
-    translate_character(vk, scan, pressed, foreground_keyboard_layout(), None)
-}
-
 pub(super) static CHARACTER_CAPTURE: CharacterCapture = CharacterCapture::new();
 
 fn foreground_keyboard_layout() -> KeyboardLayout {

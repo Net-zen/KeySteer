@@ -449,11 +449,15 @@ pub(crate) fn apps_use_light_theme() -> bool {
 
 #[inline(always)]
 pub(crate) fn wait_for_input(timeout_ms: u32) {
-    use windows::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjects, QS_ALLINPUT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, QS_ALLINPUT,
+    };
 
     // SAFETY: no handles are supplied, so Windows waits only on queued input.
     unsafe {
-        MsgWaitForMultipleObjects(None, false, timeout_ms, QS_ALLINPUT);
+        // Include messages observed by PeekMessage but left in the queue by a
+        // bounded pump. Waiting only for new input could strand that backlog.
+        MsgWaitForMultipleObjectsEx(None, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 }
 

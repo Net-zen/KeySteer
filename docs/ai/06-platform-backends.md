@@ -32,6 +32,8 @@ Windows/macOS 的连续滚动共用 `common/scroll_worker.rs`：待执行邮箱�
 
 macOS 使用 AppKit 的 NSMenu 和非模态标准 About 面板，由系统决定外观，不覆盖系统材质。`event_loop.rs` 在主线程派发 AppKit 事件，注册 common、event-tracking 和 modal-panel 模式的 observer 与可复用 deadline timer；原生菜单的嵌套循环期间仍驱动同一个 Engine。普通输入、异步完成和显示帧唤醒原生循环，期限按引擎定时任务及待确认窗口移动调整，不增加固定高频轮询。`display_link.rs` 在相同模式注册显示帧。
 
+空闲时不安排周期性的引擎回合。macOS `workspace.rs` 保留 NSWorkspace 应用切换通知及 NSApplication.effectiveAppearance 的 KVO observer，通知只标记缓存失效并唤醒主循环，下一回合读取状态；析构先注销再释放 observer。显示枚举失败和状态图标尚未挂接时按实际重试期限唤醒，恢复后移除期限。Windows 使用消息等待及 `MWMO_INPUTAVAILABLE`，已查看但未移除的消息也必须唤醒；只有前台或托盘通知源无法建立时才降级为 50 ms 轮询。无截止时间使用 INFINITE，有限期限向上取整到毫秒且不能误映射为 INFINITE。
+
 通用回合的有界批处理、事件路由、定时任务和退出清理只存在于 `app/runtime`，两种驱动都复用它。`event_loop.rs` 只拥有 AppKit/CFRunLoop 适配，并集中原来分散在 workspace/display-link 的原生唤醒、等待和事件派发；`workspace.rs` 只缓存焦点与外观。Windows 托盘线程无需这套嵌套循环适配，不能把 AppKit 注册或原生回调寿命搬到公共层。
 
 每个回合有事件数量上限；native-driven poll 不派发 AppKit 事件、不等待，避免持有 Engine/Backend 借用时进入菜单循环。回调通过 RefCell 拒绝重入，在 FFI 边界收束 Rust panic。退出／错误先取消状态菜单跟踪并退出原生循环，注销 observer/timer 后才统一关闭后端资源；注册对象不得比回调上下文活得更久。模式仍遵循原有焦点、点击和完成规则，不因菜单开闭额外进入 idle。

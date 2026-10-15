@@ -1,7 +1,9 @@
 //! Display snapshots and event-driven reconfiguration notices.
 
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use core_graphics::base::kCGErrorSuccess;
 use core_graphics::display::{CGDirectDisplayID, CGDisplay};
@@ -13,6 +15,7 @@ use crate::api::geometry::{Rect, Screen};
 pub struct DisplayWatcher {
     registered: bool,
     stop_failure_returned: bool,
+    retry_at: Cell<Option<Instant>>,
 }
 
 static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
@@ -28,15 +31,33 @@ impl DisplayWatcher {
         Ok(Self {
             registered: true,
             stop_failure_returned: false,
+            retry_at: Cell::new(None),
         })
     }
 
     pub fn take_changed(&self) -> bool {
-        DISPLAY_CHANGED.swap(false, Ordering::AcqRel)
+        let changed = DISPLAY_CHANGED.swap(false, Ordering::AcqRel);
+        let retry = self
+            .retry_at
+            .get()
+            .is_some_and(|deadline| deadline <= Instant::now());
+        if changed || retry {
+            self.retry_at.set(None);
+        }
+        changed || retry
     }
 
     pub fn retry_refresh(&self) {
-        DISPLAY_CHANGED.store(true, Ordering::Release);
+        if self.retry_at.get().is_none() {
+            self.retry_at
+                .set(Some(Instant::now() + Duration::from_millis(250)));
+        }
+    }
+
+    pub(super) fn time_until_retry(&self) -> Duration {
+        self.retry_at.get().map_or(Duration::MAX, |deadline| {
+            deadline.saturating_duration_since(Instant::now())
+        })
     }
 
     pub fn stop(&mut self) -> Result<(), String> {

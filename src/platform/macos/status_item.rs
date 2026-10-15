@@ -538,9 +538,16 @@ impl StatusItem {
         }
     }
 
+    pub(super) fn time_until_icon_retry(&self) -> Duration {
+        self.icon_attach_retry
+            .as_ref()
+            .map_or(Duration::MAX, |retry| {
+                retry.next_attempt.saturating_duration_since(Instant::now())
+            })
+    }
+
     /// Complete icon attachment when a cold login creates the status item
-    /// before its native button is hosted. This reuses Backend::poll and never
-    /// creates a timer, thread, item replacement, or visibility loop.
+    /// before its native button is hosted. Only pending retries arm a deadline.
     pub(super) fn maintain_icon_attachment(&mut self) {
         let Some(retry) = self.icon_attach_retry.as_mut() else {
             return;

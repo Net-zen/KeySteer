@@ -74,7 +74,9 @@ impl Scheduler {
 
 impl Engine {
     pub(super) fn next_timeout(&self) -> Duration {
-        const MAX: Duration = Duration::from_millis(50);
+        // No heartbeat: native input/results wake the backend. Only real work
+        // supplies a deadline; backends own any degraded-notification fallback.
+        const MAX: Duration = Duration::MAX;
         if self.scheduler.timers.is_empty()
             && self.scheduler.sequences.is_empty()
             && self.input.pending_long_press_toggles.is_empty()
@@ -111,7 +113,6 @@ impl Engine {
             .map(|fires_at| fires_at.saturating_duration_since(now))
             .min()
             .unwrap_or(MAX)
-            .min(MAX)
     }
 
     pub(super) fn fire_due_sequences(&mut self, backend: &mut dyn Backend) -> Result<(), String> {

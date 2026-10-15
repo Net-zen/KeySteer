@@ -32,9 +32,6 @@ mod window_manager;
 mod window_mover;
 mod window_tabs;
 
-#[cfg(feature = "benchmark-hooks")]
-pub use input::{CharacterCapture, observe_character_unfiltered};
-
 use crate::platform::common::event_queue::{self, Receiver, Sender};
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -166,6 +163,26 @@ const fn strategy_prewarms_uia(strategy: Option<crate::api::UiScanStrategy>) -> 
         strategy,
         Some(crate::api::UiScanStrategy::AxTree | crate::api::UiScanStrategy::Hybrid)
     )
+}
+
+fn notification_poll_timeout(timeout: Duration, native_notifications: bool) -> Duration {
+    if native_notifications {
+        timeout
+    } else {
+        // Remote/stripped-down shells may lack either notification source.
+        timeout.min(Duration::from_millis(50))
+    }
+}
+
+fn wait_millis(timeout: Duration) -> u32 {
+    if timeout == Duration::MAX {
+        u32::MAX // Win32 INFINITE, reserved exclusively for no deadline.
+    } else {
+        timeout
+            .as_nanos()
+            .div_ceil(1_000_000)
+            .min((u32::MAX - 1) as u128) as u32
+    }
 }
 
 impl WindowsBackend {
@@ -739,8 +756,11 @@ impl Backend for WindowsBackend {
 
         // Sleep until input arrives or the timeout expires, so the engine's
         // timers stay punctual without spinning.
-        let millis = timeout.as_millis().min(u32::MAX as u128) as u32;
-        native::wait_for_input(millis);
+        let timeout = notification_poll_timeout(
+            timeout,
+            self.foreground_watcher.is_some() && self.status_item.is_some(),
+        );
+        native::wait_for_input(wait_millis(timeout));
 
         if !self.pump_messages() {
             return Ok(Some(BackendEvent::Quit));
@@ -1107,6 +1127,54 @@ fn system_appearance() -> Appearance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_wait_retains_fallback_polling_and_short_timer_deadlines() {
+        let idle = Duration::MAX;
+        assert_eq!(notification_poll_timeout(idle, true), idle);
+        assert_eq!(
+            notification_poll_timeout(idle, false),
+            Duration::from_millis(50)
+        );
+        for notifications in [false, true] {
+            assert_eq!(
+                notification_poll_timeout(Duration::ZERO, notifications),
+                Duration::ZERO
+            );
+            assert_eq!(
+                notification_poll_timeout(Duration::from_millis(5), notifications),
+                Duration::from_millis(5)
+            );
+        }
+    }
+
+    #[test]
+    fn native_wait_distinguishes_no_deadline_and_rounds_up_submillisecond_work() {
+        assert_eq!(wait_millis(Duration::MAX), u32::MAX);
+        assert_eq!(wait_millis(Duration::ZERO), 0);
+        assert_eq!(wait_millis(Duration::from_nanos(1)), 1);
+        assert_eq!(wait_millis(Duration::from_micros(1001)), 2);
+        assert_eq!(
+            wait_millis(Duration::from_secs(u32::MAX as u64)),
+            u32::MAX - 1
+        );
+    }
+
+    #[test]
+    fn native_wait_wakes_for_previously_observed_queued_messages() {
+        std::thread::spawn(|| {
+            let owner = native::prepare_thread_message_queue();
+            native::post_thread_message(owner, WAKE_MESSAGE, 0).unwrap();
+            // Peek without removing makes the wake old input to Win32.
+            native::prepare_thread_message_queue();
+            let start = std::time::Instant::now();
+            native::wait_for_input(1_000);
+            assert!(start.elapsed() < Duration::from_millis(500));
+            assert!(native::pump_window_messages());
+        })
+        .join()
+        .unwrap();
+    }
 
     #[test]
     fn only_accessibility_strategies_prewarm_uia() {

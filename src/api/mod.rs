@@ -52,11 +52,9 @@ pub use plugin::Plugin;
 pub use style::{BoundaryHighlight, HintPlacement, LabelUi, SearchInputUi};
 pub use theme::{Palette, ThemedColor};
 
-#[cfg(feature = "benchmark-hooks")]
-pub use backend::KeyDisposition;
-#[cfg(any(test, feature = "benchmark-hooks"))]
+#[cfg(test)]
 pub use command::UiScanResult;
-#[cfg(any(target_os = "windows", test, feature = "benchmark-hooks"))]
+#[cfg(any(target_os = "windows", test))]
 pub use command::UiScanStatus;
-#[cfg(any(test, feature = "benchmark-hooks"))]
+#[cfg(test)]
 pub use input::InputEvent;
