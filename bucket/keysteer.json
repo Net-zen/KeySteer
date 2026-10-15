@@ -6,11 +6,11 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/dccif/KeySteer/releases/download/v0.12.0/KeySteer-v0.12.0-x86_64-pc-windows-msvc.zip",
-            "hash": "17b18dc6cd5fc50666bebced06221dd1fdef99258f131a4fc1454bdb51433c68"
+            "hash": "7cd845248ccb8dafa36d9d7001f92628b3fc52a73b238860cbcb87e3d80bd076"
         },
         "arm64": {
             "url": "https://github.com/dccif/KeySteer/releases/download/v0.12.0/KeySteer-v0.12.0-aarch64-pc-windows-msvc.zip",
-            "hash": "8e72c4005218a57ac310acdbc9d131e408287aa1c3df050e493c5d6cae360a70"
+            "hash": "1323b4ff7a7c88b5554ff99b38059f9060b1a447ab5ad85e82e4363e961b8e8c"
         }
     },
     "extract_dir": "KeySteer",

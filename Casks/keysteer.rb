@@ -3,8 +3,8 @@ cask "keysteer" do
   arch arm: "aarch64", intel: "x86_64"
 
   version "0.12.0"
-  sha256 arm:   "399a882ae9275c1824715074b32740f59d9c73774b300a52642b051c756e14e5",
-         intel: "e06ab37872aa73436b7a61a69def73333532d3820478304fd0b7486073efbe72"
+  sha256 arm:   "80ba8dec1bb93be897811b35b1c02154d58ec90ddc3f918c93449abaf55f626a",
+         intel: "9ecaac2d397550975ed3005aa454603693c06ad78c5a54aa1d09356a72839f1c"
 
   url "https://github.com/dccif/KeySteer/releases/download/v0.12.0/KeySteer-v#{version}-#{arch}-apple-darwin.zip"
   name "KeySteer"
