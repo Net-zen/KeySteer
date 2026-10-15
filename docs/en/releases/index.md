@@ -5,6 +5,12 @@ outline: false
 
 # Release notes
 
+## 0.12.0
+
+- **Quieter at idle, quicker to respond.** The core loop now wakes for events and scheduled work, eliminating routine idle polling.
+- UIHint search prepares work in small batches with input taking priority, rebuilding only changed entries for smoother searches on complex screens.
+- Logging now runs asynchronously, reducing disk I/O on the interaction thread.
+
 ## 0.11.9
 
 - Added support for reading and saving configuration files through symbolic links.

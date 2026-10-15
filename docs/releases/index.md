@@ -5,6 +5,16 @@ outline: false
 
 # 更新日志 / Release Notes
 
+## 0.12.0
+
+- **闲时更安静，操作更跟手。** 核心循环改为事件驱动，告别常规空闲轮询，输入和任务到来时按需唤醒。
+- UIHint 搜索分批预热、输入优先，目标更新只重建变化部分，让复杂界面下的搜索更流畅。
+- 日志改为异步写入，减少磁盘操作对交互的干扰。
+
+- **Quieter at idle, quicker to respond.** The core loop now wakes for events and scheduled work, eliminating routine idle polling.
+- UIHint search prepares work in small batches with input taking priority, rebuilding only changed entries for smoother searches on complex screens.
+- Logging now runs asynchronously, reducing disk I/O on the interaction thread.
+
 ## 0.11.9
 
 - 支持读取和保存符号链接配置文件。
