@@ -1,0 +1,86 @@
+[
+  {
+    "name": "default input raised from bottom and information separated above",
+    "config": "",
+    "screen": [0, 0, 1000, 800], "window": [100, 100, 600, 500], "scale": 1,
+    "input": [360, 741.4, 280, 37.2], "info": [240, 571.688, 520, 158]
+  },
+  {
+    "name": "negative secondary display coordinates",
+    "config": "",
+    "screen": [-1920, -200, 1920, 1080], "window": [-1720, -50, 1000, 700], "scale": 1,
+    "input": [-1100, 807.4, 280, 37.2], "info": [-1220, 637.688, 520, 158]
+  },
+  {
+    "name": "input follows window center",
+    "config": "[ui_hint.search_input_ui]\nposition_mode = 'window'\nposition = ['50%', '50%', '50%', '50%']",
+    "screen": [0, 0, 1000, 800], "window": [100, 100, 600, 500], "scale": 1,
+    "input": [260, 331.4, 280, 37.2], "info": [140, 161.688, 520, 158]
+  },
+  {
+    "name": "missing reference window falls back to display",
+    "config": "[ui_hint.search_input_ui]\nposition_mode = 'window'\nposition = ['50%', '50%', '50%', '50%']",
+    "screen": [0, 0, 1000, 800], "window": null, "scale": 1,
+    "input": [360, 381.4, 280, 37.2], "info": [240, 211.688, 520, 158]
+  },
+  {
+    "name": "information follows the bottom of the input",
+    "config": "[ui_hint.search_input_ui]\nposition = ['50%', '50%', '50%', '50%']\n[ui_hint.search_info_ui]\nposition = ['100%', '50%', '0%', '50%']",
+    "screen": [0, 0, 1000, 800], "window": [100, 100, 600, 500], "scale": 1,
+    "input": [360, 381.4, 280, 37.2], "info": [240, 516.2, 520, 158]
+  },
+  {
+    "name": "range selection uses its center",
+    "config": "[ui_hint.search_input_ui]\nposition = ['30%', '20%', '50%', '20%']",
+    "screen": [0, 0, 1000, 800], "window": [100, 100, 600, 500], "scale": 1,
+    "input": [360, 301.4, 280, 37.2], "info": [240, 131.688, 520, 158]
+  },
+  {
+    "name": "panels stay within the screen at a corner",
+    "config": "[ui_hint.search_input_ui]\nposition = ['0%', '100%', '100%', '0%']",
+    "screen": [0, 0, 1000, 800], "window": [100, 100, 600, 500], "scale": 1,
+    "input": [0, 0, 280, 37.2], "info": [0, 0, 520, 158]
+  },
+  {
+    "name": "scaled panels cap their width to the display",
+    "config": "",
+    "screen": [0, 0, 1000, 800], "window": [100, 100, 600, 500], "scale": 2,
+    "input": [220, 722.8, 560, 74.4], "info": [0, 383.376, 1000, 316]
+  },
+  {
+    "name": "oversized information clamps before clipping to a tiny window",
+    "config": "[ui_hint.search_input_ui]\nposition_mode = 'window'\n[ui_hint.search_info_ui]\nposition_mode = 'window'",
+    "screen": [0, 0, 1000, 800], "window": [100, 790, 50, 10], "scale": 1,
+    "input": [100, 790, 50, 10], "info": [100, 642, 50, 10]
+  },
+  {
+    "name": "legacy anchors retain their directions",
+    "config": "[ui_hint.search_input_ui]\nposition_mode = 'window'\nposition = 'top_right'\n[ui_hint.search_info_ui]\nposition = 'bottom_center'",
+    "screen": [0, 0, 1000, 800], "window": [100, 100, 600, 500], "scale": 1,
+    "input": [420, 100, 280, 37.2], "info": [300, 234.8, 520, 158]
+  },
+  {
+    "name": "independent information uses its own window anchor",
+    "config": "[ui_hint.search_info_ui]\nposition_mode = 'window'\nposition = 'bottom_right'",
+    "screen": [0, 0, 1000, 800], "window": [100, 100, 600, 500], "scale": 1,
+    "input": [360, 741.4, 280, 37.2], "info": [180, 442, 520, 158]
+  },
+  {
+    "name": "custom font and automatic padding change both panel heights",
+    "config": "[ui_hint.search_input_ui]\nposition = ['50%', '50%', '50%', '50%']\nwidth = 320\nfont_size = 20\npadding_y = -1\n[ui_hint.search_info_ui]\nfont_size = 10\npadding_y = -1",
+    "screen": [0, 0, 1000, 800], "window": [100, 100, 600, 500], "scale": 1,
+    "input": [340, 378, 320, 44], "info": [240, 275.72, 520, 94]
+  },
+  {
+    "name": "midline means adjacent above with zero gap",
+    "config": "[ui_hint.search_input_ui]\nposition = ['50%', '50%', '50%', '50%']\n[ui_hint.search_info_ui]\nposition = ['50%', '50%', '50%', '50%']",
+    "screen": [0, 0, 1000, 800], "window": null, "scale": 1,
+    "input": [360, 381.4, 280, 37.2], "info": [240, 223.4, 520, 158]
+  },
+  {
+    "name": "position alone controls the gap below without offsets",
+    "config": "[ui_hint.search_input_ui]\nposition = ['50%', '50%', '50%', '50%']\n[ui_hint.search_info_ui]\nposition = ['56%', '50%', '44%', '50%']",
+    "screen": [0, 0, 1000, 800], "window": null, "scale": 1,
+    "input": [360, 381.4, 280, 37.2], "info": [240, 430.312, 520, 158]
+  }
+]

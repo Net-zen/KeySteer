@@ -1,0 +1,155 @@
+[
+  {
+    "name": "discard both panel offsets regardless of their value types",
+    "source": "[ui_hint.search_input_ui]\nx_offset = 'ignored'\ny_offset = [1, 2]\nwidth = 320\n[ui_hint.search_info_ui]\nx_offset = { old = true }\ny_offset = 9000\nfont_size = 18",
+    "normalized": "[ui_hint.search_input_ui]\nwidth = 320\n[ui_hint.search_info_ui]\nfont_size = 18"
+  },
+  {
+    "name": "preserve the color swatch's current offsets",
+    "source": "[ui_hint.search_info_ui]\nx_offset = 123\n[ui_hint.search_point.color_preview]\nx_offset = 12\ny_offset = -8",
+    "normalized": "[ui_hint.search_info_ui]\n[ui_hint.search_point.color_preview]\nx_offset = 12\ny_offset = -8"
+  },
+  {
+    "name": "window exit destination migration",
+    "source": "[window]\nexit_mode = 'idle'",
+    "error": "window.exit_mode was removed; use [window.bindings] q = \"idle\" (or another mode)"
+  },
+  {
+    "name": "window split ratios migration",
+    "source": "[window]\nsplit_ratios = [0.5]",
+    "error": "window.split_ratios was removed; use window_quick.split_ratios"
+  },
+  {
+    "name": "window gap migration",
+    "source": "[window]\ngap = 6",
+    "error": "window.gap was removed; use window_editor.gap / window_quick.gap / window_restore.gap"
+  },
+  {
+    "name": "window selection migration",
+    "source": "[window]\nlayout_keys = 'asdf'",
+    "error": "window.layout_keys was removed; use numeric selection in the independent window modes"
+  },
+  {
+    "name": "window double tap migration",
+    "source": "[window]\ndouble_tap_ms = 250",
+    "error": "window.double_tap_ms was removed; use direct window_quick / window_editor bindings"
+  },
+  {
+    "name": "multiple removed fields choose the same error in both loaders",
+    "source": "[window]\nexit_mode = 'idle'\ndouble_tap_ms = 250\ngap = 6",
+    "error": "window.double_tap_ms was removed; use direct window_quick / window_editor bindings"
+  },
+  {
+    "name": "scroll rate migration",
+    "source": "[scroll]\nsteps_per_second = 20",
+    "error": "scroll.steps_per_second was removed; use scroll.speed (pixels/second)"
+  },
+  {
+    "name": "global indicator placement migration",
+    "source": "[mode_indicator.ui]\nposition = 'bottom_left'",
+    "error": "mode_indicator.ui.position was removed; use indicator_offset = [X, Y]"
+  },
+  {
+    "name": "per-mode wildcard reports the actual path",
+    "source": "[mode_indicator.modes.normal.ui]\nindicator_x_offset = 12",
+    "error": "mode_indicator.modes.normal.ui.indicator_x_offset was removed; use indicator_offset = [X, Y]"
+  },
+  {
+    "name": "per-mode wildcard also handles other mode names",
+    "source": "[mode_indicator.modes.grid.ui]\nindicator_y_offset = -8",
+    "error": "mode_indicator.modes.grid.ui.indicator_y_offset was removed; use indicator_offset = [X, Y]"
+  },
+  {
+    "name": "all-axis scroll setting becomes two current fields",
+    "source": "[platform.macos.scroll]\ninvert = true",
+    "normalized": "[platform.macos.scroll]\ninvert_horizontal = true\ninvert_vertical = true"
+  },
+  {
+    "name": "explicit scroll axes take priority over both old settings",
+    "source": "[scroll]\ninvert_scroll = true\n[platform.macos.scroll]\ninvert = false\ninvert_vertical = true",
+    "normalized": "[scroll]\n[platform.macos.scroll]\ninvert_horizontal = false\ninvert_vertical = true",
+    "warnings": ["`scroll.invert_scroll` is deprecated; use `platform.macos.scroll.invert_horizontal` / `invert_vertical` instead"]
+  },
+  {
+    "name": "older scroll setting fills an explicitly present platform table",
+    "source": "[scroll]\ninvert_scroll = true\n[platform.macos.scroll]",
+    "normalized": "[scroll]\n[platform.macos.scroll]\ninvert_horizontal = true\ninvert_vertical = true",
+    "warnings": ["`scroll.invert_scroll` is deprecated; use `platform.macos.scroll.invert_horizontal` / `invert_vertical` instead"]
+  },
+  {
+    "name": "absent platform table keeps the original platform defaults",
+    "source": "[scroll]\ninvert_scroll = true",
+    "normalized": "[scroll]",
+    "warnings": ["`scroll.invert_scroll` is deprecated; use `platform.macos.scroll.invert_horizontal` / `invert_vertical` instead"]
+  },
+  {
+    "name": "malformed old boolean is rejected even when axes are explicit",
+    "source": "[platform.macos.scroll]\ninvert = 'true'\ninvert_horizontal = false\ninvert_vertical = true",
+    "error": "platform.macos.scroll.invert must be a boolean"
+  },
+  {
+    "name": "old action-to-keys editing table becomes current keys-to-action",
+    "source": "[ui_hint.search_edit_keys]\naccept = 'f9'\npaste = 'alt+v'",
+    "normalized": "[ui_hint.search_edit_keys]\nf9 = 'accept'\n'alt+v' = 'paste'"
+  },
+  {
+    "name": "several disabled editing actions remain independently disabled",
+    "source": "[ui_hint.search_edit_keys]\naccept = 'f9'\ncut = ''\ncopy = ''",
+    "normalized": "[ui_hint.search_edit_keys]\nf9 = 'accept'\n'' = 'copy'\n' ' = 'cut'"
+  },
+  {
+    "name": "canonical editing tables do not get inverted",
+    "source": "[ui_hint.search_edit_keys]\nf9 = 'accept'\n'alt+v' = 'paste'",
+    "normalized": "[ui_hint.search_edit_keys]\nf9 = 'accept'\n'alt+v' = 'paste'"
+  },
+  {
+    "name": "old editing table cannot assign the same group to two actions",
+    "source": "[ui_hint.search_edit_keys]\ncopy = 'f9'\ncut = 'f9'",
+    "error": "duplicate search editing key group"
+  },
+  {
+    "name": "removed fifth copy slot is discarded before normal parsing",
+    "source": "[ui_hint]\nsearch_copy_keys = ['ctrl+9', 'cmd+2', 'alt+3', 'ctrl+alt+4', 'ctrl+5']",
+    "normalized": "[ui_hint]\nsearch_copy_keys = ['ctrl+9', 'cmd+2', 'alt+3', 'ctrl+alt+4']"
+  },
+  {
+    "name": "old action in global hotkeys",
+    "source": "[hotkeys]\nf9 = 'window_exit'",
+    "error": "hotkeys.f9: window_exit was removed; use a destination mode such as window or idle"
+  },
+  {
+    "name": "old action with target suffix",
+    "source": "[normal.bindings]\nf9 = 'window_layout active'",
+    "error": "normal.bindings.f9: window_layout was removed; use window_quick"
+  },
+  {
+    "name": "old action inside a binding sequence",
+    "source": "[window.bindings]\nf9 = ['window_maximize', 'window_edit']",
+    "error": "window.bindings.f9: window_edit was removed; use window_editor"
+  },
+  {
+    "name": "old action in an application override array",
+    "source": "[[normal.app_configs]]\nbundle_id = 'example'\n[normal.app_configs.bindings]\nf9 = 'window_saved_presets'",
+    "error": "normal.app_configs.0.bindings.f9: window_saved_presets was removed; use window_restore"
+  },
+  {
+    "name": "old action in a global application override array",
+    "source": "[[app_configs]]\nbundle_id = 'example'\n[app_configs.bindings]\nf9 = 'window_cancel'",
+    "error": "app_configs.0.bindings.f9: window_cancel was removed; use a destination mode such as window or idle"
+  },
+  {
+    "name": "old action in a plugin binding table",
+    "source": "[plugin_modes.example.bindings]\nf9 = 'window_cycle_state'",
+    "error": "plugin_modes.example.bindings.f9: window_cycle_state was removed; use window_maximize / window_minimize"
+  },
+  {
+    "name": "old action in the embedded window selection prompt",
+    "source": "[window.multi_select.bindings]\nf9 = 'window_saved_layouts'",
+    "error": "window.multi_select.bindings.f9: window_saved_layouts was removed; use window_restore"
+  },
+  {
+    "name": "retired names inside exec arguments remain opaque",
+    "source": "[normal.bindings]\nf9 = 'exec echo window_exit window_layout'",
+    "normalized": "[normal.bindings]\nf9 = 'exec echo window_exit window_layout'"
+  }
+]
