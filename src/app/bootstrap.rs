@@ -33,8 +33,11 @@ fn run_with_snapshot(
         },
         |snapshot| snapshot.discovery_directory.clone(),
     );
+    let mut compatibility_warnings = Vec::new();
     let (config, config_path, loaded_from_file, config_source) = if let Some(snapshot) = snapshot {
-        let config = Config::parse(&snapshot.source).map_err(|error| error.to_string())?;
+        let (config, warnings) =
+            Config::parse_with_warnings(&snapshot.source).map_err(|error| error.to_string())?;
+        compatibility_warnings = warnings;
         (
             config,
             snapshot.write_path,
@@ -55,6 +58,7 @@ fn run_with_snapshot(
                 }
                 let path = crate::app::paths::explicit_config_file(name)?;
                 let loaded = Config::load_with_source(&path).map_err(|e| e.to_string())?;
+                compatibility_warnings = loaded.warnings;
                 (
                     loaded.config,
                     Some(loaded.path),
@@ -64,12 +68,15 @@ fn run_with_snapshot(
             }
             None => match Config::discover() {
                 Ok(Some(path)) => match Config::load_with_source(&path) {
-                    Ok(loaded) => (
-                        loaded.config,
-                        Some(loaded.path),
-                        true,
-                        Some(loaded.raw_text),
-                    ),
+                    Ok(loaded) => {
+                        compatibility_warnings = loaded.warnings;
+                        (
+                            loaded.config,
+                            Some(loaded.path),
+                            true,
+                            Some(loaded.raw_text),
+                        )
+                    }
                     Err(error) => {
                         crate::support::logging::report_error(
                             "config",
@@ -122,8 +129,7 @@ fn run_with_snapshot(
     }
 
     if config.debug.enabled {
-        for warning in config
-            .deprecation_warnings()
+        for warning in compatibility_warnings
             .into_iter()
             .chain(config.platform_warnings())
         {

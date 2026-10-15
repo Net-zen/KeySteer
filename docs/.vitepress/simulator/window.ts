@@ -147,7 +147,9 @@ export function switchWindowMode(state: SimulatorState, mode: WindowMode, settin
   if (!isWindowMode(state.mode)) enterWindow(state, settings)
   const w = state.window
   if (w.mode === 'window_tab' && mode !== 'window_tab') { w.tabs.target = null; w.tabs.restore = null }
-  const scope = settings.screens === 'current' ? 'current' : 'all', includeMinimized = settings.include_minimized === true
+  const defaultScope = mode === 'window' ? 'all' : 'current'
+  const scope = settings.screens === 'all' || settings.screens === 'current' ? settings.screens : defaultScope
+  const includeMinimized = settings.include_minimized === true
   if (w.screens !== scope || w.includeMinimized !== includeMinimized) { w.numbers = {}; w.nextNumber = 1 }
   w.screens = scope; w.includeMinimized = includeMinimized
   refreshWindowNumbers(w)

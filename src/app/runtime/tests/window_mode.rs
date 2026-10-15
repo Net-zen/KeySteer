@@ -444,6 +444,7 @@ fn window_all_screen_editor_submits_separate_display_layouts() {
     use crate::api::window::{WindowEditResult, WindowId, WindowInfo, WindowOperation, WindowResult};
     let mut config = Config::default();
     config.window.screens = crate::config::WindowScreens::Current;
+    config.window_editor.screens = crate::config::WindowScreens::All;
     let (mut engine, mut backend, log) = window_test_engine(&config);
     let mut second = engine.screens[0].clone();
     second.bounds.x += second.bounds.width;
@@ -591,14 +592,19 @@ fn window_temporary_normal_uses_custom_movement_and_preserves_size_state() {
 fn window_a_opens_quick_without_any_double_tap_tiling() {
     use crate::api::window::WindowOperation as O;
     let (mut engine, mut backend, log) = window_test_engine(&Config::default());
-    enter_window(&mut engine, &mut backend, &log);
+    let acquired = enter_window(&mut engine, &mut backend, &log);
+    assert_eq!(acquired.scope.unwrap().screen, None);
     engine.handle_backend_event(key_down("a"), &mut backend).unwrap();
-    assert_eq!(log.lock().unwrap().window_requests.len(), 2);
+    // Quick refreshes the inventory when leaving Window's all-screen scope.
+    assert_eq!(log.lock().unwrap().window_requests.len(), 3);
+    let request = log.lock().unwrap().window_requests.last().unwrap().clone();
+    assert!(matches!(request.operation, O::BeginEdit { .. }));
+    assert_eq!(request.scope.unwrap().screen, Some(0));
     acknowledge_window_edit(&mut engine, &mut backend, &log);
     let mut repeat = key_down("a");
     if let BackendEvent::Input(input) = &mut repeat { input.repeat = true; }
     engine.handle_backend_event(repeat, &mut backend).unwrap();
-    assert_eq!(log.lock().unwrap().window_requests.len(), 2);
+    assert_eq!(log.lock().unwrap().window_requests.len(), 3);
     for event in [key_up("a"), key_down("a"), key_up("a")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
     acknowledge_window_edit(&mut engine, &mut backend, &log);
     assert_eq!(log.lock().unwrap().window_requests.iter().filter(|r| matches!(r.operation, O::Tile { .. })).count(), 0);

@@ -40,6 +40,34 @@ In an operation mode, press Q alone and hold it for 350 ms to show the panel, or
 
 Positions are the current pointer screen's center (`screen`), the foreground window's center with a screen fallback (`window`), or below the pointer's mode indicator (`mouse`), clamped to the current screen. Styles also support `font_family` and per-appearance colors, resolved when configuration loads. The web editor displays imported workspace statistics and edits the threshold and panel options, preserving counts on export. Version 1 files remain readable; files containing statistics use workspace version 2.
 
+## Search panel positioning
+
+Like window cards, the search input and information panel use a reference area and inset percentages:
+
+```toml
+[ui_hint.search_input_ui]
+position_mode = "screen"
+position = ["95%", "50%", "5%", "50%"]
+
+[ui_hint.search_info_ui]
+position_mode = "search_input"
+position = ["44%", "50%", "56%", "50%"]
+```
+
+| `position_mode` | Reference area |
+| --- | --- |
+| `screen` | The current display under the pointer. |
+| `window` | The scanned window, falling back to the current display. |
+| `search_input` | The search input; available only for the information panel, which follows the input. |
+
+`position` contains top, right, bottom and left insets, each within `0–100%`. Screen/window positioning aligns the panel center with the region center, like `[window_editor.card]`. Width, font and padding determine panel size.
+
+`search_input` uses the input center as its reference. The upper half places details above, the lower half below; moving toward the 50% midline reduces the gap. The half-heights of both panels first separate their edges, then the region center's distance from the midline adds that fraction of their combined height. The default `44% / 56%` leaves about 12 pixels at the default font sizes. Four `50%` values place details immediately above; `["56%", "50%", "44%", "50%"]` leaves the same gap below. Screen boundaries still constrain placement.
+
+The input defaults to 95% of the display height. The appearance editor provides point selection, range dragging and sliders. Both panels appear directly in the live preview on the right, so you can see their position, spacing and appearance while editing.
+
+Legacy `x_offset` / `y_offset` fields in these two panels remain accepted, but have no effect and are omitted from exports. Use `position` to adjust placement.
+
 ## Configuration file location
 
 KeySteer looks for `keysteer.<name>.toml` in its data directory. If no user configuration exists, it tries `keysteer.default.toml`; if neither exists, it uses built-in defaults.

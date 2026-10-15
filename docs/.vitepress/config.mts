@@ -1,7 +1,8 @@
 import vueJsx from '@vitejs/plugin-vue-jsx'
-import { withMermaid } from 'vitepress-plugin-mermaid'
+import type { MarkdownRenderer } from 'vitepress'
 import { loadLatestRelease } from './latest-release.ts'
 import { releaseHistory } from './release-history.ts'
+import { mermaidMarkdown } from './mermaid-markdown.ts'
 
 const base = process.env.KEYSTEER_DOCS_BASE || '/'
 const windowSidebar = (prefix = '', english = false) => ({
@@ -94,10 +95,10 @@ const languageStateScript = `(() => {
 export default async ({ command }: { command: unknown }) => {
   // Use the supplied command rather than global argv or NODE_ENV.
   const latestRelease = await loadLatestRelease(command, process.env.GITHUB_TOKEN, process.env.KEYSTEER_DOCS_RELEASE_TAG)
-  return withMermaid({
+  return {
   // Internal maintenance notes are repository documentation, not site pages.
   srcExclude: ['ai/**'],
-  markdown: { config: releaseHistory },
+  markdown: { config(md: MarkdownRenderer) { releaseHistory(md); mermaidMarkdown(md) } },
   base,
   lang: 'zh-CN',
   locales: {
@@ -121,6 +122,11 @@ export default async ({ command }: { command: unknown }) => {
     ['script', {}, languageStateScript],
   ],
   vite: {
+    optimizeDeps: {
+      // Mermaid's lazy diagram chunks import CommonJS dependencies such as elkjs.
+      // Prebundle the entry so those imports are converted before browser loading.
+      include: ['mermaid'],
+    },
     build: {
       // Pages serves the built files; gzip size reporting is only a console statistic.
       reportCompressedSize: false,
@@ -130,9 +136,7 @@ export default async ({ command }: { command: unknown }) => {
     },
     plugins: [vueJsx()],
     ssr: {
-      // Compile the Vue plugin, but let Node load Mermaid during SSR.
-      // Diagrams render onMounted; bundling Mermaid again on the server is wasteful.
-      noExternal: ['vitepress-plugin-mermaid'],
+      // Diagrams import Mermaid only after mounting in the browser.
       external: ['mermaid'],
     },
   },
@@ -317,5 +321,5 @@ export default async ({ command }: { command: unknown }) => {
       },
     },
   },
-  })
+  }
 }

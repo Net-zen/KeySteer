@@ -7,34 +7,52 @@ KeySteer 是一个单 crate Rust 桌面程序。可以把它理解为一条清�
 ## 架构总览
 
 ```mermaid
+---
+config:
+    layout: dagre
+    look: classic
+    themeVariables:
+        fontSize: 14px
+    flowchart:
+        curve: linear
+        nodeSpacing: 24
+        rankSpacing: 24
+        minNodeWidth: 88
+        padding: 12
+---
 flowchart TB
     subgraph configuration["配置层"]
         direction LR
-        toml["TOML 配置"]
-        config["ConfigFile<br/>反序列化 · 校验 · 默认值"]
-        plan["RuntimePlan<br/>Settings · 路由 · palette · Mode catalog"]
+        toml("TOML<br/>用户配置"):::diagram-step
+        config("ConfigFile<br/>解析 · 校验 · 默认值"):::diagram-step
+        plan("RuntimePlan<br/>Settings · 路由<br/>palette · catalog"):::diagram-step
         toml --> config --> plan
     end
 
     subgraph core["平台无关核心"]
         direction LR
-        engine["Engine<br/>状态 · 归属 · 调度"]
-        mode["Mode / Plugin<br/>状态机与算法"]
-        engine -->|"ModeEvent"| mode
-        mode -->|"CommandBatch"| engine
-        mode -->|"HostContext · View"| presenter["Presenter 端口<br/>统一场景构建"]
-        presenter -->|"ShowOverlay"| engine
+        engine("Engine<br/>状态 · 归属 · 调度"):::diagram-primary
+        mode("Mode / Plugin<br/>状态机与算法"):::diagram-step
+        presenter("Presenter<br/>统一场景构建"):::diagram-step
+        engine <-->|"ModeEvent<br/>CommandBatch"| mode
+        mode -->|"HostContext<br/>View"| presenter
+        presenter -.->|"ShowOverlay"| engine
     end
 
     subgraph native["平台层"]
         direction LR
-        backend["Backend trait<br/>平台能力边界"]
-        os["Windows / macOS<br/>Hook · Overlay · 状态栏"]
+        backend("Backend trait<br/>平台能力边界"):::diagram-step
+        os("Windows / macOS<br/>Hook · Overlay<br/>状态栏"):::diagram-step
         backend <--> os
     end
 
     configuration -->|"RuntimePlan"| core
-    core <-->|"BackendEvent / 原生调用"| native
+    core <-->|"BackendEvent<br/>原生调用"| native
+    class configuration,core,native diagram-layer
+    class configuration,toml,config,plan diagram-config
+    class core,mode diagram-core
+    class native,backend,os diagram-platform
+    class presenter diagram-presentation
 ```
 
 配置和 `Command` 向平台能力流动；键盘、指针、屏幕、帧时钟及异步扫描结果以 `BackendEvent` 返回 Engine。Mode 始终位于平台无关的一侧，只通过 `ModeEvent` 与 `Command` 和宿主交互。
@@ -107,10 +125,25 @@ Mode 可以请求：移动鼠标、发送按键、显示覆盖层、扫描 UI、
 UIA、AX、Vision 扫描在 worker 中执行，以 `BackendEvent::UiScanned` 分批返回；Engine 用 scan id 和 owner 丢弃过期结果。
 
 ```mermaid
-flowchart LR
-    engine["Engine"] -->|"request_ui_scan<br/>scan id + owner"| scan["UI 扫描 worker<br/>UIA / AX / Vision"]
-    scan -->|"BackendEvent::UiScanned<br/>分批结果"| engine
-    engine -.->|"切换、取消或 generation 过期"| scan
+---
+config:
+    layout: dagre
+    look: classic
+---
+sequenceDiagram
+    participant engine as Engine
+    participant scan as UI 扫描 worker
+    engine->>scan: request_ui_scan（scan id + owner）
+    activate scan
+    loop 分批返回 · 不阻塞事件循环
+        scan-->>engine: BackendEvent::UiScanned
+        Note over engine: 校验 scan id 与 owner<br/>接收有效的部分结果
+    end
+    opt 切换、取消或 generation 过期
+        engine->>scan: 取消扫描
+        Note over engine: 丢弃过期结果
+    end
+    deactivate scan
 ```
 
 ## 修改时守住的边界

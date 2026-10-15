@@ -1,8 +1,9 @@
 import { useStudioI18n } from './i18n'
 import { fieldLocation, type SettingsTab } from './navigation'
-import { cardPositionRatios } from '../simulator/window-card-position.ts'
+import { percentagePositionRatios } from '../simulator/window-card-position.ts'
 import CardPositionEditor from './CardPositionEditor'
 import CardStylePreview from './CardStylePreview'
+import { panelPositionPercentages, searchPanelSettings, type SearchPanelBlock } from '../simulator/search-panel-position.ts'
 import { selectedCardStyle } from '../simulator/window-card-style'
 import { searchPanelColors } from '../simulator/search-input-style'
 import { searchHighlightStyle } from '../simulator/search-highlight-style'
@@ -57,6 +58,7 @@ export default defineComponent({
     const infoPreviewStyle = computed(() => previewPanelStyle('search_info_ui'))
     const modeFields = computed(() => fields[props.mode])
     const isSearchInputField = (field: StyleField) => field.path.startsWith('ui_hint.search_input_ui.') || field.path.startsWith('ui_hint.search_point.input_')
+    const isSearchPositionField = (field: StyleField) => /^ui_hint\.search_(input|info)_ui\.(position|position_mode)$/.test(field.path)
     const isColorPreviewField = (field: StyleField) => field.path.startsWith('ui_hint.search_point.color_preview.')
     const isCardField = (field: StyleField) => props.mode.startsWith('window') &&
       ((field.path.startsWith('window.card.') || field.path.startsWith('window_editor.card.')) || /^window(?:_\w+)?\.ui\./.test(field.path))
@@ -197,8 +199,8 @@ export default defineComponent({
               </div>
               <div class="ks-search-input-controls">{renderFields(modeFields.value.colors.filter(isSearchInputField))}</div>
               <details class="ks-style-advanced">
-                <summary>{t('输入框字体、尺寸与位置')}</summary>
-                {renderFields(modeFields.value.advanced.filter(isSearchInputField))}
+                <summary>{t('输入框字体与尺寸')}</summary>
+                {renderFields(modeFields.value.advanced.filter(field => isSearchInputField(field) && !isSearchPositionField(field)))}
               </details>
             </div>
           </section>}
@@ -215,6 +217,24 @@ export default defineComponent({
                 <div class="ks-search-color-value">#49A98A</div>
               </div>
               <div class="ks-search-color-controls">{renderFields(modeFields.value.layout.filter(isColorPreviewField))}</div>
+            </div>
+          </section>}
+          {props.page === 'ui_hint' && props.tab === 'appearance' && <section class="ks-style-section ks-settings-section" aria-label={t('搜索面板 · 布局与定位')}>
+            <header class="ks-settings-section-heading">
+              <h2>{t('搜索面板 · 布局与定位')}</h2>
+              <p>{t('screen 相对当前屏幕；window 相对识别窗口，没有窗口时回退到屏幕；search_input 让信息面板跟随输入框。')}</p>
+            </header>
+            <div class="ks-settings-section-body">
+              {(['search_input_ui', 'search_info_ui'] as SearchPanelBlock[]).map(block => {
+                const ui = searchPanelSettings(props.effectiveDocument, block)
+                const prefix = `ui_hint.${block}`
+                return <div class="ks-search-position-section" data-search-position-editor={block}>
+                  <h3>{t(block === 'search_input_ui' ? '输入框位置' : '信息面板位置')}</h3>
+                  {renderFields(modeFields.value.advanced.filter(field => field.path.startsWith(prefix + '.') && isSearchPositionField(field)))}
+                  <CardPositionEditor panel position={panelPositionPercentages(ui.position)} reference={ui.position_mode}
+                    onChange={value => update(prefix + '.position', value)} />
+                </div>
+              })}
             </div>
           </section>}
           {props.mode.startsWith('window') && props.tab === 'appearance' && <div class="ks-style-section ks-card-editor">
@@ -257,7 +277,7 @@ export default defineComponent({
           </section>}
           <details class="ks-style-advanced">
             <summary>{t("高级设置")}</summary>
-            {renderFields(modeFields.value.advanced.filter(field => !isCardField(field) && !isSearchInputField(field) && !field.path.includes('.lifecycle.')))}
+            {renderFields(modeFields.value.advanced.filter(field => !isCardField(field) && !isSearchInputField(field) && !isSearchPositionField(field) && !field.path.includes('.lifecycle.')))}
           </details>
         </div>
       )
@@ -308,7 +328,7 @@ export const StyleControl = defineComponent({
             <input value={Array.isArray(value) ? value.join(', ') : String(value)} onChange={event => {
               const input = event.target as HTMLInputElement
               const values = input.value.split(',').map(part => part.trim())
-              try { cardPositionRatios(values); input.setCustomValidity(''); props.onUpdate(values) }
+              try { percentagePositionRatios(values, field.path); input.setCustomValidity(''); props.onUpdate(values) }
               catch (error) { input.setCustomValidity(String(error)); input.reportValidity() }
             }} />
           ) : field.kind === 'ratios' ? (
@@ -346,7 +366,7 @@ export const StyleControl = defineComponent({
             </div>
           ) : field.kind === 'select' ? (
             <select value={String(value)} onChange={(event) => props.onUpdate((event.target as HTMLSelectElement).value)}>
-              {field.options?.map((option) => <option value={option}>{option || t('保留现有行为')}</option>)}
+              {field.options?.map((option) => <option value={option}>{field.optionLabels?.[option] ? t(field.optionLabels[option]) : option || t('保留现有行为')}</option>)}
             </select>
           ) : (
             <input

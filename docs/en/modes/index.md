@@ -3,23 +3,33 @@
 Think of KeySteer as three operating layers: `Idle` waits quietly, `Normal` handles everyday movement and clicking, and a targeting mode helps you find an exact target.
 
 ```mermaid
+---
+config:
+    layout: dagre
+    look: classic
+    flowchart:
+        curve: linear
+        nodeSpacing: 24
+        rankSpacing: 44
+---
 flowchart LR
-    idle["Idle"]
-    normal["Normal"]
-    subgraph target["Targeting modes"]
-        grid["Grid"]
-        rg["Recursive Grid"]
-        ui["UI Hint"]
-    end
+    idle("Idle<br/>Standby"):::mode-step
+    normal("Normal<br/>Everyday control"):::mode-primary
+    grid("Grid<br/>Screen regions"):::mode-step
+    rg("Recursive Grid<br/>Precise targeting"):::mode-step
+    ui("UI Hint<br/>Controls and text"):::mode-step
     idle -->|"Primary+E"| normal
     normal -->|g| grid
     normal -->|f| rg
     normal -->|"Primary+F"| ui
-    normal -->|"Esc / q"| idle
-    target -->|"Esc / Primary+Q"| normal
+    class idle diagram-blue
+    class normal diagram-violet
+    class grid diagram-green
+    class rg diagram-amber
+    class ui diagram-rose
 ```
 
-All three targeting modes return to Normal with `Esc` or `Primary+Q`.
+All three targeting modes return to Normal with `Esc` or `Primary+Q`. In Normal, press `Esc` or `q` to return to Idle.
 
 ## Which mode should I choose?
 

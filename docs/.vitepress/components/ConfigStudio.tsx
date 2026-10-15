@@ -12,8 +12,10 @@ import { keyMappingTarget } from '../simulator/key-mapping'
 import { gridRegion } from '../simulator/grid-region'
 import { commonSearchFields, styleSearchFields } from '../config-studio/fields'
 import { pages, tabLabels, searchSettings, utilitySearchFields, type SettingsTab, type SearchEntry } from '../config-studio/navigation'
-import { cardPositionRatios, packedCardCenters } from '../simulator/window-card-position.ts'
+import { cardPositionRatios, packedCardCenters, percentageRegion, rectCenter, relativePoint } from '../simulator/window-card-position.ts'
 import QuickSwitchPreview from '../config-studio/QuickSwitchPreview'
+import SearchPanelsOverlay from '../config-studio/SearchPanelsOverlay'
+import { PREVIEW_WINDOW } from '../config-studio/preview-geometry.ts'
 import { computed, defineComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { withBase } from 'vitepress'
 import { stringify } from 'smol-toml'
@@ -1168,6 +1170,7 @@ export default defineComponent({
                 {simulator.mode === 'grid' && <TargetGrid mode="grid" settings={targetingSettings.value} path={simulator.targeting.grid.path} />}
                 {simulator.mode === 'recursive_grid' && <TargetGrid mode="recursive_grid" settings={targetingSettings.value} path={simulator.targeting.recursiveGrid.path} />}
                 {simulator.mode === 'ui_hint' && <HintOverlay settings={targetingSettings.value} />}
+                {simulator.mode === 'ui_hint' && effectiveDocument.value && <SearchPanelsOverlay document={effectiveDocument.value} appearance={appearance.value} />}
                 {cursorPreview.value.enabled && simulator.mode !== 'idle' && <svg class="ks-cursor-marker" aria-hidden="true"
                   style={{ left: `${simulator.pointer.x}%`, top: `${simulator.pointer.y}%`, width: `${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width}px`, height: `${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width}px` }}
                   viewBox={`${-cursorPreview.value.radius - cursorPreview.value.stroke_width / 2} ${-cursorPreview.value.radius - cursorPreview.value.stroke_width / 2} ${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width} ${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width}`}>
@@ -1473,7 +1476,7 @@ const DesktopBackdrop = defineComponent({
       viewport.value.scrollLeft += x; viewport.value.scrollTop += y
     } })
     return () => (
-      <div class="ks-desktop-backdrop" aria-hidden="true">
+      <div class="ks-desktop-backdrop" aria-hidden="true" style={{ left: `${PREVIEW_WINDOW.x}px`, top: `${PREVIEW_WINDOW.y}px`, width: `${PREVIEW_WINDOW.width}px`, height: `${PREVIEW_WINDOW.height}px` }}>
         <div class="ks-desktop-window">
           <div class="ks-desktop-titlebar">
             <div class="ks-window-controls"><i /><i /><i /></div>
@@ -2041,15 +2044,16 @@ function readable(background: string, text = '#10172DFF', alternate = '#FFFFFFFF
 
 function windowNumberLabels(state: WindowState, card: Record<string, any>): Array<{ number: number; x: number; y: number; app: string; title: string; selected: boolean; members?: string[] }> {
   const [top, right, bottom, left] = cardPositionRatios(card.position)
-  const anchorX = (left + 1 - right) / 2
-  const anchorY = (top + 1 - bottom) / 2
+  const anchor = rectCenter(percentageRegion({ x: 0, y: 0, width: 1, height: 1 }, [top, right, bottom, left]))
   const labels: Array<{ number: number; x: number; y: number; app: string; title: string; selected: boolean; members?: string[] }> = []
   for (const window of state.windows.map(w => ({ ...w, ...tabFrame(activeTabWindow(state, w.id) ?? w) })).filter(w => (state.includeMinimized || !w.minimized) && w.screen === state.screen && state.numbers[w.id] !== undefined).sort((a, b) => state.numbers[a.id] - state.numbers[b.id])) {
     const group = containingTab(state, window.id)
     if (group && (state.tree ? group.members[0] : group.active) !== window.id) continue
     const slot = state.tree ? treeSlots(state.tree).find(s => s.window === window.id) : undefined
-    let x = Math.max(17, Math.min(83, (slot ? slot.rect.x + slot.rect.width * anchorX : (window.x + window.width * anchorX) / WINDOW_AREA.width) * 100))
-    let y = Math.max(6, Math.min(94, slot ? (card.position ? (slot.rect.y + slot.rect.height * anchorY) * 100 : slot.rect.y * 100 + 6) : (window.y + window.height * anchorY) / WINDOW_AREA.height * 100))
+    const frame = slot?.rect ?? { x: window.x / WINDOW_AREA.width, y: window.y / WINDOW_AREA.height, width: window.width / WINDOW_AREA.width, height: window.height / WINDOW_AREA.height }
+    const preferred = relativePoint(frame, anchor)
+    let x = Math.max(17, Math.min(83, preferred.x * 100))
+    let y = Math.max(6, Math.min(94, slot && !card.position ? slot.rect.y * 100 + 6 : preferred.y * 100))
     if (labels.some(l => Math.abs(l.x - x) < 33 && Math.abs(l.y - y) < 10)) {
       let distance = Infinity
       for (let row = 0; row < 9; row++) for (let col = 0; col < 3; col++) {

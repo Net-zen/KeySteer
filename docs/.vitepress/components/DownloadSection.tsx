@@ -13,7 +13,7 @@ interface DownloadAsset {
   key: string
   platform: 'windows' | 'macos'
   platformLabel: string
-  label: string
+  label: { zh: string; en: string }
   description: { zh: string; en: string }
   target: (typeof DOWNLOAD_TARGETS)[number]
   optional?: boolean
@@ -24,23 +24,23 @@ const ASSETS: DownloadAsset[] = [
     key: 'windows-x64',
     platform: 'windows',
     platformLabel: 'Windows',
-    label: 'x64 · AVX2',
-    description: { zh: '推荐默认版', en: 'Recommended default' },
+    label: { zh: '默认版', en: 'Default' },
+    description: { zh: 'x64 · AVX2', en: 'x64 · AVX2' },
     target: 'x86_64-pc-windows-msvc',
   },
   {
     key: 'windows-arm64',
     platform: 'windows',
     platformLabel: 'Windows',
-    label: 'ARM64',
-    description: { zh: 'Windows on ARM', en: 'Windows on ARM' },
+    label: { zh: 'ARM64', en: 'ARM64' },
+    description: { zh: 'ARM 电脑', en: 'ARM PCs' },
     target: 'aarch64-pc-windows-msvc',
   },
   {
     key: 'macos-apple-silicon',
     platform: 'macos',
     platformLabel: 'macOS',
-    label: 'Apple Silicon',
+    label: { zh: 'Apple Silicon', en: 'Apple Silicon' },
     description: { zh: 'M 系列芯片', en: 'M-series chips' },
     target: 'aarch64-apple-darwin',
   },
@@ -48,16 +48,16 @@ const ASSETS: DownloadAsset[] = [
     key: 'macos-intel',
     platform: 'macos',
     platformLabel: 'macOS',
-    label: 'Intel',
-    description: { zh: 'Intel 芯片', en: 'Intel chips' },
+    label: { zh: 'Intel', en: 'Intel' },
+    description: { zh: 'Intel Mac', en: 'Intel Mac' },
     target: 'x86_64-apple-darwin',
   },
   {
     key: 'windows-x64-compatible',
     platform: 'windows',
     platformLabel: 'Windows',
-    label: 'x64 · Compatible',
-    description: { zh: '旧 CPU 兼容版 · 无需 AVX2 / AVX-512', en: 'Older CPUs · No AVX2 / AVX-512 required' },
+    label: { zh: '兼容版', en: 'Compatible' },
+    description: { zh: 'x64 · 无需 AVX2', en: 'x64 · No AVX2' },
     target: 'x86_64-pc-windows-msvc-compatible',
     optional: true,
   },
@@ -65,8 +65,8 @@ const ASSETS: DownloadAsset[] = [
     key: 'windows-x64-avx512',
     platform: 'windows',
     platformLabel: 'Windows',
-    label: 'x64 · AVX-512',
-    description: { zh: '可选优化版 · 需支持 AVX-512', en: 'Optional · Requires AVX-512 support' },
+    label: { zh: 'AVX-512 版', en: 'AVX-512' },
+    description: { zh: 'x64 · 需 AVX-512', en: 'x64 · Requires AVX-512' },
     target: 'x86_64-pc-windows-msvc-avx512',
     optional: true,
   },
@@ -121,8 +121,7 @@ export default defineComponent({
     const text = (zh: string, en: string) => isEnglish() ? en : zh
     const localPath = (path: string) => withBase(`${isEnglish() ? '/en' : ''}${path}`)
     const downloadLabel = computed(() => text('立即下载', 'Download now'))
-    const assetLabel = (asset: DownloadAsset) => asset.key === 'windows-x64-compatible'
-      ? text('x64 · 兼容版', 'x64 · Compatible') : asset.label
+    const assetLabel = (asset: DownloadAsset) => asset.label[isEnglish() ? 'en' : 'zh']
     const assetUrl = (asset: DownloadAsset) => (
       latestRelease.assets[asset.target] ?? latestRelease.url
     )
@@ -152,12 +151,12 @@ export default defineComponent({
             <a
               class="hero-download-main"
               href={assetUrl(detected.value)}
-              title={text(`下载 KeySteer ${detected.value.platformLabel} ${detected.value.label}`, `Download KeySteer for ${detected.value.platformLabel} ${detected.value.label}`)}
+              title={text(`下载 KeySteer ${detected.value.platformLabel} ${assetLabel(detected.value)}`, `Download KeySteer for ${detected.value.platformLabel} (${assetLabel(detected.value)})`)}
             >
               <span class="hero-download-emoji" aria-hidden="true">💾</span>
               <span class="hero-download-copy">
                 <strong>{downloadLabel.value}</strong>
-                <small>{latestRelease.tag} · {detected.value.key === 'windows-x64' ? text('默认版 · AVX2', 'Default · AVX2') : detected.value.label}</small>
+                <small>{latestRelease.tag} · {assetLabel(detected.value)}{detected.value.key === 'windows-x64' && ' · AVX2'}</small>
               </span>
             </a>
             <button
@@ -218,6 +217,16 @@ export default defineComponent({
                     </a>
                   ))}
                 </div>
+                <div class="hero-download-help">
+                  <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <circle cx="10" cy="10" r="7.25" stroke="currentColor" stroke-width="1.5" />
+                    <path d="M10 9v4m0-7v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                  <div>
+                    <p>{text('Windows 启动失败？试试', 'Windows: cannot start? Try ')}{compatibleUrl ? <a href={compatibleUrl} onClick={closeMenu}>{text('兼容版', 'Compatible')}</a> : text('兼容版', 'Compatible')}</p>
+                    <p>{text('「检查更新」自动匹配合适版本', 'Check for Updates picks the best build.')}</p>
+                  </div>
+                </div>
                 <a class="hero-download-all" href={RELEASES_URL} target="_blank" rel="noopener" onClick={closeMenu}>
                   {text('查看全部 Release →', 'View all releases →')}
                 </a>
@@ -229,15 +238,6 @@ export default defineComponent({
             {text('一起开发', 'Configuration & simulator')}
           </a>
         </div>
-        {detected.value.platform === 'windows' && detected.value.key !== 'windows-arm64' && (
-          <details class="hero-cpu-note">
-            <summary>{text('Windows 下载哪个版本？', 'Which Windows build should I download?')}</summary>
-            <div class="hero-cpu-note-body">
-              <p>{text('一般下载默认版即可；如果无法启动，请尝试', 'Use the default build for most PCs. If it will not start, try the ')}{compatibleUrl ? <a href={compatibleUrl}>{text('兼容版', 'compatible build')}</a> : text('兼容版', 'compatible build')}{text('。', '.')}</p>
-              <p>{text('启动后使用「检查更新」，程序会自动选择这台电脑支持的最高等级（AVX-512 / AVX2 / Compatible），同一版本也能切换，无需自行判断；下载完成后确认安装即可。', 'Once running, use Check for Updates to automatically select the highest build your PC supports (AVX-512 / AVX2 / Compatible), even within the same version. No manual CPU checks are needed; confirm installation after the download.')}</p>
-            </div>
-          </details>
-        )}
       </div>
     )
   },

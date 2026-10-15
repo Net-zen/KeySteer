@@ -1,6 +1,8 @@
 import { defineComponent, h } from 'vue'
 import DefaultTheme from 'vitepress/theme'
 import DownloadButton from '../components/DownloadSection'
+import MermaidDiagram from '../components/MermaidDiagram'
+import type { Theme } from 'vitepress'
 import './custom.css'
 
 const Layout = defineComponent({
@@ -15,4 +17,7 @@ const Layout = defineComponent({
 export default {
   ...DefaultTheme,
   Layout,
-}
+  enhanceApp({ app }) {
+    app.component('MermaidDiagram', MermaidDiagram)
+  },
+} satisfies Theme

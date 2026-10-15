@@ -73,29 +73,55 @@ Save from Editor or Tabs with `Ctrl+S` → optional note → `Enter`. An empty n
 ## The operating model at a glance
 
 ```mermaid
+---
+config:
+    layout: dagre
+    look: classic
+    flowchart:
+        curve: basis
+        rankSpacing: 40
+        minNodeWidth: 88
+        padding: 12
+---
 flowchart LR
-    idle["Idle<br/>normal typing"]
-    normal["Normal<br/>move, click, scroll"]
-    target["Targeting<br/>Grid<br/>Recursive Grid<br/>UI Hint"]
+    idle("Idle<br/>normal typing"):::mode-step
+    normal("Normal<br/>move, click, scroll"):::mode-primary
+    target("Targeting<br/>Grid<br/>Recursive Grid<br/>UI Hint"):::mode-step
 
     idle -->|"Primary+E"| normal
     normal -->|"enter when needed"| target
     target -->|"Esc"| normal
     normal -->|"Esc / q"| idle
+    class idle diagram-blue
+    class normal diagram-violet
+    class target diagram-green
 ```
 
 Most of the time you only switch between Idle and Normal. The three targeting modes are optional; there is no need to learn them all at once.
 
 ```mermaid
+---
+config:
+    layout: dagre
+    look: classic
+    flowchart:
+        curve: basis
+        rankSpacing: 40
+        minNodeWidth: 88
+        padding: 12
+---
 flowchart LR
-    idle["Idle<br/>normal typing"]
-    window["Window<br/>move, resize, volume"]
-    arrange["Window arrangement<br/>Quick<br/>Editor<br/>Tabs"]
+    idle("Idle<br/>normal typing"):::mode-step
+    window("Window<br/>move, resize, volume"):::mode-primary
+    arrange("Window arrangement<br/>Quick<br/>Editor<br/>Tabs"):::mode-step
 
     idle -->|"Alt+W"| window
     window -->|"enter when needed"| arrange
     arrange -->|"Q"| window
     window -->|"Q"| idle
+    class idle diagram-blue
+    class window diagram-violet
+    class arrange diagram-amber
 ```
 
 Window is the starting point for window management. Quick, Editor, and Tabs are optional ways to arrange your windows.

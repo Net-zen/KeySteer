@@ -38,6 +38,24 @@ test('scope defaults cover all screens and exclude minimized windows', () => {
   assert.equal(state.window.windows.find(w => w.id === 3)!.minimized, false)
 })
 
+test('other window modes default to the current screen and preserve explicit all-screen settings', () => {
+  for (const mode of ['window_quick', 'window_editor', 'window_restore', 'window_tab'] as const) {
+    for (const fromWindow of [false, true]) {
+      const state = createSimulatorState()
+      if (fromWindow) switchWindowMode(state, 'window')
+      switchWindowMode(state, mode)
+      assert.equal(state.window.screens, 'current', mode)
+      assert.equal(state.window.numbers[4], undefined, mode)
+      switchWindowMode(state, 'window')
+      assert.equal(state.window.screens, 'all')
+      assert.notEqual(state.window.numbers[4], undefined)
+      switchWindowMode(state, mode, { screens: 'all' })
+      assert.equal(state.window.screens, 'all', mode)
+      assert.notEqual(state.window.numbers[4], undefined, mode)
+    }
+  }
+})
+
 test('all-screen editor arranges each display independently and one undo restores both', () => {
   const state = createSimulatorState()
   const original = structuredClone(state.window.windows)

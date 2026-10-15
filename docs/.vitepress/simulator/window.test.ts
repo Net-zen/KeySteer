@@ -334,18 +334,20 @@ test('continuous divider motion is one undo and X removes a region with stable I
 })
 
 
-test('all window modes launch directly from Idle and share session numbers', () => {
-  for (const mode of ['window', 'window_quick', 'window_editor', 'window_restore']) {
-    const state = createSimulatorState(); state.mode = 'idle'
-    applyWindowAction(state, mode)
-    assert.equal(state.mode, mode)
-    const target = state.window.target, numbers = { ...state.window.numbers }
-    applyWindowAction(state, mode === 'window_restore' ? 'window_delete' : 'window_restore')
-    assert.equal(state.window.target, target)
-    assert.deepEqual(state.window.numbers, numbers)
-    applyModeAction(state, 'grid')
-    assert.equal(state.mode, 'grid')
-    assert.equal(state.window.library, false)
+test('all window modes launch directly from Idle and share session numbers within the same scope', () => {
+  for (const screens of ['current', 'all']) {
+    for (const mode of ['window', 'window_quick', 'window_editor', 'window_restore']) {
+      const state = createSimulatorState(); state.mode = 'idle'
+      applyWindowAction(state, mode, { screens })
+      assert.equal(state.mode, mode)
+      const target = state.window.target, numbers = { ...state.window.numbers }
+      applyWindowAction(state, mode === 'window_restore' ? 'window_delete' : 'window_restore', { screens })
+      assert.equal(state.window.target, target)
+      assert.deepEqual(state.window.numbers, numbers)
+      applyModeAction(state, 'grid')
+      assert.equal(state.mode, 'grid')
+      assert.equal(state.window.library, false)
+    }
   }
 })
 

@@ -280,7 +280,12 @@ fn the_shipped_config_validates_without_platform_warnings() {
         .validate()
         .expect("keysteer.default.toml should validate");
     assert!(config.platform_warnings().is_empty());
-    assert!(config.deprecation_warnings().is_empty());
+    assert!(
+        Config::parse_with_warnings(include_str!("../../keysteer.default.toml"))
+            .unwrap()
+            .1
+            .is_empty()
+    );
     for chord in config.hotkeys.keys().chain(config.normal.bindings.keys()) {
         let parsed = KeyChord::parse(chord).expect("shipped chords must parse");
         assert!(

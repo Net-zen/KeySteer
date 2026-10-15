@@ -396,16 +396,14 @@ impl Default for UiHint {
             search_info_ui: SearchInputUi {
                 position_mode: crate::api::style::PanelPositionMode::SearchInput,
                 position: crate::api::style::PanelPosition::Percentages(
-                    ["0%", "50%", "100%", "50%"].map(String::from),
+                    ["44%", "50%", "56%", "50%"].map(String::from),
                 ),
                 width: 520,
-                y_offset: 12,
                 label: LabelUi {
                     font_size: 14,
                     padding_y: 16,
                     ..Default::default()
                 },
-                ..Default::default()
             },
             search_edit_keys: crate::api::text_edit::default_keys(),
             search_highlight: Default::default(),
@@ -670,9 +668,6 @@ pub struct Scroll {
     pub scroll_step_half: i32,
     /// Pixels for `scroll_full_up` and friends.
     pub scroll_step_full: i32,
-    /// Deprecated compatibility input. Use `platform.macos.scroll.invert`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub invert_scroll: Option<bool>,
 }
 
 impl Default for Scroll {
@@ -682,7 +677,6 @@ impl Default for Scroll {
             scroll_step: 50,
             scroll_step_half: 500,
             scroll_step_full: 1_000_000,
-            invert_scroll: None,
         }
     }
 }
@@ -794,29 +788,20 @@ fn deserialize_search_edit_keys<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<std::collections::BTreeMap<crate::api::text_edit::EditAction, String>, D::Error> {
     use crate::api::text_edit::EditAction;
-    let table = toml::Table::deserialize(deserializer)?;
     // Public tables use key = action. Group alternatives by action only while
     // loading, so the existing compilation and input paths remain unchanged.
-    let bindings = table
-        .clone()
-        .try_into::<std::collections::BTreeMap<String, EditAction>>();
-    let overrides = if let Ok(bindings) = bindings {
-        let mut actions: std::collections::BTreeMap<EditAction, String> = Default::default();
-        for (alternatives, action) in bindings {
-            actions
-                .entry(action)
-                .and_modify(|keys| {
-                    keys.push(' ');
-                    keys.push_str(&alternatives);
-                })
-                .or_insert(alternatives);
-        }
-        actions
-    } else {
-        // Preserve existing action = keys configurations during migration.
-        table.try_into().map_err(serde::de::Error::custom)?
-    };
+    let bindings = std::collections::BTreeMap::<String, EditAction>::deserialize(deserializer)?;
     let mut keys = crate::api::text_edit::default_keys();
+    let mut overrides: std::collections::BTreeMap<EditAction, String> = Default::default();
+    for (alternatives, action) in bindings {
+        overrides
+            .entry(action)
+            .and_modify(|keys| {
+                keys.push(' ');
+                keys.push_str(&alternatives);
+            })
+            .or_insert(alternatives);
+    }
     keys.extend(overrides);
     Ok(keys)
 }
@@ -829,7 +814,7 @@ fn serialize_search_edit_keys<S: serde::Serializer>(
     let mut table = serializer.serialize_map(Some(actions.len()))?;
     let mut used = std::collections::BTreeSet::new();
     for (action, keys) in actions {
-        // Empty legacy bindings disable an action. Distinct empty groups keep
+        // Empty groups disable an action. Distinct empty groups keep
         // that behavior representable when exporting several disabled actions.
         let mut keys = std::borrow::Cow::Borrowed(keys.as_str());
         while !used.insert(keys.to_string()) {

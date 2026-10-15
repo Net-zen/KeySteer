@@ -12,6 +12,7 @@
 //! partial config file is valid.
 
 mod aliases;
+mod compatibility;
 mod settings;
 mod window;
 pub use window::{
@@ -133,6 +134,7 @@ pub(crate) struct LoadedConfig {
     pub(crate) config: Config,
     pub(crate) raw_text: String,
     pub(crate) path: PathBuf,
+    pub(crate) warnings: Vec<String>,
 }
 
 impl Default for ConfigFile {
@@ -317,9 +319,6 @@ pub struct MacOsScrollConfig {
     pub invert_horizontal: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invert_vertical: Option<bool>,
-    /// Deprecated compatibility input for the former all-axis switch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invert: Option<bool>,
 }
 
 impl Default for MacOsScrollConfig {
@@ -327,7 +326,6 @@ impl Default for MacOsScrollConfig {
         Self {
             invert_horizontal: Some(false),
             invert_vertical: Some(true),
-            invert: None,
         }
     }
 }
@@ -474,45 +472,24 @@ impl ConfigFile {
     pub(crate) fn load_with_source(path: &Path) -> Result<LoadedConfig, ConfigError> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| ConfigError::Io(format!("cannot read {}: {e}", path.display())))?;
-        let config = Self::parse(&text)?;
+        let (config, warnings) = Self::parse_with_warnings(&text)?;
         config.validate()?;
         Ok(LoadedConfig {
             config,
             raw_text: text,
             path: path.to_path_buf(),
+            warnings,
         })
     }
 
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
-        let value: toml::Value =
+        Self::parse_with_warnings(text).map(|(config, _)| config)
+    }
+
+    pub(crate) fn parse_with_warnings(text: &str) -> Result<(Self, Vec<String>), ConfigError> {
+        let mut value: toml::Value =
             toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
-        if let Some(window) = value.get("window").and_then(toml::Value::as_table) {
-            for (old, replacement) in [
-                (
-                    "exit_mode",
-                    "[window.bindings] q = \"idle\" (or another mode)",
-                ),
-                ("split_ratios", "window_quick.split_ratios"),
-                (
-                    "gap",
-                    "window_editor.gap / window_quick.gap / window_restore.gap",
-                ),
-                (
-                    "layout_keys",
-                    "numeric selection in the independent window modes",
-                ),
-                (
-                    "double_tap_ms",
-                    "direct window_quick / window_editor bindings",
-                ),
-            ] {
-                if window.contains_key(old) {
-                    return Err(ConfigError::Invalid(format!(
-                        "window.{old} was removed; use {replacement}"
-                    )));
-                }
-            }
-        }
+        let warnings = compatibility::normalize(&mut value)?;
         let key_aliases = value
             .get("key_aliases")
             .cloned()
@@ -525,7 +502,7 @@ impl ConfigFile {
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
         config.resolved_key_aliases = aliases;
         config.apply_configured_key_aliases()?;
-        Ok(config)
+        Ok((config, warnings))
     }
 
     /// Expand whitespace-separated single-key aliases in a binding key.
@@ -645,50 +622,18 @@ impl ConfigFile {
     }
 
     pub fn to_toml(&self) -> Result<String, ConfigError> {
-        // Export only the new platform hierarchy. A legacy value is projected
-        // into it so dumping and reloading a migrated configuration preserves
-        // behavior without perpetuating the deprecated field.
-        let mut exported = self.clone();
-        let legacy = exported
-            .platform
-            .macos
-            .scroll
-            .invert
-            .or(exported.scroll.invert_scroll);
-        if let Some(legacy) = legacy {
-            if exported.platform.macos.scroll.invert_horizontal.is_none() {
-                exported.platform.macos.scroll.invert_horizontal = Some(legacy);
-            }
-            if exported.platform.macos.scroll.invert_vertical.is_none() {
-                exported.platform.macos.scroll.invert_vertical = Some(legacy);
-            }
-        }
-        exported.platform.macos.scroll.invert = None;
-        exported.scroll.invert_scroll = None;
-        toml::to_string_pretty(&exported).map_err(|error| ConfigError::Serialize(error.to_string()))
+        toml::to_string_pretty(self).map_err(|error| ConfigError::Serialize(error.to_string()))
     }
 
     /// Effective macOS values, with explicit per-axis settings taking priority.
     pub fn macos_scroll_invert(&self) -> (bool, bool) {
-        let legacy = self
-            .platform
-            .macos
-            .scroll
-            .invert
-            .or(self.scroll.invert_scroll);
         (
             self.platform
                 .macos
                 .scroll
                 .invert_horizontal
-                .or(legacy)
                 .unwrap_or(false),
-            self.platform
-                .macos
-                .scroll
-                .invert_vertical
-                .or(legacy)
-                .unwrap_or(true),
+            self.platform.macos.scroll.invert_vertical.unwrap_or(true),
         )
     }
 

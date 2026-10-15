@@ -13,8 +13,8 @@ pub enum SplitRatio {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowScreens {
-    Current,
     #[default]
+    Current,
     All,
 }
 
@@ -41,7 +41,7 @@ impl Default for WindowModeConfig {
     fn default() -> Self {
         Self {
             target: None,
-            screens: WindowScreens::All,
+            screens: WindowScreens::Current,
             include_minimized: false,
             enabled: true,
             inherits: vec!["hotkeys".into()],
@@ -245,6 +245,7 @@ impl Default for Window {
             resize_step: 20.0,
             resize_speed: 500.0,
         };
+        window.common.screens = WindowScreens::All;
         let modifier = "ctrl";
         let clear = format!("{modifier}+x");
         window.common.temporary_mode_passthrough_keys = vec![modifier.into(), clear.clone()];
@@ -468,9 +469,24 @@ mod scope_tests {
         let default = Window::default();
         assert_eq!(default.screens, WindowScreens::All);
         assert!(!default.include_minimized);
+        let window: Window = toml::from_str("").unwrap();
+        assert_eq!(window.screens, WindowScreens::All);
+        for common in [
+            WindowQuick::default().common,
+            WindowEditor::default().common,
+            WindowRestore::default().common,
+            WindowTab::default().common,
+            toml::from_str::<WindowQuick>("").unwrap().common,
+            toml::from_str::<WindowEditor>("").unwrap().common,
+            toml::from_str::<WindowRestore>("").unwrap().common,
+            toml::from_str::<WindowTab>("").unwrap().common,
+        ] {
+            assert_eq!(common.screens, WindowScreens::Current);
+            assert!(!common.include_minimized);
+        }
         let editor: WindowEditor =
-            toml::from_str("screens = 'current'\ninclude_minimized = true").unwrap();
-        assert_eq!(editor.screens, WindowScreens::Current);
+            toml::from_str("screens = 'all'\ninclude_minimized = true").unwrap();
+        assert_eq!(editor.screens, WindowScreens::All);
         assert!(editor.include_minimized);
         assert!(toml::from_str::<WindowTab>("screens = 'unknown'").is_err());
         let tabs: WindowTab = toml::from_str("screens = 'all'").unwrap();

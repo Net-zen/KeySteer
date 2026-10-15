@@ -173,6 +173,8 @@ windows-future = "0.3.2"
 [build-dependencies]
 # Build scripts run on the host, including Linux during Windows cross builds.
 cc = "1.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0"
 winresource = { version = "0.1.31", default-features = false }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dev-dependencies]

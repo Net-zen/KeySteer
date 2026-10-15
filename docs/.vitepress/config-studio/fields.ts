@@ -11,6 +11,7 @@ export interface StyleField {
   max?: number
   step?: number
   options?: string[]
+  optionLabels?: Record<string, string>
   requireAll?: boolean
   default?: unknown
   action?: string
@@ -178,7 +179,8 @@ fields.window.layout.push({ path: 'window.card.position_mode', label: '卡片定
 for (const [block, title] of [['search_input_ui', '搜索框'], ['search_info_ui', '搜索信息']] as const) {
   const prefix = `ui_hint.${block}`
   fields.ui_hint.advanced.push(
-    { path: `${prefix}.position_mode`, label: `${title}定位`, kind: 'select', options: block === 'search_input_ui' ? ['screen', 'window'] : ['search_input', 'screen', 'window'] },
+    { path: `${prefix}.position_mode`, label: `${title}定位`, kind: 'select', options: block === 'search_input_ui' ? ['screen', 'window'] : ['search_input', 'screen', 'window'],
+      optionLabels: { screen: 'screen · 当前屏幕', window: 'window · 识别窗口', search_input: 'search_input · 跟随搜索输入框' } },
     { path: `${prefix}.position`, label: `${title}四边百分比`, kind: 'percentages' },
     { path: `${prefix}.font_family`, label: `${title}字体`, kind: 'text' },
   )
@@ -186,7 +188,6 @@ for (const [block, title] of [['search_input_ui', '搜索框'], ['search_info_ui
     ['width', '宽度', 80, 2000], ['font_size', '字号', 6, 72],
     ['border_radius', '圆角', -1, 80], ['border_width', '边框', 0, 12],
     ['padding_x', '水平内边距', -1, 100], ['padding_y', '垂直内边距', -1, 100],
-    ['x_offset', '水平偏移', -2000, 2000], ['y_offset', '垂直偏移', -2000, 2000],
   ] as const) fields.ui_hint.advanced.push({ path: `${prefix}.${key}`, label: `${title}${label}`, kind: 'number', min, max, step: 1 })
   for (const [key, label] of [['background_color', '底色'], ['text_color', '文字色'], ['border_color', '边框色']] as const) {
     fields.ui_hint.colors.push({ path: `${prefix}.${key}`, label: `${title}${label}`, kind: 'color' })
@@ -224,7 +225,11 @@ fields.window.advanced.push({ path: 'window.ui.padding_x', label: '编号水平�
 fields.window.advanced.push({ path: 'window.ui.padding_y', label: '编号垂直内边距（-1 自动）', kind: 'number', min: -1, max: 256 })
 
 for (const mode of ['window_quick', 'window_editor', 'window_restore', 'window_tab'] as const) {
-  const common = (items: StyleField[]) => items.filter(f => !/window\.(move_|resize_)/.test(f.path) && (mode === 'window_editor' || !f.path.startsWith('window.card.position'))).map(f => ({ ...f, path: f.path.replace(/^window\.(?!card\.(?!position))/, `${mode}.`) }))
+  const common = (items: StyleField[]) => items.filter(f => !/window\.(move_|resize_)/.test(f.path) && (mode === 'window_editor' || !f.path.startsWith('window.card.position'))).map(f => ({
+    ...f,
+    path: f.path.replace(/^window\.(?!card\.(?!position))/, `${mode}.`),
+    label: f.path === 'window.screens' ? '窗口范围（current 当前屏幕 / all 全部屏幕，默认 current）' : f.label,
+  }))
   ;(fields as Record<string, ModeFields>)[mode] = { colors: common(fields.window.colors), layout: common(fields.window.layout), advanced: common(fields.window.advanced) }
   const own = (fields as Record<string, ModeFields>)[mode]
   if (mode === 'window_quick') own.layout.push({ path: `${mode}.split_ratios`, label: '比例（逗号分隔，支持分数）', kind: 'ratios' })

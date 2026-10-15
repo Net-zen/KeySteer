@@ -1,5 +1,9 @@
+#[path = "build/compatibility.rs"]
+mod compatibility;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
+    compatibility::generate()?;
     println!("cargo:rerun-if-changed=assets/icons/keysteer.ico");
     println!("cargo:rerun-if-changed=assets/windows/keysteer.manifest");
     println!("cargo:rerun-if-changed=src/platform/windows/compositor_clock.c");

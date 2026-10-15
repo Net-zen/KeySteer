@@ -86,7 +86,7 @@ y = "end"
 # Optional entry priority: "active" or "mouse"; omit to preserve session handoffs.
 [window]
 # target = "active"
-screens = "all" # "current" = current screen; "all" = all screens (default).
+screens = "all" # "current" = current screen; "all" = all screens (Window default).
 include_minimized = false
 enabled = true
 inherits = ["hotkeys"]
@@ -169,7 +169,7 @@ font_size = 28
 
 # Quick: directional split ratios, followed by full-screen size.
 [window_quick]
-screens = "all"
+screens = "current"
 include_minimized = false
 enabled = true
 inherits = ["hotkeys"]
@@ -211,7 +211,7 @@ font_size = 28
 
 # Editor: tile windows and adjust their regions.
 [window_editor]
-screens = "all"
+screens = "current"
 include_minimized = false
 enabled = true
 inherits = ["hotkeys"]
@@ -268,7 +268,7 @@ font_size = 28
 
 # Restore: saved workspace layouts.
 [window_restore]
-screens = "all"
+screens = "current"
 include_minimized = false
 enabled = true
 inherits = ["hotkeys"]
@@ -294,7 +294,7 @@ font_size = 28
 
 # Tabs: 12t34t creates two groups; ~ selects a group number.
 [window_tab]
-screens = "all"
+screens = "current"
 include_minimized = false
 enabled = true
 inherits = ["hotkeys"]
@@ -401,12 +401,10 @@ ctrl = "point_toggle"
 tab = "point_next"
 "ctrl+shift+4" = "color_next"
 
-# Position arrays are [top, right, bottom, left]; offsets are logical pixels.
+# Position arrays are [top, right, bottom, left], relative to position_mode.
 [ui_hint.search_input_ui]
 position_mode = "screen" # "screen" or "window".
-position = ["100%", "50%", "0%", "50%"]
-x_offset = 0
-y_offset = 24
+position = ["95%", "50%", "5%", "50%"]
 width = 280
 font_size = 14
 padding_y = 6
@@ -414,9 +412,7 @@ padding_y = 6
 # Four result slots: OCR, accessibility, coordinates and color.
 [ui_hint.search_info_ui]
 position_mode = "search_input" # "search_input", "screen" or "window".
-position = ["0%", "50%", "100%", "50%"]
-x_offset = 0
-y_offset = 12
+position = ["44%", "50%", "56%", "50%"] # Above the input, with a small gap.
 width = 520
 font_size = 14
 padding_y = 16

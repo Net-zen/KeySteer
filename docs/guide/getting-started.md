@@ -73,15 +73,28 @@ Quick、Editor、Tabs、Restore 的 `Q` 返回 Window，再按一次 `Q` 回到�
 ## 一张图记住工作方式
 
 ```mermaid
+---
+config:
+    layout: dagre
+    look: classic
+    flowchart:
+        curve: basis
+        rankSpacing: 40
+        minNodeWidth: 88
+        padding: 12
+---
 flowchart LR
-    idle["待机<br/>正常打字"]
-    normal["Normal<br/>移动、点击、滚动"]
-    target["快速定位<br/>Grid<br/>Recursive Grid<br/>UI Hint"]
+    idle("待机<br/>正常打字"):::mode-step
+    normal("Normal<br/>移动、点击、滚动"):::mode-primary
+    target("快速定位<br/>Grid<br/>Recursive Grid<br/>UI Hint"):::mode-step
 
     idle -->|"Primary+E"| normal
     normal -->|"需要时再进入"| target
     target -->|"Esc"| normal
     normal -->|"Esc / q"| idle
+    class idle diagram-blue
+    class normal diagram-violet
+    class target diagram-green
 ```
 
 平时只需在“待机”和 “Normal” 之间切换。三种定位模式是可选的，不需要一开始全部记住。
@@ -89,15 +102,28 @@ flowchart LR
 
 
 ```mermaid
+---
+config:
+    layout: dagre
+    look: classic
+    flowchart:
+        curve: basis
+        rankSpacing: 40
+        minNodeWidth: 88
+        padding: 12
+---
 flowchart LR
-    idle["待机<br/>正常打字"]
-    window["Window<br/>移动、大小、音量"]
-    arrange["窗口整理<br/>Quick<br/>Editor<br/>Tabs"]
+    idle("待机<br/>正常打字"):::mode-step
+    window("Window<br/>移动、大小、音量"):::mode-primary
+    arrange("窗口整理<br/>Quick<br/>Editor<br/>Tabs"):::mode-step
 
     idle -->|"Alt+W"| window
     window -->|"需要时再进入"| arrange
     arrange -->|"Q"| window
     window -->|"Q"| idle
+    class idle diagram-blue
+    class window diagram-violet
+    class arrange diagram-amber
 ```
 
 Window 是窗口管理的基础入口，Quick、Editor 和 Tabs 是按需选用的整理方式。

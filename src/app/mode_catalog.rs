@@ -73,7 +73,6 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
             .copy_chords()
             .unwrap_or_else(|error| panic!("search requires validated copy keys: {error}"))
             .into_iter()
-            .take(4)
             .collect(),
         search_edit_keys: config
             .ui_hint

@@ -2,13 +2,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { translate } from '../config-studio/messages.ts'
 import { pages, categories, tabLabels, utilitySearchFields, searchSettings } from '../config-studio/navigation.ts'
-import { commonSearchFields, styleSearchFields, frequentFields, advancedFields } from '../config-studio/fields.ts'
+import { commonSearchFields, styleSearchFields, frequentFields, advancedFields, fields } from '../config-studio/fields.ts'
 
 test('all settings metadata has English labels and descriptions', () => {
   const labels = [
     ...pages.map(item => item.label), ...categories.map(item => item.label), ...Object.values(tabLabels),
     ...[...commonSearchFields, ...styleSearchFields, ...utilitySearchFields].map(item => item.label),
     ...[...frequentFields, ...advancedFields].flatMap(item => [item.description, ...(item.options ?? []).map(option => option.label)]),
+    ...Object.values(fields).flatMap(mode => [...mode.colors, ...mode.layout, ...mode.advanced].flatMap(field => Object.values(field.optionLabels ?? {}))),
   ]
   for (const label of labels) {
     assert.equal(translate(label, 'zh'), label)

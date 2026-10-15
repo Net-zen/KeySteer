@@ -540,7 +540,7 @@ fn pointer_smooth_acceleration_defaults_on_and_can_be_disabled() {
 #[test]
 fn macos_scroll_axes_have_independent_defaults() {
     assert_eq!(Config::default().macos_scroll_invert(), (false, true));
-    let config = Config::parse(
+    let (config, warnings) = Config::parse_with_warnings(
         r#"
             [platform.macos.scroll]
             invert_horizontal = true
@@ -549,7 +549,7 @@ fn macos_scroll_axes_have_independent_defaults() {
     )
     .unwrap();
     assert_eq!(config.macos_scroll_invert(), (true, false));
-    assert!(config.deprecation_warnings().is_empty());
+    assert!(warnings.is_empty());
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -599,7 +599,7 @@ fn all_macos_scroll_axis_combinations_are_preserved() {
 
 #[test]
 fn explicit_axis_settings_override_legacy_values() {
-    let config = Config::parse(
+    let (config, warnings) = Config::parse_with_warnings(
         r#"
             [scroll]
             invert_scroll = true
@@ -611,7 +611,7 @@ fn explicit_axis_settings_override_legacy_values() {
     )
     .unwrap();
     assert_eq!(config.macos_scroll_invert(), (false, true));
-    assert_eq!(config.deprecation_warnings().len(), 1);
+    assert_eq!(warnings.len(), 1);
 }
 
 #[test]

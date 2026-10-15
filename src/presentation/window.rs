@@ -396,10 +396,7 @@ impl WindowView<'_> {
                             .map_or(w.bounds, |slot| {
                                 placed_rect(screen.work_area, slot.rect, self.gap)
                             });
-                        crate::api::Point::new(
-                            area.x + area.width * self.styles.anchor.x,
-                            area.y + area.height * self.styles.anchor.y,
-                        )
+                        crate::api::style::relative_point(area, self.styles.anchor)
                     })
                     .collect();
                 card_positions(&centers, desired_width, group_height * scale, area)

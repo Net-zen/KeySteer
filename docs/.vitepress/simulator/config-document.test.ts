@@ -58,6 +58,11 @@ test('complete shipped defaults load with guide-line settings', async () => {
   const source = await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')
   const parsed = parseConfigDocument(source).document
   assert.equal(parsed.window.card.guide_line_enabled, true)
+  const effective = resolveConfigDocument(parsed, parseConfigDocument('').document)
+  assert.equal(effective.window.screens, 'all')
+  for (const mode of ['window_quick', 'window_editor', 'window_restore', 'window_tab']) {
+    assert.equal(effective[mode].screens, 'current', mode)
+  }
   assert.equal(parsed.quick_switch.position, 'mouse')
   assert.equal(parsed.recursive_grid.ui.font_size, 0)
 })
@@ -349,7 +354,6 @@ test('search match priorities validate, round-trip and reset without expanding s
 
 test('search editing key-action tables inherit actions and migrate legacy imports', async () => {
   const { stringify } = await import('smol-toml')
-  const { normalizeSearchEditBindings } = await import('../config-studio/document.ts')
   const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
   assert.equal(defaults.ui_hint.search_edit_keys['enter / primary+q'], 'accept')
   assert.equal(defaults.ui_hint.search_edit_keys.accept, undefined)
@@ -370,7 +374,7 @@ test('search editing key-action tables inherit actions and migrate legacy import
     assert.equal(exported.ui_hint.search_edit_keys.paste, undefined)
     assert.deepEqual(cloneConfigDocument(resolveConfigDocument(defaults, exported)), cloneConfigDocument(effective))
   }
-  const disabled = normalizeSearchEditBindings({ copy: '', cut: '' })
+  const disabled = parseConfigDocument('[ui_hint.search_edit_keys]\ncopy = ""\ncut = ""').document.ui_hint.search_edit_keys
   assert.deepEqual(Object.values(disabled).sort(), ['copy', 'cut'])
   const effective = resolveConfigDocument(defaults, { ui_hint: { search_edit_keys: disabled } })
   assert.equal(effective.ui_hint.search_edit_keys['primary+c'], undefined)

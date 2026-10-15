@@ -55,7 +55,7 @@ screens = "all"           # "current" 当前屏幕；"all" 全部屏幕（默认
 include_minimized = false # true 时也包含最小化窗口
 ```
 
-`[window_quick]`、`[window_editor]`、`[window_restore]` 和 `[window_tab]` 使用相同配置项。默认选择全部屏幕的非最小化窗口；设为 `screens = "current"` 时只选择当前屏幕。编号覆盖配置范围内的窗口，自动布局、自动分组仍在各屏幕内分别执行，不跨屏搬动。开启 `include_minimized` 后，最小化窗口也可编号选择和参与布局。退出后重新进入会根据当前候选从 1 编号，释放关闭、最小化或范围外窗口占用的旧编号；会话内刷新保持存活编号稳定。窗口身份卡片会相互避让，并避开下方帮助面板。
+`[window_quick]`、`[window_editor]`、`[window_restore]` 和 `[window_tab]` 使用相同配置项。只有 Window 默认使用 `screens = "all"`；其余四个模式默认使用 `screens = "current"`，只选择当前屏幕。各模式均默认排除最小化窗口。编号覆盖配置范围内的窗口，自动布局、自动分组仍在各屏幕内分别执行，不跨屏搬动。开启 `include_minimized` 后，最小化窗口也可编号选择和参与布局。退出后重新进入会根据当前候选从 1 编号，释放关闭、最小化或范围外窗口占用的旧编号；会话内刷新保持存活编号稳定。窗口身份卡片会相互避让，并避开下方帮助面板。
 
 窗口操作由五个独立模式组成。每个模式使用自己的绑定、继承、应用覆盖、临时模式和样式；方向键默认显式配置 H/J/K/L，不随 Normal 改键。
 
@@ -475,7 +475,7 @@ input_border_color = { light = "#16856BFF", dark = "#68D9B1FF" }
 ```toml
 [ui_hint.search_input_ui]
 position_mode = "screen" # 或 window
-position = ["100%", "50%", "0%", "50%"] # 上、右、下、左
+position = ["95%", "50%", "5%", "50%"] # 上、右、下、左
 width = 420
 font_family = "Microsoft YaHei UI"
 font_size = 16
@@ -486,17 +486,15 @@ border_width = 1
 background_color = "#0A1338F2"
 text_color = "#E8EEFFFF"
 border_color = "#6E82D6FF"
-y_offset = 24
 
 [ui_hint.search_info_ui]
 position_mode = "search_input" # 也支持 screen / window
-position = ["0%", "50%", "100%", "50%"]
+position = ["44%", "50%", "56%", "50%"] # 上方留少量间距
 width = 520
-y_offset = 12
 font_size = 14
 ```
 
-两个面板共用字体、颜色、边框、圆角和内边距设置方式；百分比位置与 Window 卡片共用解析。搜索索引提前准备并在同一轮 UIHint 中复用，最终退出或重新扫描后才释放。
+两个面板共用字体、颜色、边框、圆角和内边距设置方式；定位仅使用参照对象与四边百分比，与 Window 卡片共用解析和区域计算，不再使用像素偏移。`search_input` 参照输入框，`screen` 参照当前屏幕，`window` 参照识别窗口，缺少窗口时回退到屏幕。网页外观页分别提供两个面板的点选、范围拖动和四边滑块，并同时预览布局。搜索索引提前准备并在同一轮 UIHint 中复用，最终退出或重新扫描后才释放。
 
 搜索面板的百分比、浅深主题样式、信息标题、四栏行为枚举和快捷键在加载阶段编译。搜索过程中复用已编译结果；目标文本及中文简拼索引随扫描提前准备。成员集合只在查询或扫描几何改变时更新，帧处理和取样回调不重建集合。
 

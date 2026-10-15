@@ -10,10 +10,12 @@ outline: false
 - **闲时更安静，操作更跟手。** 核心循环改为事件驱动，告别常规空闲轮询，输入和任务到来时按需唤醒。
 - UIHint 搜索分批预热、输入优先，目标更新只重建变化部分，让复杂界面下的搜索更流畅。
 - 日志改为异步写入，减少磁盘操作对交互的干扰。
+- ⚠️ **配置变更提醒：** `[ui_hint.search_input_ui]` 搜索框略微上移，`[ui_hint.search_info_ui]` 信息面板默认跟随其上方并留出间距，可在[网页模拟器](https://dccif.github.io/KeySteer/simulator)调整位置、间距和样式。这两个配置段的旧 `x_offset` / `y_offset` 仍兼容读取，但不再生效，不影响启动。
 
 - **Quieter at idle, quicker to respond.** The core loop now wakes for events and scheduled work, eliminating routine idle polling.
 - UIHint search prepares work in small batches with input taking priority, rebuilding only changed entries for smoother searches on complex screens.
 - Logging now runs asynchronously, reducing disk I/O on the interaction thread.
+- ⚠️ **Configuration changes:** The search input in `[ui_hint.search_input_ui]` sits slightly higher, with the information panel in `[ui_hint.search_info_ui]` following above it with a gap. Adjust positions, spacing and appearance in the [web simulator](https://dccif.github.io/KeySteer/simulator). Legacy `x_offset` / `y_offset` fields in these two sections remain accepted but have no effect and do not prevent startup.
 
 ## 0.11.9
 

@@ -10,6 +10,7 @@ outline: false
 - **Quieter at idle, quicker to respond.** The core loop now wakes for events and scheduled work, eliminating routine idle polling.
 - UIHint search prepares work in small batches with input taking priority, rebuilding only changed entries for smoother searches on complex screens.
 - Logging now runs asynchronously, reducing disk I/O on the interaction thread.
+- ⚠️ **Configuration changes:** The search input in `[ui_hint.search_input_ui]` sits slightly higher, with the information panel in `[ui_hint.search_info_ui]` following above it with a gap. Adjust positions, spacing and appearance in the [web simulator](https://dccif.github.io/KeySteer/simulator). Legacy `x_offset` / `y_offset` fields in these two sections remain accepted but have no effect and do not prevent startup.
 
 ## 0.11.9
 

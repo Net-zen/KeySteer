@@ -24,19 +24,6 @@ fn validate_label_colors(path: &str, label: &LabelUi) -> Result<(), ConfigError>
 }
 
 impl ConfigFile {
-    /// Deprecated settings that should be moved to their replacement path.
-    pub fn deprecation_warnings(&self) -> Vec<String> {
-        self.scroll
-            .invert_scroll
-            .map(|_| {
-                "`scroll.invert_scroll` is deprecated; use \
-                 `platform.macos.scroll.invert` instead"
-                    .to_string()
-            })
-            .into_iter()
-            .collect()
-    }
-
     /// Chords that will not behave as expected on this platform.
     ///
     /// Separate from [`Self::validate`] because these are advisory, and because
@@ -323,9 +310,8 @@ impl ConfigFile {
                 "search_input_ui cannot be positioned relative to itself".into(),
             ));
         }
-        // Accept legacy five-slot configurations; the removed label slot is ignored.
         let chords = self.ui_hint.copy_chords().map_err(bad)?;
-        if !matches!(chords.len(), 4 | 5) {
+        if chords.len() != 4 {
             return Err(bad(
                 "search_copy_keys requires four stable field shortcuts".into()
             ));

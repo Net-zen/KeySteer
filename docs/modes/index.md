@@ -3,25 +3,34 @@
 把 KeySteer 想成三层操作：`Idle` 安静等待，`Normal` 负责日常移动和点击，需要找准目标时再进入一种定位模式。
 
 ```mermaid
+---
+config:
+    layout: dagre
+    look: classic
+    flowchart:
+        curve: linear
+        nodeSpacing: 24
+        rankSpacing: 44
+---
 flowchart LR
-    idle["Idle 待机"]
-    normal["Normal 日常操作"]
-
-    subgraph target["定位模式"]
-        grid["Grid 网格"]
-        rg["Recursive Grid 递归网格"]
-        ui["UI 标签"]
-    end
+    idle("Idle<br/>待机"):::mode-step
+    normal("Normal<br/>日常操作"):::mode-primary
+    grid("Grid<br/>网格"):::mode-step
+    rg("Recursive Grid<br/>递归网格"):::mode-step
+    ui("UI Hint<br/>UI 标签"):::mode-step
 
     idle -->|"Primary+E"| normal
     normal -->|g| grid
     normal -->|f| rg
-    normal -->|"Primary+f"| ui
-    normal -->|"esc / q"| idle
-    target -->|"esc / Primary+Q"| normal
+    normal -->|"Primary+F"| ui
+    class idle diagram-blue
+    class normal diagram-violet
+    class grid diagram-green
+    class rg diagram-amber
+    class ui diagram-rose
 ```
 
-三个定位模式都可以按 `Esc` 或 `Primary+Q` 回到 Normal。
+三个定位模式都可以按 `Esc` 或 `Primary+Q` 回到 Normal；Normal 中按 `Esc` 或 `q` 返回 Idle。
 
 ## 选哪个模式？
 
