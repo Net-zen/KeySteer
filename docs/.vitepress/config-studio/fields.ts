@@ -31,7 +31,7 @@ export const fields = {
     ],
     layout: [
       { path: 'window.target', label: '入口优先目标（active 激活窗口 / mouse 鼠标下窗口；无目标时互相兜底）', kind: 'select', options: ['', 'active', 'mouse'] },
-      { path: 'window.screens', label: '窗口范围（current 当前屏幕 / all 全部屏幕）', kind: 'select', options: ['current', 'all'] },
+      { path: 'window.screens', label: '窗口范围（current 当前屏幕 / all 全部屏幕，默认 all）', kind: 'select', options: ['current', 'all'] },
       { path: 'window.include_minimized', label: '包含最小化窗口', kind: 'boolean' },
       { path: 'window.enabled', label: '启用 Window', kind: 'boolean' },
       { path: 'window.number_timeout_ms', label: '歧义编号等待（毫秒）', kind: 'number', min: 100, max: 2000, step: 10 },

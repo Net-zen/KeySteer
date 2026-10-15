@@ -13,8 +13,8 @@ pub enum SplitRatio {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowScreens {
-    #[default]
     Current,
+    #[default]
     All,
 }
 
@@ -41,7 +41,7 @@ impl Default for WindowModeConfig {
     fn default() -> Self {
         Self {
             target: None,
-            screens: WindowScreens::Current,
+            screens: WindowScreens::All,
             include_minimized: false,
             enabled: true,
             inherits: vec!["hotkeys".into()],
@@ -466,11 +466,11 @@ mod scope_tests {
     #[test]
     fn window_scope_defaults_and_flat_mode_configuration() {
         let default = Window::default();
-        assert_eq!(default.screens, WindowScreens::Current);
+        assert_eq!(default.screens, WindowScreens::All);
         assert!(!default.include_minimized);
         let editor: WindowEditor =
-            toml::from_str("screens = 'all'\ninclude_minimized = true").unwrap();
-        assert_eq!(editor.screens, WindowScreens::All);
+            toml::from_str("screens = 'current'\ninclude_minimized = true").unwrap();
+        assert_eq!(editor.screens, WindowScreens::Current);
         assert!(editor.include_minimized);
         assert!(toml::from_str::<WindowTab>("screens = 'unknown'").is_err());
         let tabs: WindowTab = toml::from_str("screens = 'all'").unwrap();

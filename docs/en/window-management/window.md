@@ -25,7 +25,7 @@ Entering Window activates and locks the window under the pointer. Moving the poi
 | `Z / Shift+Z` | Undo / redo window adjustments |
 | `Shift+C` | Restore positions, sizes, and window states from the start of this window session |
 
-By default, candidates are **non-minimized windows on the current display**. Existing numbers stay stable where possible: closing a window does not renumber the others, although re-entering may reclaim gaps. Only a prefix that could form a longer number waits, for 250 ms by default.
+By default, candidates are **non-minimized windows across all displays**; set `screens = "current"` to limit them to the current display. Existing numbers stay stable where possible: closing a window does not renumber the others, although re-entering may reclaim gaps. Only a prefix that could form a longer number waits, for 250 ms by default.
 
 Need to click something? Hold `Primary` to temporarily use Normal's pointer movement, scrolling, and click bindings. Release it to resume the same target. Each window mode has independent direction bindings; remapping Normal does not automatically remap these modes.
 

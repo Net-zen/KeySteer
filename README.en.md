@@ -201,13 +201,14 @@ Supports x64 and ARM64; x64 uses the default AVX2 build with no filename suffix.
 
 ## Development and packaging
 
-The development Rust version is specified by `rust-toolchain.toml`. The documentation site requires Node 24+ and the pnpm version pinned in `package.json`.
+The development Rust version is specified by `rust-toolchain.toml`. For the documentation site, use Node.js 24 and install pnpm from npm's `latest` tag, matching Pages.
 
 ```bash
 cargo run
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 
+npm install --global pnpm@latest --allow-scripts=pnpm
 pnpm install
 pnpm docs:build
 ```

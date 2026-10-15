@@ -91,8 +91,8 @@ const languageStateScript = `(() => {
   }, true)
 })()`
 
-export default async ({ command }: { command: string }) => {
-  // Vite passes serve/build explicitly; do not infer it from argv or NODE_ENV.
+export default async ({ command }: { command: unknown }) => {
+  // Use the supplied command rather than global argv or NODE_ENV.
   const latestRelease = await loadLatestRelease(command, process.env.GITHUB_TOKEN, process.env.KEYSTEER_DOCS_RELEASE_TAG)
   return withMermaid({
   // Internal maintenance notes are repository documentation, not site pages.

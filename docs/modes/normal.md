@@ -63,7 +63,7 @@ reset_on = ["move", "click"]
 
 启用前需让出对应布局的单键及 `Tab`、`Backspace`、`Space`：它们与 Normal 本地、继承或应用覆盖绑定冲突时，新配置会被拒绝，错误写入 `keysteer.log` 和可用的控制台，并列出冲突键、动作及来源。可修改布局，或删除 Normal 对应绑定；`none` 可显式让出旧动作并屏蔽继承。组合键不与其中的单键直接冲突，仍按现有组合键规则处理。
 
-`[normal.bindings]` 整表替换内置绑定，不是增量补丁。示例与默认键位冲突说明统一放在 `keysteer.default.toml` 的 Normal 段末尾。默认 Grid 需让出 q/t/f/g/v/b；默认 Recursive Grid 需让出 q，保留 Esc 退出。可用 `keysteer --config keysteer.user.toml --check` 检查字段及绑定冲突；热重载失败保留旧配置。
+`[normal.bindings]` 整表替换内置绑定，不是增量补丁。默认 Grid 需让出 q/t/f/g/v/b；默认 Recursive Grid 需让出 q，保留 Esc 退出。可用 `keysteer --config keysteer.user.toml --check` 检查字段及绑定冲突；热重载失败保留旧配置。
 
 | 操作 | 行为 |
 | --- | --- |
@@ -132,12 +132,6 @@ Normal 默认按 `\` 进入 Text Input，普通文字透传到应用。进入和
 [normal.bindings]
 '\' = "text_input"
 
-[text_input]
-inherits = []
-temporary_mode = "normal"
-temporary_mode_keys = ["primary"]
-temporary_mode_passthrough_keys = []
-
 [text_input.bindings]
 'enter \ esc' = "normal"
 
@@ -149,11 +143,21 @@ temporary_mode_passthrough_keys = []
 
 默认返回键会被消费，不发送给应用。需要 Enter 正常用于多行编辑或输入法选词时，从返回绑定中移除 enter 即可。显式 bindings 表替换默认值，请在现有 Normal 绑定表中追加入口，保留其他操作。
 
-按住 Primary 临时使用 Normal，松开继续输入；通过 `key_aliases` 解析，与其他模式一致。也支持 `inherits = ["normal"]`，本模式绑定优先；完整继承会让未覆盖的 HJKL 等字母执行 Normal 动作，因此连续打字通常使用临时层。进入文本输入或松开临时层触发键时停止借用的手势并释放锁定输入，长按 Q 不启动快速切换。
+Text Input 默认不继承或临时借用 Normal，Cmd/Ctrl+A、C、V 等应用快捷键正常透传，不受 Normal 的字母绑定影响。长按 Q 也不启动快速切换。
+
+需要临时借用 Normal 时可显式配置，选择不与应用编辑快捷键冲突的触发键：
+
+```toml
+[text_input]
+temporary_mode = "normal"
+temporary_mode_keys = ["right_ctrl"]
+```
+
+按住触发键借用 Normal，松开继续输入。进入文本输入或松开触发键会清理借用的手势和锁定输入。也支持 `inherits = ["normal"]`，但完整继承会让未覆盖的 HJKL 等字母执行 Normal 动作，不适合连续打字。
 
 ### 可选主键区编辑映射
 
-默认配置中的编辑组合键全部为注释示例，按需取消注释启用：
+编辑组合键默认不启用，可在 `[text_input.bindings]` 中按需添加：
 
 | 组合键 | 发送的按键 |
 | --- | --- |
@@ -161,7 +165,7 @@ temporary_mode_passthrough_keys = []
 | Primary + U/I/O | Backspace／Delete／Insert |
 | Primary + T/Y | Home／End |
 
-还提供 Ctrl、Shift、Ctrl+Shift 的注释示例。请选择与 Primary 实际映射不重复的修饰键。例如 Primary 是 Ctrl 时，不使用 Ctrl+Primary 的示例。
+完整示例还包含 Ctrl、Shift、Ctrl+Shift 组合。请选择与 Primary 实际映射不重复的修饰键。例如 Primary 是 Ctrl 时，不使用 Ctrl+Primary 的示例。
 
 ```toml
 # 在 [text_input.bindings] 中按需启用：
@@ -170,9 +174,57 @@ temporary_mode_passthrough_keys = []
 # "shift+primary+h" = "send shift+arrow_left"
 ```
 
+<details>
+<summary>完整编辑键示例（按需复制）</summary>
+
+```toml
+# Optional Text Input editing keys; choose modifiers distinct from Primary.
+# Explicit bindings replace the default table, so keep the return keys.
+[text_input.bindings]
+'enter \ esc' = "normal"
+"primary+h" = "arrow_left"
+"primary+j" = "arrow_down"
+"primary+k" = "arrow_up"
+"primary+l" = "arrow_right"
+"primary+u" = "backspace"
+"primary+i" = "delete"
+"primary+o" = "insert"
+"primary+t" = "home"
+"primary+y" = "end"
+"shift+primary+h" = "send shift+arrow_left"
+"shift+primary+j" = "send shift+arrow_down"
+"shift+primary+k" = "send shift+arrow_up"
+"shift+primary+l" = "send shift+arrow_right"
+"shift+primary+u" = "send shift+backspace"
+"shift+primary+i" = "send shift+delete"
+"shift+primary+o" = "send shift+insert"
+"shift+primary+t" = "send shift+home"
+"shift+primary+y" = "send shift+end"
+"ctrl+primary+h" = "send ctrl+arrow_left"
+"ctrl+primary+j" = "send ctrl+arrow_down"
+"ctrl+primary+k" = "send ctrl+arrow_up"
+"ctrl+primary+l" = "send ctrl+arrow_right"
+"ctrl+primary+u" = "send ctrl+backspace"
+"ctrl+primary+i" = "send ctrl+delete"
+"ctrl+primary+o" = "send ctrl+insert"
+"ctrl+primary+t" = "send ctrl+home"
+"ctrl+primary+y" = "send ctrl+end"
+"ctrl+shift+primary+h" = "send ctrl+shift+arrow_left"
+"ctrl+shift+primary+j" = "send ctrl+shift+arrow_down"
+"ctrl+shift+primary+k" = "send ctrl+shift+arrow_up"
+"ctrl+shift+primary+l" = "send ctrl+shift+arrow_right"
+"ctrl+shift+primary+u" = "send ctrl+shift+backspace"
+"ctrl+shift+primary+i" = "send ctrl+shift+delete"
+"ctrl+shift+primary+o" = "send ctrl+shift+insert"
+"ctrl+shift+primary+t" = "send ctrl+shift+home"
+"ctrl+shift+primary+y" = "send ctrl+shift+end"
+```
+
+</details>
+
 显式完整组合键优先于临时层中去掉触发键后的普通绑定。映射使用现有 Send 的源修饰键暂停／恢复和系统按键重复逻辑，不改变应用对目标快捷键的处理。
 
-文本输入模式默认不显示文字提示，可在 `[mode_indicator.modes.text_input]` 中用 `enabled` 自定义。临时 Normal 仍使用 Normal 的提示设置，且 `s = "screen next"` 等插件动作的结果由 Normal 处理。
+文本输入模式默认不显示文字提示，可在 `[mode_indicator.modes.text_input]` 中用 `enabled` 自定义。显式启用临时 Normal 后，它使用 Normal 的提示设置，且 `s = "screen next"` 等插件动作的结果由 Normal 处理。
 ## 模式标识符样式与位置
 
 程序和网页现在使用相同的标识符尺寸与定位公式，移除了额外的预览屏幕缩放补偿。坐标原点是系统鼠标热点（通常为箭头尖端，也是圆形指示器中心），不是箭头图片的中心。Windows 使用桌面坐标像素，macOS 使用逻辑点；标识符后端不再二次缩放尺寸，字体栅格仍可能有细微差异。

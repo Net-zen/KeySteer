@@ -208,13 +208,14 @@ scoop update keysteer
 
 ## 运行与打包
 
-开发环境：Rust 版本以 `rust-toolchain.toml` 为准。文档站需要 Node 24+ 和 `package.json` 指定的 pnpm 版本。
+开发环境：Rust 版本以 `rust-toolchain.toml` 为准。文档站使用 Node.js 24 和 npm 安装的 pnpm `latest`，与 Pages 保持同一渠道。
 
 ```bash
 cargo run
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 
+npm install --global pnpm@latest --allow-scripts=pnpm
 pnpm install
 pnpm docs:build
 ```

@@ -38,7 +38,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## 网页与发布
 
+网页使用 Node.js 24，先用 `npm install --global pnpm@latest --allow-scripts=pnpm` 安装或升级 pnpm，再运行 `pnpm install`；npm 12 需要允许 pnpm 自身的安装脚本以放置原生可执行文件。本地通过 npm 管理 pnpm，不通过 `packageManager` 固定版本；Pages 每次从 npm 的 `latest` 标签解析最新正式版，并以解析出的确切版本缓存工具。`pnpm-workspace.yaml` 通过 `runtimeOnFail: ignore` 将语言工具链留给既有工具管理，避免仅安装文档依赖时下载 Rust。VitePress 2 当前固定使用 alpha 版本，采用 Vite 8 的 Rolldown／Oxc 构建链，不安装 esbuild；自定义 Markdown 测试须等待 `renderAsync` 完成异步语法高亮。
+
 网页代码位于 `docs/.vitepress/`；变更时按范围运行 `pnpm docs:test`、`pnpm docs:check`、`pnpm docs:build`，视觉交互另做浏览器验证。
+
+`docs:dev`、`docs:check`、`docs:build` 通过 `scripts/docs.mjs` 在同一个 Node 进程中先同步资源，再启动对应 CLI，避免嵌套启动 pnpm 和额外的 Node／命令包装。CLI 选项原样透传；正式构建仍从 GitHub 获取并校验所选 Release。`latest-release.ts` 兼容 `dev`／`serve` 字符串及 VitePress 开发 CLI 转交的选项对象，网络失败可继续预览；`build` 和未知命令始终严格校验。
 
 正式产物走 `packaging/` 脚本和 `.github/workflows/`，检查应用身份、资源和签名。纯文档修改验证链接、代码路径和 `git diff --check` 即可。
 

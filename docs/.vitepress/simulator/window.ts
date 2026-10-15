@@ -80,7 +80,7 @@ export const WINDOW_MOTION = new Set(['window_left', 'window_down', 'window_up',
 export function createWindowState(): WindowState {
   return {
     audio: {}, systemAudio: { volume: 1, output: 0, muted: false },
-    screens: 'current', includeMinimized: false,
+    screens: 'all', includeMinimized: false,
     tabs: createDemoTabs(),
     mode: 'window', deletingPresets: false, deleteSelection: null, presets: [], library: false, libraryPage: 0, libraryIndex: new Map(), noteOpen: false, recent: [], editingPresetId: null, savedEditSnapshot: '',
     windows: [
@@ -117,7 +117,7 @@ export function enterWindow(state: SimulatorState, settings: Record<string, any>
   if (isWindowMode(state.mode)) return
   state.windowHelpOverride = null
   w.previous = state.mode
-  w.screens = settings.screens === 'all' ? 'all' : 'current'; w.includeMinimized = settings.include_minimized === true
+  w.screens = settings.screens === 'current' ? 'current' : 'all'; w.includeMinimized = settings.include_minimized === true
   w.size = false; w.temporary = false; w.history = []; w.redo = []; w.editRedo = []; w.initial = snapshot(w); w.changedWindows = []; w.gesture = false
   w.library = false; w.noteOpen = false
   w.editingPresetId = null; w.savedEditSnapshot = ''
@@ -147,7 +147,7 @@ export function switchWindowMode(state: SimulatorState, mode: WindowMode, settin
   if (!isWindowMode(state.mode)) enterWindow(state, settings)
   const w = state.window
   if (w.mode === 'window_tab' && mode !== 'window_tab') { w.tabs.target = null; w.tabs.restore = null }
-  const scope = settings.screens === 'all' ? 'all' : 'current', includeMinimized = settings.include_minimized === true
+  const scope = settings.screens === 'current' ? 'current' : 'all', includeMinimized = settings.include_minimized === true
   if (w.screens !== scope || w.includeMinimized !== includeMinimized) { w.numbers = {}; w.nextNumber = 1 }
   w.screens = scope; w.includeMinimized = includeMinimized
   refreshWindowNumbers(w)

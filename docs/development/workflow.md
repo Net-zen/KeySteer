@@ -3,7 +3,7 @@
 ## 环境
 
 - Rust 版本以 `rust-toolchain.toml` 为准。
-- 文档站需要 Node 24 及以上；pnpm 版本以根目录 `package.json` 的 `packageManager` 字段为准。
+- 文档站使用 Node.js 24；通过 npm 安装 pnpm `latest`，与 Pages 使用同一渠道，项目不固定 pnpm 版本。
 - macOS 原生功能需要 macOS 14；Windows 原生功能应在 Windows 实机验证。
 
 ## 编译和运行
@@ -48,6 +48,7 @@ powershell -ExecutionPolicy Bypass -File packaging/windows/package.ps1
 ## 文档站
 
 ```bash
+npm install --global pnpm@latest --allow-scripts=pnpm
 pnpm install
 pnpm docs:dev
 pnpm docs:test

@@ -37,8 +37,6 @@ Vision needs macOS Screen Recording permission; keyboard capture still needs Acc
   description="22-second bilingual demo, subtitles only: pinyin initials, result cycling, copying information, point adjustment, and color picking."
 />
 
-https://github.com/user-attachments/assets/84d0872d-81f6-4e42-aa7f-767061cef646
-
 Press `/` to search text, Chinese pinyin initials, or label codes. Matching results immediately show the first ranked result panel. Press `Tab` to advance from the current result and wrap from the last back to the first. Editing the query clears the manual preview, filters again, and shows the new first result. By default, `Enter`, `/`, or `Primary+Q` accepts the current preview and moves the pointer; `Esc` cancels. Cycling itself does not move the pointer.
 
 Press `Ctrl+1/2/3/4` to copy text, accessibility information, coordinates, or color, respectively. Tap `Ctrl` to edit the point, adjust the sampling position with `H/J/K/L`, and use `Ctrl+Shift+4` to cycle through HEX, RGB, and HSL. All these keys are configurable.

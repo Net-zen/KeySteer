@@ -396,8 +396,7 @@ fn window_temporary_normal_hotkey_enters_normal_once_and_exits_with_one_q() {
 #[test]
 fn window_cross_screen_selection_warp_does_not_move_or_restore_windows() {
     use crate::api::window::{WindowId, WindowInfo, WindowOperation as O, WindowResult};
-    let mut config = Config::default();
-    config.window.screens = crate::config::WindowScreens::All;
+    let config = Config::default();
     let (mut engine, mut backend, log) = window_test_engine(&config);
     let mut second = engine.screens[0].clone();
     second.bounds.x += second.bounds.width;
@@ -444,7 +443,7 @@ fn window_cross_screen_selection_warp_does_not_move_or_restore_windows() {
 fn window_all_screen_editor_submits_separate_display_layouts() {
     use crate::api::window::{WindowEditResult, WindowId, WindowInfo, WindowOperation, WindowResult};
     let mut config = Config::default();
-    config.window_editor.screens = crate::config::WindowScreens::All;
+    config.window.screens = crate::config::WindowScreens::Current;
     let (mut engine, mut backend, log) = window_test_engine(&config);
     let mut second = engine.screens[0].clone();
     second.bounds.x += second.bounds.width;

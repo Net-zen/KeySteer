@@ -221,8 +221,8 @@ impl Default for TextInput {
     fn default() -> Self {
         Self {
             inherits: Vec::new(),
-            temporary_mode: Some("normal".into()),
-            temporary_mode_keys: vec!["primary".into()],
+            temporary_mode: None,
+            temporary_mode_keys: Vec::new(),
             temporary_mode_passthrough_keys: Vec::new(),
             bindings: default_text_input_bindings(),
         }

@@ -39,7 +39,7 @@ Quick、Editor、Tabs、Restore 中按 `Q` 返回 Window，再按 `Q` 回到待�
 | `Z / Shift+Z` | 撤销 / 重做窗口调整 |
 | `Shift+C` | 恢复本次窗口会话初始的位置、尺寸及窗口状态 |
 
-默认只列出**当前屏幕、非最小化**的候选窗口。已有编号尽量保持稳定，关闭窗口不会把其余窗口重新编号；重新进入时可能回收空缺编号。只有可能组成更长编号的前缀才等待，默认 250 ms。
+默认列出**全部屏幕、非最小化**的候选窗口；设为 `screens = "current"` 可限制在当前屏幕。已有编号尽量保持稳定，关闭窗口不会把其余窗口重新编号；重新进入时可能回收空缺编号。只有可能组成更长编号的前缀才等待，默认 250 ms。
 
 需要点击一下应用？按住 `Primary` 临时使用 Normal 的鼠标移动、滚动和点击绑定，松开后继续调整原目标。Window 各模式的方向键独立配置，修改 Normal 的方向键不会自动修改这里的键位。
 
@@ -144,7 +144,7 @@ Windows 上退出模式后还可以拖动标签排序、拖到另一组转移窗
 
 Window 和 A / E / R / T 共用 [window.card]，子模式不重复配置。app_font_size、title_font_size 控制两行字号（0 自动）；app_font_family、title_font_family 控制字体（空值继承当前模式 ui.font_family）；app_bold、title_bold 控制加粗。
 
-background_color、border_color、number_color、app_color、title_color 分别设置背景、边框、编号、程序名和标题颜色。颜色支持 #RRGGBBAA 或浅色／深色表，例如 app_color = { light = "#19357DFF", dark = "#E8EEFFFF" }。省略颜色时继承当前模式 ui／主题，默认配置文件提供可取消注释的示例。
+background_color、border_color、number_color、app_color、title_color 分别设置背景、边框、编号、程序名和标题颜色。颜色支持 #RRGGBBAA 或浅色／深色表，例如 app_color = { light = "#19357DFF", dark = "#E8EEFFFF" }。省略颜色时继承当前模式 ui／主题，按需在 `[window.card]` 中添加颜色覆盖。
 
 text_width 是每列文字宽度（默认 260），padding_x / padding_y 是文字内边距（9 / 4），line_height 是行高倍数（1.4），min_height 是卡片最小高度（44），number_min_width 是编号最小宽度（38）。尺寸使用逻辑像素；行高按两行较大字号计算，空间不足时省略文字。编号字号、边框宽度和圆角继续使用各模式 ui.font_size、ui.border_width、ui.border_radius。内部导出和网页编辑器同步支持这些配置。
 

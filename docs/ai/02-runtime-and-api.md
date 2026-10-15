@@ -31,6 +31,8 @@ Mode → HostContext::present(View) → presentation → OverlayScene
 
 模式切换见 [生命周期](04-modes-and-lifecycle.md)，配置替换见 [配置](03-configuration.md)。
 
+Text Input 默认只消费显式返回绑定，其余输入保持原始 Down/Up 透传；不默认继承或临时借用 Normal，避免 Primary 在 macOS 映射为 Cmd 时接管 Cmd+A/C/V 等编辑快捷键。临时模式仍支持显式配置，沿用公共路由、owner 和释放规则，不为系统快捷键新增特判或逐项白名单。
+
 UI 扫描的 UiScanActivationExpected 按 scan owner 路由，必须在对应原生焦点通知前送到模式，防止一次主动激活触发重复扫描。范围选择与跨平台激活策略见 [UI 扫描](05-ui-scanning.md)。
 
 UIHint live TextPrompt 仅建立共享输入路由，不调用原生 request_text_prompt。runtime 在任何编辑、剪贴板和绘制工作前确认按键处置；TextInserted／TextEdit／TextPasted 交给 Mode，原生备注仍走原有异步协议。 未被编辑／复制／点位快捷键处理的修饰键，按 Mode 的 claims_key 交还给输入 owner；松键也交还，避免会话内状态变化丢失释放。搜索期间保留配置的重叠换层键，当前预览高亮仍置顶。 已解析的点位／换层事件直接复用，外层不重复构造按键集合或匹配复制快捷键；松键仅使用已有 tap／held 记录，组合键匹配只在按下时执行。

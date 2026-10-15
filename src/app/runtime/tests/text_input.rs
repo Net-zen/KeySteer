@@ -212,28 +212,15 @@ fn text_input_entry_stops_movement_and_releases_latched_inputs() {
 
 #[test]
 fn text_input_home_row_mappings_support_modified_navigation_and_repeats() {
-    // Exercise the shipped examples as explicit user bindings, not defaults.
-    let shipped = include_str!("../../../../keysteer.default.toml");
-    let examples: Vec<_> = shipped
-        .split("[text_input.bindings]")
-        .nth(1)
-        .unwrap()
-        .split("[window]")
-        .next()
-        .unwrap()
-        .lines()
-        .filter_map(|line| line.strip_prefix("# \""))
-        .filter(|line| line.contains("primary+"))
-        .map(|line| format!("\"{line}"))
-        .collect();
-    assert_eq!(examples.len(), 36);
-    let config = Config::parse(&format!(
-        "[text_input.bindings]\n'\\' = 'normal'\nesc = 'normal'\n{}",
-        examples.join("\n")
-    ))
-    .unwrap();
+    // Exercise the documented opt-in bindings, independently of temporary Normal.
+    let example = include_str!("../../../../docs/modes/normal.md")
+        .split("<details>").nth(1).unwrap()
+        .split("```toml").nth(1).unwrap()
+        .split("```").next().unwrap();
+    let config = Config::parse(example).unwrap();
+    assert_eq!(config.text_input.bindings.len(), 39);
     config.validate().unwrap();
-    let primary = config.text_input.temporary_mode_keys[0].clone();
+    let primary = config.resolved_key_aliases()["primary"].clone();
     let mut engine = text_input_engine(config);
     engine.set_active(ModeId::text_input());
     let (mut backend, log) = FakeBackend::new(Vec::new());
@@ -297,7 +284,9 @@ fn text_input_home_row_mappings_support_modified_navigation_and_repeats() {
 
 #[test]
 fn text_input_borrows_normal_and_resumes_typing_when_modifier_is_released() {
-    let config = Config::default();
+    let config = Config::parse(
+        "[text_input]\ntemporary_mode = 'normal'\ntemporary_mode_keys = ['primary']"
+    ).unwrap();
     let primary = config.text_input.temporary_mode_keys[0].clone();
     let mut engine = text_input_engine(config);
     engine.set_active(ModeId::text_input());
@@ -403,8 +392,10 @@ h = "backspace"
 fn text_input_default_editing_chords_are_opt_in_and_primary_is_aliased() {
     let defaults = Config::default();
     assert_eq!(defaults.text_input.bindings.len(), 3);
+    assert!(defaults.text_input.temporary_mode.is_none());
+    assert!(defaults.text_input.temporary_mode_keys.is_empty());
     for physical in ["left_alt", "right_ctrl", "left_win"] {
-        let config = Config::parse(&format!("[key_aliases]\nprimary = '{physical}'\n[key_aliases.windows]\nprimary = '{physical}'\n[key_aliases.macos]\nprimary = '{physical}'")).unwrap();
+        let config = Config::parse(&format!("[key_aliases]\nprimary = '{physical}'\n[key_aliases.windows]\nprimary = '{physical}'\n[key_aliases.macos]\nprimary = '{physical}'\n[text_input]\ntemporary_mode = 'normal'\ntemporary_mode_keys = ['primary']")).unwrap();
         config.validate().unwrap();
         assert_eq!(config.text_input.temporary_mode_keys, [physical]);
         let mut engine = text_input_engine(config);
@@ -454,12 +445,14 @@ fn text_input_can_submit_enter_with_an_ordinary_action_sequence() {
 fn text_input_temporary_normal_routes_plugin_screen_commands_to_normal() {
     for literal in [false, true] {
         let mut config = Config::default();
+        config.text_input.temporary_mode = Some("normal".into());
         config.normal.bindings.clear();
         config
             .normal
             .bindings
             .insert("s".into(), Binding::parse("screen next").unwrap());
         let primary = config.resolved_key_aliases()["primary"].clone();
+        config.text_input.temporary_mode_keys = vec![primary.clone()];
         let mut engine = text_input_engine(config);
         let (mut backend, log) = FakeBackend::new(Vec::new());
         engine.screens = backend.screens().unwrap();
@@ -508,6 +501,35 @@ fn text_input_temporary_normal_routes_plugin_screen_commands_to_normal() {
             [KeyDisposition::Forward; 2]
         );
         assert_eq!(log.lock().unwrap().warps.len(), 2);
+    }
+}
+
+#[test]
+fn text_input_defaults_forward_application_shortcuts_without_borrowing_normal() {
+    for primary in ["left_win", "left_ctrl", "left_alt"] {
+        let mut config = Config::parse(&format!(
+            "[key_aliases]\nprimary = '{primary}'\n[key_aliases.windows]\nprimary = '{primary}'\n[key_aliases.macos]\nprimary = '{primary}'"
+        )).unwrap();
+        for key in ["a", "c", "v", "x", "z"] {
+            config.normal.bindings.insert(key.into(), Binding::Move(Direction::Left));
+        }
+        let mut engine = text_input_engine(config);
+        engine.set_active(ModeId::text_input());
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        for chord in ["a", "c", "v", "x", "z", "shift+z", "arrow_left", "shift+arrow_right"] {
+            for event in tap_chord(&format!("{primary}+{chord}")) {
+                engine.handle_backend_event(event, &mut backend).unwrap();
+                assert_eq!(engine.active_mode(), &ModeId::text_input());
+                assert_eq!(engine.display_mode(), ModeId::text_input());
+            }
+        }
+        assert!(engine.input.active_gestures.is_empty());
+        assert!(engine.input.key_dispositions.is_empty());
+        let log = log.lock().unwrap();
+        assert!(!log.dispositions.is_empty());
+        assert!(log.dispositions.iter().all(|value| *value == KeyDisposition::Forward));
+        assert!(log.sent.is_empty());
+        assert!(log.moves.is_empty());
     }
 }
 

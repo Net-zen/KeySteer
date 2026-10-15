@@ -226,19 +226,31 @@ test('text input keeps independent editing bindings and configurable temporary N
   const defaults = parseConfigDocument(source).document
   assert.equal(defaults.normal.bindings['\\'], 'text_input')
   assert.deepEqual(cloneConfigDocument(defaults.text_input.bindings), { 'enter \\ esc': 'normal' })
-  assert.deepEqual(defaults.text_input.temporary_mode_keys, ['primary'])
-  const examples = source.split('[text_input.bindings]')[1].split('[window]')[0].split('\n').filter(line => line.startsWith('# \"') && line.includes('primary+')).map(line => line.slice(2))
-  assert.equal(examples.length, 36)
-  const configured = resolveConfigDocument(defaults, parseConfigDocument('[text_input.bindings]\n' + examples.join('\n') + '\n').document)
+  assert.equal(defaults.text_input.temporary_mode, undefined)
+  assert.equal(defaults.text_input.temporary_mode_keys, undefined)
+  const [example, translatedExample] = await Promise.all(['../../modes/normal.md', '../../en/modes/normal.md'].map(async relative => {
+    const markdown = await readFile(new URL(relative, import.meta.url), 'utf8')
+    const block = markdown.split('<details>')[1]?.split('```toml')[1]?.split('```')[0]
+    assert.ok(block, `Missing inline editing example in ${relative}`)
+    return parseConfigDocument(block).document
+  }))
+  assert.deepEqual(example, translatedExample)
+  const configured = resolveConfigDocument(defaults, example)
+  assert.equal(Object.keys(configured.text_input.bindings).length, 37)
   assert.equal(resolveLayeredPhysicalBinding(configured, 'text_input', ['left_alt', 'h'], 'h', false)?.value, 'arrow_left')
   assert.equal(resolveLayeredPhysicalBinding(configured, 'text_input', ['left_ctrl', 'left_shift', 'left_alt', 'h'], 'h', false)?.value, 'send ctrl+shift+arrow_left')
-  assert.equal(resolveLayeredPhysicalBinding(defaults, 'text_input', ['left_alt', 'h'], 'h', false)?.value, 'move_left')
+  assert.equal(resolveLayeredPhysicalBinding(defaults, 'text_input', ['left_alt', 'h'], 'h', false), undefined)
   assert.equal(resolveLayeredPhysicalBinding(defaults, 'text_input', ['h'], 'h', false), undefined)
-  const custom = parseConfigDocument('[text_input]\ninherits = ["normal"]\ntemporary_mode_keys = ["right_ctrl"]\n[text_input.bindings]\nf8 = "normal"').document
+  for (const [key, value] of Object.entries({ a: 'move_left', c: 'left_click', v: 'move_right' })) defaults.normal.bindings[key] = value
+  for (const key of ['a', 'c', 'v', 'x', 'z']) {
+    assert.equal(resolveLayeredPhysicalBinding(defaults, 'text_input', ['left_win', key], key, true), undefined)
+  }
+  const custom = parseConfigDocument('[text_input]\ninherits = ["normal"]\ntemporary_mode = "normal"\ntemporary_mode_keys = ["right_ctrl"]\n[text_input.bindings]\nf8 = "normal"').document
   const effective = resolveConfigDocument(defaults, custom)
   assert.deepEqual(effective.text_input.bindings, { f8: 'normal' })
   assert.deepEqual(effective.text_input.inherits, ['normal'])
   assert.deepEqual(effective.text_input.temporary_mode_keys, ['right_ctrl'])
+  assert.equal(resolveLayeredPhysicalBinding(effective, 'text_input', ['right_ctrl', 'h'], 'h', false)?.value, 'move_left')
 })
 
 

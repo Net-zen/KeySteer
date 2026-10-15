@@ -9,7 +9,7 @@ test('reentry releases minimized and closed numbers while retaining persistent g
   state.window.tabs.groups = [{ id: 1, members: [1, 2], active: 2 }]
   state.window.tabs.nextId = 2
   enterWindow(state)
-  assert.deepEqual(Object.values(state.window.numbers).sort(), [1, 2, 3])
+  assert.deepEqual(Object.values(state.window.numbers).sort(), [1, 2, 3, 4])
   leaveWindow(state); state.mode = 'idle'
   state.window.windows.find(w => w.id === 2)!.minimized = true
   state.window.windows = state.window.windows.filter(w => w.id !== 4)
@@ -18,18 +18,20 @@ test('reentry releases minimized and closed numbers while retaining persistent g
   assert.deepEqual(state.window.tabs.groups[0].members, [1, 2])
 })
 
-test('scope defaults exclude other screens and minimized windows; opt-in can select them', () => {
+test('scope defaults cover all screens and exclude minimized windows', () => {
   const state = createSimulatorState()
   state.window.windows.find(w => w.id === 3)!.minimized = true
   enterWindow(state)
   assert.equal(state.window.numbers[3], undefined)
-  assert.equal(state.window.numbers[4], undefined)
+  assert.notEqual(state.window.numbers[4], undefined)
+  const screens = new Set<number>()
   for (let i = 0; i < 5; i++) {
     applyWindowAction(state, 'window_select')
-    assert.equal(state.window.screen, 0)
+    screens.add(state.window.screen)
     assert.notEqual(state.window.target, 3)
   }
-  switchWindowMode(state, 'window', { screens: 'all', include_minimized: true })
+  assert.deepEqual([...screens].sort(), [0, 1])
+  switchWindowMode(state, 'window', { include_minimized: true })
   assert.deepEqual(Object.values(state.window.numbers).sort(), [1, 2, 3, 4])
   chooseWindowNumber(state, state.window.numbers[3])
   assert.equal(state.window.target, 3)

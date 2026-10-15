@@ -266,7 +266,7 @@ test('tree minimum sizes constrain the divider and infeasible splits leave geome
   assert.equal(JSON.stringify(state.window.windows), before)
 })
 
-test('leaving tree editing is one ordinary undo, and closing windows preserves empty slots and numbering', () => {
+test('leaving tree editing is one ordinary undo, and closing windows preserves empty slots and number order', () => {
   const state = createSimulatorState(); enterWindow(state)
   const before = JSON.stringify(state.window.windows)
   applyWindowAction(state, 'window_quick'); applyWindowAction(state, 'window_editor')
@@ -282,7 +282,8 @@ test('leaving tree editing is one ordinary undo, and closing windows preserves e
   assert.equal(treeSlots(state.window.tree!).length, count)
   assert.ok(treeSlots(state.window.tree!).some(s => s.window === null))
   delete numbers[closing.id]
-  assert.deepEqual(state.window.numbers, numbers)
+  const survivors = Object.entries(numbers).sort((a, b) => a[1] - b[1])
+  assert.deepEqual(state.window.numbers, Object.fromEntries(survivors.map(([id], index) => [id, index + 1])))
   applyWindowAction(state, 'window')
   assert.ok(!state.window.windows.some(w => w.id === closing.id))
 })

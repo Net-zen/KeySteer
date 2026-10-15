@@ -119,12 +119,6 @@ In a targeting Mode, Grid or UI Hint labels take priority over inherited Normal 
 [normal.bindings]
 '\' = "text_input"
 
-[text_input]
-inherits = []
-temporary_mode = "normal"
-temporary_mode_keys = ["primary"]
-temporary_mode_passthrough_keys = []
-
 [text_input.bindings]
 'enter \ esc' = "normal"
 
@@ -135,11 +129,69 @@ temporary_mode_passthrough_keys = []
 
 Default exit keys are consumed. Remove enter from the binding for multiline editing or IME candidate selection. Explicit binding tables replace defaults; add the entry to your existing Normal table.
 
-Hold Primary to borrow Normal and release it to continue typing. Primary uses key_aliases like other modes. Direct `inherits = ["normal"]` is supported, with local overrides winning, but inherited bare letters intercept typing. Entry and temporary-layer release clean up gestures and latched inputs; Q does not start Quick Switch while typing.
+Text Input does not inherit or temporarily borrow Normal by default. Application shortcuts such as Cmd/Ctrl+A, C and V pass through regardless of Normal's letter bindings. Holding Q does not start Quick Switch.
 
-Home-row mappings are commented examples, disabled by default: Primary+H/J/K/L sends arrows, Primary+U/I/O sends Backspace/Delete/Insert, and Primary+T/Y sends Home/End. Ctrl, Shift and Ctrl+Shift variants are also commented. Choose modifiers that do not duplicate Primary. Explicit full chords precede trigger-stripped temporary-layer bindings. Mappings retain existing Send modifier suspension/restoration and key repeat behavior.
+To borrow Normal explicitly, choose a trigger that does not conflict with application editing shortcuts:
 
-Text Input hides its text badge by default through `[mode_indicator.modes.text_input] enabled = false`. Temporary Normal uses its own badge settings and receives plugin results such as `screen next`.
+```toml
+[text_input]
+temporary_mode = "normal"
+temporary_mode_keys = ["right_ctrl"]
+```
+
+Hold the trigger to borrow Normal and release it to resume typing. Entry and trigger release clean up borrowed gestures and latched inputs. Direct `inherits = ["normal"]` is also supported, but inherited bare letters intercept typing.
+
+Home-row mappings are opt-in: Primary+H/J/K/L sends arrows, Primary+U/I/O sends Backspace/Delete/Insert, and Primary+T/Y sends Home/End. Add the bindings you want to `[text_input.bindings]`. The full example also includes Ctrl, Shift and Ctrl+Shift variants; choose modifiers that do not duplicate Primary. Explicit full chords precede trigger-stripped temporary-layer bindings. Mappings retain existing Send modifier suspension/restoration and key repeat behavior.
+
+<details>
+<summary>Full editing-key example (copy only the bindings you need)</summary>
+
+```toml
+# Optional Text Input editing keys; choose modifiers distinct from Primary.
+# Explicit bindings replace the default table, so keep the return keys.
+[text_input.bindings]
+'enter \ esc' = "normal"
+"primary+h" = "arrow_left"
+"primary+j" = "arrow_down"
+"primary+k" = "arrow_up"
+"primary+l" = "arrow_right"
+"primary+u" = "backspace"
+"primary+i" = "delete"
+"primary+o" = "insert"
+"primary+t" = "home"
+"primary+y" = "end"
+"shift+primary+h" = "send shift+arrow_left"
+"shift+primary+j" = "send shift+arrow_down"
+"shift+primary+k" = "send shift+arrow_up"
+"shift+primary+l" = "send shift+arrow_right"
+"shift+primary+u" = "send shift+backspace"
+"shift+primary+i" = "send shift+delete"
+"shift+primary+o" = "send shift+insert"
+"shift+primary+t" = "send shift+home"
+"shift+primary+y" = "send shift+end"
+"ctrl+primary+h" = "send ctrl+arrow_left"
+"ctrl+primary+j" = "send ctrl+arrow_down"
+"ctrl+primary+k" = "send ctrl+arrow_up"
+"ctrl+primary+l" = "send ctrl+arrow_right"
+"ctrl+primary+u" = "send ctrl+backspace"
+"ctrl+primary+i" = "send ctrl+delete"
+"ctrl+primary+o" = "send ctrl+insert"
+"ctrl+primary+t" = "send ctrl+home"
+"ctrl+primary+y" = "send ctrl+end"
+"ctrl+shift+primary+h" = "send ctrl+shift+arrow_left"
+"ctrl+shift+primary+j" = "send ctrl+shift+arrow_down"
+"ctrl+shift+primary+k" = "send ctrl+shift+arrow_up"
+"ctrl+shift+primary+l" = "send ctrl+shift+arrow_right"
+"ctrl+shift+primary+u" = "send ctrl+shift+backspace"
+"ctrl+shift+primary+i" = "send ctrl+shift+delete"
+"ctrl+shift+primary+o" = "send ctrl+shift+insert"
+"ctrl+shift+primary+t" = "send ctrl+shift+home"
+"ctrl+shift+primary+y" = "send ctrl+shift+end"
+```
+
+</details>
+
+Text Input hides its text badge by default through `[mode_indicator.modes.text_input] enabled = false`. When explicitly enabled, temporary Normal uses its own badge settings and receives plugin results such as `screen next`.
 ## Mode badge style and position
 
 Native and web badges now share the same size and positioning formulas; the extra preview display scaling compensation has been removed. The origin is the system cursor hotspot (usually the arrow tip and the cursor ring's centre), not the centre of the arrow image. Windows uses desktop coordinate pixels; macOS uses logical points. Backends do not rescale badge layout; font rasterization can still differ slightly.
@@ -171,4 +223,4 @@ enabled = false
 Individual modes can override these fields in tables such as `[mode_indicator.modes.normal.ui]`. As of 0.10.22, `position`, `indicator_x_offset`, and `indicator_y_offset` are removed. Use `indicator_offset = [X, Y]`; omitted offsets use the default or inherit the global setting. To show the Text Input badge, set `enabled = true` and use the same style fields in `[mode_indicator.modes.text_input.ui]`.
 
 
-Normal targeting geometry overrides: `grid_cols`, `grid_rows`, `keys`, and `max_depth` inherit from the selected method when omitted. With `method = "recursive_grid"`, `min_size_width`, `min_size_height`, and `layers` can also be overridden. An explicit `layers` list replaces all inherited layers; `layers = []` clears them. Overrides affect Normal only, accept no UI fields, and are resolved before geometry validation and binding-conflict compilation. See the commented example in `keysteer.default.toml`.
+Normal targeting geometry overrides: `grid_cols`, `grid_rows`, `keys`, and `max_depth` inherit from the selected method when omitted. With `method = "recursive_grid"`, `min_size_width`, `min_size_height`, and `layers` can also be overridden. An explicit `layers` list replaces all inherited layers; `layers = []` clears them. Overrides affect Normal only, accept no UI fields, and are resolved before geometry validation and binding-conflict compilation. See the [blind grid positioning example](#blind-grid-positioning).

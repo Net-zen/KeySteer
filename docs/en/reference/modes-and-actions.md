@@ -51,11 +51,11 @@ Window, Quick, Editor, Restore and Tabs each have two independent settings:
 
 ```toml
 [window]
-screens = "current"       # "current" or "all"
+screens = "all"           # "current" or "all" (default)
 include_minimized = false
 ```
 
-Use the same keys in `[window_quick]`, `[window_editor]`, `[window_restore]` and `[window_tab]`. Defaults select non-minimized windows on the current display. With `screens = "all"`, numbering includes all displays; automatic layouts and groups stay on each window’s own display. Enabling `include_minimized` also makes minimized windows eligible for selection and layout. Re-entering a fresh Window session numbers the current candidates from 1, releasing old numbers held by closed or excluded windows; refreshes within a session keep surviving numbers stable. Identity cards avoid each other and the bottom help panel.
+Use the same keys in `[window_quick]`, `[window_editor]`, `[window_restore]` and `[window_tab]`. Defaults select non-minimized windows across all displays; set `screens = "current"` to limit candidates to the current display. Numbering covers the configured scope; automatic layouts and groups stay on each window’s own display. Enabling `include_minimized` also makes minimized windows eligible for selection and layout. Re-entering a fresh Window session numbers the current candidates from 1, releasing old numbers held by closed or excluded windows; refreshes within a session keep surviving numbers stable. Identity cards avoid each other and the bottom help panel.
 
 Window operations use five independently registered modes. Each has its own bindings, inheritance, application overrides, temporary mode and style. H/J/K/L are explicit defaults and do not follow Normal remapping.
 
@@ -69,7 +69,7 @@ Window operations use five independently registered modes. Each has its own bind
 
 Q is an ordinary mode binding and behaves identically regardless of the entry path. Launching Editor directly from Idle still makes its default Q enter Window. Rebinding Q selects another destination; activating the current mode follows the normal toggle-to-Idle rule.
 
-Alt+W locks the window under the pointer. By default, non-minimized windows on the current display receive stable numbers; closing one does not renumber the others. A complete number focuses and locks its window and centers the pointer; only ambiguous prefixes wait, for 250ms by default. Tab / Shift+Tab cycles within the current tab group, or through ordinary windows when outside a group; number selection can leave a group, S switches movement/centered resizing, H/J/K/L adjusts, D changes display, F cycles maximize → minimize → restore, C centers, Z undoes one step, Shift+Z redoes, and Shift+C restores the initial state of the current window session.
+Alt+W locks the window under the pointer. By default, non-minimized windows across all displays receive stable numbers; closing one does not renumber the others. A complete number focuses and locks its window and centers the pointer; only ambiguous prefixes wait, for 250ms by default. Tab / Shift+Tab cycles within the current tab group, or through ordinary windows when outside a group; number selection can leave a group, S switches movement/centered resizing, H/J/K/L adjusts, D changes display, F cycles maximize → minimize → restore, C centers, Z undoes one step, Shift+Z redoes, and Shift+C restores the initial state of the current window session.
 
 Quick adjusts each axis independently with H/J/K/L. The first direction chooses the configured ratio nearest one half; the same direction shrinks and the opposite expands. `window_quick.split_ratios` defaults to 1/4, 1/3, 1/2, 2/3 and 3/4, with full size appended automatically. Tab changes target and resets ratios; Z undoes.
 

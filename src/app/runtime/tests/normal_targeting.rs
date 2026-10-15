@@ -216,6 +216,7 @@ fn temporary_normal_blind_targeting_keeps_priority_over_host_grid() {
                 let mut config = blind_config(method, "[]");
                 config.grid.temporary_mode_keys = vec![trigger.into()];
                 config.recursive_grid.temporary_mode_keys = vec![trigger.into()];
+                config.text_input.temporary_mode = Some("normal".into());
                 config.text_input.temporary_mode_keys = vec![trigger.into()];
                 config.normal.bindings.remove("ctrl+a");
                 config.normal.targeting.as_mut().unwrap().grid_cols = Some(4);
@@ -329,16 +330,14 @@ fn normal_targeting_validates_referenced_geometry_even_when_standalone_mode_is_d
 #[test]
 fn normal_targeting_documented_default_example_compiles_after_relinquishing_conflicts() {
     let source = include_str!("../../../../keysteer.default.toml");
-    let example = source
-        .split("# [normal.targeting]")
+    let example = include_str!("../../../../docs/modes/normal.md")
+        .split("[normal.targeting]")
         .nth(1)
         .unwrap()
-        .lines()
-        .skip(1)
-        .take(2)
-        .map(|line| line.strip_prefix("# ").unwrap())
-        .collect::<Vec<_>>()
-        .join("\n");
+        .split("```")
+        .next()
+        .unwrap()
+        .trim();
     for method in ["grid", "recursive_grid"] {
         let mut config = Config::parse(&format!(
             "{source}\n[normal.targeting]\n{}",

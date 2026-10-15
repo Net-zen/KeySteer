@@ -39,7 +39,7 @@ Entering Window activates and locks the window under the pointer. Moving the poi
 | `Z / Shift+Z` | Undo / redo window adjustments |
 | `Shift+C` | Restore positions, sizes, and window states from the start of this window session |
 
-By default, candidates are **non-minimized windows on the current display**. Existing numbers stay stable where possible: closing a window does not renumber the others, although re-entering may reclaim gaps. Only a prefix that could form a longer number waits, for 250 ms by default.
+By default, candidates are **non-minimized windows across all displays**; set `screens = "current"` to limit them to the current display. Existing numbers stay stable where possible: closing a window does not renumber the others, although re-entering may reclaim gaps. Only a prefix that could form a longer number waits, for 250 ms by default.
 
 Need to click something? Hold `Primary` to temporarily use Normal's pointer movement, scrolling, and click bindings. Release it to resume the same target. Each window mode has independent direction bindings; remapping Normal does not automatically remap these modes.
 
@@ -144,7 +144,7 @@ Continue with [Window configuration](/en/reference/configuration#window-configur
 
 Window and A / E / R / T share [window.card]; do not repeat this section under child modes. app_font_size and title_font_size set the two text sizes (0 = automatic). app_font_family and title_font_family set their fonts (empty = inherit the current mode ui.font_family). app_bold and title_bold control bold text.
 
-background_color, border_color, number_color, app_color and title_color set the background, border, number, application name and title colors. Use #RRGGBBAA or a light/dark table, for example app_color = { light = "#19357DFF", dark = "#E8EEFFFF" }. Omitted colors inherit the current mode UI/theme. The default configuration includes commented examples.
+background_color, border_color, number_color, app_color and title_color set the background, border, number, application name and title colors. Use #RRGGBBAA or a light/dark table, for example app_color = { light = "#19357DFF", dark = "#E8EEFFFF" }. Omitted colors inherit the current mode UI/theme. Add the color overrides you need to `[window.card]`.
 
 text_width sets each text column width (default 260); padding_x / padding_y set text padding (9 / 4); line_height sets the row height multiplier (1.4); min_height sets the minimum card height (44); number_min_width sets the minimum number width (38). Dimensions use logical pixels. Rows follow the larger font size, and text is truncated when space is limited. Number font size, border width and corner radius still use each mode ui.font_size, ui.border_width and ui.border_radius. Internal export and the web editor support these settings.
 
