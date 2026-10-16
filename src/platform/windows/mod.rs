@@ -216,10 +216,24 @@ impl WindowsBackend {
         if let Ok(pointer) = input::cursor_position() {
             frame_clock.retarget(pointer);
         }
-        // Begin GPU prewarming before tray and display discovery. The render
-        // thread reports readiness as soon as its message queue exists, then
-        // builds the D3D/D2D/DComp device tree concurrently with the remaining
-        // native startup work.
+        // Start the clock and scroll executor before GPU, UIA and tray setup.
+        // Native output preparation follows the existing display snapshot;
+        // no display query or idle frame timer is introduced here.
+        if let Err(error) = frame_clock.prepare() {
+            pending.push_back(BackendEvent::Warning(format!(
+                "Windows display clock prewarm failed; movement will retry: {error}"
+            )));
+        }
+        let scroll_events = event_tx.clone();
+        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
+            input::scroll,
+            move |event| {
+                let _ = scroll_events.send(event);
+            },
+        )?;
+        // Begin GPU prewarming without waiting for the render thread's message
+        // queue. Its mailbox retains early requests while the D3D/D2D/DComp
+        // device tree, tray and display discovery prepare concurrently.
         let overlay = OverlayWorker::start(event_tx.clone())?;
         // UIA is useful only for axtree/hybrid. Start its MTA alongside GPU
         // prewarming so COM, IUIAutomation2, CacheRequest, and conditions are
@@ -263,6 +277,9 @@ impl WindowsBackend {
             }
         };
         let appearance = system_appearance();
+        // Keep enumeration after the tray's display-change observer exists,
+        // so changes during startup cannot fall between the snapshot and its
+        // native notifications.
         let initial_displays = screens::list_snapshot().unwrap_or_else(|error| {
             crate::support::logging::report_error(
                 "windows-screen",
@@ -271,19 +288,7 @@ impl WindowsBackend {
             screens::DisplaySnapshot::default()
         });
         frame_clock.update_displays(&initial_displays.screens, &initial_displays.monitors);
-        if let Err(error) = frame_clock.prepare() {
-            pending.push_back(BackendEvent::Warning(format!(
-                "Windows display clock prewarm failed; movement will retry: {error}"
-            )));
-        }
         let vision = vision::VisionWorker::start();
-        let scroll_events = event_tx.clone();
-        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
-            input::scroll,
-            move |event| {
-                let _ = scroll_events.send(event);
-            },
-        )?;
         Ok(Self {
             hook: None,
             overlay,

@@ -130,6 +130,16 @@ impl MacOsBackend {
         event_loop::pump_app_events();
         status_item.maintain_icon_attachment();
 
+        // Give the independent scroll executor a head start while permission,
+        // Hook and display setup runs. It stays asleep until a real command.
+        let scroll_events = event_tx.clone();
+        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
+            input::scroll,
+            move |event| {
+                let _ = scroll_events.send(event);
+            },
+        )?;
+        let frame_clock = display_link::DisplayFrameClock::new(mtm);
         let scan_mailbox = Arc::new(ScanMailbox::default());
         let configured_interval = NSEvent::doubleClickInterval();
         let double_click_interval = if configured_interval.is_finite() && configured_interval > 0.0
@@ -146,7 +156,6 @@ impl MacOsBackend {
 
         let hook_deadline = Instant::now() + Duration::from_secs(2);
         let hook_start = HookStartup::spawn(Arc::clone(&click_tracker));
-        let frame_clock = display_link::DisplayFrameClock::new(mtm);
         let initial_screens = screens::list_screens().unwrap_or_else(|error| {
             crate::support::logging::report_error(
                 "macos-screen",
@@ -168,13 +177,6 @@ impl MacOsBackend {
                 None
             }
         };
-        let scroll_events = event_tx.clone();
-        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
-            input::scroll,
-            move |event| {
-                let _ = scroll_events.send(event);
-            },
-        )?;
         Ok(Self {
             point_sampler: None,
             hook,

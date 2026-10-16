@@ -4,14 +4,17 @@ import { readFileSync } from 'node:fs'
 import { createMarkdownRenderer } from 'vitepress'
 import { releaseHistory } from '../release-history.ts'
 
-const md = await createMarkdownRenderer(process.cwd())
+const md = await createMarkdownRenderer(process.cwd(), { headers: true })
 md.use(releaseHistory)
 
-test('both release histories fold old versions without changing content or anchors', async () => {
+test('both release histories fold old versions and retain automatic version outlines', async () => {
   for (const file of ['docs/releases/index.md', 'docs/en/releases/index.md']) {
     const source = readFileSync(file, 'utf8')
     const versions = [...source.matchAll(/^## (\d+\.\d+\.\d+)$/gm)]
-    const html = await md.renderAsync(source, {})
+    const env: { frontmatter?: { outline?: number }; headers?: { title: string }[] } = {}
+    const html = await md.renderAsync(source, env)
+    assert.equal(env.frontmatter?.outline, 2)
+    assert.deepEqual(env.headers?.map(header => header.title), versions.map(version => version[1]))
     assert.equal((html.match(/<details class="ks-release-history">/g) ?? []).length, versions.length - 1)
     assert.ok(html.indexOf(versions[0][1]) < html.indexOf('<details'))
     assert.doesNotMatch(html, /<details[^>]*\bopen\b/)

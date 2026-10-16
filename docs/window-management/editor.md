@@ -10,7 +10,9 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
 
 ## 操作步骤与默认按键
 
-按 `Alt+W` 后按 `E` 进入 Editor，**会立即尝试自动排列候选窗口**。布局受应用最小尺寸约束，不必按 Enter 应用。
+::: warning 进入后立即排列
+按 `Alt+W` 后按 `E`，会立即尝试排列当前候选窗口，后续调整也即时生效。按 `Z` 可撤销，包括进入时的自动排列。
+:::
 
 | 按键 | Editor 中的操作 |
 | --- | --- |
@@ -24,7 +26,7 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
 | `Z / Shift+Z` | 撤销 / 重做编辑 |
 | `Ctrl+S` | 保存布局 |
 
-例如，先用方向键选中编辑器所在区域，再按 `Ctrl+L` 增大它的宽度。相邻区域会联动调整，保持平铺。如果应用的最小尺寸不允许继续调整，查看屏幕提示，尝试别的区域或减少分区。`Z` 可逐步撤销，包括进入 Editor 时的自动排列。
+例如，用方向键选中编辑器所在区域，再按 `Ctrl+L` 增大宽度；相邻区域会一起调整。应用最小尺寸不允许继续缩小时，查看屏幕提示，尝试其他区域或减少分区。
 
 保存操作与演示请看 [Restore · 保存操作](/window-management/restore#save)。
 

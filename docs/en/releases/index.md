@@ -1,9 +1,13 @@
 ---
 releaseHistory: true
-outline: false
+outline: 2
 ---
 
 # Release notes
+
+## 0.12.1
+
+- Improved pointer movement and scrolling responsiveness on Windows and macOS.
 
 ## 0.12.0
 

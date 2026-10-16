@@ -29,6 +29,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 - 回放 A/B 使用相同依赖与工作量、独立 target 目录，编译和检查全部结束后交替运行至少三轮，保存为 baseline-N.json／candidate-N.json；`tools/benchmark-uihint-ab.ps1` 以相同亲和性和 Normal 优先级交替运行并记录环境。`python tools/compare-uihint-replays.py <目录>` 先核对原始输入的逐位坐标／内容指纹，核对最终结果与标签变化，再比较各场景各分位数的轮次中位数；默认同时超过 3% 和 2 微秒视为需调查的 CPU 变化，分配不使用时间容差。明确增加目标的修复可用 `--changed-fixture` 标记预期的识别／编号差异，性能与分配门槛不变；其余界面仍严格核对完整结果。保留失败记录并排查，不用调整门槛掩盖回退。这些指标只包括已就绪数据的融合和共享展示，不包含截图、OCR／UIA／AX 遍历或系统上屏。
 - `tools/` 提供 A/B、整进程和原生测量入口。正式性能比较不启用 `perf-probe`，基线与候选用独立 target 目录。
 
+移动／滚动冷启动同时记录后端构造、构造后的首个原生显示帧等待及两者合计；标明 CPU 亲和性与额外负载。固定单核即使没有压测线程，GPU／COM 等并行预热也会竞争该 CPU，不能把它称为普通多核场景。分段诊断区分资源准备、工作线程被唤醒后的等待、原生等帧及投递；原生等待的墙钟时间也可能包含调度或驱动资源争用，不能直接当成显示刷新周期。比较总等待与构造后等待，不能只用更早返回构造或某一轮的显示相位说明优化有效；原生时钟首帧不等于按键到真实移动／滚动或屏幕像素的延迟。
+
+用户首次使用的验证以配置加载／编译、后端及 Hook 启动、引擎初始状态和 Idle 激活完成后进入第一次 poll 为就绪边界；后端构造返回和 backend started 日志均不能替代它。分别测就绪后立即使用、明确空闲间隔后的首次使用及同进程再次使用，区分按下立即执行的短步和首个连续显示帧，并记录每次操作时 GPU 设备、显示时钟和滚动线程是否已就绪；引擎就绪不等于全部后台预热完成。移动、滚动分别作为独立首次动作，组合动作再检查逐个释放不影响剩余动作。测试驱动的空闲等待、输入投递与最终原生输入替代必须明确标注，不扩大生产 API，也不能把到后端执行入口的时间称为系统输入或屏幕像素延迟。
+
+GPU 设备就绪、首次场景提交完成和输入执行分别记时，不能将设备构造结束称为任意场景资源已全部预热。测试驱动的计划空闲时长与实际恢复时刻也须分别核对；线程恢复晚于请求期限时，保留长尾与完整时间线，不把后续手势当成严格固定间隔的数据，也不凭时间上的重合认定具体原生调用是原因。
+
 `tools/benchmark-core-ab.ps1 -Mode Gate` 交替运行 Hint 扩展场景、持续移动帧、小规模标签和引擎按键派发，保存实际 EXE 的 SHA256 与每轮原始输出。`compare-core-benchmarks.py` 汇总各轮分位数的中位数，默认 p50 或 p95 同时超过 3% 和 2 ns 就返回非零；p99 保留为尾延迟诊断。阈值用于发现需要调查的变化，不代表阈值以内没有退化。正式比较至少三轮，异常时增加轮次并保留原始失败记录；计时期间不运行编译、测试或其他基准。CPU 门禁不能替代原生输入到像素验证。
 
 基准子进程默认使用 `Normal` 优先级；`-BenchmarkPriority AboveNormal` 可用于排查调度干扰，须单独保存结果，不能替代默认优先级的响应测试。环境记录包含优先级和计时器分辨率；比较器同时检查成对轮次与样本批次，避免工作量不同的结果混比。
@@ -44,7 +50,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 网页代码位于 `docs/.vitepress/`；变更时按范围运行 `pnpm docs:test`、`pnpm docs:check`、`pnpm docs:build`，视觉交互另做浏览器验证。
 
-Mermaid 图表直接使用官方 `mermaid` 包，不依赖 VitePress Mermaid 插件。`mermaid-markdown.ts` 将 `mermaid`／`mmd` 围栏转换为主题注册的 `MermaidDiagram`；组件仅在浏览器挂载后加载 Mermaid，串行初始化与渲染以隔离全局主题配置，切换主题时重绘，卸载后忽略旧结果，失败时显示错误和源码。临时布局 DOM 必须清理；Vite 的 `optimizeDeps.include` 保留 `mermaid`，确保 ELK 等 CommonJS 依赖先转换。
+用户文档的中英文页面、章节、示例和图表成对维护；改写导读时保留原有标题锚点。开发导航通过 `developmentSidebar` 共用页面清单，新增译文同时加入语言切换脚本的 `englishPages`；正文目录自动收录二、三级标题。
+
+更新日志保留 Markdown 版本标题供发布脚本提取；`release-history.ts` 仅在渲染时折叠旧版本，主题以紧凑分隔行展示。中英文页面的 `outline: 2` 由标题自动生成目录；主题 Layout 在目录点击、带锚点进入和内容更新时展开对应版本，再交给 VitePress 定位。
+
+Mermaid 图表直接使用官方 `mermaid` 包，不依赖 VitePress Mermaid 插件。`mermaid-markdown.ts` 将 `mermaid`／`mmd` 围栏转换为主题注册的 `MermaidDiagram`；组件仅在浏览器挂载后加载 Mermaid，串行初始化与渲染以隔离全局主题配置，切换主题时重绘，卸载后忽略旧结果，失败时显示错误和源码。隐藏测量容器使用与正文相同的 `.vp-doc .mermaid` 层级，使标签换行和字重参与尺寸计算；临时布局 DOM 必须清理。Vite 的 `optimizeDeps.include` 保留 `mermaid`，确保 ELK 等 CommonJS 依赖先转换。
 
 `docs:dev`、`docs:check`、`docs:build` 通过 `scripts/docs.mjs` 在同一个 Node 进程中先同步资源，再启动对应 CLI，避免嵌套启动 pnpm 和额外的 Node／命令包装。CLI 选项原样透传；正式构建仍从 GitHub 获取并校验所选 Release。`latest-release.ts` 兼容 `dev`／`serve` 字符串及 VitePress 开发 CLI 转交的选项对象，网络失败可继续预览；`build` 和未知命令始终严格校验。
 

@@ -10,7 +10,9 @@ Enter with E to tile immediately; swap numbered windows and adjust regions.
 
 ## How to use it
 
-Press `Alt+W`, then `E` for Editor. **Entering immediately attempts to arrange candidate windows.** Layouts respect application minimum sizes; there is no Enter-to-apply step.
+::: warning Arrangement starts on entry
+Press `Alt+W`, then `E` to arrange current candidate windows immediately. Further changes also apply at once. `Z` undoes changes, including the initial arrangement.
+:::
 
 | Key | Action in Editor |
 | --- | --- |
@@ -24,7 +26,7 @@ Press `Alt+W`, then `E` for Editor. **Entering immediately attempts to arrange c
 | `Z / Shift+Z` | Undo / redo edits |
 | `Ctrl+S` | Save the layout |
 
-For example, select your editor's region with the direction keys, then press `Ctrl+L` to widen it. Neighbouring regions adjust together to keep the layout tiled. If an application's minimum size prevents an adjustment, read the on-screen message and try another region or fewer splits. `Z` steps back through edits, including the automatic arrangement on entry.
+For example, select your editor's region and press `Ctrl+L` to widen it; neighbors adjust together. If an app's minimum size prevents shrinking, check the on-screen message and try another region or fewer splits.
 
 For saving instructions and a demo, see [Save an arrangement](/en/window-management/restore#save).
 

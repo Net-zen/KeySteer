@@ -1,6 +1,6 @@
 # 扩展 KeySteer
 
-先判断你要解决的问题，再选择扩展点。大多数需求不需要改 Rust，能用 TOML 配置完成，就不要把配置问题做成代码问题。
+改快捷键、速度或动作组合，先用 TOML；需要新的交互流程，再添加 Mode、插件或平台能力。下面按需求给出改动入口。
 
 ## 先选合适的方式
 
@@ -35,7 +35,7 @@ Mode 是平台无关的状态机：它接收事件和只读运行现场，返回
 1. 在 `src/api/` 确认已有的 `ModeEvent` 和 `Command` 是否够用。
 2. 在 `src/modes/` 新建状态机，保存会话状态，不直接调用 Win32、AppKit 或 Backend。
 3. 实现 `api::Mode` 的 `id`、`display_name` 和 `handle`。
-4. 在 `src/app/mode_catalog.rs` 增加唯一 catalog 项，把配置 DTO 转成该 Mode 的强类型 `Settings`。
+4. 在 `src/app/mode_catalog.rs` 增加唯一 catalog 项，把读取的配置转成该 Mode 的 `Settings`。
 5. 为按键、完成、取消、配置重载和失败清理补测试。
 6. 同步更新默认 TOML、用户文档、侧边栏和 AI 项目手册。
 
@@ -47,18 +47,22 @@ impl Mode for MyMode {
         ModeId::new("my_mode").unwrap()
     }
 
-    fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> Vec<Command> {
+    fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
         // 更新状态；通过 Command 请求宿主能力
-        Vec::new()
+        CommandBatch::new()
     }
 }
 ```
 
-不要在 Mode 里直接操作鼠标、线程、窗口或平台权限。这样才能复用同一套状态机测试，也不会让 Windows 和 macOS 逻辑互相污染。
+::: tip 把系统操作交给宿主
+Mode 只更新状态和返回命令；鼠标、窗口、线程和权限由 Engine／Backend 处理，同一套交互逻辑就能在两平台测试。
+:::
 
 ## 新增一个插件
 
-当前插件是**编译进程序并在启动时注册的 bundled plugin**，不是从目录动态加载的 DLL、dylib 或脚本。完整接口见[插件开发](/development/plugin-development)。
+::: info 插件随程序一起编译
+当前使用内置插件（bundled plugin），在启动时注册；开发时需修改仓库并重新编译。完整接口见[插件开发](/development/plugin-development)。
+:::
 
 基本步骤：
 
@@ -72,7 +76,7 @@ impl Mode for MyMode {
 插件与内置 Mode 使用同一套公共 API：
 
 ```text
-ModeEvent + HostContext → Plugin 状态机 → Vec<Command>
+ModeEvent + HostContext → Plugin 状态机 → CommandBatch
 ```
 
 需要新能力时，优先扩充 `src/api/` 的公共类型，而不是让插件绕过 Engine 访问平台模块。
@@ -103,7 +107,7 @@ ModeEvent + HostContext → Plugin 状态机 → Vec<Command>
 ```bash
 cargo fmt --check
 cargo check
-cargo test
+cargo test --all-features --lib --tests -- --test-threads=1
 cargo clippy --all-targets --all-features -- -D warnings
 cargo run -- --check -c ./keysteer.default.toml
 ```
@@ -115,4 +119,4 @@ pnpm docs:check
 pnpm docs:build
 ```
 
-最后检查三件事：配置示例能否复制、默认行为是否与源码一致、失败时是否释放按键/鼠标/覆盖层/timer/等占用资源。
+最后确认：示例可复制使用、默认行为与源码一致、失败时能释放按键、鼠标、覆盖层和定时器。

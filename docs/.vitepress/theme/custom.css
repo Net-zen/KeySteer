@@ -202,24 +202,33 @@
 .ks-open-simulator { margin: 28px 0; }
 
 .vp-doc .ks-release-history {
-  margin: 12px 0;
-  padding: 12px 18px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 12px;
-  background: var(--vp-c-bg-soft);
-}
-.vp-doc .ks-release-history > summary { cursor: pointer; color: var(--vp-c-text-1); }
-.vp-doc .ks-release-history > summary > h2 {
-  display: inline;
-  margin: 0 0 0 8px;
+  margin: 0;
   padding: 0;
   border: 0;
-  font-size: 17px;
-  line-height: 28px;
+  border-bottom: 1px solid var(--vp-c-divider);
+  border-radius: 0;
+  background: transparent;
+}
+.vp-doc .ks-release-history > summary {
+  margin: 0;
+  padding: 8px 0;
+  color: var(--vp-c-text-1);
+  cursor: pointer;
+  line-height: 24px;
+  list-style-position: inside;
+}
+.vp-doc .ks-release-history > summary::marker { color: var(--vp-c-text-3); font-size: 12px; }
+.vp-doc .ks-release-history > summary > h2 {
+  display: inline;
+  margin: 0 0 0 6px;
+  padding: 0;
+  border: 0;
+  font-size: 15px;
+  line-height: 24px;
 }
 .vp-doc .ks-release-history > summary:focus-visible { outline: 2px solid var(--vp-c-brand-1); outline-offset: 4px; border-radius: 4px; }
 .vp-doc .ks-release-history > summary .header-anchor { position: static; display: inline; float: none; margin-left: 8px; padding: 0; }
-.vp-doc .ks-release-history[open] > summary { margin-bottom: 12px; }
+.vp-doc .ks-release-history[open] > summary { margin-bottom: 8px; }
 
 .ks-standalone {
   min-height: 100vh;

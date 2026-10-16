@@ -32,16 +32,24 @@ Entering Window activates and locks the window under the pointer. Moving the poi
 | `S` | Toggle movement and resizing around the centre |
 | `C` | Centre the window |
 | `D` | Move to the next display |
-| `F` | Cycle maximize → minimize → restore |
+| `F` / `Shift+F` | Maximize / restore; minimize / restore |
 | Number | Select a window by number |
 | `Tab / Shift+Tab` | Next / previous window; prefer members of the current tab group |
 | `X` | Request that the window close; the app may ask you to save |
 | `Z / Shift+Z` | Undo / redo window adjustments |
 | `Shift+C` | Restore positions, sizes, and window states from the start of this window session |
 
-By default, candidates are **non-minimized windows across all displays**; set `screens = "current"` to limit them to the current display. Existing numbers stay stable where possible: closing a window does not renumber the others, although re-entering may reclaim gaps. Only a prefix that could form a longer number waits, for 250 ms by default.
+By default, numbers cover non-minimized windows on all displays. Closing a window does not renumber the others; re-entering clears gaps. When both 1 and 12 exist, typing 1 briefly waits for more digits (250 ms by default).
 
-Need to click something? Hold `Primary` to temporarily use Normal's pointer movement, scrolling, and click bindings. Release it to resume the same target. Each window mode has independent direction bindings; remapping Normal does not automatically remap these modes.
+Use `screens = "current"` to show only the current display. See [Window configuration](/en/reference/configuration#window-configuration) for more options.
+
+::: tip Use the pointer while arranging windows
+Hold `Primary` for Normal movement, scrolling, and clicks. Release it to resume the same window. Each window mode has its own bindings; remapping Normal does not remap them.
+:::
+
+### Adjust several windows together
+
+Tap `Ctrl` to start multi-selection, type window numbers, then confirm with `Ctrl` or `Enter`. Movement and resizing apply to the selection; `E` arranges only those windows, and `T` groups them. `Ctrl+X` clears the selection. See [Multi-selection and remapping](/en/window-management/window#select-multiple-windows).
 
 ## Recipe one: browser and editor side by side
 
@@ -50,11 +58,19 @@ Need to click something? Hold `Primary` to temporarily use Normal's pointer move
 3. Type your editor's window number, then press `L` to place it on the right half.
 4. Press `Q` to return to Window, then `Q` again to start working.
 
-Quick adjusts each axis independently. The first direction starts with the configured proportion nearest half a screen; repeating the direction shrinks it, while the opposite direction expands it. For example, press `K` after choosing the left half to place the window in the upper-left area. Default proportions are `1/4, 1/3, 1/2, 2/3, 3/4`, plus an automatically included full-screen proportion. Press `Z` to undo.
+Quick adjusts horizontal and vertical placement separately. The first direction starts nearest half-screen; repeat it to shrink, reverse it to expand. For example, `H` then `K` places the window in the upper-left area.
+
+Default proportions are `1/4, 1/3, 1/2, 2/3, 3/4`, plus full-screen.
+
+::: tip A misplaced window is easy to fix
+`Z` undoes the last step, `Shift+Z` redoes it. Leaving with `Q` keeps the new positions.
+:::
 
 ## Recipe two: arrange everything, then give your main window more room
 
-Press `Alt+W`, then `E` for Editor. **Entering immediately attempts to arrange candidate windows.** Layouts respect application minimum sizes; there is no Enter-to-apply step.
+::: warning Arrangement starts on entry
+Press `Alt+W`, then `E` to arrange current candidate windows immediately. Further changes also apply at once. `Z` undoes changes, including the initial arrangement.
+:::
 
 | Key | Action in Editor |
 | --- | --- |
@@ -68,11 +84,11 @@ Press `Alt+W`, then `E` for Editor. **Entering immediately attempts to arrange c
 | `Z / Shift+Z` | Undo / redo edits |
 | `Ctrl+S` | Save the layout |
 
-For example, select your editor's region with the direction keys, then press `Ctrl+L` to widen it. Neighbouring regions adjust together to keep the layout tiled. If an application's minimum size prevents an adjustment, read the on-screen message and try another region or fewer splits. `Z` steps back through edits, including the automatic arrangement on entry.
+For example, select your editor's region and press `Ctrl+L` to widen it; neighbors adjust together. If an app's minimum size prevents shrinking, check the on-screen message and try another region or fewer splits.
 
 ## Recipe three: turn scattered windows into tab groups
 
-Press `T` from Window to group compatible, ungrouped windows from the same application separately on each display, preserving existing groups. Press `Z` to undo this automatic grouping.
+Press `T` from Window. A multi-selection combines only the selected windows, bringing entire existing groups when their members are selected. Without multi-selection, compatible ungrouped windows are grouped by app on each display, preserving existing groups. `Z` undoes the arrangement.
 
 You can also combine windows from different applications:
 
@@ -108,7 +124,9 @@ Press `R` from Window to open the shared preset list, then type a preset number.
 | Layout | Fills saved regions with current windows; on success, enters Editor by default for further adjustment |
 | Tabs | Enters Tabs so you can choose the required windows in order; applies when all are selected, and can be cancelled before then |
 
-**Templates do not save application identities, launch apps, or reopen documents.** Layout restoration uses the current windows' recent activity order. Extra windows stay where they are; missing windows leave empty regions. For tab templates, you choose the members again.
+::: info Restore arrangements with current windows
+Layouts fill regions in recent activity order. Extra windows stay put; missing windows leave empty regions. Choose tab-template members again. Templates do not launch apps or reopen documents.
+:::
 
 To delete a preset, press `X` in Restore to switch to deletion, type its number, check the displayed name, and press `Enter`. Press `X` again to return to restoration. Deleting a template does not affect an existing tab group.
 
@@ -142,20 +160,40 @@ Continue with [Window configuration](/en/reference/configuration#window-configur
 
 ## Window number card style
 
-Window and A / E / R / T share [window.card]; do not repeat this section under child modes. app_font_size and title_font_size set the two text sizes (0 = automatic). app_font_family and title_font_family set their fonts (empty = inherit the current mode ui.font_family). app_bold and title_bold control bold text.
+Cards show a window number, application name, and title. Preview changes under **Window management → Shared appearance** in [Configuration & Simulator](/en/editor/).
 
-background_color, border_color, number_color, app_color and title_color set the background, border, number, application name and title colors. Use #RRGGBBAA or a light/dark table, for example app_color = { light = "#19357DFF", dark = "#E8EEFFFF" }. Omitted colors inherit the current mode UI/theme. Add the color overrides you need to `[window.card]`.
+All window modes share the appearance in `[window.card]`:
 
-text_width sets each text column width (default 260); padding_x / padding_y set text padding (9 / 4); line_height sets the row height multiplier (1.4); min_height sets the minimum card height (44); number_min_width sets the minimum number width (38). Dimensions use logical pixels. Rows follow the larger font size, and text is truncated when space is limited. Number font size, border width and corner radius still use each mode ui.font_size, ui.border_width and ui.border_radius. Internal export and the web editor support these settings.
+| Setting | Purpose / default |
+| --- | --- |
+| `app_font_size` / `title_font_size` | App name / title size; 0 is automatic |
+| `app_font_family` / `title_font_family` | Fonts; empty inherits the mode's `ui.font_family` |
+| `app_bold` / `title_bold` | Bold app name / title |
+| `background_color` / `border_color` | Card background / border colors |
+| `number_color` / `app_color` / `title_color` | Number / app name / title colors |
+| `text_width` | Text column width, 260 |
+| `padding_x` / `padding_y` | Horizontal / vertical padding, 9 / 4 |
+| `line_height` / `min_height` | Line height multiplier 1.4 / minimum height 44 |
+| `number_min_width` | Minimum number area width, 38 |
 
+Sizes use logical pixels; long text is truncated. Number size, border width, and corner radius use each mode's `ui.font_size`, `ui.border_width`, and `ui.border_radius`.
+
+Colors accept `#RRGGBBAA` or separate themes, such as `app_color = { light = "#19357DFF", dark = "#E8EEFFFF" }`. Omitted colors follow the mode and theme.
 
 ### Card positioning
 
-[window.card] supports position_mode (window / screen) and position. Defaults: position_mode = "window", position = ["50%", "50%", "50%", "50%"]. The four percentage strings are top, right, bottom and left insets. Values must be 0% to 100%, with opposite sides totaling no more than 100%. Four 50% values collapse to the center point.
+Cards default to the window center. `position_mode = "window"` follows each window; `"screen"` arranges cards together in the target display's work area.
 
-window anchors each card within its window; Editor has a separate position override, defaulting to top center. screen packs cards into a compact rectangle on the current target display, ordered left to right then top to bottom. Use position = ["0%", "0%", "100%", "0%"] for a full-width top row that wraps when necessary. Switching displays recomputes geometry using the new display work area and DPI.
+`position` lists **top, right, bottom, left insets**, each from `0%–100%`. Top + bottom and left + right must each total at most 100%.
 
-Positions are preferences: existing collision avoidance still moves cards away from region numbers, other cards and the help panel. Cards may leave the preferred range when space is limited. All window modes share this configuration; percentages are parsed when configuration loads.
+| Placement | `position` |
+| --- | --- |
+| Center point (default) | `["50%", "50%", "50%", "50%"]` |
+| Top center (Editor default) | `["0%", "50%", "100%", "50%"]` |
+| Top row, wrapping if needed | `["0%", "0%", "100%", "0%"]` with `position_mode = "screen"` |
 
+Editor can override position in `[window_editor.card]` while sharing colors, fonts, and sizes from `[window.card]`. Changing the base position does not replace Editor's top-center default. Quick, Restore, and Tabs keep their own positioning behavior.
 
-Editor overrides position only: set position and optionally position_mode in [window_editor.card]. Colors, fonts and sizes still inherit [window.card]. Editor defaults to window positioning at top center, with position = ["0%", "50%", "100%", "50%"]. Changing the base Window position does not change this default. Quick, Restore and Tabs retain their original positioning. The simulator edits each mode position separately while retaining shared style controls.
+::: info Positions are preferred ranges
+Cards avoid other cards, region numbers, and the help panel. Crowding may move them outside the preferred range to keep numbers visible. Display changes automatically adapt to the new work area and scaling.
+:::

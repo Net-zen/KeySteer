@@ -5,7 +5,7 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
 import KeyLayout from '../.vitepress/components/KeyLayout'
 </script>
 
-`Grid` 把当前显示器划分成带标签的网格。
+目标在屏幕另一边？`Grid` 给屏幕铺上带字母和数字的格子。连续输入目标所在格的标签，就能快速缩小范围，不用一路移动过去。
 
 <ModeVideo
   file="grid.mp4"
@@ -25,14 +25,16 @@ import KeyLayout from '../.vitepress/components/KeyLayout'
 
 默认划分层级 `max_depth = 3`。
 
-因为 `Normal` 模式默认按键和 `Grid` 没有冲突（按住 `Primary`）的临时进入 `Normal` 模式是可选的，可以在不退出 `Grid` 的情况下移动、滚动或点击。
+::: tip 先跳过去，再微调
+按住 `Primary`，用 Normal 的移动、滚动和点击键微调；松开后继续选格。
+:::
 
 ## 控制
 
 | 按键 | 作用 |
 | --- | --- |
 | 标签键 | 选择单元格并进入下一层 |
-| `` ` (Tab上的那个按键)`` | 切换选择时是否跟随鼠标 |
+| `` ` ``（Tab 上方的键） | 切换选择时是否跟随鼠标 |
 | `Primary+Q` / `Esc` | 返回 `Normal` |
 
 网格标签优先于继承自 `Normal` 的同名按键；例如 `q` 会选择网格，而不是退出。

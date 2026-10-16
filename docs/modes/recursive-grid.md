@@ -34,9 +34,13 @@ import KeyLayout from '../.vitepress/components/KeyLayout'
 | `Backspace` / `Tab` | 返回上一层；根层再退则退出 |
 | `Space` | 回到第一层 |
 | `Enter` | 移动到当前区域中心，不点击 |
-| `` ` (Tab上的那个按键)`` | 切换每层是否跟随鼠标 |
+| `` ` ``（Tab 上方的键） | 切换每层是否跟随鼠标 |
 | `Primary` | 临时使用 Normal 的移动、滚动和点击 |
 | `Primary+Q` / `Esc` | 返回 Normal |
+
+::: tip 小按钮可以慢慢找
+按错一层用 `Tab` 返回，想从头再来用空格。`Enter` 只把鼠标移到中心，需要点击时再按住 `Primary` 使用 Normal 的点击键。
+:::
 
 ## 配置
 

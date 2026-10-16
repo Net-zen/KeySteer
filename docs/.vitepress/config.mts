@@ -16,11 +16,22 @@ const windowSidebar = (prefix = '', english = false) => ({
     { text: english ? 'Restore · Saved workspaces' : 'Restore 保存与恢复', link: `${prefix}/window-management/restore` },
   ],
 })
+const developmentSidebar = (prefix = '', english = false) => ({
+  text: english ? 'Development' : '开发',
+  items: [
+    { text: english ? 'Architecture' : '架构', link: `${prefix}/development/architecture` },
+    { text: english ? 'Extension guide' : '扩展指南', link: `${prefix}/development/extension-guide` },
+    { text: english ? 'Workflow and tests' : '开发流程与测试', link: `${prefix}/development/workflow` },
+    { text: english ? 'Plugin development' : '插件开发', link: `${prefix}/development/plugin-development` },
+    { text: english ? 'Safety and performance' : '安全与性能约束', link: `${prefix}/development/safety-and-performance` },
+  ],
+})
 const englishTheme = {
   nav: [
     { text: 'Get started', link: '/en/guide/getting-started' },
     { text: 'Modes', link: '/en/modes/' },
     { text: 'Configuration', link: '/en/reference/configuration' },
+    { text: 'Development', link: '/en/development/architecture' },
     { text: 'Configuration & simulator', link: '/en/editor/' },
   ],
   sidebar: [
@@ -35,6 +46,7 @@ const englishTheme = {
       { text: 'Configuration', link: '/en/reference/configuration' },
       { text: 'Modes and actions', link: '/en/reference/modes-and-actions' }, { text: 'Release notes', link: '/en/releases/' },
     ] },
+    developmentSidebar('/en', true),
     { text: 'Tools', items: [{ text: 'Configuration & simulator', link: '/en/editor/' }] },
   ],
   search: {
@@ -49,7 +61,7 @@ const englishTheme = {
       },
     },
   },
-  outline: { label: 'On this page' },
+  outline: { label: 'On this page', level: [2, 3] as [number, number] },
   docFooter: { prev: 'Previous page', next: 'Next page' },
   lastUpdated: { text: 'Last updated' },
 }
@@ -62,6 +74,8 @@ const languageStateScript = `(() => {
     'reference/modes-and-actions', 'editor/', 'simulator', 'releases/',
     'window-management/', 'window-management/window', 'window-management/quick',
     'window-management/editor', 'window-management/tabs', 'window-management/restore',
+    'development/architecture', 'development/extension-guide', 'development/workflow',
+    'development/plugin-development', 'development/safety-and-performance',
   ])
   const relativePath = () => decodeURIComponent(location.pathname.startsWith(base)
     ? location.pathname.slice(base.length) : location.pathname.slice(1))
@@ -176,15 +190,7 @@ export default async ({ command }: { command: unknown }) => {
           { text: '更新日志 / Release Notes', link: '/releases/' },
         ],
       },
-      {
-        text: '开发',
-        items: [
-          { text: '架构', link: '/development/architecture' },
-          { text: '扩展指南', link: '/development/extension-guide' },
-          { text: '开发流程与测试', link: '/development/workflow' },
-          { text: '插件开发', link: '/development/plugin-development' },
-        ],
-      },
+      developmentSidebar(),
       {
         text: '工具',
         items: [{ text: '配置与模拟器', link: '/editor/' }],
@@ -242,7 +248,7 @@ export default async ({ command }: { command: unknown }) => {
         },
       },
     },
-    outline: { label: '本页内容' },
+    outline: { label: '本页内容', level: [2, 3] as [number, number] },
     docFooter: { prev: '上一页', next: '下一页' },
     lastUpdated: { text: '最近更新' },
     locales: {
@@ -255,6 +261,7 @@ export default async ({ command }: { command: unknown }) => {
           { text: 'Get started', link: '/en/guide/getting-started' },
           { text: 'Modes', link: '/en/modes/' },
           { text: 'Configuration', link: '/en/reference/configuration' },
+          { text: 'Development', link: '/en/development/architecture' },
           { text: 'Configuration & simulator', link: '/en/editor/' },
         ],
         sidebar: [
@@ -284,6 +291,7 @@ export default async ({ command }: { command: unknown }) => {
               { text: 'Release notes', link: '/en/releases/' },
             ],
           },
+          developmentSidebar('/en', true),
           {
             text: 'Tools',
             items: [{ text: 'Configuration & simulator', link: '/en/editor/' }],
@@ -315,7 +323,7 @@ export default async ({ command }: { command: unknown }) => {
             },
           },
         },
-        outline: { label: 'On this page' },
+        outline: { label: 'On this page', level: [2, 3] as [number, number] },
         docFooter: { prev: 'Previous page', next: 'Next page' },
         lastUpdated: { text: 'Last updated' },
       },

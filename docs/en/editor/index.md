@@ -1,26 +1,42 @@
 # Configuration & Simulator (Beta)
 
-Configuration & Simulator is for trying a change before saving it: edit bindings in the browser, preview pointer actions, and adjust Grid, Recursive Grid, and UI Hint styles. Data stays in your browser and is never uploaded. For complex actions, external commands, and advanced fields, treat the TOML documentation as authoritative.
+Try changes in the browser before using them on your desktop. Adjust shortcuts, pointer speed, and mode styles, or practise layouts and tab groups with sample windows.
 
-With KeySteer 0.8.11 or later, choose **Configuration & Simulator...** from the Windows tray or macOS top status menu to open the active configuration directly. The configuration is passed to the browser in a URL fragment, which GitHub Pages requests never receive; the page clears it immediately after reading it. A browser extension could theoretically read the page address during the handoff, so do not keep passwords or tokens in configuration commands.
+Choose **Configuration & Simulator...** from the app's status menu to import the active configuration and existing workspace automatically. You can also open it below and import files yourself.
 
 <p class="ks-open-simulator"><a href="../simulator" target="_blank" rel="noopener">Open Configuration & Simulator ↗</a></p>
 
+::: info Preview locally, then apply your files
+Data stays in your browser and is not uploaded. Website actions change the preview. The desktop app uses your changes after you download the configuration or workspace file and place it in its data directory.
+:::
+
 ## Recommended workflow
 
-When `workspace.ksw` exists, opening the simulator from the app menu imports the active bindings and saved Layout/Tabs presets together. Select a layout number to edit its regions. Ctrl+S updates its note; **Save and download workspace** includes current edits and preserves the other presets. Replace the application's `workspace.ksw` with the downloaded file. Each `Alt+W → R` reads it again, without restarting, reloading TOML, or watching files. A separate workspace-file import button is also available.
+1. Import your TOML file or start from defaults.
+2. Change keys and styles while watching the preview.
+3. Download `keysteer.<name>.toml` into [KeySteer's data directory](/en/reference/configuration#configuration-file-location).
+4. Choose **Reload Configuration** from the status menu.
 
-1. Open the simulator, import an existing TOML file, or start with the default configuration.
-2. Change bindings and mode styles while watching the preview.
-3. Download the generated `keysteer.<name>.toml`.
-4. Place it in KeySteer's data directory and choose Reload Configuration from the status menu.
-5. When configuration errors occur, run `keysteer --check -c <file>`; the Rust program's validation is authoritative.
+::: tip If configuration validation fails
+Run `keysteer --check -c <file>` for the reason. The simulator previews behavior; the desktop app remains authoritative for complex actions, external commands, and platform permissions.
+:::
 
-The simulator is helpful for rapid experimentation and previewing, but it is not a complete configuration validator. Complex fields, platform permissions, external commands, and final validation remain the responsibility of KeySteer. See [Configuration](/en/reference/configuration) and [Modes and actions](/en/reference/modes-and-actions) for the full syntax.
+### Edit layouts and tab templates
 
-The simulator opens in a new page to keep its wide keyboard layout from covering the documentation sidebar. It also works well on a second display.
+Opening from the app menu also imports presets from an existing `workspace.ksw`. Or choose **Import workspace file**. Select a layout number to edit regions; `Ctrl+S` edits its note. **Save and download workspace** saves current edits and preserves other presets.
 
+Place the downloaded `workspace.ksw` in the data directory, then use `Alt+W → R` to read it again. No restart or TOML reload is needed.
+
+See [Configuration](/en/reference/configuration) and [Modes and actions](/en/reference/modes-and-actions) for the full syntax. The simulator opens in a separate page and also works well on a second display.
 
 ## Visual window card editing
 
-Select Window or an A/E/R/T child mode in the simulator to open the live card editor. Color pickers and opacity sliders control the background, number, app name, title and border. Edit fonts, sizes, weight, corner radius, border width and spacing alongside the preview. Click or drag an anchor, draw a range, adjust the four inset sliders, or choose a positioning preset. Changes update the simulator and exported TOML, with individual reset controls. Positions remain preferences; collision avoidance still applies.
+Select Window, Quick, Editor, Restore, or Tabs, then adjust the card editor:
+
+| What to change | How |
+| --- | --- |
+| Background, number, app name, title, border | Choose colors and opacity |
+| Fonts, sizes, weight, corners, spacing | Edit values alongside the live preview |
+| Card positions | Click or drag an anchor, draw a range, adjust inset sliders, or select a preset |
+
+Changes update the preview and exported TOML. Each setting can be reset individually. During actual use, cards still avoid other markers.

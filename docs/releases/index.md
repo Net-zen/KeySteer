@@ -1,9 +1,15 @@
 ---
 releaseHistory: true
-outline: false
+outline: 2
 ---
 
 # 更新日志 / Release Notes
+
+## 0.12.1
+
+- 优化 Windows 和 macOS 的鼠标移动与滚动响应。
+
+- Improved pointer movement and scrolling responsiveness on Windows and macOS 
 
 ## 0.12.0
 

@@ -5,14 +5,9 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
 import KeyLayout from '../.vitepress/components/KeyLayout'
 </script>
 
-`Normal` 可能是最常用和简单上手的：直接移动鼠标、滚动、点击、拖拽，并进入三种定位模式。按 `Primary+E` 从 Idle 进入
+日常移动、点击、滚动和拖拽，都从 Normal 开始。按 `Primary+E` 进入，按 `Esc` 或 `Q` 回到待机。
 
-默认只接管已经绑定的按键；未绑定输入仍会到达当前应用、AHK、Quicker 等工具。例如只有 `h = "move_left"` 时，裸 `h` 移动鼠标，而未显式绑定的 `Alt+H` 会完整透传。
-
-```toml
-[normal]
-passthrough_unbound_keys = true # 设为 false 可恢复键盘独占
-```
+`Primary` 默认是 Windows 的左 Alt、macOS 的 Command。Normal 只使用已配置的按键，其余按键照常交给当前应用。
 
 <ModeVideo
   file="normal.mp4"
@@ -37,82 +32,97 @@ passthrough_unbound_keys = true # 设为 false 可恢复键盘独占
 
 | 按键 | 作用 |
 | --- | --- |
-| `h` `j` `k` `l` | 左、下、上、右移动 |
-| `Caps Lock` / `Left Shift` | 精确 / 慢速移动 |
-| `v` 或 `b` | 快速移动 |
-| `m` / `,` | 向下 / 向上滚动 |
-| `;` / `'` / `Right Shift` | 左键 / 右键 / 中键点击 |
-| `n` | 切换任意按键按住状态，适合拖拽 |
-| `t` / `y` / `i` / `u` |  `Home` / `End` / `Page Up` / `Page Down` |
-| `g` / `f` / `Primary+F` | `Grid` / `Recursive Grid` / `UI Hint` |
-| `Primary+S` | 切换到下一块显示器 |
-| `q` / `Esc` | 返回 Idle |
+| `H / J / K / L` | 向左 / 下 / 上 / 右移动鼠标 |
+| `Caps Lock` / `左 Shift` | 精确 / 慢速移动 |
+| `V` 或 `B` | 快速移动 |
+| `M` / `,` | 向下 / 向上滚动 |
+| `;` / `'` / `右 Shift` | 左键 / 右键 / 中键点击 |
+| `N` + 点击键 | 锁住鼠标按钮，方便拖拽；单独点 `N` 松开 |
+| `T / Y / I / U` | Home / End / Page Up / Page Down |
+| `G` / `F` / `Primary+F` | Grid / Recursive Grid / UI Hint |
+| `Primary+S` | 将鼠标切到下一块显示器 |
+| `Primary+D` | 将鼠标下的窗口移到下一块显示器 |
+| `Q` / `Esc` | 返回待机 |
+
+::: tip 不用全记住
+按 `?` 查看当前可用按键，再按一次收起。字母大写只是为了好认；写出 `Shift+` 时才需要按 Shift。
+:::
 
 ## 盲操网格定位
 
-可在 Normal 内直接使用网格键粗定位，再用 HJKL 微调，不需要切换模式或按住激活键，也不显示网格。
+记住网格位置后，可以直接按格子的键跳转，再用 `H/J/K/L` 微调。整个过程留在 Normal，屏幕上不显示网格。
+
+::: info 可选功能，默认关闭
+下面用四块区域示范：`1` 左上、`2` 右上、`3` 左下、`4` 右下。连续按 `2 → 3`，就是先到屏幕右上，再到那一块的左下。
+:::
+
+将这段加入配置即可试用。先确认 `1/2/3/4`、`Tab`、`Backspace`、`Space` 没有绑定其他动作；发布默认配置中这些键都是空闲的。
 
 ```toml
 [normal.targeting]
-method = "grid" # 默认；也可用 "recursive_grid"
+method = "grid"
+grid_cols = 2
+grid_rows = 2
+keys = "1234"
+max_depth = 3
 reset_on = ["move", "click"]
 ```
 
-没有这个配置段时完全禁用，继续使用原来的 Normal；空表启用默认 Grid。
-布局、选择键、深度和 Recursive Grid 分层配置直接读取 `[grid]` 或 `[recursive_grid]`，即使该独立模式的 `enabled = false` 也可以借用其布局。盲操始终移动到所选格中心，不继承其显示、`cursor_follow_selection` 或生命周期设置。
-
-启用前需让出对应布局的单键及 `Tab`、`Backspace`、`Space`：它们与 Normal 本地、继承或应用覆盖绑定冲突时，新配置会被拒绝，错误写入 `keysteer.log` 和可用的控制台，并列出冲突键、动作及来源。可修改布局，或删除 Normal 对应绑定；`none` 可显式让出旧动作并屏蔽继承。组合键不与其中的单键直接冲突，仍按现有组合键规则处理。
-
-`[normal.bindings]` 整表替换内置绑定，不是增量补丁。默认 Grid 需让出 q/t/f/g/v/b；默认 Recursive Grid 需让出 q，保留 Esc 退出。可用 `keysteer --config keysteer.user.toml --check` 检查字段及绑定冲突；热重载失败保留旧配置。
-
-| 操作 | 行为 |
+| 操作 | 会发生什么 |
 | --- | --- |
-| 连续网格键 | 在当前区域逐层定位 |
-| Tab / Backspace | 回退一层，不移动鼠标；根层不退出 Normal |
-| Space | 清空定位路径，不移动鼠标 |
-| 到达深度／最小尺寸终点 | 保留当前区域，仍可微调、点击、回退或重置 |
-| Enter / Esc / 点击键 | 保持 Normal 自己的绑定 |
+| 继续按格子的键 | 在选中的区域里继续细分，鼠标跳到小格中心 |
+| `Tab` / `Backspace` | 退回上一层，鼠标留在原处 |
+| `Space` | 从整屏重新选，鼠标留在原处 |
+| 选到最后一层 | 留在当前位置，仍可微调、点击或回退 |
 
-`reset_on = ["move"]` 在 Normal 微调产生位移命令后结束当前路径；`["click"]` 在 KeySteer 点击／双击成功后结束路径；两项一起填写表示任一触发，`[]` 则保留路径。重置本身不移动鼠标，下一次网格键从当前屏幕重新开始。网格自身跳转、实体鼠标移动／点击、滚动、鼠标按下／释放／锁定均不触发这两个条件。离开并重新进入 Normal 开始新一轮；跨屏插件继续遵循其路径保留设置。
+上面的配置会在 `H/J/K/L` 微调或 KeySteer 点击后，从整屏开始下一次选格。想保留当前区域，改成 `reset_on = []`。实体鼠标操作和滚动不触发重选，`Esc` 和点击键仍照常使用。
+
+想换用已有 Grid 或递归网格布局，见[盲操定位配置](/reference/configuration#normal-盲操定位)。删除 `[normal.targeting]` 段即可关闭；只留下空表会启用默认网格。
 
 ## 移动速度
 
-默认的 `precision`、`slow` 和 `fast` 需要按住。若希望点按切换，可在
-`[normal.bindings]` 中使用 `precision_toggle`、`slow_toggle` 或 `fast_toggle`；
-再次按同一绑定关闭，当前锁存速度会显示在模式指示器下方。
+小目标不好点时，按住 `Caps Lock` 精确移动；想慢一点用左 `Shift`，想快一点用 `V` 或 `B`。松开后恢复原速度，这些键也影响滚动。
 
-移动速度以像素/秒和加速度计算， 默认的平滑加速会在起步和接近最高速度时放缓速度变化
-
-将 `smooth_acceleration` 设为 `false` 可恢复线性加速。
+::: tip 不想一直按住？可以点按换挡
+把下面三行加入已有的 `[normal.bindings]`。点一次换挡，再点同一个键恢复正常速度；当前档位显示在模式名下方。
 
 ```toml
-[pointer]
-initial_speed = 1000.0
-max_speed = 2200.0
-acceleration = 3000.0
-smooth_acceleration = true
-tap_distance = 2.5
-slow_multiplier = 0.35
-precision_multiplier = 0.12
-fast_multiplier = 2.0
+f5 = "precision_toggle"
+f6 = "slow_toggle"
+f7 = "fast_toggle"
 ```
+:::
+
+想整体调快或调慢，可在[配置与模拟器](/editor/)的 **Normal → 行为** 中调整。直接编辑文件时，速度和倍率写在 `[pointer]`，见[完整速度配置](/reference/configuration#指针、滚动和主题)。
 
 ## 拖拽与长按
 
-`n = "toggle"` 可以让任意数量的伙伴保持按下，伙伴先按或后按都可以。伙伴会先按 Normal 绑定转换为实际目标：例如默认的 `;`、`'`、`right_shift` 会分别保持鼠标左、右、中键，而不是这些物理键。单独短按 `n`、返回 Normal 或进入 Idle 会释放全部目标。
+拖动窗口或文件时，可以先锁住鼠标左键，再腾出手来移动：
 
-如果持续按住 `鼠标按键` 键达到 `long_press_toggle_ms`，鼠标会进入 `Toggle` 状态，也就是按下模式；点击 `n = "toggle"` 可以释放
+1. 将鼠标移到窗口标题栏或要拖动的文件上。
+2. 按住 `;` 约半秒，然后松开，左键会继续保持按下。
+3. 用 `H/J/K/L` 拖到目标位置。
+4. 单独点一下 `N`，松开左键，完成拖拽。
 
-如果希望“按住修饰键拖动”结束时少按一次释放键，可将 `auto_release_ms` 设为非零值。它仅适用于直接绑定为 click/double-click 的键经长按形成的鼠标候选；一个或多个物理 Shift/Ctrl/Alt/Win 或 Command 键已按住并透传时，首次实际移动才开始计时，后续移动会重置计时。指针停止达到该时间后只释放该鼠标按钮并立即清除按下提示，不影响你手动按住的修饰键；显式 `press`/`toggle` 创建的 latch 不参与。
+::: tip 也可以用 N 配合点击键
+按住 `N`，点一下 `;`，再松开 `N`，也能锁住左键。先按点击键再按 `N` 也可以。右键和中键同理，分别用 `'` 和右 `Shift`。
+:::
+
+`N` 也能配合其他按键，让多个键保持按下。单独点 `N`、切回 Normal 或回到待机时，会松开所有已锁住的键和鼠标按钮。
+
+想改长按时间，可以调整：
 
 ```toml
 [normal]
-passthrough_unbound_keys = true
-long_press_toggle_ms = 500 # 设为 0 可关闭
-auto_release_ms = 0        # 设为 0 保持手动释放
+long_press_toggle_ms = 500 # 半秒；设为 0 关闭长按锁定
+auto_release_ms = 0       # 默认手动松开；可改为 300 等毫秒数
 ```
 
+例如，`auto_release_ms = 300` 表示：长按点击键锁住鼠标后，配合 `Ctrl` 拖动，停住约 0.3 秒就会自动松开鼠标，Ctrl 仍需自行松开。该修饰键需正常传给应用；用 `N`、`press` 或 `toggle` 锁住的按钮仍需手动松开。两项时间均可设为 `0–60000` 毫秒。
+
 ## 自定义快捷键
+
+打开[配置与模拟器](/editor/)，点选按键并选择动作，就能尝试新键位。喜欢直接改文件，也可以将下面的行合并到已有的 `[normal.bindings]`：
 
 ```toml
 [normal.bindings]
@@ -120,32 +130,48 @@ auto_release_ms = 0        # 设为 0 保持手动释放
 "primary+g" = "grid"
 q = "idle"
 ```
-::: warning 注意
-在定位 Mode 中，`Grid` 标签或 `UI Hint` 标签优先于继承来的 `Normal` 模式按键；按住 `Primary` 可临时使用 `Normal`。
+
+这样就能用 `Primary+Space` 点击、`Primary+G` 打开网格。保存后，在托盘或状态栏菜单选择 **Reload Configuration**。
+
+::: warning 请在原有按键表上修改
+自己新建一张 `[normal.bindings]` 表会替换整张默认按键表，请保留仍要使用的移动、点击和退出键。建议从[完整默认配置](/generated/keysteer.default.toml)开始修改。
 :::
+
+在 Grid 或 UI Hint 中，同名按键优先用于选择标签；按住 `Primary` 可以临时使用 Normal 的鼠标操作。
+
+未绑定的按键默认照常交给应用，也能与 AHK、Quicker 等工具配合。例如 `H` 移动鼠标时，未配置的 `Alt+H` 仍交给应用。若希望其他按键也不传给应用，可将 `[normal]` 的 `passthrough_unbound_keys` 设为 `false`；默认是 `true`。
 
 ## 临时输入文本
 
-Normal 默认按 `\` 进入 Text Input，普通文字透传到应用。进入和返回均使用普通绑定：
+在 Normal 中需要打字时：
 
-```toml
-[normal.bindings]
-'\' = "text_input"
+1. 按 `\` 开始输入。
+2. 照常打字，`Ctrl/Cmd+A/C/V` 等应用快捷键也能使用。
+3. 按 `Enter`、`\` 或 `Esc` 回到 Normal。
 
+::: info Enter 默认只用于返回
+它不会给应用换行或提交。需要换行、输入法选词或先提交再返回时，可按下面的示例修改 `[text_input.bindings]`。输入期间长按 `Q` 不会打开快速切换面板。
+:::
+
+::: code-group
+```toml [默认：Enter 返回]
 [text_input.bindings]
 'enter \ esc' = "normal"
-
-# 可选：先把 Enter 发送给应用，再返回 Normal。
-# 用下面两行替换上面的合并绑定：
-# '\ esc' = "normal"
-# enter = ["send enter", "normal"]
 ```
 
-默认返回键会被消费，不发送给应用。需要 Enter 正常用于多行编辑或输入法选词时，从返回绑定中移除 enter 即可。显式 bindings 表替换默认值，请在现有 Normal 绑定表中追加入口，保留其他操作。
+```toml [Enter 留给应用]
+[text_input.bindings]
+'\ esc' = "normal"
+```
 
-Text Input 默认不继承或临时借用 Normal，Cmd/Ctrl+A、C、V 等应用快捷键正常透传，不受 Normal 的字母绑定影响。长按 Q 也不启动快速切换。
+```toml [Enter 提交后返回]
+[text_input.bindings]
+'\ esc' = "normal"
+enter = ["send enter", "normal"]
+```
+:::
 
-需要临时借用 Normal 时可显式配置，选择不与应用编辑快捷键冲突的触发键：
+如果想在打字时临时移动鼠标，可用右 Ctrl：按住它，再用 `H/J/K/L` 移动；松开后继续打字。
 
 ```toml
 [text_input]
@@ -153,33 +179,25 @@ temporary_mode = "normal"
 temporary_mode_keys = ["right_ctrl"]
 ```
 
-按住触发键借用 Normal，松开继续输入。进入文本输入或松开触发键会清理借用的手势和锁定输入。也支持 `inherits = ["normal"]`，但完整继承会让未覆盖的 HJKL 等字母执行 Normal 动作，不适合连续打字。
+临时操作结束时，持续移动和锁键也会结束。请选不会占用常用编辑快捷键的按键。若设置 `inherits = ["normal"]`，HJKL 等字母会执行鼠标动作，影响正常打字。
 
-### 可选主键区编辑映射
+### 用主键区编辑文字（可选） {#可选主键区编辑映射}
 
-编辑组合键默认不启用，可在 `[text_input.bindings]` 中按需添加：
+想少挪动手指，可以自己启用下面的组合键。默认不启用，以免占用应用原有快捷键。
 
-| 组合键 | 发送的按键 |
+| 组合键 | 作用 |
 | --- | --- |
-| Primary + H/J/K/L | 左／下／上／右箭头 |
-| Primary + U/I/O | Backspace／Delete／Insert |
-| Primary + T/Y | Home／End |
+| `Primary+H/J/K/L` | 左 / 下 / 上 / 右箭头 |
+| `Primary+U/I/O` | Backspace / Delete / Insert |
+| `Primary+T/Y` | Home / End |
 
-完整示例还包含 Ctrl、Shift、Ctrl+Shift 组合。请选择与 Primary 实际映射不重复的修饰键。例如 Primary 是 Ctrl 时，不使用 Ctrl+Primary 的示例。
+从完整示例中挑选需要的行，加入已有 `[text_input.bindings]`。Ctrl、Shift 组合可用于选择文字；如果 Primary 已是 Ctrl，就跳过 Ctrl+Primary 的组合，避免重复。自己配置的完整组合键会优先于临时鼠标操作，长按仍按应用原有方式重复。
 
-```toml
-# 在 [text_input.bindings] 中按需启用：
-# "primary+h" = "arrow_left"
-# "ctrl+primary+h" = "send ctrl+arrow_left"
-# "shift+primary+h" = "send shift+arrow_left"
-```
-
-<details>
-<summary>完整编辑键示例（按需复制）</summary>
+::: details 完整编辑键示例（按需复制）
 
 ```toml
-# Optional Text Input editing keys; choose modifiers distinct from Primary.
-# Explicit bindings replace the default table, so keep the return keys.
+# 按需选择编辑键；不要使用与 Primary 重复的修饰键。
+# 自定义按键表会替换默认表，请保留返回键。
 [text_input.bindings]
 'enter \ esc' = "normal"
 "primary+h" = "arrow_left"
@@ -220,26 +238,23 @@ temporary_mode_keys = ["right_ctrl"]
 "ctrl+shift+primary+y" = "send ctrl+shift+end"
 ```
 
-</details>
+:::
 
-显式完整组合键优先于临时层中去掉触发键后的普通绑定。映射使用现有 Send 的源修饰键暂停／恢复和系统按键重复逻辑，不改变应用对目标快捷键的处理。
+## 模式提示的样式与位置 {#模式标识符样式与位置}
 
-文本输入模式默认不显示文字提示，可在 `[mode_indicator.modes.text_input]` 中用 `enabled` 自定义。显式启用临时 Normal 后，它使用 Normal 的提示设置，且 `s = "screen next"` 等插件动作的结果由 Normal 处理。
-## 模式标识符样式与位置
+鼠标旁的“Normal”文字会提醒你当前在哪个模式。可以改名字、颜色、字号和位置，也可以隐藏。
 
-程序和网页现在使用相同的标识符尺寸与定位公式，移除了额外的预览屏幕缩放补偿。坐标原点是系统鼠标热点（通常为箭头尖端，也是圆形指示器中心），不是箭头图片的中心。Windows 使用桌面坐标像素，macOS 使用逻辑点；标识符后端不再二次缩放尺寸，字体栅格仍可能有细微差异。
+在[配置与模拟器](/editor/)中打开 **全局设置 → 模式标识符**，即可边改边看。拖动橙色锚点可调整位置，用方向键微调；按住 Shift 每次移动 10。
 
-通常只需修改全局 `[mode_indicator.ui]`；默认配置已集中列出字体、圆角、内边距、边框及位置。网页模拟器的「全局设置 → 模式标识符」可直接编辑并实时预览。各模式「外观」页保留独立覆盖，重置字段即可恢复继承全局样式。
-
-模式标识符可单独启用、改名，并覆盖全局 `[mode_indicator.ui]` 样式。将下面配置合并到现有同名表中：
+直接改 TOML 时，把设置合并到已有的同名表中：
 
 ```toml
 [mode_indicator.modes.normal]
-enabled = true
-text = "Normal"
+enabled = true   # false 表示隐藏
+text = "Normal" # 可改成自己喜欢的名字
 
 [mode_indicator.ui]
-indicator_offset = [-12, 18]
+indicator_offset = [-12, 18] # 向左 12、向下 18
 font_size = 13
 background_color = "#0A1338FF"
 text_color = "#E8EEFFFF"
@@ -248,12 +263,11 @@ padding_x = 8
 padding_y = 4
 
 [mode_indicator.modes.text_input]
-enabled = false
+enabled = false # 文本输入时默认隐藏；true 表示显示
 ```
 
-`indicator_offset = [X, Y]` 定位标识符的**右上角**：X 正数向右、负数向左；Y 正数向下、负数向上。两项都是 -32768～32767 的整数。默认 `[-12, 18]` 表示右上角在鼠标左侧 12、下方 18。网页可拖动橙色锚点、用方向键微调（Shift 为 10），或直接输入数组；显示器边缘会限制整个标识符的位置。
+`indicator_offset = [X, Y]` 定位提示框的右上角：X 正数向右、负数向左；Y 正数向下、负数向上。靠近屏幕边缘时，提示会自动挪回可见区域。两项可设为 `-32768–32767` 的整数。
 
-各模式 `[mode_indicator.modes.normal.ui]` 等表可覆盖同名字段。从 0.10.22 起，旧 `position`、`indicator_x_offset` 和 `indicator_y_offset` 已移除，请使用 `indicator_offset = [X, Y]`；未设置时使用默认值或继承全局配置。Text Input 默认隐藏文字，若需要显示，设 `enabled = true`，并在 `[mode_indicator.modes.text_input.ui]` 中配置相同字段。
+全局样式会影响所有模式。只想改 Normal，就写在 `[mode_indicator.modes.normal.ui]`；删除单项设置或在网页中重置，即可恢复全局样式。Text Input 也可在自己的 `.ui` 表中单独设置。
 
-
-`normal.targeting` 可覆盖 `grid_cols`、`grid_rows`、`keys`、`max_depth`，未写的字段继承所选 method 的原配置。`method = "recursive_grid"` 另支持 `min_size_width`、`min_size_height` 和 `layers`；显式 layers 整组替换继承列表，`layers = []` 清空。覆盖只影响 Normal，不改变独立网格模式，不接受 UI 字段。布局校验、键位冲突检测和控制器使用同一份合并结果，仅在加载配置时解析。完整注释示例见 `keysteer.default.toml`。
+旧配置中的 `position`、`indicator_x_offset`、`indicator_y_offset` 已停用，请改用 `indicator_offset = [X, Y]`。

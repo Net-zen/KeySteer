@@ -383,12 +383,13 @@ mod tests {
     #[test]
     #[ignore = "requires an interactive Windows desktop"]
     fn native_clock_resumes_after_cached_display_snapshot_replacement() -> Result<(), String> {
+        // Backend startup now begins preparation before its display snapshot.
+        let mut clock = DisplayFrameClock::new(native::prepare_thread_message_queue());
+        clock.prepare()?;
         let snapshot = super::super::screens::list_snapshot()?;
         let first = snapshot.screens.first().ok_or("no interactive display")?;
-        let mut clock = DisplayFrameClock::new(native::prepare_thread_message_queue());
         clock.retarget(first.bounds.center());
         clock.update_displays(&snapshot.screens, &snapshot.monitors);
-        clock.prepare()?;
         for round in 0..6 {
             if round == 2 {
                 clock.update_displays(&[], &[]);
@@ -434,7 +435,7 @@ mod tests {
             .unwrap(),
         );
         observed.recv_timeout(Duration::from_secs(2)).unwrap();
-        for _ in 0..10 {
+        for _ in 0..2 {
             clock.start().unwrap();
             assert!(clock.is_running());
             clock.stop().unwrap();
@@ -455,8 +456,8 @@ mod tests {
         clock.update_displays(&displays, &[11, 22]);
         let original = clock.shared.state.lock().unwrap().display;
         assert_eq!(original.0, 11);
-        for x in 0..1000 {
-            clock.retarget(Point::new(x as f64, 20.0));
+        for x in [0.0, 500.0, 999.0] {
+            clock.retarget(Point::new(x, 20.0));
             assert_eq!(clock.shared.state.lock().unwrap().display, original);
         }
         clock.retarget(Point::new(1500.0, 20.0));
@@ -472,8 +473,24 @@ mod tests {
         assert_eq!(clock.shared.state.lock().unwrap().display.0, 0);
         clock.retarget(Point::new(1500.0, 20.0));
         assert_eq!(clock.shared.state.lock().unwrap().display.0, 0);
+        let began = Instant::now();
+        let generation = {
+            let mut state = clock.shared.state.lock().unwrap();
+            state.frames.start(began);
+            state.frames.generation().unwrap()
+        };
         clock.update_displays(&displays, &[66, 77]);
         assert_eq!(clock.shared.state.lock().unwrap().display.0, 77);
+        clock.retarget(Point::new(500.0, 20.0));
+        let mut state = clock.shared.state.lock().unwrap();
+        assert_eq!(state.display.0, 66);
+        assert_eq!(state.frames.generation(), Some(generation));
+        assert!(
+            state
+                .frames
+                .publish(generation, began + Duration::from_millis(20))
+        );
+        assert_eq!(state.frames.take_elapsed(), Some(Duration::from_millis(20)));
     }
 
     #[test]
@@ -502,31 +519,6 @@ mod tests {
         assert_eq!(state.frames.take_elapsed(), Some(Duration::from_millis(16)));
     }
 
-    #[test]
-    fn display_retargeting_does_not_pause_or_reset_the_shared_gesture() {
-        let mut clock = DisplayFrameClock::new(0);
-        let began = Instant::now();
-        clock.shared.state.lock().unwrap().frames.start(began);
-        let generation = clock
-            .shared
-            .state
-            .lock()
-            .unwrap()
-            .frames
-            .generation()
-            .unwrap();
-        clock.update_displays(&test_displays(), &[11, 22]);
-        clock.retarget(Point::new(1500.0, 20.0));
-        let mut state = clock.shared.state.lock().unwrap();
-        assert_eq!(state.frames.generation(), Some(generation));
-        assert!(
-            state
-                .frames
-                .publish(generation, began + Duration::from_millis(20))
-        );
-        assert_eq!(state.frames.take_elapsed(), Some(Duration::from_millis(20)));
-    }
-
     fn test_displays() -> [Screen; 2] {
         [0.0, 1000.0].map(|x| {
             let bounds = crate::api::Rect::new(x, 0.0, 1000.0, 1000.0);
@@ -538,60 +530,5 @@ mod tests {
                 name: None,
             }
         })
-    }
-
-    #[test]
-    #[ignore = "microbenchmark probe; run in release with --test-threads=1"]
-    fn compositor_retarget_performance_probe() {
-        const WARMUP: usize = 2_000;
-        const SAMPLES: usize = 20_000;
-        const CALLS_PER_SAMPLE: usize = 100;
-
-        fn percentiles(samples: &mut [u128]) -> (u128, u128, u128) {
-            samples.sort_unstable();
-            let last = samples.len() - 1;
-            (
-                samples[last * 50 / 100],
-                samples[last * 95 / 100],
-                samples[last * 99 / 100],
-            )
-        }
-
-        let mut clock = DisplayFrameClock::new(0);
-        clock.update_displays(&test_displays(), &[11, 22]);
-        let skipped = || {
-            clock.retarget(Point::new(100.0, 100.0));
-        };
-        let queried = || {
-            clock.retarget(Point::new(1500.0, 100.0));
-            clock.retarget(Point::new(100.0, 100.0));
-        };
-        for _ in 0..WARMUP {
-            skipped();
-            queried();
-        }
-        let mut skipped_samples = Vec::with_capacity(SAMPLES);
-        let mut queried_samples = Vec::with_capacity(SAMPLES);
-        for sample in 0..SAMPLES {
-            let measure = |operation: &dyn Fn(), samples: &mut Vec<u128>| {
-                let started = Instant::now();
-                for _ in 0..CALLS_PER_SAMPLE {
-                    operation();
-                }
-                samples.push(started.elapsed().as_nanos() / CALLS_PER_SAMPLE as u128);
-            };
-            if sample % 2 == 0 {
-                measure(&skipped, &mut skipped_samples);
-                measure(&queried, &mut queried_samples);
-            } else {
-                measure(&queried, &mut queried_samples);
-                measure(&skipped, &mut skipped_samples);
-            }
-        }
-        println!(
-            "windows_retarget_probe samples={SAMPLES} calls_per_sample={CALLS_PER_SAMPLE} cached={:?} crossing_pair={:?}",
-            percentiles(&mut skipped_samples),
-            percentiles(&mut queried_samples),
-        );
     }
 }

@@ -5,12 +5,12 @@ import ModeVideo from '../../.vitepress/components/ModeVideo'
 import KeyLayout from '../../.vitepress/components/KeyLayout'
 </script>
 
-When KeySteer starts, it quietly waits in the Windows tray or the macOS top status area and does not interfere with normal typing. For your first use, **you do not need to memorise every command or create a configuration file**.
+Give your mouse a short break. KeySteer lets you move, click, and arrange windows while your hands stay on the keyboard. Start with one click, then explore the tools you need.
 
-::: tip One simple session
-`Primary+E` to start → `h j k l` to move → `;` to click → `Esc` to finish
+::: tip Try it first; the key list can wait
+Start with one click, then try moving a window. The full keyboard layout and configuration reference are farther down the page, ready when you need them.
 
-`Primary` is cross-platform: the shipped setting is left `Alt` on Windows and `Command` on macOS.
+No configuration file is needed. KeySteer waits in the tray or status bar until you activate it.
 :::
 
 ## First use
@@ -35,12 +35,18 @@ When KeySteer starts, it quietly waits in the Windows tray or the macOS top stat
 Once you have moved the pointer and clicked once, you know KeySteer's most common workflow.
 
 ::: warning No response on your first macOS use?
-Grant Accessibility permission first; see [macOS installation and permissions](/en/guide/macos).
+Grant **Device Control and Data Access** permission on macOS 27, or **Accessibility** on older versions. See [macOS installation and permissions](/en/guide/macos).
 :::
+
+`Primary` means **Left Alt** on Windows and **Command** on macOS by default. Use Shift only when a shortcut explicitly includes `Shift+`.
 
 ## View available keys at any time
 
-Add `"?" = "key_help"` under `[normal.bindings]`, then press `?` (`Shift+/` on a US keyboard) to show the available keys and actions in a rounded panel centered at the bottom of the current screen. Press it again to close the panel. Omit or comment out this binding to disable it.
+::: tip Your built-in cheat sheet
+Press `?` (Shift+/) to see the current mode's keys; press it again to hide them. Learn each command when you need it.
+:::
+
+If you use a custom bindings table, keep `"?" = "key_help"` to retain this shortcut. The keyboard layout and quick reference are at the end of this page.
 
 <ModeVideo file="help.mp4" title="Available key hints" description="Preview the panel, then bind key_help to a key of your choice." />
 
@@ -58,6 +64,10 @@ Want a split screen? Press `A` from Window, then `H` for the left half. Want to 
 Quick, Editor, Tabs, and Restore use `Q` to return to Window; another `Q` returns to Idle. Hold `Primary` to temporarily use Normal pointer controls.
 
 Follow the [Window guide](/en/window-management/) for side-by-side layouts, tab groups, saved workspaces, audio controls, and a mode-specific key reference.
+
+::: tip A little room to experiment
+`Z` undoes an adjustment and `Shift+Z` redoes it. Leaving with `Q` keeps the current layout.
+:::
 
 ## Choose your next window task
 
@@ -136,6 +146,33 @@ Window is the starting point for window management. Quick, Editor, and Tabs are 
 
 Press `Esc` in a targeting mode to return to Normal; press it again to return to Idle.
 
+## Want different keys?
+
+Open the [Configuration & Simulator](/en/editor/) to view the keyboard, edit bindings and colours, then download your own TOML. KeySteer does not require a configuration file; start from the [shipped default](/generated/keysteer.default.toml).
+
+`Primary` is a cross-platform name: it defaults to left `Alt` on Windows and `Command` on macOS. Advanced users can map it to another physical key with `[key_aliases]`.
+
+::: info Common controls live in the status menu
+Right-click the Windows tray icon or click the macOS status icon to pause, reload configuration, enable launch at login, check for updates, or quit. Choose **Configuration & Simulator...** to bring the active configuration into the web editor.
+:::
+
+Portable Windows builds keep configuration and logs beside the program. A macOS `.app` uses `~/Library/Application Support/KeySteer/`.
+
+If something goes wrong, run diagnostics. After editing a configuration, you can check the file separately:
+
+```bash
+keysteer --doctor                       # Check the environment and permissions.
+keysteer --check -c keysteer.user.toml   # Check configuration.
+```
+
+See [Configuration](/en/reference/configuration) for settings and troubleshooting, or [Modes and actions](/en/reference/modes-and-actions) for action syntax.
+
+## Edit bindings in your browser
+
+Open **Configuration & Simulator...** from the tray menu. It opens your browser and requires network access. The simulator is an editor and preview; native app behavior is authoritative.
+
+<ModeVideo file="config.mp4" title="Edit W and A bindings" description="Choose a key on the full keyboard, then choose its action." />
+
 ## Everyday controls
 
 <KeyLayout
@@ -151,62 +188,18 @@ Press `Esc` in a targeting mode to return to Normal; press it again to return to
   hint="Learn the colour groups first, then add commands when you need them."
 />
 
-| Key | Action | A way to remember it |
+| What you want to do | Key | Tip |
 | --- | --- | --- |
-| `m` / `,` | Scroll down / up | Scroll from the main key area |
-| `Caps Lock` / `Left Shift` | Precision / slow movement | Hold while pressing `h j k l` |
-| `v` or `b` | Fast movement | Hold while moving |
-| `'` / `Right Shift` | Right / middle click | Next to `;`, the left click |
+| Move the pointer | `H / J / K / L` | Left / down / up / right |
+| Precision / slow movement | `Caps Lock` / `Left Shift` | Hold while moving; also affects scrolling |
+| Fast movement | `V` or `B` | Hold while moving; also affects scrolling |
+| Scroll down / up | `M` / `,` | Scroll from the main key area |
+| Left / right / middle click | `;` / `'` / `Right Shift` | Click keys sit near your right hand |
+| Drag | `N` + a click key | Tap `N` alone to release |
+| Home / End / Page Up / Page Down | `T / Y / I / U` | Send directly to the current application |
+| Open a targeting mode | `G` / `F` / `Primary+F` | Grid / Recursive Grid / UI Hint |
+| Move the pointer to the next display | `Primary+S` | For multiple displays |
+| Move the window under the pointer to the next display | `Primary+D` | Keep the pointer's relative position in the window |
+| Return to Idle | `Q` or `Esc` | Resume normal typing |
 
-<details open>
-<summary><strong>Show every default key</strong> (read this once you are comfortable)</summary>
-
-| Key | Action |
-| --- | --- |
-| `h j k l` | Move left, down, up, and right |
-| `Caps Lock` / `Left Shift` | Precision / slow mode for movement and scrolling |
-| `v` or `b` | Fast mode for movement and scrolling |
-| `m` / `,` | Scroll down / up |
-| `;` / `'` / `Right Shift` | Left / right / middle click |
-| `n` | Toggle a held left button for dragging |
-| `t` / `y` / `i` / `u` | Send `Home` / `End` / `Page Up` / `Page Down` |
-| `g` / `f` / `Primary+F` | `Grid` / `Recursive Grid` / `UI Hint` |
-| `Primary+S` / `Primary+D` | Switch the pointer display / move the window under the pointer to the next display, keeping the pointer's relative position within it |
-| `q` or `Esc` | Return to Idle |
-
-</details>
-
-## Want different keys?
-
-Open the [Configuration & Simulator](/en/editor/) to view the keyboard, edit bindings and colours, then download your own TOML. KeySteer does not require a configuration file; start from the [shipped default](/generated/keysteer.default.toml).
-
-`Primary` is a cross-platform name: it defaults to left `Alt` on Windows and `Command` on macOS. Advanced users can map it to another physical key with `[key_aliases]`.
-
-<details>
-<summary><strong>Status menu, diagnostics, and configuration locations</strong></summary>
-
-Right-click the Windows tray icon or click the macOS top status icon to pause, reload configuration, send the active configuration to the web simulator, enable launch at login, check for updates, or quit.
-Signed Windows releases can install and restart after downloading. KeySteer first verifies that both
-versions use the same publisher certificate and restores the previous version if startup fails. Unsigned
-development builds and macOS downloads continue to use manual replacement.
-
-Use these commands to inspect a configuration or diagnose the environment:
-
-```bash
-keysteer --check -c keysteer.user.toml
-keysteer --doctor
-keysteer --dump-config
-```
-
-- On Windows portable builds, configuration and logs are normally next to the program.
-- In a packaged macOS app, they are in `~/Library/Application Support/KeySteer/`.
-
-You can [download](/generated/keysteer.default.toml) the complete default configuration. See [Configuration](/en/reference/configuration) and [Modes and actions](/en/reference/modes-and-actions) for more.
-
-</details>
-
-## Edit bindings in your browser
-
-Open **Configuration & Simulator...** from the tray menu. It opens your browser and requires network access. The simulator is an editor and preview; native app behavior is authoritative.
-
-<ModeVideo file="config.mp4" title="Edit W and A bindings" description="Choose a key on the full keyboard, then choose its action." />
+See [Normal mode](/en/modes/normal) for dragging, speed controls, and remapping.

@@ -4,7 +4,7 @@
 import ModeVideo from '../.vitepress/components/ModeVideo'
 </script>
 
-`UI Hint` 会为屏幕上的可交互元素显示短标签。它适合按钮、链接、菜单、复选框、输入框、滑块和列表项；输入标签即可定位，不必估算坐标。
+按钮太小、鼠标太远？UI Hint 给按钮、链接、菜单和输入框贴上短标签。输入标签，鼠标就到目标旁边。
 
 <ModeVideo
   file="uihint.mp4"
@@ -12,26 +12,40 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
   description="展示扫描界面元素、输入标签筛选并把鼠标定位到目标控件。"
 />
 
-从 `Normal` 按 `Primary+F` 进入。默认只定位，不自动点击：标签命中后先移动鼠标，再用 `Normal`状态的点击键确认。
+从 Normal 按 `Primary+F` 进入。
+
+::: tip 定位后再点击
+默认只移动鼠标，随后回到 Normal；用 `;` 左击确认即可。
+:::
 
 ## 默认操作
 
 | 按键 | 作用 |
 | --- | --- |
-| 标签字符 | 筛选候选元素；完整匹配后定位 |
-| `Shift` | 在重叠元素之间切换 |
-| `Primary+R` | 重新扫描 |
-| `Primary` | 临时使用 Normal 的移动、滚动和点击 |
+| 标签字符 | 缩小范围；完整匹配后定位 |
+| `Shift` | 切换重叠的标签 |
+| `Primary+R` | 重新识别当前界面 |
+| 按住 `Primary` | 临时使用 Normal 的移动、滚动和点击 |
 | `Primary+Q` / `Esc` | 返回 Normal |
 
 ## 扫描方式
 
-- Windows 默认使用 `hybrid`：UI Automation 与完整视觉管线并行扫描并合并结果，可由 UIA 补足最小化、最大化、关闭等原生窗口按钮，同时保留 OCR 与内置像素区域回退对自绘界面的覆盖。`axtree` 和 `vision` 可分别只启用其中一条管线。
-- Windows 扫描目标是本轮扫描真正开始时鼠标下的窗口及其菜单、弹窗和对话框；不要求它先成为前台窗口。普通鼠标移动不会持续触发扫描，目标、焦点或显示器变化时才会清除旧标签并立即按最新鼠标位置重新扫描。
-- 鼠标位于桌面、任务栏或 KeySteer 覆盖层而没有可扫描窗口时，会提示 `No window under the pointer — move the pointer over a window`。该情况不会创建 OCR/截图任务，也不会显示可能已被用户修改的固定重扫快捷键。
-- macOS 支持 `axtree`、`vision` 和 `hybrid`。
+先用默认的 `hybrid` 即可。标签会分批出现，看到目标就可以输入。
 
-Vision 需要 macOS 的“屏幕录制”权限；键盘捕获仍需要“辅助功能”权限。Windows 会在启动后异步探测系统 OCR 和本机已有的微信 OCR 组件，无需增加配置；OCR 引擎与微信 helper 仅在扫描时创建并在结束前清理。退出 UI Hint 返回 Normal/Idle 会取消 UIA、OCR 和截图 generation，释放本轮图片、bitmap、目标与大型缓存，不会继续后台识别。两者都不可用或没有有效结果时，使用不依赖 OpenCV 的内置区域识别。
+| 方式 | 适合什么情况 |
+| --- | --- |
+| `hybrid` | 默认选择：结合控件信息、文字识别（OCR）和图形轮廓 |
+| `axtree` | 标准按钮、菜单等有辅助功能信息的控件 |
+| `vision` | 自绘界面，结合文字和轮廓识别 |
+| `contour` | 只找图形轮廓；没有文字名称，不能按名称搜索 |
+
+默认扫描**鼠标下的窗口**，找不到窗口时再用激活窗口，最后用鼠标所在屏幕。可用 `scan_scope = "active"` 优先扫描激活窗口，或用 `"screen"` 扫描当前整屏。选定范围后，空结果不会触发换范围重扫。
+
+切换目标窗口或显示器时会重新识别；普通鼠标移动不会持续重扫。需要更新标签时，按 `Primary+R`。
+
+::: info macOS 需要两项权限
+键盘控制需要**设备控制和数据访问**（macOS 27；旧称“辅助功能”）；视觉识别还需要**录屏与系统录音**（旧称“屏幕录制”）。见 [macOS 授权步骤](/guide/macos)。
+:::
 
 ## 搜索与结果预览
 
@@ -41,15 +55,32 @@ Vision 需要 macOS 的“屏幕录制”权限；键盘捕获仍需要“辅助
   description="22 秒中英双语演示，纯字幕：简拼搜索、切换结果、复制信息、微调点位与取色。"
 />
 
-按 `/` 搜索文字、中文简拼或标签。有匹配结果时自动显示排序后的首项信息面板，按 `Tab` 从当前结果继续切换，末项回到首项；继续输入会清除手动预览，重新筛选并显示新的首项。默认按 `Enter`、`/` 或 `Primary+Q` 接受当前预览并移动鼠标，`Esc` 取消；切换本身不会移动鼠标。
+### 搜索一个目标
 
-按 `Ctrl+1/2/3/4` 分别复制文字、辅助信息、坐标或颜色。轻按 `Ctrl` 进入点编辑模式，用 `H/J/K/L` 微调取色位置，`Ctrl+Shift+4` 切换 HEX、RGB、HSL。以上按键均可配置。
+1. 按 `/`，输入文字、中文简拼或标签，比如 `复制`、`fz`、`text_field`。
+2. 面板自动预览最佳匹配；按 `Tab` 看下一个结果。
+3. 按 `Enter`、`/` 或 `Primary+Q` 移动到当前预览点，继续留在 UI Hint。`Esc` 取消搜索。
 
-当前预览或正在调整的标签会显示 Window 同款绿色底色和边框，重叠时显示在其他标签上方。可在网页配置器的「界面定位 · UI Hint → 外观 → 当前标签高亮」修改底色、文字色、边框色和宽度，也可在 `[ui_hint.search_highlight]` 中配置 `background_color`、`text_color`、`border_color`、`border_width`。多点仍在平均中心时不突出单个标签；退出搜索后恢复普通样式。
+切换预览不会移动鼠标；继续输入时，会重新显示最佳匹配。`@la` 或 `la@` 只搜索标签，避免和文字混在一起。用空格可以选择多个目标，例如 `@la @ka`。
 
-确认、取消及搜索框编辑键统一使用 `[ui_hint.search_edit_keys]` 的“按键 = 动作”格式，例如 `"enter / primary+q" = "accept"`、`"primary+v" = "paste"`。左侧用空格分隔多个按键，省略的动作保留默认键；旧格式仍可读取，导出使用新格式。
+::: tip 当前预览会变绿
+绿色标签表示正在预览或调整的目标；多个点还停在平均中心时，不突出某一个标签。可在网页配置器的 **UI Hint → 外观 → 当前标签高亮** 修改样式。
+:::
 
-切换键沿用 `[ui_hint.search_bindings]` 的 `point_next`，可改为其他按键或组合键。进入点位调整后，该键仍切换已选点；空格分隔的多选和信息栏拼接规则保持不变。
+### 复制文字、坐标和颜色
+
+| 按键 | 操作 |
+| --- | --- |
+| `Ctrl+1 / 2 / 3 / 4` | 分别复制文字、辅助信息、坐标、颜色 |
+| 轻按 `Ctrl` | 在搜索输入和点位调整之间切换 |
+| `H/J/K/L`（调整时） | 微调取色位置 |
+| `Ctrl+Shift+4` | 切换 HEX、RGB、HSL 颜色格式 |
+
+复制信息成功后会确认当前点并退出搜索；没有内容或复制失败时保留搜索。Windows 和 macOS 都使用上述 Ctrl 键位。
+
+### 调整搜索顺序和按键
+
+结果先按匹配程度排序：**完整匹配 → 前缀 → 包含**。下面的 `search_match_priority` 只决定同等匹配程度下的顺序，三项各写一次：`pinyin` 简拼、`text` 文字和控件类型、`label` 标签。
 
 ```toml
 [ui_hint]
@@ -61,9 +92,11 @@ tab = "point_next" # 可改为 f9、alt+f9 等
 "ctrl+shift+4" = "color_next"
 ```
 
-先按匹配程度排序：完整词／完整标签 → 词首／标签前缀 → 包含匹配。`search_match_priority` 从前到后决定同等匹配程度下的类别顺序：`label` 为标签代码，`text` 为 OCR／辅助功能文字及控件类型，`pinyin` 为中文简拼。三项必须各出现一次，默认简拼 → 文字 → 标签；例如 `["label", "text", "pinyin"]` 在同等匹配程度下优先预览标签结果。完整标签会排在简拼或文字的前缀／包含匹配之前，同分保持扫描顺序，空格项保持输入顺序。`@la` 或 `la@` 始终只搜索标签。显式 `search_bindings` 表会替换整张默认映射，上例保留了其他默认操作。
+`search_bindings` 中，`point_toggle` 切换点位调整，`point_next` 切换结果或已选点，`color_next` 切换颜色格式。自定义这张表会替换默认表，上例保留了三个默认操作。
 
-搜索内容已包含辅助功能信息和控件类型，无需额外开启。例如输入 `输入框`、`文本框`、`text_field` 或简拼 `srk` 可匹配已识别的输入框；这些匹配归入 `text`（简拼归入 `pinyin`），目前没有独立的辅助信息／类型优先级。搜索按关键词匹配，不解析“所有输入框”这样的自然语言指令。
+搜索框编辑键另用 `[ui_hint.search_edit_keys]`，例如 `"enter / primary+q" = "accept"`；左侧空格分隔多个快捷键，省略的编辑动作保留默认键。
+
+完整多选、复制和样式参数见 [搜索与信息复制](/reference/modes-and-actions#uihint-搜索与信息复制)。
 
 ## 常用配置
 
@@ -85,10 +118,20 @@ after_finish = "normal"
 after_click = "normal"
 ```
 
-`scan_timeout_ms`：扫描超时设置。只有扫描成功/超时后仍没有标签时，程序才会按 `scan_retry_count` 重试；窗口变化属于立即重定向，不占用重试次数。大型或复杂的页面可以适当提高超时和重试次数。
+| 参数 | 怎么用 |
+| --- | --- |
+| `hint_characters` | 生成标签时使用的字符 |
+| `scan_timeout_ms` | 每次识别最多等待多久，单位毫秒 |
+| `scan_retry_count` / `scan_retry_delay_ms` | 没有标签时的重试次数和间隔 |
+| `clickable_roles` | 限制辅助功能来源的控件类型；不影响 OCR 和轮廓 |
+| `placement` / `label_x_offset` / `label_y_offset` | 标签相对目标的位置和偏移 |
+| `after_finish` / `after_click` | 定位完成或点击后转到哪里 |
 
+大页面识别不全时，可增加超时和重试次数。切换窗口会立即重新识别，不占用空结果的重试次数。
 
 ## 视觉样式
+
+也可以在[配置与模拟器](/editor/)中直接预览和调整。
 
 ```toml
 [ui_hint.ui]
@@ -102,10 +145,18 @@ enabled = false
 border_width = 1
 
 [ui_hint.search_input_ui]
-position = "bottom_center"
+position_mode = "screen"
+position = ["95%", "50%", "5%", "50%"]
 width = 320
 ```
 
+`ui` 调整标签字号和边框；`boundary_highlight` 控制目标区域描边；`search_input_ui` 调整搜索框。面板位置的写法见 [搜索面板定位](/reference/configuration#搜索面板定位)。
+
 ## 视觉识别建议
 
-如果页面没有可用无障碍信息，可尝试 `strategy = "vision"`；如果标签太多，可以尝试缩小 `clickable_roles` 范围。Windows 微信 OCR 是可选的本机增强项，KeySteer 不下载、复制或打包微信二进制。
+| 遇到的情况 | 可以怎么试 |
+| --- | --- |
+| 自绘界面缺少控件信息 | 改用 `strategy = "vision"` |
+| 标准控件标签太多 | 缩小 `clickable_roles` 范围 |
+| Windows 文字识别不理想 | 使用本机可用的系统 OCR 或可选微信 OCR；KeySteer 不会下载微信组件 |
+| macOS 没有视觉标签或颜色 | 检查录屏权限，授权后重启 KeySteer |

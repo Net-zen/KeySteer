@@ -1,81 +1,21 @@
 # 配置文件
 
-KeySteer 不要求配置文件。没有配置时直接使用内置默认值，其行为与发布的 `keysteer.default.toml` 一致。
+不改配置也能直接使用 KeySteer。想按自己的习惯改键、调速度或换颜色，可以编辑 TOML 文件；[完整默认配置可直接下载](/generated/keysteer.default.toml)。
 
-配置格式是 TOML，发布的完整示例可 [直接下载](/generated/keysteer.default.toml)。本文按“先能用、再定制、最后排错”的顺序介绍配置。
-
-::: tip
-只想改快捷键：[快速上手](/guide/getting-started) 中有介绍
-
-想了解动作参数、数组、`exec` 和插件动词等高级配置：请参阅 [模式与动作参考](/reference/modes-and-actions)。
+::: tip 想边改边看效果？
+先试[配置与模拟器](/editor/)。本文用于查字段和写法；动作名称与参数见[模式与动作参考](/reference/modes-and-actions)。
 :::
-
-## 模式统计与快速切换
-
-```toml
-[mode_usage]
-save_after_entries = 100
-
-[quick_switch]
-enabled = true
-key = "q"
-hold_ms = 350
-blacklist = ["idle"]
-position = "mouse" # screen / window / mouse
-
-[quick_switch.ui]
-font_size = 28
-border_width = 1
-border_radius = 6
-padding_x = 6
-padding_y = 8
-# background_color = "#EEF2FFFF"
-# text_color = "#193781FF"
-# border_color = "#506DD0FF"
-```
-
-模式实际切换时累计一次进入记录，重复按键、同模式保持和重启不会增加计数。默认累计 100 次新增记录后后台保存至程序的 `workspace.ksw`；次数必须大于零。保存或删除工作区预设、正常退出时也会保存尚未写入的统计，不增加周期定时器。Windows/macOS 正常系统退出通知会触发保存；突然断电、强制结束或系统退出超时仍可能丢失最近未保存的计数。
-
-在操作模式中单独按住 Q，350 毫秒后显示常用模式面板；按 Q+1…9 可直接选择，无须等待展开。Q 按下立即执行原绑定；达到长按阈值或用 Q+数字选择模式后，本次按住 Q 的自动重复不再传给模式，直到松开。松开仍正常释放原手势并收起面板，不补发原动作。原动作即使切换到了 Idle，本次长按仍可打开面板。Idle、暂停、排除应用及原生备注输入不接管 Q。面板按进入次数排序，同分按模式 id 排序，显示前 9 项；打开后编号固定，选中当前模式保持状态。黑名单只限制此面板，原快捷键仍可进入对应模式。
-
-`screen` 位于鼠标所在屏幕中心，`window` 位于前台窗口中心（没有可用窗口则回退到屏幕中心），`mouse` 位于鼠标模式提示下方；均限制在当前屏幕内。样式还支持 `font_family` 和随浅深主题变化的颜色，加载配置时解析。网页可导入工作区查看统计并编辑保存次数和面板配置，导出保留统计；旧版工作区仍可导入，带统计的 v2 文件需要支持该版本的程序。
-
-## 搜索面板定位
-
-搜索框和搜索信息面板与窗口卡片一样，通过参照对象和四边百分比定位：
-
-```toml
-[ui_hint.search_input_ui]
-position_mode = "screen"
-position = ["95%", "50%", "5%", "50%"]
-
-[ui_hint.search_info_ui]
-position_mode = "search_input"
-position = ["44%", "50%", "56%", "50%"]
-```
-
-| `position_mode` | 参照对象 |
-| --- | --- |
-| `screen` | 鼠标所在的当前屏幕。 |
-| `window` | 识别窗口；无法取得时回退到当前屏幕。 |
-| `search_input` | 搜索输入框，仅用于信息面板，使其跟随输入框移动。 |
-
-`position` 依次是上、右、下、左边距，各项保持 `0–100%`。屏幕／窗口定位与 `[window_editor.card]` 一样，用区域中心定位面板中心；面板大小由宽度、字体和内边距决定。
-
-`search_input` 以搜索框中心为基准：上半区将信息面板放在上方，下半区放在下方，越靠近 50% 中线，间距越小。两个面板的半高先保证边缘分离，再按区域中心距中线的比例乘以两面板总高度计算间距。默认 `44% / 56%` 在普通字号下约留 12 像素；四个 `50%` 紧贴上方，`["56%", "50%", "44%", "50%"]` 则留相同间距放在下方。位置仍受屏幕边界限制。
-
-默认输入框中心位于屏幕高度的 95%。网页外观页支持分别点选、拖动范围和滑块调整，两个面板直接显示在右侧实时预览中；编辑信息面板时可同时查看位置、间距和样式。
-
-旧配置中这两个面板的 `x_offset`／`y_offset` 仍可读取，但不再生效，也不会保留在导出配置中；请用 `position` 调整位置。
 
 ## 配置文件位置
 
-程序会在当前目录中查找 `keysteer.<名称>.toml`：不存在用户配置时，会尝试读取 `keysteer.default.toml`。如果连它也不存在，则直接使用内置默认值：
+| 平台 | 数据目录 |
+| --- | --- |
+| Windows | 可执行文件所在目录 |
+| macOS `.app` | `~/Library/Application Support/KeySteer/` |
 
-- Windows：可执行文件所在目录。
-- macOS `.app`：`~/Library/Application Support/KeySteer/`。
+在数据目录保存为 `keysteer.<名称>.toml`，例如 `keysteer.user.toml`。程序优先读取用户配置，其次是 `keysteer.default.toml`；都没有时使用内置默认值。
 
-文件名必须是 `keysteer.<名称>.toml`，例如 `keysteer.user.toml`。也可以显式指定：
+也可以指定文件：裸文件名从数据目录查找，`./` 开头的相对路径从当前工作目录查找。
 
 ```bash
 keysteer --config keysteer.user.toml
@@ -83,16 +23,20 @@ keysteer --config ./profiles/keysteer.work.toml
 keysteer --check --config keysteer.user.toml
 ```
 
-常用诊断命令：
-
 | 命令 | 用途 |
 | --- | --- |
-| `keysteer --check -c keysteer.user.toml` | 解析并校验配置，不启动运行时。 |
-| `keysteer --dump-config` | 输出当前生效的完整配置。 |
-| `keysteer --doctor` | 检查后端、键盘、显示器、权限和启动键。 |
-| `keysteer --help` | 查看 CLI 选项和默认快捷键。 |
+| `keysteer --check -c keysteer.user.toml` | 校验配置，不启动控制 |
+| `keysteer --dump-config` | 输出当前生效的完整配置 |
+| `keysteer --doctor` | 检查键盘、显示器、权限和启动键 |
+| `keysteer --help` | 查看命令行选项和默认快捷键 |
 
 ## 最小配置
+
+下面展示“在 Normal 按空格退出”的写法。
+
+::: warning 自定义按键表会替换默认表
+未写的普通字段保留默认值，但 `[normal.bindings]` 等按键表会整体替换。建议复制完整默认配置再改键，保留需要的其他按键。用户配置与 default 文件也不会逐项合并。
+:::
 
 ```toml
 [normal.bindings]
@@ -100,11 +44,9 @@ keysteer --check --config keysteer.user.toml
 space = "idle"
 ```
 
-未写的字段保留默认值，但显式提供 `[normal.bindings]` 等绑定表会整体替换对应默认表；删除或改绑的插件快捷键不会被内部默认值补回。建议复制完整默认配置再修改。用户 profile 优先于 default 文件，二者不逐项合并。
+保存后，在状态菜单选择 **Reload Configuration**。程序会回到 Idle，再按启动键进入 Normal。
 
-保存后点击状态栏菜单的 Reload Configuration 即可生效，程序回到 Idle，再使用启动键进入 Normal。`left_shift = "slow"` 表示按住减速；改为 `shift = "slow_toggle"` 可用任一 Shift 点按切换减速。若保留 `right_shift = "middle_click"`，右 Shift 的专用绑定仍优先。
-
-也可在已有的 `[normal.bindings]` 中加入数字速度档位：
+想用点按切换速度，可把以下三行加入已有的 `[normal.bindings]`：
 
 ```toml
 "1" = "precision_toggle"
@@ -112,29 +54,31 @@ space = "idle"
 "3" = "fast_toggle"
 ```
 
-点按选择精确、慢速或快速档；再按同一个键恢复正常速度，按另一个键直接换档。倍率由 `[pointer]` 的 `precision_multiplier`、`slow_multiplier`、`fast_multiplier` 控制。Grid 等标签模式仍优先把数字作为标签输入。
+再按同一个键恢复正常速度，按另一个键直接换档。倍率在 `[pointer]` 中设置；Grid 等模式仍优先把数字当作标签。
+
+按住减速可写 `left_shift = "slow"`；点按切换则写 `shift = "slow_toggle"`。如果另有 `right_shift` 绑定，右 Shift 优先使用专用绑定。
 
 ## 配置结构
 
-根配置常用 section 如下：
-
-| Section | 作用 |
+| 配置段 | 用来改什么 |
 | --- | --- |
-| `[general]` | 排除应用。 |
-| `[key_aliases]` | 自定义键名和跨平台修饰键。 |
-| `[hotkeys]` | `Idle` 中可触发 Mode 的入口。 |
-| `[normal]`、`[grid]`、`[recursive_grid]`、`[ui_hint]` | 各 Mode 的继承、绑定和参数。 |
-| `[pointer]`、`[scroll]` | 鼠标速度和滚动距离。 |
-| `[theme]`、`[mode_indicator]` | 颜色和模式提示。 |
-| `[[app_configs]]` | 按应用覆盖绑定。 |
-| `[plugin_modes]` | 插件设置和插件 Mode 绑定。 |
-| `[debug]` | 调试日志类别。 |
+| `[general]` | 排除应用 |
+| `[key_aliases]` | 自定义键名和跨平台修饰键 |
+| `[hotkeys]` | 从 Idle 进入模式的启动键 |
+| `[normal]`、`[grid]`、`[recursive_grid]`、`[ui_hint]` | 鼠标与定位模式的按键和行为 |
+| `[window]`、`[window_quick]`、`[window_editor]`、`[window_restore]`、`[window_tab]` | 各窗口模式的按键和行为 |
+| `[pointer]`、`[scroll]` | 鼠标速度、滚动距离和速度 |
+| `[theme]`、`[mode_indicator]` | 颜色和模式提示 |
+| `[key_help]` | 按键提示面板 |
+| `[[app_configs]]` | 指定应用中的按键例外 |
+| `[plugin_modes]` | 插件参数与按键 |
+| `[debug]` | 排错日志 |
 
 ## 按键和别名
 
 ### 共享前缀的组合键
 
-程序在加载配置时预编译组合键关系，内置动作和插件使用同一规则。默认窗口移动为 `primary+d`（Windows 为 Alt+D，macOS 为 Command+D），与切换鼠标显示器的 `primary+s` 独立触发。也可自定义共享前缀：
+默认 `Primary+S` 切换鼠标所在显示器，`Primary+D` 移动窗口。若想共用前缀，也可以这样写：
 
 ```toml
 [normal.bindings]
@@ -142,16 +86,16 @@ space = "idle"
 "primary+s+d" = "move_window next"
 ```
 
-上述自定义配置中，保持 `Primary+S` 并按 D 移动窗口，只松开短组合则切换鼠标显示器。动作也可改成
-`move_window previous` 或 `move_window 2`，也可使用任意其他组合键。最后一个非修饰键是完成键，
-运行时会自动仲裁，不需要配置等待时间，也无需修改插件；`none`、按应用覆盖、继承及左右修饰键限制均参与判断。
+- 按住 `Primary+S` 再按 `D`：移动窗口。
+- 不按 `D`，直接松开短组合：切换鼠标显示器。
 
-模式切换或有效配置重载会取消尚未执行的短动作。单独修饰键保留即时行为；作为冲突前缀的
-连续动作只在松开时执行一次完整按下/释放，建议为移动、长按点击或 toggle 保留独立按键。
+`move_window previous` 表示上一屏，`move_window 2` 表示指定屏幕。无需另设等待时间；切换模式或重载配置会取消尚未执行的短动作。
+
+::: tip 连续操作用独立按键更顺手
+共享前缀会让短组合等待松开；移动、长按点击和锁定按键建议使用独立绑定。
+:::
 
 ### 按键写法
-
-按键绑定的左侧支持单键、组合键和“多个单键共享动作”：
 
 ```toml
 [normal]
@@ -164,23 +108,28 @@ h = "move_left"
 "v b" = "fast"
 ```
 
-- `+` 表示同一个组合键。
-- `空格` 表示多个独立按键绑定到同一个动作，不是顺序按键。
-- 发布默认配置中，`primary` 在 macOS 是 `Command`、Windows 是左 `Alt` 。它是别名；若你要在 Windows 使用 `Ctrl`，可以在 `[key_aliases.windows]` 注释掉 。
-- `ctrl`、`alt`、`shift` 等通用修饰键匹配左右两侧；`left_`/`right_` 前缀 只匹配指定一侧。
+| 写法 | 含义 |
+| --- | --- |
+| `h` | 单键 |
+| `primary+shift+s` | 同时按下的组合键 |
+| `"v b"` | V 和 B 分别执行同一动作，空格不表示先后顺序 |
+| `ctrl` / `alt` / `shift` | 左右两侧都能触发 |
+| `left_shift` / `right_shift` | 只匹配指定一侧 |
 
-常用键名包括 `a-z`、`0-9`、`space`、`enter`、`esc`、`tab`、`delete`、`backspace`、`up`、`down`、`left`、`right`、`home`、`end`、`page_up`、`page_down`、`f1-f20` 和 `numpad_0-numpad_9`。
+`primary` 是别名，默认 Windows 左 Alt、macOS Command。要在 Windows 改为 Ctrl，可设置 `[key_aliases.windows]` 中的 `Primary = "ctrl"`。
+
+常用键名：`a-z`、`0-9`、`space`、`enter`、`esc`、`tab`、`delete`、`backspace`、`up/down/left/right`、`home/end`、`page_up/page_down`、`f1-f20`、`numpad_0-numpad_9`。
 
 ### 鼠标侧键
 
-Windows 和 macOS 都支持把两个鼠标侧键作为绑定的左值：
+Windows 和 macOS 都支持把侧键用作快捷键：
 
-| 按键名 | 含义 | 可用别名 |
+| 键名 | 通常对应 | 也可以写成 |
 | --- | --- | --- |
-| `mouse_x1` | 第一个侧键，通常是后退键 | `xbutton1`、`mouse4` |
-| `mouse_x2` | 第二个侧键，通常是前进键 | `xbutton2`、`mouse5` |
+| `mouse_x1` | 后退侧键 | `xbutton1`、`mouse4` |
+| `mouse_x2` | 前进侧键 | `xbutton2`、`mouse5` |
 
-将需要的行加入已有配置的对应段，不要重复创建同名段：
+把需要的行合并到已有配置段，避免重复表名：
 
 ```toml
 [hotkeys]
@@ -192,10 +141,9 @@ mouse_x2 = "grid"            # 进入网格定位
 "ctrl+mouse_x2" = "ui_hint"  # Ctrl + 第二个侧键进入 UI Hint
 ```
 
-侧键支持普通组合键、绑定继承、应用覆盖和持续动作，例如 `mouse_x2 = "scroll_down"` 会在
-按住时滚动、松开时停止。未绑定或设为 `none` 时保留原生前进/后退行为，即使当前模式独占
-键盘也不会自动吞掉侧键；匹配绑定后会消费该次侧键的按下与松开。物理侧键不产生语义 `Clicked` 事件。
-这些名称也可以作为右值动作，发送真实的鼠标侧键点击：
+侧键也支持组合键、继承、应用例外和按住滚动。未绑定或设为 `none` 时保留原生前进／后退行为；绑定后由 KeySteer 接管该次按键。
+
+把侧键名放在动作一侧，可向应用发送侧键点击：
 
 ```toml
 [normal.bindings]
@@ -203,9 +151,11 @@ t = "mouse_x1"  # 模拟第一个侧键
 y = "mouse_x2"  # 模拟第二个侧键
 ```
 
-同样支持 `press mouse_x1`、`release mouse_x1`、`toggle mouse_x2`。点击沿用普通点击的长按锁定规则；是否后退或前进由接收应用决定。鼠标驱动若已把物理侧键改成键盘快捷键，应绑定驱动实际输出的按键。
+也支持 `press mouse_x1`、`release mouse_x1`、`toggle mouse_x2`，以及普通点击的长按锁定。是否前进／后退由应用决定。若鼠标驱动已把侧键改成键盘键，请绑定驱动实际输出的键。
 
 ### 自定义别名
+
+别名让同一套配置适应不同键盘或平台：
 
 ```toml
 [key_aliases]
@@ -218,13 +168,11 @@ Primary = "left_alt"
 Primary = "left_cmd"
 ```
 
-顶层别名在所有平台生效；别名值必须是一个键，不能是组合键；不区分大小写。
-
-`Primary` 只是一个 **可解析** 的跨平台别名，不是固定的物理键。发布默认值是 macOS Command、Windows `Alt`；上例正是把 Windows 的 `Primary` 显式设为 `Alt`。大小写不同的 `primary`/`Primary` 指向同一个别名。
+顶层别名在所有平台生效，平台段可分别指定。别名不区分大小写，值必须是一个键，不能是组合键；`Primary` 与 `primary` 是同一个别名。
 
 ### 绑定、数组和继承
 
-右值可以是字符串，也可以是字符串数组：
+动作可以写成一个字符串，也可以写成数组：
 
 ```toml
 [normal.bindings]
@@ -233,16 +181,7 @@ x = ["press shift", "left_click", "release shift"]
 "primary+shift+b" = ["exec say start", "wait 300", "exec say done"]
 ```
 
-数组中的动作从左到右执行。`wait` 不会阻塞整个事件循环，只暂停该序列；空数组不合法。
-
-一个 Mode 的有效绑定按以下规则合并：
-
-1. Mode 自己的 `[<mode>.bindings]`。
-2. `inherits` 中列出的父 Mode，按书写顺序查找。
-3. 当前应用匹配的 `app_configs` 覆盖合并结果。
-4. 插件的建议绑定只填补空位，不覆盖用户设置。
-
-这里的“合并”指运行时的**有效按键表**。程序只会进行覆盖替换。
+模式按键的优先级为：**自身绑定 → `inherits` 中按顺序列出的父模式**；当前应用的 `app_configs` 再覆盖结果。
 
 ```toml
 [grid]
@@ -252,22 +191,29 @@ inherits = ["hotkeys", "normal"]
 q = "none" # 屏蔽从 normal 继承的 q
 ```
 
-`none` 和 `__disabled__` 都表示明确禁用。建议保留至少一个 `[hotkeys]` 入口，否则程序仍会运行，但无法从 Idle 进入其他 Mode。
+`none` 和 `__disabled__` 都表示禁用，可用来屏蔽继承的键。用户删除或改绑的插件快捷键不会被建议默认值补回。
+
+::: tip 留一个启动键
+至少保留一个 `[hotkeys]` 入口，否则程序虽然运行，却无法从 Idle 进入操作模式。
+:::
 
 ### 动作序列
+
+数组按从左到右执行，适合“按住修饰键 → 点击 → 松开”或启动脚本：
+
 ```toml
 [normal.bindings]
 x = ["press shift", "left_click", "release shift"]
 "primary+shift+b" = ["exec say start", "wait 300", "exec say done"]
 ```
 
-完整动作、参数和 `exec` 规则见 [模式与动作](/reference/modes-and-actions)。
+`wait` 只暂停当前序列，其他输入仍可处理；空数组不合法。完整动作和 `exec` 参数规则见 [模式与动作](/reference/modes-and-actions)。
 
 ## Normal 和定位 Mode
 
 ### Normal
 
-`Normal` 是控制鼠标直接移动、点击、滚动和进入其他 Mode 的平台：
+Normal 用于移动、点击、滚动和进入其他模式。以下为部分配置：
 
 ```toml
 [normal]
@@ -292,13 +238,18 @@ f = "recursive_grid"
 # "primary+l" = "right"
 ```
 
-`passthrough_unbound_keys = true` 是默认行为：Normal 只吞掉命中完整 KeySteer 绑定的输入，未绑定键及未配置的修饰组合会保持原始 down/up 生命周期并透传。
+| 参数 | 作用 |
+| --- | --- |
+| `passthrough_unbound_keys = true` | 默认：未绑定的键和组合键交给当前应用 |
+| `passthrough_unbound_keys = false` | 独占键盘，并采用宽松的组合键匹配 |
+| `long_press_toggle_ms` | 长按点击键后保持鼠标按下，默认 500 毫秒；0 关闭长按锁定 |
+| `auto_release_ms` | 默认 0，手动释放；正数可在特定拖拽中停稳后自动松开 |
 
-设为 `false` 时，Normal 恢复键盘独占，并保留旧的宽松组合匹配；`Grid`、`Recursive Grid` 和 `UI Hint` 始终保持独占。`Idle` 始终透传未命中的输入，并同样采用完整修饰组合匹配。
+两个时间参数均为 `0–60000` 毫秒。自动松开只适用于“长按点击键＋已透传的物理修饰键”拖拽：移动后开始计时，后续移动重新计时；只松开鼠标，不松修饰键。`press`、`toggle` 锁定不参与。
 
-`long_press_toggle_ms` 作用于绑定为 `鼠标键` 的键和单独按住的无参数 `toggle` 激活键。鼠标键达到阈值后保持对应按钮按下；无参数 `toggle` 达到阈值后保持激活键自身按下，松开物理键不会撤销 latch。无参数 `toggle` 可绑定到任意激活键，并一次锁定任意数量的伙伴；伙伴与激活键无论谁先按下都会立即锁定，不等待长按阈值。伙伴按 Normal 绑定转换为实际目标，例如默认的 `;`、`'`、`right_shift` 分别保持鼠标左、右、中键，而不是保持这些物理键。单独短按无参数 `toggle`、返回 Normal 或进入 Idle 都会释放全部 latch。设为 `0` 禁用这两种长按行为，允许范围为 `0..=60000` 毫秒。
+无参数 `toggle` 可同时锁定多个伙伴键，先按伙伴或先按激活键都可以；单独短按激活键、返回 Normal 或进入 Idle 会全部释放。单独长按激活键会锁定它自身。具体步骤见 [拖拽与长按](/modes/normal#拖拽与长按)。
 
-`auto_release_ms` 默认为 `0`，即保持上述手动释放行为。它仅适用于直接 click/double-click 绑定经长按形成的鼠标候选；一个或多个物理 Shift/Ctrl/Alt/Win 或 Command 键已按住并透传时，首次实际移动指针才开始计时，后续移动会重置计时。指针保持静止达到该时间后仅释放该鼠标按钮，并立即清除对应的按下提示，不影响物理按住的修饰键；显式 `press`/`toggle` 的 latch 不参与。允许范围为 `0..=60000` 毫秒。
+Grid、Recursive Grid、UI Hint 始终独占键盘；Idle 始终放行未命中的输入。
 
 ### Grid
 
@@ -315,11 +266,16 @@ after_finish = "normal"
 after_click = "finish"
 ```
 
-`keys` 必须正好包含 `grid_cols × grid_rows` 个字符，按从左到右、从上到下填入。`max_depth` 是确认目标前的最大层数。初始画面会在一级格中央显示大号第一键，并在内部预览小号第二键；`[grid.ui]` 的 `matched_text_color` 控制大字，`text_color` 控制小字的基色，`matched_border_color` 控制内部细线。这个预览只影响绘制，不提前改变选择深度。
+| 参数 | 作用 |
+| --- | --- |
+| `grid_cols` / `grid_rows` | 列数／行数 |
+| `keys` | 从左到右、从上到下排列；字符数必须等于列数 × 行数 |
+| `max_depth` | 选多少层后完成定位 |
+| `cursor_follow_selection` | 选格时鼠标是否跟随 |
+
+初始画面预览前两键，大字是第一键，小字是第二键。`[grid.ui]` 的 `matched_text_color`、`text_color`、`matched_border_color` 分别控制大字、小字基色和内部边界；预览不影响实际选择层数。
 
 ### Recursive Grid
-
-`[recursive_grid.ui]` 的 `font_size = 0`（默认）按格子短边的 40% 自动计算字号，并缩小以适应格子，默认使用常规字重。设为正数（如 `20`）可指定最大字号。
 
 ```toml
 [recursive_grid]
@@ -335,7 +291,9 @@ after_finish = "keep"
 after_click = "keep"
 ```
 
-`max_depth` 必须在 `1..=20`。`layers` 可以按深度覆盖网格形状；未写的字段继承基础设置：
+`max_depth` 允许 `1–20`。`min_size_width` / `min_size_height` 控制最小区域尺寸。默认 `font_size = 0` 按格子自动缩放字号，正数（如 20）限制最大字号。
+
+需要不同层用不同网格时，可设置 `layers`；未写的字段沿用基础设置：
 
 ```toml
 [recursive_grid]
@@ -361,33 +319,48 @@ after_finish = "normal"
 after_click = "normal"
 ```
 
-搜索结果的切换键使用 `ui_hint.search_bindings` 的 `point_next`（默认 Tab）；有结果即显示最佳匹配面板，再从当前项继续切换。`ui_hint.search_match_priority = ["pinyin", "text", "label"]` 控制同等匹配程度下的类别优先级，三项各出现一次；完整词／标签优于前缀，前缀优于包含匹配。详细示例见 [UI Hint 搜索与结果预览](/modes/ui-hint#搜索与结果预览)。
+| `strategy` | 识别来源 |
+| --- | --- |
+| `hybrid`（默认） | 辅助功能、所有可用 OCR 和轮廓 |
+| `axtree` | 辅助功能信息 |
+| `vision` | OCR 和轮廓；macOS 也使用 Vision 矩形检测 |
+| `contour` | 轮廓，不运行 OCR 或辅助功能扫描 |
 
-`[ui_hint.search_highlight]` 控制当前预览／单个点位的标签高亮：`background_color`、`text_color`、`border_color` 支持 `#RRGGBBAA` 或浅深主题表；`border_width` 为 0–20，默认 1.5，0 隐藏边框。缺省使用 Window 同款绿色，未修改的默认值不写入导出配置；网页配置器提供相同设置和切换预览。
+标签会分批出现。轮廓没有文字名称，不能按名称搜索；`clickable_roles` 只过滤辅助功能来源。
 
-Windows 和 macOS 都支持 `axtree`、`vision`、`contour` 和 `hybrid`。默认 `hybrid` 并行合并辅助功能、OCR 与 contour 轮廓检测，流式显示并统一去重；OCR 找到文字后仍保留 contour 的独有目标。`vision` 使用 OCR 与 contour（macOS 还保留原生 Vision 矩形检测），`contour` 仅从截图识别按钮、图标与文字轮廓，不启动 OCR 或辅助功能树扫描。轮廓目标没有文字名称，不能按名称搜索。Windows 自动发现系统及微信 OCR，不随发行包分发微信组件；macOS 的视觉/轮廓捕获需要屏幕录制权限。
+| 设置 | 说明 |
+| --- | --- |
+| `scan_timeout_ms` | 单次扫描超时 |
+| `scan_retry_count` / `scan_retry_delay_ms` | 扫描结束或超时仍无标签时的重试次数／间隔 |
+| `vision.request_timeout_ms` | 视觉和轮廓识别的请求超时 |
+| `vision.rectangle_max_candidates` | 轮廓候选上限，默认 10000 |
+| `vision.detect_text` / `vision.detect_rectangles` | 只控制 `vision` 来源；不关闭 `hybrid` 或独立 `contour` 的识别来源 |
 
-单独使用时设置 `[ui_hint]` 下的 `strategy = "contour"`，也支持应用覆盖。Contour 复用 `[ui_hint.vision]` 的 `request_timeout_ms` 和 `rectangle_max_candidates`（默认 10000）；其余置信度、尺寸和角色分类参数仅用于原有视觉识别。`detect_text` / `detect_rectangles` 仅在 `vision` 中控制来源，独立 `contour` 始终启用轮廓。`hybrid` 固定合并辅助功能、所有可用 OCR 和 contour；上述开关或旧的 100 候选配置不会关闭或缩减 hybrid 来源。合并去重后仍受扫描总上限 10000、范围和超时约束，512 内联容量不是标签上限。高分辨率截图只捕获一次，轮廓分析图最多 2,073,600 像素、最长边 2560，卷积按带重叠区的小块处理，跨块连接后再还原桌面坐标；细小目标可能因下采样丢失。`clickable_roles` 仅约束辅助功能语义角色。
+扫描仍受范围、超时和总上限 10000 约束；高分辨率画面中的极小目标可能识别不到。Windows 自动发现本机系统／微信 OCR，不下载微信组件；macOS 视觉识别需要录屏权限。
+
+搜索用法见 [UI Hint](/modes/ui-hint#搜索与结果预览)。`search_match_priority = ["pinyin", "text", "label"]` 设置同等匹配程度下的优先级；`search_bindings` 的 `point_next` 默认 Tab。
+
+当前标签高亮在 `[ui_hint.search_highlight]` 设置：`background_color`、`text_color`、`border_color` 支持浅深主题，`border_width` 为 0–20，默认 1.5；0 隐藏边框。未设置时使用内置绿色。
 
 ## Window 配置
 
-第一次使用？先看 [Window 操作指南](/modes/window)，按场景练习并查阅默认键位。
+第一次使用可先按场景练习：[Window 操作指南](/modes/window)。
 
-五个顶层配置段分别为 `[window]`、`[window_quick]`、`[window_editor]`、`[window_restore]`、`[window_tab]`。它们都支持 `bindings`、`inherits`、`app_configs`、`temporary_mode`、`temporary_mode_keys`、`number_timeout_ms`、`border_width`、`ui` 和 `lifecycle`。默认仅继承 hotkeys，按住 Primary 临时使用 Normal。
+五个配置段为 `[window]`、`[window_quick]`、`[window_editor]`、`[window_restore]`、`[window_tab]`。每个模式分别设置按键、继承、应用例外、临时模式、`ui` 和 `lifecycle`；默认只继承 hotkeys，按住 Primary 临时使用 Normal。
 
-| 参数 | 所属配置 | 默认值 |
+| 参数 | 用于哪里 | 默认值／作用 |
 | --- | --- | --- |
-| `move_step` / `move_speed` | `window` | 20 / 600 |
-| `resize_step` / `resize_speed` | `window`、`window_editor`，各自独立 | 20 / 500 |
-| `split_ratios` | `window_quick` | `["1/4", "1/3", "1/2", "2/3", "3/4"]` |
-| `gap` | Quick、Editor、Restore，各自独立 | 0 |
-| `number_timeout_ms` | 五个模式 | 250，允许 100–2000 |
-| `border_width` | 五个模式 | 3 |
-| `lifecycle.after_finish` | Restore | `"window_editor"` |
+| `move_step` / `move_speed` | Window | 移动步长 20／速度 600 |
+| `resize_step` / `resize_speed` | Window、Editor，各自独立 | 缩放步长 20／速度 500 |
+| `split_ratios` | Quick | `["1/4", "1/3", "1/2", "2/3", "3/4"]` |
+| `gap` | Quick、Editor、Restore，各自独立 | 窗口间距，0 |
+| `number_timeout_ms` | 五个模式 | 多位编号等待，250 毫秒；允许 100–2000 |
+| `border_width` | 五个模式 | 窗口描边宽度，3 |
+| `lifecycle.after_finish` | Restore | 恢复成功后进入 `"window_editor"` |
 
-步长和间距为逻辑像素，速度为逻辑像素／秒；Windows 按目标屏幕 DPI 换算。编号和描边使用各模式的 `ui`，统一操作面板使用 `[key_help]` 字体和颜色。
+步长、间距为逻辑像素，速度为逻辑像素／秒；Windows 自动适应目标屏幕 DPI。编号样式用各模式的 `ui`，操作面板用 `[key_help]`。
 
-以下是全局直达和独立参数示例；请把启动键合并到已有 `[hotkeys]`，避免重复表名：
+下面示例添加直达启动键并分别修改参数；请合并到已有表中：
 
 ```toml
 [hotkeys]
@@ -408,11 +381,20 @@ gap = 12.0
 after_finish = "window_editor"
 ```
 
-`window_delete` 仅为 Restore 内切换恢复／删除状态的动作（默认 X），不再是模式；删除旧 `[window_delete]` 配置段，相关设置统一放在 `[window_restore]`。
+应用例外可写在 `[[window_editor.app_configs]]` 等段中；共享按键通过 `inherits` 明确继承。按键的动作不随入口变化，例如 Editor 中配置 `q = "grid"` 就总是进入 Grid。
 
-只写参数时保留该模式的默认绑定。写入 `[模式.bindings]` 会整体替换该模式的默认表，应复制需要保留的键后修改；例如 Editor 的 `q = "grid"` 总是进入 Grid，与进入 Editor 的路径无关。应用覆盖如 `[[window_editor.app_configs]]`，共享键通过 `inherits` 明确继承。
+::: info 从旧窗口配置迁移
+旧字段会报错并提示迁移，不会自动重写文件。按下面对应关系调整：
+:::
 
-迁移旧配置：把 `window_layout`、`window_edit`、`window_saved_layouts` 分别改为模式名 `window_quick`、`window_editor`、`window_restore`；把 `window_cancel`／`window_exit` 改为所需目的模式（如 `window` 或 `idle`）。删除 `window.exit_mode`、`layout_keys`、`double_tap_ms`；将旧 `window.split_ratios` 移至 Quick，`window.gap` 按用途移至 Quick／Editor／Restore。旧字段和动作会报错并提示迁移，不自动重写用户文件。
+| 旧写法 | 现在的写法 |
+| --- | --- |
+| `window_layout` / `window_edit` / `window_saved_layouts` | `window_quick` / `window_editor` / `window_restore` |
+| 模式段 `[window_delete]` | 合并到 `[window_restore]`；`window_delete` 只是切换删除状态的动作 |
+| `window_cancel` / `window_exit` | 直接写目标模式，如 `window` 或 `idle` |
+| `window.exit_mode`、`layout_keys`、`double_tap_ms` | 删除 |
+| `window.split_ratios` | 移到 `window_quick` |
+| `window.gap` | 按用途移到 Quick／Editor／Restore |
 
 ## 指针、滚动和主题
 
@@ -438,13 +420,19 @@ invert_horizontal = false
 invert_vertical = true
 ```
 
-速度单位是像素/秒，加速度单位是像素/秒²，与显示器刷新率无关。`smooth_acceleration = true` 使用起步和收尾更柔和的 S 曲线；设为 `false` 使用线性加速。
+| 设置 | 改什么 |
+| --- | --- |
+| `initial_speed` / `max_speed` / `acceleration` | 起步速度、最高速度、加速度，单位像素／秒、像素／秒² |
+| `smooth_acceleration` | true 起步和收尾更柔和；false 线性加速 |
+| `tap_distance` | 短按移动距离 |
+| `slow_multiplier` / `precision_multiplier` / `fast_multiplier` | 慢速、精确、快速倍率 |
+| `scroll.speed` / `scroll_step` | 长按速度／短按距离；默认 500 像素／秒、50 像素 |
+| `scroll_step_half` / `scroll_step_full` | 半页／整页滚动距离 |
+| `invert_horizontal` / `invert_vertical` | macOS 横向／纵向滚动反转 |
 
-普通滚动按下立即响应，按住连续滚动，松开停止。`scroll_step` 设置短按距离，`speed` 设置长按速度（像素/秒），两者独立。默认短按 50 像素，长按 500 像素/秒；设为 0 时仅短按。`precision`、`slow`、`fast` 修饰键仍生效。
+普通滚动按住连续、松开停止；`speed = 0` 时仅短按。半页、整页滚动每次按下只执行一次。精确、慢速和快速键也影响滚动；速度不随显示器刷新率变化。
 
-半页、整页滚动每次按下执行一次，按住不重复。持续滚动跟随显示帧，不使用固定间隔计时器。网页模拟器的 **Normal → 行为** 页可直接修改长按滚动速度，单位为像素/秒。
-
-主题颜色使用 `#RRGGBBAA`，可以为浅色和深色外观分别设置：
+主题颜色用 `#RRGGBBAA`，末两位是透明度；可分别设置浅深主题：
 
 ```toml
 [theme.dark]
@@ -460,11 +448,11 @@ middle_pressed_color = "#FF00FFFF"
 right_pressed_color = "#00FFFFFF"
 ```
 
-鼠标按钮通过 `press` 或 `toggle` 保持按下时，透明圆形指示器使用对应的 `*_pressed_color`：填充使用配置颜色 20% 的不透明度。
+`*_pressed_color` 控制鼠标按住时的圆形提示，填充使用配置颜色 20% 的不透明度。模式标识符完整设置见 [Normal](/modes/normal#模式标识符样式与位置)。
 
 ## 应用覆盖：`[[app_configs]]`
 
-应用覆盖可以禁用或替换某些程序里的绑定：
+为某个应用禁用或替换按键：
 
 ```toml
 [[app_configs]]
@@ -476,11 +464,11 @@ bundle_id = "Figma"
 bindings = { v = "none", "primary+f" = "grid" }
 ```
 
-根级 `[[app_configs]]` 对所有 Mode 生效；`[[normal.app_configs]]` 只在 Normal 生效。匹配值可以是 macOS bundle id、Windows 可执行文件名、或窗口标题的子串。
+根级 `[[app_configs]]` 对所有模式生效，`[[normal.app_configs]]` 只影响 Normal。`bundle_id` 可写 macOS bundle id、Windows 可执行文件名，或窗口标题子串。
 
 ## 插件设置
 
-插件 Mode 使用命名空间：
+插件模式名使用 `plugin:<id>`：
 
 ```toml
 [plugin_modes."plugin:screen-selector".settings]
@@ -490,11 +478,11 @@ preserve = true
 inherits = ["hotkeys", "normal"]
 ```
 
-自带 Screen Selector 的 `preserve = true` 会在切屏时保留 `Grid`/`Recursive Grid` 的选择路径；设为 `false` 则从目标显示器重新开始。
+Screen Selector 的 `preserve = true` 会在切屏时保留 Grid／Recursive Grid 的选择路径；false 则在新屏幕重新开始。开发自己的插件见[插件开发](/development/plugin-development)。
 
 ## 运行时修改与调试
 
-`set_config` 可以修改点号路径，并在解析、校验通过后原子写回配置：
+用 `set_config` 修改点号分隔的字段路径，校验通过后保存到当前配置文件：
 
 ```toml
 [normal.bindings]
@@ -502,7 +490,9 @@ inherits = ["hotkeys", "normal"]
 "primary+2" = "set_config theme.dark.accent \"#FF8800FF\""
 ```
 
-无效修改不会替换当前有效配置。状态栏的 Reload Configuration 会重新加载配置。
+无效修改会保留原来的有效配置。手动编辑文件后，可从状态菜单重载。
+
+需要排错时，临时开启日志类别：
 
 ```toml
 [debug]
@@ -517,15 +507,18 @@ overlay = true
 timers = true
 ```
 
-建议只在排查问题时开启调试日志；日志会写入数据目录中的 `keysteer.log`。
+日志位于数据目录的 `keysteer.log`。排查结束后关闭调试日志，避免持续产生大量记录。
 
 ## 实时按键提示
 
-`key_help` 动词切换按键提示面板，Normal 默认绑定 `"?" = "key_help"`，targeting 模式按继承规则使用。`?` 按字面匹配操作系统产生的问号字符。进入 Idle 自动关闭。已有自定义绑定表需自行补入此绑定。
+按 `?` 显示或隐藏当前模式的操作提示，不会清空选择。已有自定义绑定表需保留 `"?" = "key_help"`；问号按系统实际输入的字符匹配。
 
-`mouse_key_help` 表示 Normal、Grid、Recursive Grid、UI Hint 的默认显示状态，默认 `false`；设为 `true` 则进入时显示。无论默认值如何，都能按 `?` 切换。手动选择在这些模式间保持，退出到 Idle 后重新进入恢复默认值。旧 `[key_help].enabled` 已改名为 `mouse_key_help`。
+| 设置 | 影响哪些模式 | 默认 |
+| --- | --- | --- |
+| `mouse_key_help` | Normal、Grid、Recursive Grid、UI Hint | false |
+| `window_key_help` | Window、Quick、Editor、Restore、Tabs | true |
 
-Window 和 A/E/R/T 子模式的下方面板默认开启，可独立设置初始显示状态：
+例如，想让窗口面板也默认隐藏：
 
 ```toml
 [key_help]
@@ -533,20 +526,15 @@ mouse_key_help = false
 window_key_help = false
 ```
 
-这些模式默认绑定 `"?" = "key_help"`，默认关闭后仍可按 `?` 显示或隐藏。手动切换状态在窗口子模式之间保持，退出后重新进入恢复配置默认值。此设置不隐藏窗口边框或编号，与 `mouse_key_help` 独立。已有自定义窗口绑定表需自行补入 `"?" = "key_help"`。
+手动显示状态在同组模式间保持；回到 Idle 后重新进入恢复默认。隐藏帮助不会隐藏窗口编号或边框。旧 `[key_help].enabled` 已改名为 `mouse_key_help`。
 
-`[key_help]` 还支持 `font_family`、`font_size`、`background_color`、`text_color`、`border_color`、`border_width`、`border_radius`、`padding_x`、`padding_y`。空字体和未指定的背景/文字色跟随模式指示器与主题。颜色支持 `#RRGGBBAA` 或 `{ light = "#RRGGBBAA", dark = "#RRGGBBAA" }`。标题大小、分列和居中自动适配。
+`[key_help]` 支持 `font_family`、`font_size`、`background_color`、`text_color`、`border_color`、`border_width`、`border_radius`、`padding_x`、`padding_y`。未设置的字体和颜色跟随模式提示及主题；颜色支持浅深主题表。可在[模拟器](/simulator)点击“编辑按键提示样式”预览。
 
-在[模拟器](/simulator)点击“编辑按键提示样式”，即可修改、预览并导出 TOML。
-
-
-Window 的中央编号与分区编号使用 `[window.ui].font_size`，默认 28。分区编号位于窗口中心编号下方；帮助面板优先放在目标窗口内底部，不重复列出数字选窗键。
-
-Quick 的比例尺按 split_ratios 显示原标识，可混用 "1/2"、"1/3"、0.3、0.45；需要保留尾零时写为字符串，如 "0.30"。Actions 下方的屏幕比例预览标注当前宽高，其他比例以细刻度显示；内部矩形实时表示布局。
+Window 的编号字号用 `[window.ui].font_size`，默认 28。Quick 比例尺可混用分数和小数；要保留尾零可写字符串 `"0.30"`，屏幕预览会显示当前宽高比例。
 
 ### 窗口卡片引导线
 
-共享配置适用于 Window 及相关子模式，包括标签避让后产生的引导线。关闭线条不影响避让。
+编号卡片避让后，会用引导线指向对应窗口。关闭线条不影响卡片避让。
 
 ```toml
 [window.card]
@@ -560,20 +548,96 @@ guide_line_width = 3.0 # 0–32；0 也隐藏线条
 # selected_border_width = 1.5 # 0–20；0 隐藏选中卡片边框
 ```
 
-选中颜色也可使用单个 `#RRGGBBAA` 值，末两位控制透明度。配置工作室的「窗口管理 → 共用外观」提供颜色与线宽编辑，并展示普通／选中卡片对照；交互模拟器同步显示当前选中的卡片。未修改时不生成选中样式字段，修改后下载配置会包含对应覆盖，重置则移除覆盖并恢复内置样式。
+线宽允许 0–32，0 隐藏线条；选中边框宽度允许 0–20，0 隐藏边框。颜色支持单个 `#RRGGBBAA` 或浅深主题表。
+
+在 **窗口管理 → 共用外观** 可预览普通／选中卡片。修改后导出对应字段，重置可恢复内置绿色样式。
+
+## 模式统计与快速切换
+
+单独按住 `Q`，默认 350 毫秒后显示常用模式面板；`Q+1…9` 可直接选择，不必等面板展开。
+
+```toml
+[mode_usage]
+save_after_entries = 100
+
+[quick_switch]
+enabled = true
+key = "q"
+hold_ms = 350
+blacklist = ["idle"]
+position = "mouse" # screen / window / mouse
+
+[quick_switch.ui]
+font_size = 28
+border_width = 1
+border_radius = 6
+padding_x = 6
+padding_y = 8
+# background_color = "#EEF2FFFF"
+# text_color = "#193781FF"
+# border_color = "#506DD0FF"
+```
+
+| 设置 | 作用 |
+| --- | --- |
+| `save_after_entries` | 每新增多少次模式进入记录后保存，必须大于 0 |
+| `enabled` / `key` / `hold_ms` | 开关、长按键、展开等待时间 |
+| `blacklist` | 从面板隐藏指定模式；原快捷键仍可使用 |
+| `position` | `screen` 屏幕中心、`window` 前台窗口中心、`mouse` 鼠标提示下方 |
+| `quick_switch.ui` | 字体、字号、颜色、边框、圆角和内边距 |
+
+面板按使用次数排序，最多 9 项，同分按模式 id 排序；打开后编号固定，选择当前模式会保留状态。前台窗口不可用时，`window` 回退到屏幕中心，面板始终限制在当前屏幕内。
+
+::: info Q 仍先执行原来的动作
+按下 Q 会立即执行原绑定；长按或选择模式后，不再重复该动作，松开时收起面板并正常结束原手势。即使原动作已进入 Idle，本次长按仍有效；从 Idle 开始、暂停、排除应用或文本／备注输入时不接管 Q。
+:::
+
+统计只记录实际模式切换，同模式保持或重启不增加次数。记录保存在 `workspace.ksw`；保存／删除预设和正常退出时也会保存。强制结束或断电可能丢失最近未保存的次数。
+
+网页可导入工作区查看统计并修改面板设置；导出保留统计。带统计的 v2 工作区需要支持该格式的程序。
+
+## 搜索面板定位
+
+搜索框与信息面板都用“参照对象＋四边百分比”定位：
+
+```toml
+[ui_hint.search_input_ui]
+position_mode = "screen"
+position = ["95%", "50%", "5%", "50%"]
+
+[ui_hint.search_info_ui]
+position_mode = "search_input"
+position = ["44%", "50%", "56%", "50%"]
+```
+
+| `position_mode` | 参照哪里 |
+| --- | --- |
+| `screen` | 鼠标所在屏幕 |
+| `window` | 识别窗口；没有窗口则用当前屏幕 |
+| `search_input` | 搜索框；只用于信息面板，让它跟随搜索框 |
+
+`position` 依次为**上、右、下、左边距**，均为 `0%–100%`；相对两边之和不能超过 100%。屏幕和窗口定位使用所选区域的中心点，面板大小另由宽度、字体和内边距决定。
+
+| 信息面板相对搜索框的位置 | `position` |
+| --- | --- |
+| 上方留少量间距（默认） | `["44%", "50%", "56%", "50%"]` |
+| 紧贴上方 | `["50%", "50%", "50%", "50%"]` |
+| 下方留相同间距 | `["56%", "50%", "44%", "50%"]` |
+
+默认搜索框中心位于屏幕高度 95%。在网页外观页点选、拖动范围或调整滑块，可同时预览两个面板的位置和间距。旧 `x_offset`／`y_offset` 不再生效，请改用 `position`。
 
 ## 临时模式按键优先级
 
-按住 `temporary_mode_keys` 时，按以下顺序解析（各层包含其继承绑定）：
+按住 `temporary_mode_keys` 时，依次查找：
 
 1. 临时模式的完整组合键。
 2. 当前模式的完整组合键。
-3. 去掉临时激活键后，临时模式的绑定。
-4. 去掉临时激活键后，当前模式的绑定或模式输入。
+3. 去掉临时激活键后的临时模式绑定。
+4. 去掉临时激活键后的当前模式绑定或标签输入。
 
-完整匹配优先于裸键：Window 中 Primary+S 可以执行 Normal 的屏幕切换；Grid 的 Primary+Q 仍可切换到 Normal。默认 Normal 的 Primary+F 会执行 UI Hint，优先于裸 F 的 Recursive Grid。
+每一层都包含其继承绑定。完整组合键优先于裸键，例如 Normal 的 `Primary+F` 进入 UI Hint，优先于裸 F 的 Recursive Grid；Grid 的 `Primary+Q` 仍返回 Normal。
 
-如果当前模式使用裸 Q 返回 Normal，可以为它声明穿透键：
+想让 Q 直接交给当前模式，可声明穿透键：
 
 ```toml
 [grid]
@@ -585,12 +649,21 @@ temporary_mode_passthrough_keys = ["q"]
 q = "normal"
 ```
 
-穿透键匹配完整或去掉临时激活键后的输入，只跳过临时层，仍解析当前模式及其继承；不会向操作系统注入按键。默认 `[]`，支持组合键、别名和左右修饰键，也适用于 Recursive Grid、UI Hint、Window 家族和插件模式。不对 `idle` 或退出动作做特殊处理。
+穿透键只跳过临时模式，不向系统发送按键。默认 `[]`，支持组合键、别名和左右修饰键；同样适用于其他定位模式、窗口模式和插件。
 
-Window 家族临时使用 Normal 时，激活键只负责启用临时层，不参与 Normal 的组合键；先保留 Window 显式完整组合键，再按去掉激活键后的输入查临时层、当前层。于是临时 S 可执行 Normal 的 screen next，临时 F 默认进入 Recursive Grid。固定 Window 面板不列出 Normal 的其他快捷键，Move 的 Other Actions 只补充 Grid/Recursive Grid 入口。
+::: info Window 的临时键有不同规则
+Window 先保留自身显式组合键，再去掉激活键查找 Normal 和当前模式。例如临时 S 可切屏，临时 F 默认进入 Recursive Grid。窗口面板显示窗口操作，不会列出整张 Normal 按键表。
+:::
+
 ## Normal 盲操定位
 
-可选 `[normal.targeting]` 使用 `method = "grid" | "recursive_grid"`（默认 grid）和 `reset_on = ["move", "click"]`（可取子集或空列表）。缺省不启用、不导出配置段；布局引用对应顶层网格，输入冲突在计划编译时拒绝。完整行为、键位让出与示例见 [Normal 盲操网格定位](../modes/normal.md#盲操网格定位)。
+Normal 也能直接输入网格键定位，但默认关闭。启用步骤和安全示例见 [Normal 盲操网格定位](../modes/normal.md#盲操网格定位)。
 
+| `[normal.targeting]` 字段 | 作用 |
+| --- | --- |
+| `method` | `grid`（默认）或 `recursive_grid`，沿用对应网格的布局 |
+| `reset_on` | 默认 `["move", "click"]`，移动或 KeySteer 点击后重选；可取子集或 `[]` |
+| `grid_cols` / `grid_rows` / `keys` / `max_depth` | 只在 Normal 中覆盖布局，不改变独立网格模式 |
+| `min_size_width` / `min_size_height` / `layers` | 仅 `recursive_grid` 可用；显式 layers 整组替换，`[]` 清空 |
 
-`normal.targeting` 可覆盖 `grid_cols`、`grid_rows`、`keys`、`max_depth`，未写的字段继承所选 method 的原配置。`method = "recursive_grid"` 另支持 `min_size_width`、`min_size_height` 和 `layers`；显式 layers 整组替换继承列表，`layers = []` 清空。覆盖只影响 Normal，不改变独立网格模式，不接受 UI 字段。布局校验、键位冲突检测和控制器使用同一份合并结果，仅在加载配置时解析。完整注释示例见 `keysteer.default.toml`。
+未写的字段沿用对应网格。此配置不接受 UI 样式；键位冲突会在加载时报告。删除整个段即可关闭，完整注释见 `keysteer.default.toml`。

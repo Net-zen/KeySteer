@@ -235,9 +235,12 @@ test('text input keeps independent editing bindings and configurable temporary N
   assert.equal(defaults.text_input.temporary_mode_keys, undefined)
   const [example, translatedExample] = await Promise.all(['../../modes/normal.md', '../../en/modes/normal.md'].map(async relative => {
     const markdown = await readFile(new URL(relative, import.meta.url), 'utf8')
-    const block = markdown.split('<details>')[1]?.split('```toml')[1]?.split('```')[0]
-    assert.ok(block, `Missing inline editing example in ${relative}`)
-    return parseConfigDocument(block).document
+    const examples = [...markdown.matchAll(/```toml[^\n]*\r?\n([\s\S]*?)```/g)]
+      .filter(([, source]) => source.includes('[text_input.bindings]'))
+      .map(([, source]) => parseConfigDocument(source).document)
+    const example = examples.find(document => document.text_input?.bindings?.['primary+h'] === 'arrow_left')
+    assert.ok(example, `Missing inline editing example in ${relative}`)
+    return example
   }))
   assert.deepEqual(example, translatedExample)
   const configured = resolveConfigDocument(defaults, example)

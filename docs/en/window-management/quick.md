@@ -15,7 +15,13 @@ Enter with A, then choose placement and ratios with direction keys.
 3. Type your editor's window number, then press `L` to place it on the right half.
 4. Press `Q` to return to Window, then `Q` again to start working.
 
-Quick adjusts each axis independently. The first direction starts with the configured proportion nearest half a screen; repeating the direction shrinks it, while the opposite direction expands it. For example, press `K` after choosing the left half to place the window in the upper-left area. Default proportions are `1/4, 1/3, 1/2, 2/3, 3/4`, plus an automatically included full-screen proportion. Press `Z` to undo.
+Quick adjusts horizontal and vertical placement separately. The first direction starts nearest half-screen; repeat it to shrink, reverse it to expand. For example, `H` then `K` places the window in the upper-left area.
+
+Default proportions are `1/4, 1/3, 1/2, 2/3, 3/4`, plus full-screen.
+
+::: tip A misplaced window is easy to fix
+`Z` undoes the last step, `Shift+Z` redoes it. Leaving with `Q` keeps the new positions.
+:::
 
 ## Configure the scale
 

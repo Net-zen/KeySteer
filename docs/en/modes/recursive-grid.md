@@ -30,6 +30,10 @@ Enter it from Normal with `f`. The default grid is 3 × 3:
 | `Primary` | Temporarily use Normal movement, scrolling, and clicking |
 | `Primary+Q` / `Esc` | Return to Normal |
 
+::: tip Take your time with small targets
+Use `Tab` to back up a level, or Space to start over. `Enter` only centers the pointer; hold `Primary` to use Normal click keys when ready.
+:::
+
 ## Configuration
 
 ```toml

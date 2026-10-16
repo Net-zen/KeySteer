@@ -14,7 +14,12 @@ function renderDiagram(id: string, source: string, dark: boolean, current: () =>
     // Keep Mermaid's temporary DOM separate from Vue's rendered SVG, including
     // failures and navigation away while a diagram is being laid out.
     const container = document.createElement('div')
+    container.className = 'vp-doc'
     container.style.cssText = 'position:absolute;left:-100000px;top:0;visibility:hidden;'
+    // Measure with the same label wrapping and font weight as the final SVG.
+    const stage = document.createElement('div')
+    stage.className = 'mermaid'
+    container.append(stage)
     document.body.append(container)
     try {
       mermaid.initialize({
@@ -23,7 +28,7 @@ function renderDiagram(id: string, source: string, dark: boolean, current: () =>
         suppressErrorRendering: true,
         theme: dark ? 'dark' : 'default',
       })
-      return (await mermaid.render(id, source, container)).svg
+      return (await mermaid.render(id, source, stage)).svg
     } finally {
       container.remove()
     }
