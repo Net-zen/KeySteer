@@ -38,7 +38,8 @@ static void keysteer_ensure_compositor_clock(void) {
         &keysteer_clock_once, keysteer_initialize_compositor_clock, NULL, NULL);
 }
 
-// Returns zero when the Windows 11 compositor-clock API is unavailable.
+// Probe exports once; do not gate capability by the reported OS version.
+// Returns zero when the compositor-clock API or its stop event is unavailable.
 intptr_t keysteer_compositor_clock_create(void) {
     keysteer_ensure_compositor_clock();
     if (keysteer_wait_for_compositor_clock == NULL) {

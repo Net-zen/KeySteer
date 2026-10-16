@@ -636,6 +636,49 @@ fn held_scrolling_runs_before_os_repeat_and_stops_on_key_up() {
 }
 
 #[test]
+fn remapped_movement_and_scroll_sequences_share_frames_and_release_independently() {
+    let mut config = Config::default();
+    config.normal.bindings.insert("a".into(), Binding::Sequence(vec![
+        Binding::parse("move_left").unwrap(),
+        Binding::parse("move_up").unwrap(),
+    ]));
+    config.normal.bindings.insert("s".into(), Binding::Sequence(vec![
+        Binding::parse("scroll_right").unwrap(),
+        Binding::parse("scroll_down").unwrap(),
+    ]));
+    config.normal.bindings.insert("d".into(), Binding::parse("move_right").unwrap());
+    let mut engine = Engine::from_plan(crate::app::configuration::compile(&config).unwrap(), Appearance::Dark).unwrap();
+    engine.rebuild_tables();
+    engine.set_active(ModeId::normal());
+    let (mut backend, log) = FakeBackend::new(Vec::new());
+    engine.screens = backend.screens().unwrap();
+    engine.cursor = Point::new(500.0, 400.0);
+    for _ in 0..3 {
+        engine.handle_backend_event(key_down("a"), &mut backend).unwrap();
+        engine.handle_backend_event(key_down("s"), &mut backend).unwrap();
+        engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(20)), &mut backend).unwrap();
+        assert!(matches!(log.lock().unwrap().moves.last(), Some((dx, dy)) if *dx < 0.0 && *dy < 0.0));
+        assert!(matches!(log.lock().unwrap().scrolls.last(), Some((dx, dy)) if *dx != 0.0 && *dy != 0.0));
+        engine.handle_backend_event(key_down("d"), &mut backend).unwrap();
+        engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(20)), &mut backend).unwrap();
+        assert!(matches!(log.lock().unwrap().moves.last(), Some((dx, dy)) if *dx == 0.0 && *dy < 0.0));
+        engine.handle_backend_event(key_up("a"), &mut backend).unwrap();
+        engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(20)), &mut backend).unwrap();
+        assert!(matches!(log.lock().unwrap().moves.last(), Some((dx, dy)) if *dx > 0.0 && *dy == 0.0));
+        assert!(matches!(log.lock().unwrap().scrolls.last(), Some((dx, dy)) if *dx != 0.0 && *dy != 0.0));
+        engine.handle_backend_event(key_up("s"), &mut backend).unwrap();
+        let scroll_count = log.lock().unwrap().scrolls.len();
+        engine.handle_backend_event(BackendEvent::Frame(Duration::from_millis(20)), &mut backend).unwrap();
+        assert_eq!(log.lock().unwrap().scrolls.len(), scroll_count);
+        assert_eq!(engine.scheduler.frame_clock_owner, Some(ModeId::normal()));
+        engine.handle_backend_event(key_up("d"), &mut backend).unwrap();
+        assert!(engine.scheduler.frame_clock_owner.is_none());
+        assert!(engine.input.active_gestures.is_empty());
+    }
+    assert_eq!(log.lock().unwrap().frame_clock_states, [true, false, true, false, true, false]);
+}
+
+#[test]
 fn held_scrolling_stops_on_mode_exit_pause_and_capture_loss() {
     for cancel in [key_down("esc"), BackendEvent::ToggleEnabled, BackendEvent::InputCaptureLost("test capture loss".into())] {
         let config = Config::default();

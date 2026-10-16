@@ -14,7 +14,7 @@ pub(crate) use capture::PreparedCapture;
 pub(crate) use com::ComApartment;
 pub(crate) use compositor::{
     CompositorClockSignal, CompositorWait, boost_compositor_clock, display_output_for_monitor,
-    dwm_composition_enabled, interrupt_compositor_clock, monitor_for_point, prefer_dynamic_vblank,
+    dwm_composition_enabled, interrupt_compositor_clock, prefer_dynamic_vblank,
     wait_for_compositor_frame, wait_for_dwm_frame,
 };
 pub(crate) use dimensions::NativeDimensions;
@@ -790,7 +790,7 @@ mod tests {
     #[test]
     fn compositor_clock_stop_event_is_immediately_interruptible_when_available() {
         let Some(signal) = CompositorClockSignal::try_new() else {
-            // Windows 10 intentionally uses the DXGI compatibility path.
+            // Missing runtime API support intentionally selects compatibility.
             return;
         };
 

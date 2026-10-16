@@ -11,8 +11,10 @@ pub(crate) mod app_info;
 pub(crate) mod audio_worker;
 pub(crate) mod character_candidates;
 pub(crate) mod contour;
+pub(crate) mod display_target;
 pub(crate) mod disposition_mailbox;
 pub(crate) mod event_queue;
+pub(crate) mod frame_clock;
 pub(crate) mod image_tiles;
 #[cfg(any(target_os = "windows", test))]
 pub(crate) mod overlay_damage;

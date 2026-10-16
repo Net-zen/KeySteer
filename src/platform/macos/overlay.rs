@@ -32,6 +32,7 @@ use crate::api::overlay::{
     OverlayShape,
 };
 
+use crate::platform::common::display_target::DisplayTargetCache;
 use crate::platform::common::overlay_reconcile::matched_previous_indices;
 
 const MAX_CACHED_COLORS: usize = 64;
@@ -57,6 +58,7 @@ define_class!(
 pub struct Overlay {
     surfaces: Vec<Surface>,
     source_point: Option<Point>,
+    display_target: DisplayTargetCache,
 }
 
 impl Overlay {
@@ -92,6 +94,11 @@ impl Overlay {
                 .as_ref()
                 .map(|m| m.center)
                 .or_else(|| scene.indicator.as_ref().map(|i| i.position));
+            self.display_target.replace(
+                self.surfaces
+                    .iter()
+                    .map(|surface| surface.area.unwrap_or_default()),
+            );
             Ok(())
         })
     }
@@ -119,18 +126,14 @@ impl Overlay {
         }
         self.surfaces.clear();
         self.source_point = None;
+        self.display_target.replace([]);
         Ok(())
     }
 
     pub fn display_link_source(&self) -> Result<&NSView, String> {
-        self.surfaces
-            .iter()
-            .find(|surface| {
-                self.source_point
-                    .zip(surface.area)
-                    .is_some_and(|(point, area)| area.contains(&point))
-            })
-            .or_else(|| self.surfaces.first())
+        self.display_target
+            .select(self.source_point)
+            .and_then(|index| self.surfaces.get(index))
             .ok_or("macOS overlay has no display surface")?
             .display_link_source()
     }

@@ -773,12 +773,10 @@ impl Backend for MacOsBackend {
         // display changes here too, but never enumerate displays per frame.
         self.refresh_screens()?;
         self.overlay.present(scene, &self.screens)?;
-        if self.frame_clock.is_running() {
-            if let Ok(source) = self.overlay.display_link_source() {
-                self.frame_clock.start(source);
-            } else {
-                self.frame_clock.stop();
-            }
+        if let Ok(source) = self.overlay.display_link_source() {
+            self.frame_clock.prepare(source);
+        } else {
+            self.frame_clock.stop();
         }
         crate::support::perf_probe::mark("native_presented");
         Ok(())
@@ -792,7 +790,8 @@ impl Backend for MacOsBackend {
         let updated = self.overlay.update_positions(cursor, indicator)?;
         if updated {
             if self.frame_clock.is_running() {
-                self.frame_clock.start(self.overlay.display_link_source()?);
+                self.frame_clock
+                    .prepare(self.overlay.display_link_source()?);
             }
             crate::support::perf_probe::mark("native_presented");
         }

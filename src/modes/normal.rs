@@ -338,9 +338,9 @@ pub struct NormalMode {
     scroll: ScrollSettings,
     passthrough_unbound_keys: bool,
 
-    /// Directions currently held, keyed by the key holding them so releasing
-    /// the right key stops the right direction.
-    moving: SmallKeyMap<Direction>,
+    /// Each action retains its key and direction, including several movement
+    /// directions bound to one physical key by a sequence.
+    moving: SmallVec<[(Key, Direction); 4]>,
     /// Scroll gestures currently held. A sequence can bind several scroll
     /// directions/amounts to one key, so each action retains its own identity.
     scrolling: SmallVec<[(Key, Direction, ScrollAmount); 4]>,
@@ -373,7 +373,7 @@ impl NormalMode {
             profile: settings.pointer.into(),
             scroll: settings.scroll,
             passthrough_unbound_keys: settings.passthrough_unbound_keys,
-            moving: SmallKeyMap::default(),
+            moving: SmallVec::new(),
             scrolling: SmallVec::new(),
             speeds: SmallKeyMap::default(),
             toggled_speed: None,
@@ -422,7 +422,11 @@ impl NormalMode {
     }
 
     fn refresh_directions(&mut self) {
-        self.directions = self.moving.values().copied().collect();
+        self.directions = self
+            .moving
+            .iter()
+            .map(|(_, direction)| *direction)
+            .collect();
     }
 
     fn refresh_scroll_velocity(&mut self) {
@@ -469,10 +473,16 @@ impl NormalMode {
 
         match binding {
             Binding::Move(direction) => {
+                let index = self.moving.iter().position(|(held_key, held_direction)| {
+                    held_key == key && held_direction == direction
+                });
                 if pressed {
                     let was_still = !self.is_animating();
-                    let is_first_press = self.moving.insert(key.clone(), *direction).is_none();
-                    self.refresh_directions();
+                    let is_first_press = index.is_none();
+                    if is_first_press {
+                        self.moving.push((key.clone(), *direction));
+                        self.refresh_directions();
+                    }
                     if !is_first_press && self.frame_driven {
                         // Native display updates own held movement. Keyboard
                         // autorepeat is only a fallback when no update arrives.
@@ -504,7 +514,8 @@ impl NormalMode {
                         (false, true) => Command::SetFrameClock(true).into(),
                         (false, false) => CommandBatch::new(),
                     };
-                } else if self.moving.remove(key).is_some() {
+                } else if let Some(index) = index {
+                    self.moving.swap_remove(index);
                     self.refresh_directions();
                     if self.moving.is_empty() {
                         self.motion.reset();
@@ -1344,6 +1355,72 @@ mod tests {
             up(&mut mode, &env, horizontal, "e"),
             vec![Command::SetFrameClock(false)]
         );
+    }
+
+    #[test]
+    fn diagonal_movement_and_diagonal_scroll_keep_each_action_until_its_release() {
+        let env = Env::new();
+        for shared_key in [false, true] {
+            let mut mode = crate::app::mode_catalog::normal(&env.config);
+            let horizontal = Binding::Move(Direction::Left);
+            let vertical = Binding::Move(Direction::Up);
+            let vertical_key = if shared_key { "a" } else { "b" };
+            down(&mut mode, &env, horizontal.clone(), "a");
+            mode.frame(Duration::from_millis(20));
+            assert!(
+                down(&mut mode, &env, vertical.clone(), vertical_key)
+                    .iter()
+                    .any(|c| matches!(c, Command::MovePointer { .. }))
+            );
+            let scroll_x = Binding::Scroll(Direction::Right, ScrollAmount::Step);
+            let scroll_y = Binding::Scroll(Direction::Down, ScrollAmount::Step);
+            down(&mut mode, &env, scroll_x.clone(), "c");
+            down(&mut mode, &env, scroll_y.clone(), "c");
+            let frame = mode.frame(Duration::from_millis(20));
+            assert!(
+                frame.iter().any(
+                    |c| matches!(c, Command::MovePointer { dx, dy } if *dx < 0.0 && *dy < 0.0)
+                )
+            );
+            let pending = frame
+                .iter()
+                .find_map(|c| match c {
+                    Command::ScrollFrame(frame) => Some(frame),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!((pending.dx, pending.dy), (10.0, 10.0));
+            assert!(up(&mut mode, &env, horizontal, "a").is_empty());
+            assert!(
+                pending.is_current(),
+                "releasing movement cannot cancel scrolling"
+            );
+            let frame = mode.frame(Duration::from_millis(20));
+            assert!(
+                frame.iter().any(
+                    |c| matches!(c, Command::MovePointer { dx, dy } if *dx == 0.0 && *dy < 0.0)
+                )
+            );
+            assert!(frame.iter().any(
+                |c| matches!(c, Command::ScrollFrame(frame) if frame.dx == 10.0 && frame.dy == 10.0)
+            ));
+            assert!(up(&mut mode, &env, scroll_x, "c").is_empty());
+            assert!(!pending.is_current());
+            let frame = mode.frame(Duration::from_millis(20));
+            assert!(
+                frame.iter().any(
+                    |c| matches!(c, Command::MovePointer { dx, dy } if *dx == 0.0 && *dy < 0.0)
+                )
+            );
+            assert!(frame.iter().any(
+                |c| matches!(c, Command::ScrollFrame(frame) if frame.dx == 0.0 && frame.dy == 10.0)
+            ));
+            assert!(up(&mut mode, &env, vertical, vertical_key).is_empty());
+            assert_eq!(
+                up(&mut mode, &env, scroll_y, "c"),
+                vec![Command::SetFrameClock(false)]
+            );
+        }
     }
 
     #[test]

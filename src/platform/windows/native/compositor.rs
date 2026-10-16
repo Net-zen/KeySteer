@@ -16,7 +16,7 @@ enum CompositorCall {
     Boost(bool),
 }
 
-/// Keep the C ABI and its dynamically resolved Windows 11 functions inside one
+/// Keep the C ABI and its dynamically resolved compositor functions inside one
 /// reviewed native boundary. The bridge normalizes every result to `isize`.
 fn compositor_call(call: CompositorCall) -> isize {
     // SAFETY: the C bridge is compiled into this crate with matching signatures.
@@ -53,12 +53,12 @@ pub(crate) enum CompositorWait {
     Failed,
 }
 
-/// Owner of the event used to interrupt the Windows 11 compositor clock.
+/// Owner of the event used to interrupt an available compositor clock.
 pub(crate) struct CompositorClockSignal(OwnedHandle);
 
 impl CompositorClockSignal {
-    /// Return `None` on Windows 10 or when the compositor-clock export cannot
-    /// be loaded. Callers then retain the DXGI/DWM compatibility path.
+    /// Probe runtime exports, independently of OS version labels. Return `None`
+    /// when the API or its stop event is unavailable; callers then use DXGI/DWM.
     pub(crate) fn try_new() -> Option<Self> {
         let token = compositor_call(CompositorCall::Create);
         (token != 0).then(|| Self(OwnedHandle::new(HANDLE(token as *mut _))))
@@ -84,8 +84,8 @@ pub(crate) fn wait_for_compositor_frame(stop_event: isize) -> CompositorWait {
     }
 }
 
-/// Ask Windows 11 to use its high dynamic-refresh cadence while movement is
-/// active. Unsupported systems return false and continue normally.
+/// Request high dynamic-refresh cadence while movement is active, when the
+/// optional boost export exists. Missing boost support does not disable waiting.
 pub(crate) fn boost_compositor_clock(enable: bool) -> bool {
     compositor_call(CompositorCall::Boost(enable)) != 0
 }
@@ -102,7 +102,7 @@ impl DisplayOutput {
     }
 }
 
-/// Prefer actual Windows 11 dynamic-refresh VBlank cadence when supported.
+/// Prefer actual dynamic-refresh VBlank cadence when the optional export exists.
 pub(crate) fn prefer_dynamic_vblank() {
     use windows::Win32::Foundation::FreeLibrary;
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -122,20 +122,6 @@ pub(crate) fn prefer_dynamic_vblank() {
             crate::report_error!("windows-native", "cannot unload dxgi.dll: {error}");
         }
     }
-}
-
-/// Map a desktop point to the nearest monitor without querying refresh rate.
-pub(crate) fn monitor_for_point(x: f64, y: f64) -> isize {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
-
-    let point = POINT {
-        x: x.round() as i32,
-        y: y.round() as i32,
-    };
-    // SAFETY: `point` is a value type and nearest-monitor fallback returns a
-    // stable HMONITOR whenever a display is attached.
-    unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) }.0 as isize
 }
 
 /// Find the DXGI output whose native monitor handle matches `monitor`.

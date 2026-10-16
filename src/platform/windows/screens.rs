@@ -3,6 +3,8 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
+use smallvec::SmallVec;
+
 use windows::Win32::Foundation::{LPARAM, RECT, TRUE};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
@@ -46,11 +48,25 @@ fn monitor_dpi(monitor: HMONITOR, dpi_x: &mut u32, dpi_y: &mut u32) -> windows::
 }
 
 thread_local! {
-    static SCREENS: RefCell<Vec<Screen>> = const { RefCell::new(Vec::new()) };
+    static SCREENS: RefCell<DisplaySnapshot> = RefCell::new(DisplaySnapshot::default());
+}
+
+#[derive(Default)]
+pub(super) struct DisplaySnapshot {
+    pub screens: Vec<Screen>,
+    /// Borrowed monitor identities from the same enumeration, aligned by index.
+    pub monitors: SmallVec<[isize; 4]>,
 }
 
 pub fn list_screens() -> Result<Vec<Screen>, String> {
-    SCREENS.with_borrow_mut(Vec::clear);
+    list_snapshot().map(|snapshot| snapshot.screens)
+}
+
+pub(super) fn list_snapshot() -> Result<DisplaySnapshot, String> {
+    SCREENS.with_borrow_mut(|snapshot| {
+        snapshot.screens.clear();
+        snapshot.monitors.clear();
+    });
 
     // SAFETY: the callback matches the expected signature and the pointer we
     // pass stays valid for the duration of the call.
@@ -95,8 +111,8 @@ extern "system" fn enum_callback(
         );
     }
 
-    SCREENS.with_borrow_mut(|screens| {
-        screens.push(Screen {
+    SCREENS.with_borrow_mut(|snapshot| {
+        snapshot.screens.push(Screen {
             bounds: rect_to_api(info.monitorInfo.rcMonitor),
             work_area: rect_to_api(info.monitorInfo.rcWork),
             is_primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
@@ -106,7 +122,8 @@ extern "system" fn enum_callback(
                     .trim_end_matches('\0')
                     .to_string(),
             ),
-        })
+        });
+        snapshot.monitors.push(monitor.0 as isize);
     });
     TRUE
 }

@@ -197,8 +197,8 @@ impl WindowsBackend {
         // on scaled displays.
         screens::enable_dpi_awareness()?;
         // Must precede creation of the DXGI overlay and the first VBlank wait.
-        // On Windows 11 this exposes real dynamic-refresh cadence; older
-        // systems keep DXGI's compatible virtualized cadence.
+        // Probe the optional export instead of assuming support from an OS
+        // version label; unsupported systems keep compatible DXGI cadence.
         frame_clock::prefer_dynamic_vblank();
         if let Err(error) = native::prefer_input_latency() {
             crate::report_warning!(
@@ -212,6 +212,10 @@ impl WindowsBackend {
         let event_tx = EventSender::new(async_tx, owner_thread);
         let scan_mailbox = Arc::new(ScanMailbox::default());
         let mut pending = VecDeque::new();
+        let mut frame_clock = frame_clock::DisplayFrameClock::new(owner_thread);
+        if let Ok(pointer) = input::cursor_position() {
+            frame_clock.retarget(pointer);
+        }
         // Begin GPU prewarming before tray and display discovery. The render
         // thread reports readiness as soon as its message queue exists, then
         // builds the D3D/D2D/DComp device tree concurrently with the remaining
@@ -259,13 +263,19 @@ impl WindowsBackend {
             }
         };
         let appearance = system_appearance();
-        let initial_screens = screens::list_screens().unwrap_or_else(|error| {
+        let initial_displays = screens::list_snapshot().unwrap_or_else(|error| {
             crate::support::logging::report_error(
                 "windows-screen",
                 format!("initial display enumeration failed: {error}"),
             );
-            Vec::new()
+            screens::DisplaySnapshot::default()
         });
+        frame_clock.update_displays(&initial_displays.screens, &initial_displays.monitors);
+        if let Err(error) = frame_clock.prepare() {
+            pending.push_back(BackendEvent::Warning(format!(
+                "Windows display clock prewarm failed; movement will retry: {error}"
+            )));
+        }
         let vision = vision::VisionWorker::start();
         let scroll_events = event_tx.clone();
         let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
@@ -290,10 +300,10 @@ impl WindowsBackend {
                 }
             }),
             pending,
-            screens: initial_screens,
+            screens: initial_displays.screens,
             last_foreground: native::foreground_window(),
             last_appearance: appearance,
-            frame_clock: frame_clock::DisplayFrameClock::new(owner_thread),
+            frame_clock,
             scroll_worker,
             foreground_watcher,
             status_item,
@@ -349,9 +359,10 @@ impl WindowsBackend {
     }
 
     fn detect_screen_change(&mut self) -> Option<BackendEvent> {
-        let current = match screens::list_screens() {
+        let snapshot = match screens::list_snapshot() {
             Ok(screens) => screens,
             Err(error) => {
+                self.frame_clock.update_displays(&[], &[]);
                 crate::support::logging::report_error(
                     "windows-screen",
                     format!("display re-enumeration failed: {error}"),
@@ -359,7 +370,15 @@ impl WindowsBackend {
                 return None;
             }
         };
-        if current == self.screens || current.is_empty() {
+        if snapshot.screens.is_empty() {
+            self.frame_clock.update_displays(&[], &[]);
+            return None;
+        }
+        // A native display identity can change without changing geometry.
+        self.frame_clock
+            .update_displays(&snapshot.screens, &snapshot.monitors);
+        let current = snapshot.screens;
+        if current == self.screens {
             return None;
         }
         self.screens = current.clone();
@@ -367,7 +386,11 @@ impl WindowsBackend {
     }
 
     fn next_hook_event(&mut self) -> Result<Option<BackendEvent>, String> {
-        Ok(self.hook.as_mut().and_then(hook::HookThread::next_event))
+        let event = self.hook.as_mut().and_then(hook::HookThread::next_event);
+        if let Some(BackendEvent::PointerMoved(point)) = &event {
+            self.frame_clock.retarget(*point);
+        }
+        Ok(event)
     }
 
     fn try_event(&mut self) -> Result<Option<BackendEvent>, String> {
@@ -804,11 +827,17 @@ impl Backend for WindowsBackend {
     }
 
     fn screens(&self) -> Result<Vec<Screen>, String> {
-        screens::list_screens()
+        if self.screens.is_empty() {
+            screens::list_screens()
+        } else {
+            Ok(self.screens.clone())
+        }
     }
 
     fn pointer(&self) -> Result<Point, String> {
-        input::cursor_position()
+        let point = input::cursor_position()?;
+        self.frame_clock.retarget(point);
+        Ok(point)
     }
 
     fn move_window_to_screen(
@@ -836,13 +865,14 @@ impl Backend for WindowsBackend {
 
     fn warp_pointer(&self, to: Point) -> Result<(), String> {
         input::warp_cursor(to)?;
-        self.frame_clock.retarget(to.x, to.y);
+        self.frame_clock.retarget(to);
         Ok(())
     }
 
     fn move_pointer(&self, from: Point, dx: f64, dy: f64) -> Result<(), String> {
         input::move_cursor_relative(from, dx, dy)?;
-        self.frame_clock.retarget(from.x + dx, from.y + dy);
+        self.frame_clock
+            .retarget(Point::new(from.x + dx, from.y + dy));
         Ok(())
     }
 
@@ -893,9 +923,6 @@ impl Backend for WindowsBackend {
 
     fn set_frame_clock(&mut self, active: bool) -> Result<(), String> {
         if active {
-            if let Ok(pointer) = input::cursor_position() {
-                self.frame_clock.retarget(pointer.x, pointer.y);
-            }
             self.frame_clock.start()
         } else {
             self.frame_clock.stop()

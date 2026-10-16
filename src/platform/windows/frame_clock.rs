@@ -1,35 +1,60 @@
-//! Display-synchronised animation ticks backed by the Windows compositor.
+//! A reusable, display-synchronised clock shared by movement and scrolling.
 //!
-//! Windows 11's display-independent compositor clock handles mixed-refresh
-//! screens and accepts a stop event, so shutdown and mode changes do not wait
-//! for another VBlank. Windows 10 falls back to the cursor monitor's DXGI
-//! VBlank, then `DwmFlush`. A one-slot channel coalesces frames when the engine
-//! is busy, but elapsed wall-clock time is accumulated so coalescing never
-//! loses movement distance.
+//! The worker and its native output are prepared at startup and retained while
+//! idle. Gesture release only pauses delivery; it never joins a native VBlank
+//! wait on the engine thread. Shutdown alone interrupts and joins the worker.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::cell::Cell;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use smallvec::SmallVec;
+
+use crate::api::{Point, Screen};
+use crate::platform::common::display_target::DisplayTargetCache;
+use crate::platform::common::frame_clock::FrameClockState;
 use crate::support::worker::WorkerJoin;
 
 use super::{WAKE_MESSAGE, native};
 
-/// Let the Windows 10 DXGI fallback observe dynamic-refresh changes where the
-/// optional Windows 11 export exists. The compositor-clock path observes its
-/// native cadence directly.
 pub fn prefer_dynamic_vblank() {
     native::prefer_dynamic_vblank();
 }
 
+#[derive(Default)]
+struct State {
+    frames: FrameClockState,
+    shutdown: bool,
+    display: (isize, u64),
+    // Protected by the same lock used to clear this token before its native
+    // owner is released, so shutdown cannot signal a recycled HANDLE.
+    compositor_stop: isize,
+}
+
+impl State {
+    fn publish_frame(
+        &mut self,
+        generation: u64,
+        output: Option<(isize, u64)>,
+        now: Instant,
+    ) -> bool {
+        (output.is_none_or(|output| output == self.display)) && self.frames.publish(generation, now)
+    }
+}
+
+#[derive(Default)]
+struct Shared {
+    state: Mutex<State>,
+    ready: Condvar,
+}
+
 pub struct DisplayFrameClock {
     owner_thread: u32,
-    running: Arc<AtomicBool>,
-    target_monitor: Arc<AtomicIsize>,
-    uses_target_monitor: Arc<AtomicBool>,
-    compositor_token: Arc<AtomicIsize>,
-    receiver: Option<Receiver<Duration>>,
+    shared: Arc<Shared>,
+    display_target: DisplayTargetCache,
+    monitors: SmallVec<[isize; 4]>,
+    pointer: Cell<Option<Point>>,
+    selected_monitor: Cell<isize>,
     worker: Option<WorkerJoin>,
 }
 
@@ -39,18 +64,22 @@ impl DisplayFrameClock {
     pub fn new(owner_thread: u32) -> Self {
         Self {
             owner_thread,
-            running: Arc::new(AtomicBool::new(false)),
-            target_monitor: Arc::new(AtomicIsize::new(0)),
-            uses_target_monitor: Arc::new(AtomicBool::new(true)),
-            compositor_token: Arc::new(AtomicIsize::new(0)),
-            receiver: None,
+            shared: Arc::new(Shared::default()),
+            display_target: DisplayTargetCache::default(),
+            monitors: SmallVec::new(),
+            pointer: Cell::new(None),
+            selected_monitor: Cell::new(0),
             worker: None,
         }
     }
 
-    pub fn start(&mut self) -> Result<(), String> {
-        if self.is_running() {
-            return Ok(());
+    /// Prepare native resources without starting a gesture or an idle timer.
+    pub fn prepare(&mut self) -> Result<(), String> {
+        if let Some(worker) = self.worker.as_mut() {
+            if !worker.reap_finished()? {
+                return Ok(());
+            }
+            self.worker.take();
         }
         let composition_enabled = native::dwm_composition_enabled()
             .map_err(|error| format!("cannot query DWM composition: {error}"))?;
@@ -59,86 +88,121 @@ impl DisplayFrameClock {
                 "DWM composition is disabled; display-synchronised frames are unavailable".into(),
             );
         }
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let running = Arc::clone(&self.running);
-        let target_monitor = Arc::clone(&self.target_monitor);
-        let uses_target_monitor = Arc::clone(&self.uses_target_monitor);
-        let compositor_token = Arc::clone(&self.compositor_token);
+        {
+            let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.frames.pause();
+            state.shutdown = false;
+        }
+        let shared = self.shared.clone();
         let owner_thread = self.owner_thread;
-        self.uses_target_monitor.store(true, Ordering::Release);
-        running.store(true, Ordering::Release);
-        let worker = WorkerJoin::spawn(
+        self.worker = Some(WorkerJoin::spawn(
             "Windows display clock",
             std::thread::Builder::new().name("keysteer-display-clock".into()),
-            move || {
-                // The worker owns the native stop event. If shutdown reaches
-                // its deadline, the detached worker therefore cannot observe a
-                // closed or recycled HANDLE; process exit remains the fallback.
-                let compositor_signal = native::CompositorClockSignal::try_new();
-                uses_target_monitor.store(compositor_signal.is_none(), Ordering::Release);
-                let stop_event = compositor_signal
-                    .as_ref()
-                    .map(native::CompositorClockSignal::token);
-                compositor_token.store(stop_event.unwrap_or_default(), Ordering::Release);
-                run_clock(
-                    running,
-                    target_monitor,
-                    uses_target_monitor,
-                    stop_event,
-                    sender,
-                    owner_thread,
-                );
-                compositor_token.store(0, Ordering::Release);
-            },
-        )
-        .inspect_err(|_| {
-            self.running.store(false, Ordering::Release);
-        })?;
-        self.receiver = Some(receiver);
-        self.worker = Some(worker);
+            move || run_clock(shared, owner_thread),
+        )?);
+        Ok(())
+    }
+
+    pub fn start(&mut self) -> Result<(), String> {
+        if self.is_running() {
+            return Ok(());
+        }
+        self.prepare()?;
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.shutdown {
+            return Err("Windows display clock is stopping".into());
+        }
+        state.frames.start(Instant::now());
+        drop(state);
+        self.shared.ready.notify_one();
         Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
-        let now = Instant::now();
-        let deadline = now.checked_add(CLOCK_STOP_TIMEOUT).unwrap_or(now);
-        self.stop_until(deadline)
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .frames
+            .pause();
+        Ok(())
     }
 
     pub fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
-        self.running.store(false, Ordering::Release);
-        let compositor_token = self.compositor_token.load(Ordering::Acquire);
-        if compositor_token != 0 && !native::interrupt_compositor_clock(compositor_token) {
-            crate::support::logging::report_error(
-                "windows-frame-clock",
-                "cannot interrupt compositor frame wait",
-            );
+        {
+            let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.frames.pause();
+            state.shutdown = true;
+            if state.compositor_stop != 0
+                && !native::interrupt_compositor_clock(state.compositor_stop)
+            {
+                crate::report_error!(
+                    "windows-frame-clock",
+                    "cannot interrupt compositor frame wait"
+                );
+            }
         }
+        self.shared.ready.notify_one();
         if let Some(worker) = self.worker.as_mut() {
             worker.join_until(deadline)?;
             self.worker.take();
         }
-        self.compositor_token.store(0, Ordering::Release);
-        self.receiver = None;
         Ok(())
     }
 
     pub fn is_running(&self) -> bool {
-        self.running.load(Ordering::Acquire)
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .frames
+            .generation()
+            .is_some()
     }
 
-    /// Select the native output containing the pointer. MonitorFromPoint is a
-    /// topology lookup, not a refresh-rate query; the clock still waits on the
-    /// display hardware for each update.
-    pub fn retarget(&self, x: f64, y: f64) {
-        if self.uses_target_monitor.load(Ordering::Acquire) {
-            self.target_monitor
-                .store(native::monitor_for_point(x, y), Ordering::Release);
+    /// Use coordinates already observed by the backend; never query the OS.
+    pub fn retarget(&self, point: Point) {
+        self.pointer
+            .set(Some(Point::new(point.x.round(), point.y.round())));
+        self.publish_target(false);
+    }
+
+    pub fn update_displays(&mut self, screens: &[Screen], monitors: &[isize]) {
+        self.display_target
+            .replace(screens.iter().map(|screen| screen.bounds));
+        self.monitors.clear();
+        self.monitors.extend_from_slice(monitors);
+        self.publish_target(true);
+    }
+
+    fn publish_target(&self, invalidate: bool) {
+        let monitor = self
+            .display_target
+            .select(self.pointer.get())
+            .and_then(|index| self.monitors.get(index).copied())
+            .unwrap_or_default();
+        if !invalidate && self.selected_monitor.get() == monitor {
+            return;
         }
+        // Coordinate-only updates stay lock-free within one display. Crossing
+        // or replacing the snapshot synchronizes with the worker's idle wait.
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.display.0 = monitor;
+        if invalidate {
+            state.display.1 = state.display.1.wrapping_add(1);
+        }
+        self.selected_monitor.set(monitor);
+        drop(state);
+        self.shared.ready.notify_one();
     }
 
     pub fn try_next(&self) -> Option<Duration> {
-        self.receiver.as_ref()?.try_recv().ok()
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .frames
+            .take_elapsed()
     }
 }
 
@@ -151,14 +215,13 @@ impl Drop for DisplayFrameClock {
         {
             return;
         }
-        if let Err(error) = self.stop() {
-            crate::support::logging::report_error("windows-frame-clock", &error);
+        let now = Instant::now();
+        if let Err(error) = self.stop_until(now.checked_add(CLOCK_STOP_TIMEOUT).unwrap_or(now)) {
+            crate::support::logging::report_error("windows-frame-clock", error);
         }
     }
 }
 
-/// Balance the process-wide dynamic-refresh request on every worker exit,
-/// including early error returns and debug-build unwinding.
 struct CompositorBoost(bool);
 
 impl CompositorBoost {
@@ -185,152 +248,296 @@ impl Drop for CompositorBoost {
     }
 }
 
-fn run_clock(
-    running: Arc<AtomicBool>,
-    target_monitor: Arc<AtomicIsize>,
-    uses_target_monitor: Arc<AtomicBool>,
-    mut compositor_stop: Option<isize>,
-    sender: SyncSender<Duration>,
-    owner_thread: u32,
-) {
-    let mut selected_monitor = isize::MIN;
+fn run_clock(shared: Arc<Shared>, owner_thread: u32) {
+    // This worker owns every native display resource. No native wait,
+    // initialization, boost or output enumeration holds the delivery lock.
+    let compositor_signal = native::CompositorClockSignal::try_new();
+    let mut compositor_stop = compositor_signal
+        .as_ref()
+        .map(native::CompositorClockSignal::token);
+    {
+        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.compositor_stop = compositor_stop.unwrap_or_default();
+    }
+    let mut selected_display = (isize::MIN, u64::MAX);
     let mut selected_output = None;
-    let mut last_delivered = Instant::now();
-    let mut compositor_boost =
-        CompositorBoost::request(compositor_stop.is_some() && running.load(Ordering::Acquire));
-    while running.load(Ordering::Acquire) {
+    let mut compositor_boost = CompositorBoost(false);
+    let mut boosted_gesture = None;
+    loop {
+        let requested = {
+            let state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.shutdown {
+                break;
+            }
+            state.display
+        };
+        if compositor_stop.is_none() && requested != selected_display {
+            selected_display = requested;
+            selected_output = if requested.0 == 0 {
+                None
+            } else {
+                match native::display_output_for_monitor(requested.0) {
+                    Ok(output) => output,
+                    Err(error) => {
+                        crate::support::logging::report_error("windows-frame-clock", error);
+                        None
+                    }
+                }
+            };
+        }
+        let (generation, requested) = {
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.frames.generation().is_none() {
+                drop(state);
+                compositor_boost.disable();
+                boosted_gesture = None;
+                state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+                while !state.shutdown
+                    && state.frames.generation().is_none()
+                    && (compositor_stop.is_some() || state.display == selected_display)
+                {
+                    state = shared.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+                }
+            }
+            if state.shutdown {
+                break;
+            }
+            let Some(generation) = state.frames.generation() else {
+                continue;
+            };
+            (generation, state.display)
+        };
+        // A retarget during the idle wait is prepared before the next VBlank.
+        if compositor_stop.is_none() && selected_display != requested {
+            continue;
+        }
+        if boosted_gesture != Some(generation) {
+            if !compositor_boost.0 {
+                compositor_boost = CompositorBoost::request(compositor_stop.is_some());
+            }
+            boosted_gesture = Some(generation);
+        }
         let waited = if let Some(stop_event) = compositor_stop {
             match native::wait_for_compositor_frame(stop_event) {
                 native::CompositorWait::Frame => Ok(()),
                 native::CompositorWait::Interrupted => break,
                 native::CompositorWait::Failed => {
-                    crate::support::logging::report_error(
+                    crate::report_error!(
                         "windows-frame-clock",
-                        "compositor clock failed; falling back to output VBlank",
+                        "compositor clock failed; falling back to output VBlank"
                     );
                     compositor_boost.disable();
                     compositor_stop = None;
-                    uses_target_monitor.store(true, Ordering::Release);
                     continue;
                 }
             }
+        } else if let Some(output) = selected_output.as_ref() {
+            output.wait_for_vblank().map_err(|error| error.to_string())
         } else {
-            let requested_monitor = target_monitor.load(Ordering::Acquire);
-            if requested_monitor != selected_monitor {
-                selected_monitor = requested_monitor;
-                selected_output = if requested_monitor == 0 {
-                    None
-                } else {
-                    match native::display_output_for_monitor(requested_monitor) {
-                        Ok(output) => output,
-                        Err(error) => {
-                            crate::support::logging::report_error("windows-frame-clock", error);
-                            None
-                        }
-                    }
-                };
-            }
-
-            if let Some(output) = selected_output.as_ref() {
-                output.wait_for_vblank().map_err(|error| error.to_string())
-            } else {
-                native::wait_for_dwm_frame().map_err(|error| error.to_string())
-            }
+            native::wait_for_dwm_frame().map_err(|error| error.to_string())
         };
         if let Err(error) = waited {
             if selected_output.take().is_some() {
-                crate::support::logging::report_error(
+                crate::report_error!(
                     "windows-frame-clock",
-                    format!("output VBlank wait failed; falling back to DWM: {error}"),
+                    "output VBlank wait failed; falling back to DWM: {error}"
                 );
                 continue;
             }
-            crate::support::logging::report_error(
+            crate::report_error!(
                 "windows-frame-clock",
-                format!("DwmFlush failed; frame delivery stopped: {error}"),
+                "DwmFlush failed; frame delivery stopped: {error}"
             );
             break;
         }
-        let now = Instant::now();
-        if !running.load(Ordering::Acquire) {
+        let wake = {
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            // An output wait can finish after a display snapshot replacement.
+            // Keep its elapsed time for the next valid frame, but do not
+            // deliver a frame from a retired native output.
+            state.publish_frame(
+                generation,
+                compositor_stop.is_none().then_some(requested),
+                Instant::now(),
+            )
+        };
+        if wake && let Err(error) = native::post_thread_wake(owner_thread, WAKE_MESSAGE) {
+            crate::report_error!(
+                "windows-frame-clock",
+                "cannot wake engine for display frame: {error}"
+            );
             break;
         }
-        match deliver_elapsed(&sender, &mut last_delivered, now) {
-            Ok(true) => {
-                if let Err(error) = native::post_thread_wake(owner_thread, WAKE_MESSAGE) {
-                    crate::support::logging::report_error(
-                        "windows-frame-clock",
-                        format!("cannot wake engine for display frame: {error}"),
-                    );
-                    break;
-                }
-            }
-            Ok(false) => {}
-            Err(()) => break,
-        }
     }
-    running.store(false, Ordering::Release);
-}
-
-/// Queue at most one frame while keeping the interval anchored to the last
-/// successful delivery. If the slot is full, the next successful delivery
-/// therefore includes every coalesced display interval.
-fn deliver_elapsed(
-    sender: &SyncSender<Duration>,
-    last_delivered: &mut Instant,
-    now: Instant,
-) -> Result<bool, ()> {
-    let elapsed = now.saturating_duration_since(*last_delivered);
-    match sender.try_send(elapsed) {
-        Ok(()) => {
-            *last_delivered = now;
-            Ok(true)
-        }
-        Err(TrySendError::Full(_)) => Ok(false),
-        Err(TrySendError::Disconnected(_)) => Err(()),
-    }
+    let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+    state.frames.pause();
+    state.shutdown = true;
+    state.compositor_stop = 0;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
 
     #[test]
-    fn frame_queue_is_bounded_and_coalesced_time_is_not_lost() {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let start = Instant::now();
-        let mut last_delivered = start;
-
-        let first = start + Duration::from_millis(16);
-        assert_eq!(
-            deliver_elapsed(&sender, &mut last_delivered, first),
-            Ok(true)
-        );
-        assert_eq!(last_delivered, first);
-
-        let second = start + Duration::from_millis(33);
-        assert_eq!(
-            deliver_elapsed(&sender, &mut last_delivered, second),
-            Ok(false)
-        );
-        assert_eq!(last_delivered, first);
-        assert_eq!(receiver.try_recv().unwrap(), Duration::from_millis(16));
-
-        let after_two_coalesced_frames = start + Duration::from_millis(64);
-        assert_eq!(
-            deliver_elapsed(&sender, &mut last_delivered, after_two_coalesced_frames),
-            Ok(true)
-        );
-        assert_eq!(receiver.try_recv().unwrap(), Duration::from_millis(48));
+    #[ignore = "requires an interactive Windows desktop"]
+    fn native_clock_resumes_after_cached_display_snapshot_replacement() -> Result<(), String> {
+        let snapshot = super::super::screens::list_snapshot()?;
+        let first = snapshot.screens.first().ok_or("no interactive display")?;
+        let mut clock = DisplayFrameClock::new(native::prepare_thread_message_queue());
+        clock.retarget(first.bounds.center());
+        clock.update_displays(&snapshot.screens, &snapshot.monitors);
+        clock.prepare()?;
+        for round in 0..6 {
+            if round == 2 {
+                clock.update_displays(&[], &[]);
+            } else {
+                clock.update_displays(&snapshot.screens, &snapshot.monitors);
+                clock.retarget(
+                    snapshot.screens[round % snapshot.screens.len()]
+                        .bounds
+                        .center(),
+                );
+            }
+            clock.start()?;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(elapsed) = clock.try_next() {
+                    assert!(!elapsed.is_zero());
+                    break;
+                }
+                assert!(Instant::now() < deadline, "display frames did not resume");
+                native::wait_for_input(50);
+                assert!(native::pump_window_messages());
+            }
+            clock.stop()?;
+            assert_eq!(clock.try_next(), None);
+        }
+        clock.stop_until(Instant::now() + Duration::from_secs(2))
     }
 
     #[test]
-    fn compositor_path_does_not_query_a_target_monitor() {
-        let clock = DisplayFrameClock::new(0);
-        clock.target_monitor.store(123, Ordering::Release);
-        clock.uses_target_monitor.store(false, Ordering::Release);
-        clock.retarget(10.0, 20.0);
-        assert_eq!(clock.target_monitor.load(Ordering::Acquire), 123);
+    fn pausing_and_resuming_reuses_a_worker_blocked_in_native_work() {
+        let (entered, observed) = mpsc::channel();
+        let (resume, blocked) = mpsc::channel();
+        let mut clock = DisplayFrameClock::new(0);
+        clock.worker = Some(
+            WorkerJoin::spawn(
+                "display clock test",
+                std::thread::Builder::new(),
+                move || {
+                    entered.send(()).unwrap();
+                    blocked.recv_timeout(Duration::from_secs(2)).unwrap();
+                },
+            )
+            .unwrap(),
+        );
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        for _ in 0..10 {
+            clock.start().unwrap();
+            assert!(clock.is_running());
+            clock.stop().unwrap();
+            assert!(!clock.is_running());
+            assert!(clock.worker.is_some());
+        }
+        resume.send(()).unwrap();
+        clock
+            .stop_until(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        assert!(clock.worker.is_none());
+    }
+
+    #[test]
+    fn retargeting_uses_snapshot_identities_and_refreshes_unchanged_geometry() {
+        let mut clock = DisplayFrameClock::new(0);
+        let displays = test_displays();
+        clock.update_displays(&displays, &[11, 22]);
+        let original = clock.shared.state.lock().unwrap().display;
+        assert_eq!(original.0, 11);
+        for x in 0..1000 {
+            clock.retarget(Point::new(x as f64, 20.0));
+            assert_eq!(clock.shared.state.lock().unwrap().display, original);
+        }
+        clock.retarget(Point::new(1500.0, 20.0));
+        assert_eq!(clock.shared.state.lock().unwrap().display, (22, original.1));
+        clock.update_displays(&displays, &[33, 44]);
+        assert_eq!(
+            clock.shared.state.lock().unwrap().display,
+            (44, original.1 + 1)
+        );
+        clock.update_displays(&displays[..1], &[55]);
+        assert_eq!(clock.shared.state.lock().unwrap().display.0, 55);
+        clock.update_displays(&[], &[]);
+        assert_eq!(clock.shared.state.lock().unwrap().display.0, 0);
+        clock.retarget(Point::new(1500.0, 20.0));
+        assert_eq!(clock.shared.state.lock().unwrap().display.0, 0);
+        clock.update_displays(&displays, &[66, 77]);
+        assert_eq!(clock.shared.state.lock().unwrap().display.0, 77);
+    }
+
+    #[test]
+    fn retired_output_waits_are_rejected_without_disabling_the_compositor_path() {
+        let began = Instant::now();
+        let mut state = State::default();
+        state.frames.start(began);
+        let generation = state.frames.generation().unwrap();
+        state.display = (11, 1);
+        let previous = state.display;
+        state.display = (22, 2);
+        assert!(!state.publish_frame(
+            generation,
+            Some(previous),
+            began + Duration::from_millis(16)
+        ));
+        assert_eq!(state.frames.take_elapsed(), None);
+        assert!(state.publish_frame(
+            generation,
+            Some(state.display),
+            began + Duration::from_millis(32)
+        ));
+        assert_eq!(state.frames.take_elapsed(), Some(Duration::from_millis(32)));
+        state.display = (0, 3);
+        assert!(state.publish_frame(generation, None, began + Duration::from_millis(48)));
+        assert_eq!(state.frames.take_elapsed(), Some(Duration::from_millis(16)));
+    }
+
+    #[test]
+    fn display_retargeting_does_not_pause_or_reset_the_shared_gesture() {
+        let mut clock = DisplayFrameClock::new(0);
+        let began = Instant::now();
+        clock.shared.state.lock().unwrap().frames.start(began);
+        let generation = clock
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .frames
+            .generation()
+            .unwrap();
+        clock.update_displays(&test_displays(), &[11, 22]);
+        clock.retarget(Point::new(1500.0, 20.0));
+        let mut state = clock.shared.state.lock().unwrap();
+        assert_eq!(state.frames.generation(), Some(generation));
+        assert!(
+            state
+                .frames
+                .publish(generation, began + Duration::from_millis(20))
+        );
+        assert_eq!(state.frames.take_elapsed(), Some(Duration::from_millis(20)));
+    }
+
+    fn test_displays() -> [Screen; 2] {
+        [0.0, 1000.0].map(|x| {
+            let bounds = crate::api::Rect::new(x, 0.0, 1000.0, 1000.0);
+            Screen {
+                bounds,
+                work_area: bounds,
+                is_primary: x == 0.0,
+                scale: 1.0,
+                name: None,
+            }
+        })
     }
 
     #[test]
@@ -350,14 +557,14 @@ mod tests {
             )
         }
 
-        let clock = DisplayFrameClock::new(0);
+        let mut clock = DisplayFrameClock::new(0);
+        clock.update_displays(&test_displays(), &[11, 22]);
         let skipped = || {
-            clock.uses_target_monitor.store(false, Ordering::Release);
-            clock.retarget(100.0, 100.0);
+            clock.retarget(Point::new(100.0, 100.0));
         };
         let queried = || {
-            clock.uses_target_monitor.store(true, Ordering::Release);
-            clock.retarget(100.0, 100.0);
+            clock.retarget(Point::new(1500.0, 100.0));
+            clock.retarget(Point::new(100.0, 100.0));
         };
         for _ in 0..WARMUP {
             skipped();
@@ -382,7 +589,7 @@ mod tests {
             }
         }
         println!(
-            "windows_retarget_probe samples={SAMPLES} calls_per_sample={CALLS_PER_SAMPLE} skipped={:?} queried={:?}",
+            "windows_retarget_probe samples={SAMPLES} calls_per_sample={CALLS_PER_SAMPLE} cached={:?} crossing_pair={:?}",
             percentiles(&mut skipped_samples),
             percentiles(&mut queried_samples),
         );
