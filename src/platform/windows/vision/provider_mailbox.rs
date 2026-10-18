@@ -205,8 +205,7 @@ impl ProviderMailboxState {
                 slot.finish(provider, elapsed, result)?;
                 self.ready |= ready;
             }
-            ProviderEvent::ContourBatch(mut targets) => {
-                targets.truncate(MAX_OCR_TARGETS.saturating_sub(self.contour.published_targets));
+            ProviderEvent::ContourBatch(targets) => {
                 if targets.is_empty() {
                     return Ok(());
                 }
@@ -313,9 +312,8 @@ impl OcrProviderSlot {
         &mut self,
         _provider: &'static str,
         elapsed: Duration,
-        mut targets: Vec<UiTarget>,
+        targets: Vec<UiTarget>,
     ) -> Result<(), VisionError> {
-        targets.truncate(MAX_OCR_TARGETS.saturating_sub(self.published_targets));
         if targets.is_empty() {
             return Ok(());
         }
@@ -394,7 +392,7 @@ pub(super) fn send_ocr_batches(
     started: Instant,
     targets: Vec<UiTarget>,
 ) -> Result<usize, VisionError> {
-    let count = targets.len().min(MAX_OCR_TARGETS);
+    let count = targets.len();
     mailbox.publish(ProviderEvent::OcrBatch {
         provider,
         elapsed: started.elapsed(),

@@ -328,7 +328,8 @@ esc = "idle"
 font_size = 28
 
 # UI Hint: type a label to click; / searches names, OCR and Chinese initials.
-# scan_scope: window (pointer window first), active (focused window first), screen.
+# scan_scope: window (pointer window first), active (focused window first),
+# screen (pointer's display), all (all displays). Display scopes scan visible UI.
 # strategy: hybrid (default), axtree, vision or contour.
 # Advanced OCR/contour thresholds and roles use built-in defaults; see --dump-config.
 [ui_hint]

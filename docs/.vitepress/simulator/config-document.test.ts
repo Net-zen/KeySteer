@@ -3,6 +3,21 @@ import test from 'node:test'
 import { reactive } from 'vue'
 import { readFile } from 'node:fs/promises'
 
+test('UI Hint display scopes use scan_scope without a second screens setting', async () => {
+  const { stringify } = await import('smol-toml')
+  const { frequentFields } = await import('../config-studio/fields.ts')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  assert.equal(defaults.ui_hint.scan_scope, 'window')
+  const scopes = frequentFields.find(field => field.path === 'ui_hint.scan_scope')?.options?.map(option => option.value)
+  assert.deepEqual(scopes, ['window', 'active', 'screen', 'all'])
+  for (const scope of scopes) {
+    const effective = resolveConfigDocument(defaults, parseConfigDocument(`[ui_hint]\nscan_scope = "${scope}"`).document)
+    const exported = parseConfigDocument(stringify(effective)).document
+    assert.equal(exported.ui_hint.scan_scope, scope)
+    assert.equal(exported.ui_hint.screens, undefined)
+  }
+})
+
 test('held scroll speed validates, exports and resets to shipped defaults', async () => {
   assert.throws(() => parseConfigDocument('[scroll]\nsteps_per_second = 10'), /steps_per_second/)
   const { setConfigPath, deleteConfigPath } = await import('../config-studio/document.ts')

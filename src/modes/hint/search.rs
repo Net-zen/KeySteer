@@ -154,8 +154,8 @@ impl<'a> Term<'a> {
         }
         let (plain, initials) = text.text.split_at(text.initials_start);
         let text_quality = match_quality(plain, self.code);
-        // Literal Latin text also appears in initials; it belongs to the text
-        // group and does not need a second substring search.
+        // Literal Latin text retained in initials belongs to the text group
+        // and does not need a second substring search.
         let pinyin_quality = if text_quality == 3 && self.initials_possible {
             match_quality(initials, self.code)
         } else {
@@ -279,10 +279,15 @@ impl SearchText {
         let role_name = role.as_str();
         let (role_translation, role_initials) = role_terms(role);
         let suffix_len = 2 + role_name.len() + role_translation.len();
-        let mut text = if name
-            .chars()
-            .any(|ch| !ch.is_ascii() && ch.to_lowercase().ne(std::iter::once(ch)))
-        {
+        let mut ascii = true;
+        let unicode_lowercase = name.chars().any(|ch| {
+            if ch.is_ascii() {
+                return false;
+            }
+            ascii = false;
+            ch.to_lowercase().ne(std::iter::once(ch))
+        });
+        let mut text = if unicode_lowercase {
             // Whole-string conversion preserves contextual Unicode mappings,
             // including final sigma, and mappings that expand to multiple chars.
             let mut text = name.to_lowercase();
@@ -291,7 +296,12 @@ impl SearchText {
         } else {
             // ASCII and uncased text (including Chinese) fit with the roles in
             // one allocation. Lowercasing ASCII preserves all other UTF-8 bytes.
-            let mut text = String::with_capacity(2 * (name.len() + suffix_len));
+            let capacity = if ascii {
+                name.len() + suffix_len + role_initials.len()
+            } else {
+                2 * (name.len() + suffix_len)
+            };
+            let mut text = String::with_capacity(capacity);
             text.push_str(name);
             text.make_ascii_lowercase();
             text
@@ -304,20 +314,25 @@ impl SearchText {
         // Both representations share one allocation; the split keeps searches
         // from matching across their boundary, including control characters.
         let initials_start = text.len();
-        let mut cursor = 0;
-        while let Some(ch) = text[cursor..name_end].chars().next() {
-            cursor += ch.len_utf8();
-            if let Some(py) = ch.to_pinyin() {
-                text.push_str(py.first_letter());
-            } else {
-                text.push(ch);
+        // ASCII names are already searched in plain text. Their identical
+        // initials copy cannot add a match; retain only the role aliases below.
+        if !ascii {
+            let mut cursor = 0;
+            while let Some(ch) = text[cursor..name_end].chars().next() {
+                cursor += ch.len_utf8();
+                if let Some(py) = ch.to_pinyin() {
+                    text.push_str(py.first_letter());
+                } else {
+                    text.push(ch);
+                }
             }
+            text.push(' ');
+            text.push_str(role_name);
+            text.push(' ');
         }
         // Role names and aliases are fixed; their initials do not need per-
-        // target pinyin conversion. Keep field spacing identical to plain text.
-        text.push(' ');
-        text.push_str(role_name);
-        text.push(' ');
+        // target pinyin conversion. ASCII only needs the translated aliases;
+        // the English role name already appears in plain text.
         text.push_str(role_initials);
         Self {
             text,
@@ -554,9 +569,9 @@ mod tests {
         }
     }
     #[test]
-    fn fixed_role_initials_preserve_every_normalized_representation() {
+    fn fixed_role_initials_match_transliteration_for_unicode_names() {
         for role in SemanticRole::ALL {
-            for name in ["", "Control 设置", "ΟΔΟΣ İẞ", "复制\0面板"] {
+            for name in ["Control 设置", "ΟΔΟΣ İẞ", "复制\0面板"] {
                 let plain = format!(
                     "{} {} {}",
                     name.to_lowercase(),
@@ -705,6 +720,40 @@ mod tests {
                 format!("{} button 按钮", name.to_lowercase()),
                 "{name:?}"
             );
+        }
+    }
+
+    #[test]
+    fn ascii_names_preserve_literal_initials_and_label_match_ranks() {
+        let priority = crate::api::hint::CompiledSearchPriority::new(
+            crate::api::hint::DEFAULT_SEARCH_MATCH_PRIORITY,
+        );
+        for role in SemanticRole::ALL {
+            for name in ["", "SAVE Ctrl+S", "an", "under_score 123", "buttonan"] {
+                let current = SearchText::new(name, role);
+                let lower = name.to_ascii_lowercase();
+                let (translation, initials) = role_terms(role);
+                let plain = format!("{lower} {} {translation}", role.as_str());
+                let previous = SearchText {
+                    initials_start: plain.len(),
+                    text: format!("{plain}{lower} {} {initials}", role.as_str()),
+                };
+                for query in [
+                    "save", "sav", "ave", "ctrl+s", "an", "button", "buttonan", "score", "123",
+                    "按钮", "wbk", "srk", "ssk", "zhk", "xlk", "wz", "missing", "@sa", "sa@",
+                ]
+                .into_iter()
+                .chain(std::iter::once(role.as_str()))
+                .chain(initials.split_whitespace())
+                {
+                    let term = Term::new(query);
+                    assert_eq!(
+                        term.rank(&current, "sa", &priority),
+                        term.rank(&previous, "sa", &priority),
+                        "name={name:?} role={role:?} query={query:?}"
+                    );
+                }
+            }
         }
     }
 

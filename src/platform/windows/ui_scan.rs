@@ -13,8 +13,6 @@ use crate::platform::common::spatial_index::TargetSource;
 use crate::platform::common::spatial_index::{SpatialIndex, rectangles_match};
 use smallvec::SmallVec;
 use std::sync::{Arc, Mutex};
-#[cfg(test)]
-const MAX_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 
 pub(super) struct ScanSession {
     sink: Sink,
@@ -75,6 +73,7 @@ impl ScanSession {
     ) -> Arc<Self> {
         let sink = fusion.begin(Options {
             id: plan.id,
+
             generation,
             threshold: plan.vision.merge_iou_threshold,
             output: mailbox,
@@ -210,6 +209,8 @@ mod tests {
 
     fn request(id: u64) -> UiScanRequest {
         UiScanRequest {
+            screen_bounds: Vec::new(),
+
             scope: crate::api::UiScanScope::Window,
             id,
             timeout_ms: 1_000,
@@ -273,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn merged_sources_accept_ten_thousand_and_bound_the_tail() {
+    fn merged_sources_accept_more_than_ten_thousand_without_truncation() {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(42);
         let (events, _) = crate::platform::common::event_queue::channel();
@@ -311,7 +312,7 @@ mod tests {
         visual.finish(UiScanStatus::Success);
         session.flush();
         let result = mailbox.take().unwrap();
-        assert_eq!(result.targets.len(), MAX_TARGETS);
+        assert_eq!(result.targets.len(), 10001);
         assert_eq!(result.status, UiScanStatus::Success);
     }
 
@@ -332,6 +333,32 @@ mod tests {
             ..target
         };
         assert!(!plan.target_center_is_visible(&outside));
+    }
+
+    #[test]
+    fn all_scope_accepts_both_displays_and_rejects_the_gap() {
+        let mut input = request(99);
+        input.scope = crate::api::UiScanScope::All;
+        input.screen_bounds = vec![
+            rect(-1000.0, 0.0, 800.0, 600.0),
+            rect(0.0, 0.0, 800.0, 600.0),
+        ];
+        input.bounds = Some(input.screen_bounds[0].union(&input.screen_bounds[1]));
+        let plan = super::super::accessibility::test_scan_plan(input);
+        for (x, visible) in [
+            (-500.0, true),
+            (100.0, true),
+            (-100.0, false),
+            (900.0, false),
+        ] {
+            let target = UiTarget {
+                details: None,
+                rect: rect(x, 100.0, 20.0, 20.0),
+                name: String::new(),
+                role: SemanticRole::Control,
+            };
+            assert_eq!(plan.target_center_is_visible(&target), visible);
+        }
     }
 
     #[test]

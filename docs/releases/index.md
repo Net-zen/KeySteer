@@ -5,6 +5,12 @@ outline: 2
 
 # 更新日志 / Release Notes
 
+## 0.12.2
+
+- UIHint 新增 `scan_scope = "all"`，支持识别所有显示器上的可见窗口。
+
+- UIHint now supports `scan_scope = "all"` to scan visible windows across all displays.
+
 ## 0.12.1
 
 - 优化 Windows 和 macOS 的鼠标移动与滚动响应。

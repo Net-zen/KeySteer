@@ -181,15 +181,19 @@ impl PartialPublisher {
     fn new(job: &ScanJob, pid: libc::pid_t, activation_pid: Option<libc::pid_t>) -> Self {
         let generation = job.generation;
         let bounds = job.request.bounds;
+        let screens = job.request.screen_bounds.clone();
         let wake = job.wake.clone();
         let sink = job.fusion.begin(Options {
             id: job.request.id,
+
             generation,
             threshold: job.request.vision.merge_iou_threshold,
             output: Arc::clone(&job.mailbox),
             wake: Arc::new(move || wake.wake()),
             accepts: Arc::new(move |target| {
-                bounds.is_none_or(|bounds| bounds.contains(&target.rect.center()))
+                let center = target.rect.center();
+                bounds.is_none_or(|bounds| bounds.contains(&center))
+                    && (screens.is_empty() || screens.iter().any(|screen| screen.contains(&center)))
             }),
             current: Arc::new(move || {
                 autoreleasepool(|_| scan_is_current(generation, pid, activation_pid))
@@ -289,7 +293,7 @@ fn run_scan(mut job: ScanJob) {
                     pointer.is_some_and(|point| window.bounds.contains(&point))
                 }
                 crate::api::UiScanScope::Active => Some(window.pid) == original_pid,
-                crate::api::UiScanScope::Screen => false,
+                crate::api::UiScanScope::Screen | crate::api::UiScanScope::All => false,
             })
             .map(|window| (window.pid, window.bounds))
     });
@@ -311,7 +315,7 @@ fn run_scan(mut job: ScanJob) {
     let target = target.map(|target| target.window);
     if let Some((_, bounds)) = target {
         job.request.bounds = Some(requested_window_bounds(bounds, &job.request).unwrap_or(bounds));
-    } else {
+    } else if job.request.scope != crate::api::UiScanScope::All {
         job.request.scope = crate::api::UiScanScope::Screen;
     }
 
@@ -325,7 +329,7 @@ fn run_scan(mut job: ScanJob) {
             let ax_status = ax
                 .join()
                 .unwrap_or_else(|_| UiScanStatus::Failed("AX scan worker panicked".into()));
-            combined_status(ax_status, vision_status)
+            combined_status(("AX", ax_status), ("Vision", vision_status))
         }),
         (false, false) => UiScanStatus::Failed("UI scan strategy has no enabled source".into()),
     };
@@ -373,14 +377,17 @@ fn stream_vision(job: &ScanJob, publisher: &PartialPublisher) -> UiScanStatus {
     scan_vision(job.generation, &job.request, publisher)
 }
 
-fn combined_status(ax: UiScanStatus, vision: UiScanStatus) -> UiScanStatus {
+fn combined_status(
+    (first, ax): (&str, UiScanStatus),
+    (second, vision): (&str, UiScanStatus),
+) -> UiScanStatus {
     match (&ax, &vision) {
         (UiScanStatus::Success, other) => {
-            report_masked_provider_status("Vision", other);
+            report_masked_provider_status(second, other);
             UiScanStatus::Success
         }
         (other, UiScanStatus::Success) => {
-            report_masked_provider_status("AX", other);
+            report_masked_provider_status(first, other);
             UiScanStatus::Success
         }
         _ => vision,
@@ -391,12 +398,12 @@ fn report_masked_provider_status(provider: &str, status: &UiScanStatus) {
     match status {
         UiScanStatus::Failed(error) => crate::report_error!(
             "macos-ui-scan",
-            "{provider} provider failed while the other Hybrid provider succeeded: {error}"
+            "{provider} scan failed while another source or display succeeded: {error}"
         ),
         UiScanStatus::PermissionDenied(message) | UiScanStatus::Unsupported(message) => {
             crate::report_warning!(
                 "macos-ui-scan",
-                "{provider} provider is unavailable while the other Hybrid provider succeeded: {message}"
+                "{provider} scan is unavailable while another source or display succeeded: {message}"
             );
         }
         UiScanStatus::Partial
@@ -430,17 +437,40 @@ fn scan_vision(
     request: &UiScanRequest,
     publisher: &PartialPublisher,
 ) -> UiScanStatus {
-    match request.bounds {
-        Some(bounds) => vision::detect(
+    let deadline =
+        Instant::now() + Duration::from_millis(request.vision.request_timeout_ms.clamp(1, 30_000));
+    let mut status = None;
+    for bounds in request.capture_regions() {
+        if !scan_id_is_current(generation) {
+            return UiScanStatus::ContextChanged;
+        }
+        if Instant::now() >= deadline {
+            return UiScanStatus::TimedOut;
+        }
+        let mut options = request.vision.clone();
+        options.request_timeout_ms = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .clamp(1, 30_000) as u64;
+        let region_status = vision::detect(
             generation,
             bounds,
-            &request.vision,
+            &options,
             request.strategy,
             || !scan_id_is_current(generation),
             |source, targets| publisher.push(source, targets),
-        ),
-        None => UiScanStatus::Failed("screen scan requires display bounds".into()),
+        );
+        if region_status == UiScanStatus::ContextChanged {
+            return region_status;
+        }
+        status = Some(match status {
+            None => region_status,
+            Some(previous) => {
+                combined_status(("previous display", previous), ("display", region_status))
+            }
+        });
     }
+    status.unwrap_or_else(|| UiScanStatus::Failed("screen scan requires display bounds".into()))
 }
 
 #[cfg(test)]
@@ -450,6 +480,8 @@ mod tests {
 
     fn request(id: u64) -> UiScanRequest {
         UiScanRequest {
+            screen_bounds: Vec::new(),
+
             scope: crate::api::UiScanScope::Window,
             id,
             timeout_ms: 2_500,
@@ -488,17 +520,28 @@ mod tests {
     fn hybrid_succeeds_when_either_source_succeeds() {
         assert_eq!(
             combined_status(
-                UiScanStatus::Failed("AX failed".into()),
-                UiScanStatus::Success,
+                ("AX", UiScanStatus::Failed("AX failed".into())),
+                ("Vision", UiScanStatus::Success),
             ),
             UiScanStatus::Success
         );
         assert_eq!(
             combined_status(
-                UiScanStatus::Success,
-                UiScanStatus::Failed("Vision failed".into()),
+                ("AX", UiScanStatus::Success),
+                ("Vision", UiScanStatus::Failed("Vision failed".into())),
             ),
             UiScanStatus::Success
+        );
+    }
+
+    #[test]
+    fn failed_displays_do_not_become_a_success_without_any_successful_scan() {
+        assert_eq!(
+            combined_status(
+                ("first display", UiScanStatus::TimedOut),
+                ("display", UiScanStatus::Unsupported("unavailable".into()))
+            ),
+            UiScanStatus::Unsupported("unavailable".into())
         );
     }
 

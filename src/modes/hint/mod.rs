@@ -237,7 +237,14 @@ impl HintMode {
 
     fn scan_request(&mut self, ctx: &HostContext<'_>) -> Command {
         self.session.scan_id = self.session.scan_id.wrapping_add(1);
-        let bounds = ctx.active_bounds();
+        let screens = if self.config.scan_scope == crate::api::UiScanScope::All {
+            ctx.screens
+        } else {
+            ctx.active_screen()
+                .map(std::slice::from_ref)
+                .unwrap_or_default()
+        };
+        let bounds = crate::api::Screen::virtual_bounds(screens);
         self.session.scan_bounds = Some(bounds);
         let timeout_multiplier = u64::from(self.session.retry_attempt).saturating_add(1);
         let timeout_ms = self
@@ -248,13 +255,26 @@ impl HintMode {
         Command::scan_ui(UiScanRequest {
             id: self.session.scan_id,
             scope: self.config.scan_scope,
+            screen_bounds: if screens.len() > 1 {
+                screens.iter().map(|screen| screen.bounds).collect()
+            } else {
+                Vec::new()
+            },
+
             timeout_ms,
             bounds: Some(bounds),
             roles: self.config.clickable_roles.clone(),
             max_depth: self.config.max_depth,
             visible_only: self.config.visible_check_enabled,
             clickable_only: !self.config.ignore_clickable_check,
-            strategy: self.config.strategy_for(ctx.focused_app),
+            strategy: if matches!(
+                self.config.scan_scope,
+                crate::api::UiScanScope::Screen | crate::api::UiScanScope::All
+            ) {
+                self.config.strategy
+            } else {
+                self.config.strategy_for(ctx.focused_app)
+            },
             vision: self.config.vision.clone(),
             app: ctx.focused_app.cloned(),
         })
@@ -1515,10 +1535,14 @@ impl HintMode {
             ModeEvent::PointerMoved(_)
                 if self.session.active
                     && !self.session.finished
-                    && self
-                        .session
-                        .scan_bounds
-                        .is_some_and(|bounds| bounds != ctx.active_bounds()) =>
+                    && self.session.scan_bounds.is_some_and(|bounds| {
+                        bounds
+                            != if self.config.scan_scope == crate::api::UiScanScope::All {
+                                crate::api::Screen::virtual_bounds(ctx.screens)
+                            } else {
+                                ctx.active_bounds()
+                            }
+                    }) =>
             {
                 self.request_scan(ctx)
             }
@@ -4144,15 +4168,17 @@ mod tests {
                     let packed: Vec<_> = placements
                         .iter()
                         .map(|(index, _)| {
-                            mode.overlap_plan
-                                .layer_info(*index)
-                                .map_or(u32::MAX, |(layer, depth)| {
-                                    ((depth as u32) << 16) | layer as u32
-                                })
+                            mode.overlap_plan.layer_info(*index).map_or(
+                                crate::api::presentation::hint_cache::LayerInfo::default(),
+                                |(layer, depth)| crate::api::presentation::hint_cache::LayerInfo {
+                                    layer,
+                                    depth,
+                                },
+                            )
                         })
                         .collect();
                     let mut general = VisualLayerPlan::default();
-                    general.finish(&placements, count, &packed, mode.overlap_plan.layer_count());
+                    general.finish(&placements, count, packed, mode.overlap_plan.layer_count());
                     assert!(!general.is_canonical_stack());
                     for cycle in [0, 1, count / 2, count - 1] {
                         mode.overlap_cycle = cycle;
@@ -4583,6 +4609,141 @@ mod tests {
         assert!(request.id > old_scan_id);
         assert_eq!(request.bounds, Some(env.screens[1].bounds));
         assert_eq!(mode.session.scan_bounds, Some(env.screens[1].bounds));
+    }
+
+    #[test]
+    fn all_displays_share_one_scan_and_pointer_crossing_preserves_its_labels() {
+        let mut config = Config::default();
+        config.ui_hint.scan_scope = crate::api::UiScanScope::All;
+        let mut env = Env::with(config);
+        env.screens.push(Screen {
+            bounds: Rect::new(-1400.0, -100.0, 1200.0, 900.0),
+            work_area: Rect::new(-1400.0, -100.0, 1200.0, 900.0),
+            is_primary: false,
+            scale: 2.0,
+            name: None,
+        });
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        let out = activate(&mut mode, &env);
+        let request = out
+            .iter()
+            .find_map(|command| match command {
+                Command::ScanUi(request) => Some(request),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(request.scope, crate::api::UiScanScope::All);
+        assert_eq!(request.bounds, Some(Screen::virtual_bounds(&env.screens)));
+        assert_eq!(
+            request.capture_regions().collect::<Vec<_>>(),
+            env.screens
+                .iter()
+                .map(|screen| screen.bounds)
+                .collect::<Vec<_>>()
+        );
+        let old_scan_id = request.id;
+        let targets: Vec<_> = (0..800)
+            .map(|index| {
+                let mut item = target(
+                    if index % 2 == 0 {
+                        "Primary"
+                    } else {
+                        "Secondary"
+                    },
+                    0.0,
+                );
+                item.rect = Rect::new(
+                    if index % 2 == 0 { 0.0 } else { -1400.0 } + (index / 2 % 20) as f64 * 48.0,
+                    (index / 40) as f64 * 38.0,
+                    24.0,
+                    24.0,
+                );
+                item
+            })
+            .collect();
+        let mut previous = 0;
+        for count in [2, 9, 10, 81, 82, 512, 513, 729, 730, 800] {
+            let mut batch = targets[previous..count].to_vec();
+            // Native first-element previews can reappear in the complete query.
+            batch.push(targets[0].clone());
+            let out = mode.handle_owned(
+                ModeEvent::UiScanned(UiScanResult {
+                    id: old_scan_id,
+                    targets: batch,
+                    retired: Vec::new(),
+                    status: UiScanStatus::Partial,
+                }),
+                &env.ctx(),
+            );
+            assert_eq!(mode.session.hints.len(), count);
+            let mut codes: Vec<_> = mode
+                .session
+                .hints
+                .iter()
+                .map(|hint| hint.label.as_str())
+                .collect();
+            codes.sort_unstable();
+            assert!(codes.windows(2).all(|pair| !pair[1].starts_with(pair[0])));
+            let scene = scene_of(&out).materialized();
+            assert_eq!(scene.labels.len(), count);
+            let mut drawn: Vec<_> = scene
+                .labels
+                .iter()
+                .map(|label| label.text.as_str())
+                .collect();
+            drawn.sort_unstable();
+            assert_eq!(
+                drawn, codes,
+                "both displays must draw each code exactly once"
+            );
+            previous = count;
+        }
+        let labels: Vec<_> = mode
+            .session
+            .hints
+            .iter()
+            .map(|hint| hint.label.clone())
+            .collect();
+        env.cursor = Point::new(-500.0, 200.0);
+        let moved = mode.handle(&ModeEvent::PointerMoved(env.cursor), &env.ctx());
+        assert!(
+            !moved
+                .iter()
+                .any(|command| matches!(command, Command::ScanUi(_)))
+        );
+        assert_eq!(mode.session.scan_id, old_scan_id);
+        assert_eq!(
+            mode.session
+                .hints
+                .iter()
+                .map(|hint| hint.label.clone())
+                .collect::<Vec<_>>(),
+            labels
+        );
+
+        let search = press(&mut mode, &env, "/");
+        assert_eq!(
+            scene_of(&search).clip,
+            Some(Screen::virtual_bounds(&env.screens)),
+            "search must preserve labels on every selected display"
+        );
+        let changed = mode.handle(&ModeEvent::TextChanged("Primary".into()), &env.ctx());
+        assert_eq!(
+            scene_of(&changed).clip,
+            Some(Screen::virtual_bounds(&env.screens))
+        );
+        assert_eq!(mode.session.hints.len(), 400);
+        let restored = mode.handle(&ModeEvent::TextChanged(String::new()), &env.ctx());
+        let scene = scene_of(&restored).materialized();
+        let mut drawn: Vec<_> = scene
+            .labels
+            .iter()
+            .filter(|label| label.z_index < 10_000)
+            .map(|label| label.text.as_str())
+            .collect();
+        drawn.sort_unstable();
+        assert_eq!(drawn.len(), 800);
+        assert!(drawn.windows(2).all(|pair| !pair[1].starts_with(pair[0])));
     }
 
     #[test]

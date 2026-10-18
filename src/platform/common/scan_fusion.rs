@@ -3,10 +3,7 @@
 use super::{
     scan_accumulator::ScanAccumulator, scan_mailbox::ScanMailbox, spatial_index::TargetSource,
 };
-use crate::api::{
-    UiTarget,
-    command::{MAX_UI_SCAN_TARGETS, UiScanStatus},
-};
+use crate::api::{UiTarget, command::UiScanStatus};
 use crate::support::worker::WorkerJoin;
 use smallvec::SmallVec;
 use std::collections::VecDeque;
@@ -25,6 +22,7 @@ type Current = Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub(crate) struct Options {
     pub(crate) id: u64,
+
     pub(crate) generation: u64,
     pub(crate) threshold: f64,
     pub(crate) output: Arc<ScanMailbox>,
@@ -35,7 +33,6 @@ pub(crate) struct Options {
 struct Lane {
     source: TargetSource,
     batches: VecDeque<std::vec::IntoIter<UiTarget>>,
-    submitted: usize,
 }
 #[derive(Default)]
 struct InboxState {
@@ -49,6 +46,7 @@ struct InboxState {
 }
 struct Inbox {
     id: u64,
+
     cancelled: AtomicBool,
     state: Mutex<InboxState>,
     #[cfg(test)]
@@ -60,52 +58,34 @@ pub(crate) struct Sink {
     wake: mpsc::SyncSender<()>,
 }
 impl Sink {
-    /// Reserve bounded storage, move the ready buffer, and wake once. No fusion,
+    /// Move the complete ready buffer and wake once. No fusion,
     /// native query, capacity wait, or dependency on another source occurs here.
-    pub(crate) fn submit(&self, source: TargetSource, mut targets: Vec<UiTarget>) -> usize {
+    pub(crate) fn submit(&self, source: TargetSource, targets: Vec<UiTarget>) -> usize {
         if targets.is_empty() || self.inbox.cancelled.load(Ordering::Acquire) {
             return 0;
         }
-        let (index, accepted) = {
-            let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.finished || self.inbox.cancelled.load(Ordering::Acquire) {
-                return 0;
-            }
-            let index = state
-                .lanes
-                .iter()
-                .position(|l| l.source == source)
-                .unwrap_or_else(|| {
-                    state.lanes.push(Lane {
-                        source,
-                        batches: VecDeque::new(),
-                        submitted: 0,
-                    });
-                    state.lanes.len() - 1
-                });
-            let lane = &mut state.lanes[index];
-            let accepted = targets
-                .len()
-                .min(MAX_UI_SCAN_TARGETS.saturating_sub(lane.submitted));
-            lane.submitted += accepted;
-            (index, accepted)
-        };
-        // Drop an oversized provider's excess outside the shared submission lock.
-        targets.truncate(accepted);
-        if accepted == 0 {
+        let accepted = targets.len();
+        let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.finished || self.inbox.cancelled.load(Ordering::Acquire) {
             return 0;
         }
-        {
-            let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.finished || self.inbox.cancelled.load(Ordering::Acquire) {
-                return 0;
-            }
-            if state.lanes[index].batches.is_empty() {
-                state.ready.push_back(index);
-            }
-            state.lanes[index].batches.push_back(targets.into_iter());
-            state.version += 1;
+        let index = state
+            .lanes
+            .iter()
+            .position(|lane| lane.source == source)
+            .unwrap_or_else(|| {
+                state.lanes.push(Lane {
+                    source,
+                    batches: VecDeque::new(),
+                });
+                state.lanes.len() - 1
+            });
+        if state.lanes[index].batches.is_empty() {
+            state.ready.push_back(index);
         }
+        state.lanes[index].batches.push_back(targets.into_iter());
+        state.version += 1;
+        drop(state);
         let _ = self.wake.try_send(());
         accepted
     }
@@ -226,6 +206,7 @@ impl Handle {
     pub(crate) fn begin(&self, options: Options) -> Sink {
         let inbox = Arc::new(Inbox {
             id: options.id,
+
             cancelled: AtomicBool::new(false),
             state: Mutex::new(InboxState::default()),
             #[cfg(test)]
@@ -397,7 +378,8 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
             if let Some((old, _, _)) = current.take() {
                 old.inbox.discard();
             }
-            current = Some((job, ScanAccumulator::new(), Budget::new(shared.maximum)));
+            let accumulator = ScanAccumulator::new();
+            current = Some((job, accumulator, Budget::new(shared.maximum)));
         }
         if stopping {
             if let Some((job, _, _)) = current.take() {
@@ -560,22 +542,16 @@ mod tests {
         assert!(output.take().is_none());
     }
     #[test]
-    fn empty_and_oversized_submissions_do_not_starve_other_sources() {
+    fn empty_and_large_submissions_do_not_starve_other_sources() {
         let (sink, receiver) = detached();
         assert_eq!(sink.submit(TargetSource::Contour, Vec::new()), 0);
         assert!(receiver.try_recv().is_err());
         assert_eq!(
-            sink.submit(
-                TargetSource::Accessibility,
-                targets(0, MAX_UI_SCAN_TARGETS + 5)
-            ),
-            MAX_UI_SCAN_TARGETS
+            sink.submit(TargetSource::Accessibility, targets(0, 10_025)),
+            10_025
         );
-        assert_eq!(sink.submit(TargetSource::Accessibility, targets(0, 1)), 0);
-        assert_eq!(
-            sink.submit(TargetSource::SystemOcr, targets(MAX_UI_SCAN_TARGETS, 1)),
-            1
-        );
+        assert_eq!(sink.submit(TargetSource::Accessibility, targets(0, 1)), 1);
+        assert_eq!(sink.submit(TargetSource::SystemOcr, targets(10_025, 1)), 1);
         let Step::Targets(source, first) = sink.inbox.take(MAX_FUSION_BATCH) else {
             panic!("missing first quantum")
         };

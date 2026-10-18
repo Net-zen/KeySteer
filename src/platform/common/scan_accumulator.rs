@@ -2,7 +2,6 @@
 
 use smallvec::SmallVec;
 
-use crate::api::command::MAX_UI_SCAN_TARGETS;
 use crate::api::{Rect, SemanticRole, UiTarget};
 
 use super::spatial_index::{TargetIndex, TargetSource};
@@ -67,10 +66,7 @@ impl ScanAccumulator {
             && targets.iter().any(|t| t.role == SemanticRole::StaticText);
         if has_text {
             for t in &targets {
-                if t.role == SemanticRole::StaticText
-                    && !t.name.is_empty()
-                    && self.visual_text.len() < MAX_UI_SCAN_TARGETS
-                {
+                if t.role == SemanticRole::StaticText && !t.name.is_empty() {
                     // Evidence needs only geometry and normalized text, not a
                     // second copy of the provider's metadata/boxed strings.
                     let mut name = String::with_capacity(t.name.len());
@@ -112,7 +108,6 @@ impl ScanAccumulator {
         } else {
             self.insert_targets::<false>(&mut targets, source, threshold);
         }
-        debug_assert!(self.index.len() <= MAX_UI_SCAN_TARGETS);
         let mut retired = self.index.take_retired();
         if !retired.is_empty() {
             let descriptions: Vec<_> = targets
@@ -238,9 +233,7 @@ impl ScanAccumulator {
                 );
                 if let Some(index) = existing {
                     self.search_targets[index] = Some(target.clone());
-                } else if self.search_targets.len() < MAX_UI_SCAN_TARGETS * 2
-                    && self.search_spatial.store(target.rect)
-                {
+                } else if self.search_spatial.store(target.rect) {
                     self.search_targets.push(Some(target.clone()));
                 }
             }

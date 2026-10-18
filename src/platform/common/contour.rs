@@ -1,10 +1,8 @@
 //! Only borrows a bounded luma frame; no native APIs or retained screen pixels.
 
-use crate::api::command::MAX_UI_SCAN_TARGETS;
 use crate::api::{Rect, SemanticRole, UiTarget};
 
 pub(crate) const MAX_PIXELS: usize = 2_073_600;
-const MAX_COMPONENTS: usize = 32_768;
 const LOW: u16 = 70;
 const HIGH: u16 = 220;
 
@@ -29,10 +27,10 @@ pub(crate) fn candidate_limit(
     strategy: crate::api::UiScanStrategy,
     options: &crate::api::VisionOptions,
 ) -> usize {
-    if strategy == crate::api::UiScanStrategy::Hybrid {
-        MAX_UI_SCAN_TARGETS
+    if strategy == crate::api::UiScanStrategy::Hybrid || options.rectangle_max_candidates == 0 {
+        usize::MAX
     } else {
-        options.rectangle_max_candidates.min(MAX_UI_SCAN_TARGETS)
+        options.rectangle_max_candidates
     }
 }
 
@@ -96,14 +94,7 @@ pub(crate) fn detect_fragments(
     if !hierarchy(&mut components, &cancelled) {
         return Vec::new();
     }
-    filter(
-        &components,
-        width,
-        height,
-        bounds,
-        limit.min(MAX_UI_SCAN_TARGETS),
-        &cancelled,
-    )
+    filter(&components, width, height, bounds, limit, &cancelled)
 }
 
 pub(crate) fn detect(
@@ -138,7 +129,7 @@ pub(crate) fn detect(
                 .is_some_and(|i| i.width * i.height >= 0.9 * t.rect.width * t.rect.height)
         })
     }));
-    output.truncate(limit.min(MAX_UI_SCAN_TARGETS));
+    output.truncate(limit);
     output
 }
 
@@ -408,11 +399,6 @@ fn components(
         }
         if pixels[i] == 0 {
             continue;
-        }
-        // Bound hierarchy cost on noisy photographs. Refuse an incomplete
-        // hierarchy rather than emit children of a discarded parent.
-        if result.len() == MAX_COMPONENTS {
-            return Some(Vec::new());
         }
         let mut c = Component {
             left: i % w,

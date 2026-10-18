@@ -5,6 +5,10 @@ outline: 2
 
 # Release notes
 
+## 0.12.2
+
+- UIHint now supports `scan_scope = "all"` to scan visible windows across all displays.
+
 ## 0.12.1
 
 - Improved pointer movement and scrolling responsiveness on Windows and macOS.

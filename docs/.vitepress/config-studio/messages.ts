@@ -464,6 +464,7 @@ export const englishMessages: Record<string, string> = {
   "当前激活窗口优先": "Active window first",
   "鼠标下窗口（默认）": "Window under pointer (default)",
   "当前整屏": "Whole current screen",
+  "全部显示器": "All displays",
   "UI 扫描": "UI scanning",
   "辅助功能、OCR、轮廓检测，或全部并行合并": "Accessibility, OCR, contours, or all combined",
   "Hybrid（默认）": "Hybrid (default)",

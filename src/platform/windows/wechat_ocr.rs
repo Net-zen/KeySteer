@@ -36,7 +36,6 @@ use super::vision::{CaptureGeometry, image_to_desktop, valid_target_rect};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
 const MAX_MESSAGE: usize = 8 * 1024 * 1024;
-const MAX_OCR_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 const MAX_OCR_TEXT_BYTES: usize = 4 * 1024;
 const MAX_OCR_BATCH_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const READY_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1043,10 +1042,7 @@ where
                     && item.rate.is_finite()
                     && item.right > item.left
                     && item.bottom > item.top;
-                if !plausible
-                    || items.len() >= MAX_OCR_TARGETS
-                    || text_bytes >= MAX_OCR_BATCH_TEXT_BYTES
-                {
+                if !plausible || text_bytes >= MAX_OCR_BATCH_TEXT_BYTES {
                     continue;
                 }
                 let remaining = MAX_OCR_BATCH_TEXT_BYTES - text_bytes;
@@ -1452,16 +1448,16 @@ mod tests {
     }
 
     #[test]
-    fn json_deserializer_caps_retained_items_and_text() {
+    fn json_deserializer_keeps_large_batches_and_bounds_text_bytes() {
         let item = r#"{"left":1,"top":1,"right":3,"bottom":3,"text":"x"}"#;
         let json = format!(
             "{{\"errcode\":0,\"ocr_response\":[{}]}}",
-            std::iter::repeat_n(item, MAX_OCR_TARGETS + 25)
+            std::iter::repeat_n(item, 10_025)
                 .collect::<Vec<_>>()
                 .join(",")
         );
         let response: WechatResponse = serde_json::from_slice(json.as_bytes()).unwrap();
-        assert_eq!(response.ocr_response.len(), MAX_OCR_TARGETS);
+        assert_eq!(response.ocr_response.len(), 10_025);
 
         let long = "测".repeat(MAX_OCR_TEXT_BYTES);
         let json = format!(

@@ -396,7 +396,7 @@ Normal defaults to `"?" = "key_help"`; targeting modes can inherit it. Keep this
 
 ```toml
 [ui_hint]
-scan_scope = "window" # window / active / screen
+scan_scope = "window" # window / active / screen / all
 ```
 
 | `scan_scope` | Area |
@@ -404,10 +404,13 @@ scan_scope = "window" # window / active / screen
 | `window` (default) | Pointer's window, then active window if unavailable, then pointer's display |
 | `active` | Active window, then pointer's window, then pointer's display |
 | `screen` | Pointer's whole display, without combining other displays |
+| `all` | Visible windows and UI on all displays; spanning windows are traversed once |
 
 All strategies use these rules on both platforms. The default attempts to activate the pointer's window. Once selected, empty results, source failure, or activation failure do not change the scope.
 
-Changing displays or targets clears old labels and scans again. Ordinary pointer movement does not keep rescanning. Press `Primary+R` to refresh manually.
+`screen` / `all` use the global `strategy`, without applying the foreground application's `app_configs` strategy to other applications. Visibility checks exclude fully covered windows and retain visible portions of controls; visual sources read the composited desktop. Results grow dynamically with no default 10,000-target ceiling. For visual-only scans, `rectangle_max_candidates = 0` means unlimited; explicit positive values still apply, and Hybrid ignores that option. Timeouts, cancellation and image-size protections remain active.
+
+Changing displays or targets clears old labels and scans again; moving between displays within `all` preserves labels. Ordinary pointer movement does not keep rescanning. Press `Primary+R` to refresh manually.
 
 ## Window target source
 

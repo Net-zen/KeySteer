@@ -732,14 +732,6 @@ fn recognize_system_provider(
                     continue;
                 }
                 let index = active.len();
-                if accepted >= MAX_OCR_TARGETS {
-                    if let Err(error) = tile.bitmap.close() {
-                        cleanup_failures.push(error);
-                    }
-                    active.push(None);
-                    let _ = credit_sender.send(());
-                    continue;
-                }
                 if tile.geometry.width > descriptor.maximum_dimension
                     || tile.geometry.height > descriptor.maximum_dimension
                 {
@@ -822,7 +814,7 @@ fn recognize_system_provider(
         ));
     }
 
-    while pending != 0 && accepted < MAX_OCR_TARGETS {
+    while pending != 0 {
         drain_completed_system_tiles(
             &mut active,
             &mut pending,
@@ -833,7 +825,7 @@ fn recognize_system_provider(
             &mut operational_failures,
             &mut cleanup_failures,
         )?;
-        if pending == 0 || accepted >= MAX_OCR_TARGETS {
+        if pending == 0 {
             break;
         }
         if cancellation.is_cancelled() || Instant::now() >= deadline {
@@ -941,7 +933,7 @@ fn complete_system_tile(
             &result,
             completed.tile.geometry,
             completed.tile.core_bounds,
-            MAX_OCR_TARGETS.saturating_sub(*accepted),
+            usize::MAX.saturating_sub(*accepted),
             result_mailbox,
             started,
         ) {

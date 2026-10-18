@@ -5,9 +5,6 @@
 //! [`Command`]s. It never touches a platform API, which is what makes the
 //! built-in modes and third-party plugins interchangeable.
 
-/// Shared per-source and merged UI scan ceiling. Buffers grow with actual results.
-pub const MAX_UI_SCAN_TARGETS: usize = 10_000;
-
 use std::iter::FusedIterator;
 use std::ops::Index;
 use std::sync::Arc;
@@ -659,7 +656,7 @@ pub struct VisionOptions {
     pub request_timeout_ms: u64,
     pub minimum_confidence: f64,
     pub merge_iou_threshold: f64,
-    /// Vision/Contour candidate cap; Hybrid uses MAX_UI_SCAN_TARGETS.
+    /// Optional Vision/Contour candidate limit; zero is unlimited. Hybrid ignores it.
     pub rectangle_max_candidates: usize,
     pub rectangle_min_size: f64,
     pub rectangle_min_aspect: f64,
@@ -684,7 +681,7 @@ impl Default for VisionOptions {
             request_timeout_ms: 5_000,
             minimum_confidence: 0.0,
             merge_iou_threshold: 0.5,
-            rectangle_max_candidates: MAX_UI_SCAN_TARGETS,
+            rectangle_max_candidates: 0,
             rectangle_min_size: 0.01,
             rectangle_min_aspect: 0.3,
             rectangle_max_aspect: 10.0,
@@ -710,11 +707,12 @@ pub enum UiScanScope {
     Window,
     Active,
     Screen,
+    All,
 }
 
 impl UiScanScope {
     /// Only metadata lookup falls back; provider failure or empty results never
-    /// select another scope. None means the caller should use the pointer display.
+    /// select another scope. None uses the requested display area.
     pub(crate) fn resolve_window<T>(
         self,
         mut lookup: impl FnMut(Self) -> Option<T>,
@@ -722,7 +720,7 @@ impl UiScanScope {
         let order = match self {
             Self::Window => [Self::Window, Self::Active],
             Self::Active => [Self::Active, Self::Window],
-            Self::Screen => return None,
+            Self::Screen | Self::All => return None,
         };
         order.into_iter().find_map(|source| {
             lookup(source).map(|window| ResolvedScanWindow {
@@ -763,16 +761,20 @@ mod scan_scope_tests {
                 }
             }
         }
-        assert_eq!(
-            Screen.resolve_window::<()>(|_| panic!("screen must not query windows")),
-            None
-        );
+        for scope in [Screen, All] {
+            assert_eq!(
+                scope.resolve_window::<()>(|_| panic!("display scope must not query windows")),
+                None
+            );
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiScanRequest {
     pub scope: UiScanScope,
+    /// Selected displays; empty means the single `bounds` rectangle.
+    pub screen_bounds: Vec<Rect>,
     pub id: u64,
     /// Soft accessibility traversal budget. Platform providers may spend up
     /// to this long in one native transaction before returning control.
@@ -785,6 +787,23 @@ pub struct UiScanRequest {
     pub strategy: UiScanStrategy,
     pub vision: VisionOptions,
     pub app: Option<FocusedApp>,
+}
+
+impl UiScanRequest {
+    /// Iterate physical display intersections, preserving the one-region path.
+    pub(crate) fn capture_regions(&self) -> impl Iterator<Item = Rect> + '_ {
+        let fallback = self
+            .screen_bounds
+            .is_empty()
+            .then_some(self.bounds)
+            .flatten();
+        fallback
+            .into_iter()
+            .chain(self.screen_bounds.iter().filter_map(|screen| {
+                self.bounds
+                    .map_or(Some(*screen), |bounds| screen.intersect(&bounds))
+            }))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -87,6 +87,8 @@ fn native_event_loop_services_due_timers_and_async_scan_results() {
                 ModeEvent::Activated { .. } => CommandBatch::two(
                     Command::SetTimer { id: "native-timer".into(), delay: Duration::ZERO, repeating: false },
                     Command::scan_ui(crate::api::UiScanRequest {
+                        screen_bounds: Vec::new(),
+
                         id: 77, scope: crate::api::UiScanScope::Active,
                         timeout_ms: 2_500, bounds: None, roles: Vec::new(), max_depth: 0,
                         visible_only: false, clickable_only: false,

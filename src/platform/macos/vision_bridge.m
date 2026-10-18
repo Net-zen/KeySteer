@@ -5,6 +5,7 @@
 
 #include <stdlib.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
@@ -59,7 +60,7 @@ enum {
     NMK_VISION_CONTEXT_CHANGED = 4,
 };
 
-enum { NMK_VISION_ABI_VERSION = 3, NMK_MAX_VISION_REGIONS = 10000 };
+enum { NMK_VISION_ABI_VERSION = 3 };
 
 static _Atomic uint64_t latestVisionScan = 0;
 static _Atomic bool captureInFlight = false;
@@ -322,9 +323,6 @@ NmkVisionResult *NmkDetectVisionElements(
     uint64_t scanID) {
     @autoreleasepool {
         config.timeout_ms = MIN(MAX(config.timeout_ms, 1), 30000);
-        config.rectangle_max_candidates = MIN(
-            MAX(config.rectangle_max_candidates, 1),
-            (uint64_t)NMK_MAX_VISION_REGIONS);
         if (!scanIsCurrent(scanID)) {
             return resultWithStatus(NMK_VISION_CONTEXT_CHANGED, nil);
         }
@@ -396,8 +394,6 @@ NmkVisionResult *NmkRecognizeVisionImage(
         if (image == NULL || !scanIsCurrent(scanID)) {
             return resultWithStatus(NMK_VISION_CONTEXT_CHANGED, nil);
         }
-        config.rectangle_max_candidates = MIN(MAX(config.rectangle_max_candidates, 1),
-            (uint64_t)NMK_MAX_VISION_REGIONS);
         NSMutableArray<VNRequest *> *requests = [NSMutableArray array];
         VNDetectRectanglesRequest *rectangleRequest = nil;
         VNRecognizeTextRequest *textRequest = nil;
@@ -428,9 +424,13 @@ NmkVisionResult *NmkRecognizeVisionImage(
 
         NSArray<VNRectangleObservation *> *rectangleResults = rectangleRequest.results ?: @[];
         NSArray<VNRecognizedTextObservation *> *textResults = textRequest.results ?: @[];
-        NSUInteger capacity = MIN(
-            (NSUInteger)NMK_MAX_VISION_REGIONS,
-            rectangleResults.count + textResults.count);
+        if (rectangleResults.count > SIZE_MAX - textResults.count) {
+            return resultWithStatus(NMK_VISION_FAILED, @"Vision result size overflow");
+        }
+        NSUInteger capacity = rectangleResults.count + textResults.count;
+        if (capacity > SIZE_MAX / sizeof(NmkVisionRegion)) {
+            return resultWithStatus(NMK_VISION_FAILED, @"Vision result buffer size overflow");
+        }
         NmkVisionResult *result = resultWithStatus(NMK_VISION_OK, nil);
         if (result == NULL) return NULL;
         result->captured_bounds = capturedBounds;

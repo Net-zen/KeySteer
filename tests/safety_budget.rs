@@ -71,7 +71,11 @@ use std::path::{Path, PathBuf};
 // and paired removal before the retained main-thread observer is released.
 // Callbacks only invalidate an atomic cache and wake the loop; no raw context,
 // engine borrow, Send/Sync override or ownership transfer is introduced.
-const MAX_UNSAFE_EXPRESSIONS: usize = 408;
+// Whole-display UI Hint adds one read-only FindFirstBuildCache call before the
+// existing complete query, to stream a control while that bulk call is pending.
+// It borrows the same worker-owned MTA interfaces and finite provider timeout.
+// No raw pointer ownership, callback, or Send/Sync surface is added.
+const MAX_UNSAFE_EXPRESSIONS: usize = 409;
 const MAX_UNSAFE_FILES: usize = 42;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
@@ -96,7 +100,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/workspace.rs", 3),
     ("src/platform/windows/text_prompt.rs", 17),
     ("src/platform/macos/vision.rs", 7),
-    ("src/platform/windows/accessibility.rs", 30),
+    ("src/platform/windows/accessibility.rs", 31),
     ("src/platform/windows/autostart.rs", 4),
     ("src/platform/windows/gpu_overlay.rs", 28),
     ("src/platform/windows/hook.rs", 8),

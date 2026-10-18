@@ -1,6 +1,6 @@
 //! Bounded asynchronous macOS Accessibility traversal for UI hints.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_float, c_int, c_void};
 use std::ptr;
 use std::time::{Duration, Instant};
@@ -26,7 +26,6 @@ const AX_CANNOT_COMPLETE: i32 = -25204;
 const AX_VALUE_CGPOINT: i32 = 1;
 const AX_VALUE_CGSIZE: i32 = 2;
 const SCAN_BUDGET: Duration = Duration::from_millis(500);
-const MAX_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 // Apple declares AXUIElementSetMessagingTimeout's value as a C `float`.
 // Keeping the constant typed prevents an accidental ABI-widening to `double`.
 const NODE_TIMEOUT_SECONDS: c_float = 0.05;
@@ -441,7 +440,6 @@ pub(crate) fn scan_process_stream(
         attributes,
         allowed_roles,
         deadline: Instant::now() + SCAN_BUDGET,
-        target_count: 0,
         on_batch: &mut on_batch,
         is_current: &is_current,
         seen: HashSet::with_capacity(128),
@@ -461,7 +459,7 @@ pub(crate) fn scan_screen_stream(
     let bounds = request
         .bounds
         .ok_or("screen scan requires display bounds")?;
-    let visible = window_manager::visible_windows()?;
+    let visible = window_manager::scan_windows()?;
     let deadline = Instant::now() + Duration::from_millis(request.timeout_ms.clamp(1, 30_000));
     let mut scan = Scan {
         request,
@@ -469,46 +467,73 @@ pub(crate) fn scan_screen_stream(
         attributes: AxAttributes::new(),
         allowed_roles: ax_roles_for(&request.roles).into_iter().collect(),
         deadline,
-        target_count: 0,
         on_batch: &mut on_batch,
         is_current: &is_current,
         seen: HashSet::with_capacity(128),
         occluders: Vec::new(),
     };
-    let windows_key = CFString::new("AXWindows");
+    let mut applications = HashMap::new();
     let minimized_key = CFString::new("AXMinimized");
     for item in visible
         .iter()
         .filter(|w| w.bounds.intersect(&bounds).is_some())
-        .take(64)
     {
-        if !is_current() || Instant::now() >= deadline || scan.target_count >= MAX_TARGETS {
+        if !is_current() || Instant::now() >= deadline {
             break;
         }
-        if item.pid as u32 != std::process::id()
-            && let Ok(app) = AxApplication::new(item.pid)
-            && let Some(windows) = copy_array_attribute(app.as_ptr(), &windows_key)
+        if crate::platform::common::window_visibility::visible_part(
+            item.bounds,
+            bounds,
+            &scan.occluders,
+            &request.screen_bounds,
+        )
+        .is_none()
         {
-            for raw in windows.iter() {
-                if !is_current() || Instant::now() >= deadline {
-                    break;
-                }
-                if !is_ax_element(*raw) || copy_bool_attribute(*raw, &minimized_key) == Some(true) {
-                    continue;
-                }
-                let Some(frame) = element_rect(*raw, &scan.attributes) else {
-                    continue;
-                };
-                if (frame.x - item.bounds.x).abs() > 2.0
-                    || (frame.y - item.bounds.y).abs() > 2.0
-                    || (frame.width - item.bounds.width).abs() > 2.0
-                    || (frame.height - item.bounds.height).abs() > 2.0
-                {
-                    continue;
-                }
+            continue;
+        }
+        {
+            let windows = applications.entry(item.pid).or_insert_with(|| {
+                let mut windows = Vec::new();
+                window_manager::application_windows(
+                    item.pid,
+                    NODE_TIMEOUT_SECONDS,
+                    false,
+                    &|| !is_current() || Instant::now() >= deadline,
+                    |window| {
+                        if !is_current()
+                            || Instant::now() >= deadline
+                            || copy_bool_attribute(window.window.as_ptr(), &minimized_key)
+                                == Some(true)
+                        {
+                            return;
+                        }
+                        if let Some(frame) = element_rect(window.window.as_ptr(), &scan.attributes)
+                        {
+                            let title = copy_string_attribute(
+                                window.window.as_ptr(),
+                                &window.attributes.title,
+                            )
+                            .unwrap_or_default();
+                            windows.push((window, frame, title));
+                        }
+                    },
+                );
+                windows
+            });
+            let candidates: smallvec::SmallVec<[(Rect, &str); 8]> = windows
+                .iter()
+                .map(|(_, frame, title)| (*frame, title.as_str()))
+                .collect();
+            let matching = crate::platform::common::window_visibility::visible_candidates(
+                &candidates,
+                item,
+                &visible,
+            );
+            // An ambiguous AX identity must not expose a covered or off-Space window.
+            if let [index] = matching.as_slice() {
+                let (window, frame, _) = &windows[*index];
                 scan.scan_bounds = frame.intersect(&bounds);
-                scan.visit((*raw).cast(), 0);
-                break;
+                scan.visit(window.window.as_ptr(), 0);
             }
         }
         if item.pid as u32 != std::process::id() {
@@ -524,7 +549,6 @@ struct Scan<'a> {
     attributes: AxAttributes,
     allowed_roles: HashSet<String>,
     deadline: Instant,
-    target_count: usize,
     on_batch: &'a mut dyn FnMut(Vec<UiTarget>),
     is_current: &'a dyn Fn() -> bool,
     seen: HashSet<(i64, i64, i64, i64)>,
@@ -535,7 +559,6 @@ impl Scan<'_> {
     fn visit(&mut self, element: AXUIElementRef, depth: u32) {
         if !is_ax_element(element)
             || depth > self.request.max_depth
-            || self.target_count >= MAX_TARGETS
             || Instant::now() >= self.deadline
             || !(self.is_current)()
         {
@@ -549,7 +572,15 @@ impl Scan<'_> {
             self.request.roles.is_empty() || self.allowed_roles.contains(role.as_str());
         let rect = role_allowed
             .then(|| element_rect(element, &self.attributes))
-            .flatten();
+            .flatten()
+            .and_then(|rect| {
+                crate::platform::common::window_visibility::visible_part(
+                    rect,
+                    self.scan_bounds.unwrap_or(rect),
+                    &self.occluders,
+                    &self.request.screen_bounds,
+                )
+            });
         let in_bounds = rect.is_some_and(|rect| {
             self.scan_bounds
                 .is_none_or(|bounds| bounds.contains(&rect.center()))
@@ -585,7 +616,6 @@ impl Scan<'_> {
                     name: accessible_name(element, &self.attributes),
                     role: semantic_role,
                 }]);
-                self.target_count += 1;
             }
         }
 
@@ -602,10 +632,7 @@ impl Scan<'_> {
         };
         for child in &children {
             self.visit(*child, depth + 1);
-            if self.target_count >= MAX_TARGETS
-                || Instant::now() >= self.deadline
-                || !(self.is_current)()
-            {
+            if Instant::now() >= self.deadline || !(self.is_current)() {
                 break;
             }
         }

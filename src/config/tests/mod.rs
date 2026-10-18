@@ -1344,10 +1344,7 @@ fn scan_strategy_defaults_to_hybrid_and_allows_per_app_overrides() {
     assert_eq!(vision.request_timeout_ms, 5_000);
     assert_eq!(vision.minimum_confidence, 0.0);
     assert_eq!(vision.merge_iou_threshold, 0.5);
-    assert_eq!(
-        vision.rectangle_max_candidates,
-        crate::api::command::MAX_UI_SCAN_TARGETS
-    );
+    assert_eq!(vision.rectangle_max_candidates, 0);
     assert_eq!(vision.rectangle_min_size, 0.01);
     assert_eq!(vision.button_icon_max_size, 48.0);
     assert_eq!(vision.checkbox_max_size, 32.0);
@@ -1694,7 +1691,17 @@ fn ui_hint_scan_scope_defaults_and_round_trips() {
             .scan_scope,
         crate::api::UiScanScope::Active
     );
-    assert!(Config::parse("[ui_hint]\nscan_scope = 'all'\n").is_err());
+    let all = Config::parse("[ui_hint]\nscan_scope = 'all'\n").unwrap();
+    all.validate().unwrap();
+    assert_eq!(all.ui_hint.scan_scope, crate::api::UiScanScope::All);
+    assert_eq!(
+        Config::parse(&all.to_toml().unwrap())
+            .unwrap()
+            .ui_hint
+            .scan_scope,
+        crate::api::UiScanScope::All
+    );
+    assert!(Config::parse("[ui_hint]\nscreens = 'all'\n").is_err());
 }
 
 #[test]
@@ -1784,8 +1791,9 @@ fn temporary_passthrough_chords_round_trip_and_resolve_aliases() {
 }
 
 #[test]
-fn visual_candidate_limit_accepts_ten_thousand_but_remains_bounded() {
-    for count in [1, 2000, 10_000] {
+fn visual_candidate_limit_defaults_to_unlimited_and_accepts_explicit_limits() {
+    assert_eq!(Config::default().ui_hint.vision.rectangle_max_candidates, 0);
+    for count in [0, 1, 2000, 10_000, 100_025] {
         assert!(
             Config::parse(&format!(
                 "[ui_hint.vision]\nrectangle_max_candidates = {count}"
@@ -1794,20 +1802,7 @@ fn visual_candidate_limit_accepts_ten_thousand_but_remains_bounded() {
             .is_ok()
         );
     }
-    for count in [0, 10_001] {
-        assert!(
-            Config::parse(&format!(
-                "[ui_hint.vision]\nrectangle_max_candidates = {count}"
-            ))
-            .and_then(|config| config.validate())
-            .is_err()
-        );
-    }
-    let native = include_str!("../../platform/macos/vision_bridge.m");
-    assert!(native.contains(&format!(
-        "NMK_MAX_VISION_REGIONS = {}",
-        crate::api::command::MAX_UI_SCAN_TARGETS
-    )));
+    assert!(Config::parse("[ui_hint.vision]\nrectangle_max_candidates = -1").is_err());
 }
 
 #[test]

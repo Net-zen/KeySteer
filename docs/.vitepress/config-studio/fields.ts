@@ -290,6 +290,7 @@ export const frequentFields: ConfigField[] = [
     { value: 'window', label: '鼠标下窗口（默认）' },
     { value: 'active', label: '当前激活窗口优先' },
     { value: 'screen', label: '当前整屏' },
+    { value: 'all', label: '全部显示器' },
   ] },
   { path: 'ui_hint.strategy', label: 'UI 扫描', description: '辅助功能、OCR、轮廓检测，或全部并行合并', kind: 'select', options: [
     { value: 'vision', label: 'Vision' },

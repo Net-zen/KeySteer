@@ -147,7 +147,7 @@ pub struct WindowsBackend {
     foreground_watcher: Option<system_events::ForegroundWatcher>,
     status_item: Option<status_item::StatusItem>,
     console_control: Option<console_control::ConsoleControl>,
-    ui_automation: Option<accessibility::UiAutomationWorker>,
+    ui_automation: Vec<accessibility::UiAutomationWorker>,
     vision: vision::VisionWorker,
     prewarm_ocr: bool,
     update_worker: Option<crate::platform::common::update::UpdateWorker>,
@@ -240,19 +240,17 @@ impl WindowsBackend {
         // ready before the first Hint request. The worker does not inspect a
         // HWND until a scan is submitted, and vision-only startup owns no UIA
         // thread or COM resources.
-        let ui_automation = if strategy_prewarms_uia(strategy) {
+        let mut ui_automation = Vec::new();
+        if strategy_prewarms_uia(strategy) {
             match accessibility::UiAutomationWorker::start() {
-                Ok(worker) => Some(worker),
+                Ok(worker) => ui_automation.push(worker),
                 Err(error) => {
                     pending.push_back(BackendEvent::Warning(format!(
                         "Windows UI Automation prewarm failed; the first accessibility scan will retry: {error}"
                     )));
-                    None
                 }
             }
-        } else {
-            None
-        };
+        }
         let status_item = match status_item::StatusItem::new(event_tx.clone()) {
             Ok(item) => Some(item),
             Err(error) => {
@@ -522,10 +520,10 @@ impl WindowsBackend {
         if let Err(error) = self.vision.stop_until(deadline) {
             errors.push("vision worker", error);
         }
-        if let Some(worker) = self.ui_automation.as_mut() {
-            match worker.stop_until(deadline) {
+        for index in (0..self.ui_automation.len()).rev() {
+            match self.ui_automation[index].stop_until(deadline) {
                 Ok(()) => {
-                    self.ui_automation.take();
+                    self.ui_automation.remove(index);
                 }
                 Err(error) => errors.push("UI Automation worker", error),
             }
@@ -983,8 +981,24 @@ impl Backend for WindowsBackend {
             plan.strategy,
             UiScanStrategy::Vision | UiScanStrategy::Contour | UiScanStrategy::Hybrid
         );
-        if wants_uia && self.ui_automation.is_none() {
-            self.ui_automation = Some(accessibility::UiAutomationWorker::start()?);
+        let mut uia_workers = if wants_uia { plan.worker_count() } else { 0 };
+        while self.ui_automation.len() < uia_workers {
+            match accessibility::UiAutomationWorker::start() {
+                Ok(worker) => self.ui_automation.push(worker),
+                Err(error) if !self.ui_automation.is_empty() => {
+                    crate::report_warning!(
+                        "windows-uia",
+                        "cannot start a second UIA worker; continuing with one: {error}"
+                    );
+                    uia_workers = self.ui_automation.len();
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        // A retained second worker must not keep inspecting an older scan when
+        // the new request needs only one worker or only visual recognition.
+        for worker in &self.ui_automation[uia_workers..] {
+            worker.cancel(None);
         }
         let generation = self.scan_mailbox.begin(request_id);
         if let Some(process_id) = plan.activation_process() {
@@ -1021,13 +1035,18 @@ impl Backend for WindowsBackend {
         );
         let result = (|| {
             if wants_uia {
-                let worker = self.ui_automation.as_ref().ok_or_else(|| {
-                    "UI Automation worker was not retained after startup".to_string()
-                })?;
-                worker.submit(
+                let source = session.source("UI Automation");
+                if uia_workers > 1 {
+                    self.ui_automation[1].submit(
+                        Arc::clone(&plan),
+                        generation,
+                        accessibility::ScanWork::Preview(source.sink()),
+                    )?;
+                }
+                self.ui_automation[0].submit(
                     Arc::clone(&plan),
                     generation,
-                    session.source("UI Automation"),
+                    accessibility::ScanWork::Complete(source),
                 )?;
             }
             if wants_vision {
@@ -1043,8 +1062,8 @@ impl Backend for WindowsBackend {
         if result.is_err() {
             self.scan_fusion.cancel(request_id);
             self.scan_mailbox.cancel(request_id);
-            if let Some(worker) = self.ui_automation.as_ref() {
-                worker.cancel(request_id);
+            for worker in &self.ui_automation {
+                worker.cancel(Some(request_id));
             }
             self.vision.cancel(request_id);
         }
@@ -1054,8 +1073,8 @@ impl Backend for WindowsBackend {
     fn cancel_ui_scan(&mut self, id: u64) -> Result<(), String> {
         if self.scan_mailbox.cancel(id) {
             self.scan_fusion.cancel(id);
-            if let Some(worker) = self.ui_automation.as_ref() {
-                worker.cancel(id);
+            for worker in &self.ui_automation {
+                worker.cancel(Some(id));
             }
             self.vision.cancel(id);
         }

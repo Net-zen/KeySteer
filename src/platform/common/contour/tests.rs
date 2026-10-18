@@ -14,7 +14,7 @@ fn hybrid_always_combines_sources_and_ignores_legacy_visual_caps() {
             assert_eq!(sources(UiScanStrategy::Hybrid, &options), (true, true));
             assert_eq!(
                 candidate_limit(UiScanStrategy::Hybrid, &options),
-                MAX_UI_SCAN_TARGETS
+                usize::MAX
             );
             assert_eq!(
                 sources(UiScanStrategy::Vision, &options),
@@ -327,7 +327,7 @@ pub(crate) fn reference_detect(
 }
 
 #[test]
-fn ten_thousand_candidates_survive_component_and_output_budgets() {
+fn more_than_ten_thousand_candidates_survive_without_truncation() {
     // Separate connected components exercise the old 8192 cutoff as well as
     // filtering above 2000, without making normal tests run full-image Sobel.
     let side = 303;
@@ -346,10 +346,10 @@ fn ten_thousand_candidates_survive_component_and_output_budgets() {
         side,
         side,
         Rect::new(0.0, 0.0, side as f64, side as f64),
-        MAX_UI_SCAN_TARGETS,
+        usize::MAX,
         &|| false,
     );
-    assert_eq!(targets.len(), 10_000);
+    assert_eq!(targets.len(), 10_001);
 }
 
 fn reference_threshold_edges(

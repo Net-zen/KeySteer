@@ -425,10 +425,6 @@ impl TargetIndex {
                     })
             });
         }
-        if self.active.saturating_sub(suppressed.len()) >= crate::api::command::MAX_UI_SCAN_TARGETS
-        {
-            return false;
-        }
         if !self.spatial.store(rect) {
             return false;
         }
@@ -930,9 +926,9 @@ mod tests {
     }
 
     #[test]
-    fn higher_priority_replacement_is_allowed_at_the_active_target_limit() {
+    fn large_scans_keep_replacements_and_continue_growing() {
         let mut index = TargetIndex::new();
-        for i in 0..crate::api::command::MAX_UI_SCAN_TARGETS {
+        for i in 0..10_025 {
             assert!(index.insert(
                 &target(
                     Rect::new((i % 100) as f64 * 80.0, (i / 100) as f64 * 40.0, 20.0, 20.0),
@@ -947,9 +943,9 @@ mod tests {
             TargetSource::Accessibility,
             0.5
         ));
-        assert_eq!(index.len(), crate::api::command::MAX_UI_SCAN_TARGETS);
+        assert_eq!(index.len(), 10_025);
         assert_eq!(index.take_retired().len(), 1);
-        assert!(!index.insert(
+        assert!(index.insert(
             &target(Rect::new(-100.0, -100.0, 20.0, 20.0), SemanticRole::Button),
             TargetSource::Accessibility,
             0.5

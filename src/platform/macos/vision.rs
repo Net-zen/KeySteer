@@ -105,7 +105,6 @@ struct NativeResult {
     gray_height: u64,
 }
 
-const MAX_VISION_REGIONS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 const MAX_VISION_LABEL_BYTES: usize = 64 * 1024;
 const MAX_VISION_MESSAGE_BYTES: usize = 4 * 1024;
 const MAX_CAPTURE_PIXELS: u64 = 8_388_608;
@@ -159,10 +158,11 @@ impl OwnedVisionResult {
         }
         let count = usize::try_from(raw.count)
             .map_err(|_| "Vision returned an unrepresentable region count".to_string())?;
-        if count > MAX_VISION_REGIONS {
-            return Err(format!(
-                "Vision returned {count} regions; maximum is {MAX_VISION_REGIONS}"
-            ));
+        if count
+            .checked_mul(std::mem::size_of::<NativeRegion>())
+            .is_none_or(|bytes| bytes > isize::MAX as usize)
+        {
+            return Err("Vision region buffer does not fit the address space".into());
         }
         if count == 0 {
             return Ok(&[]);
@@ -257,7 +257,11 @@ fn detect_inner(
         detect_contours,
         timeout_ms: options.request_timeout_ms,
         minimum_confidence: options.minimum_confidence,
-        rectangle_max_candidates: candidate_limit as u64,
+        rectangle_max_candidates: if candidate_limit == usize::MAX {
+            0
+        } else {
+            candidate_limit as u64
+        },
         rectangle_min_size: options.rectangle_min_size,
         rectangle_min_aspect: options.rectangle_min_aspect,
         rectangle_max_aspect: options.rectangle_max_aspect,

@@ -720,7 +720,6 @@ impl HintView<'_> {
     // Keep panel layout and its larger temporaries out of ordinary label frames.
     #[inline(never)]
     fn append_search(&self, scene: &mut OverlayScene, ctx: &HostContext<'_>) {
-        scene.clip = Some(ctx.active_bounds());
         let cfg = &self.content.style.search_input_ui;
         let (rect, style) = input_panel(cfg, *self.window_bounds, ctx);
         if let Some(info) = &self.info {

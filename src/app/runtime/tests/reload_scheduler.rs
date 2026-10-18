@@ -151,6 +151,8 @@ fn scan_requests_fall_back_to_configured_roles() {
         fn handle(&mut self, event: &ModeEvent, _c: &HostContext<'_>) -> CommandBatch {
             CommandBatch::from(match event {
                 ModeEvent::Activated { .. } => vec![Command::scan_ui(UiScanRequest {
+                    screen_bounds: Vec::new(),
+
                     scope: crate::api::UiScanScope::Window,
                     id: 1,
                     timeout_ms: 2_500,

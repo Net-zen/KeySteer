@@ -76,6 +76,10 @@ pub(in crate::platform::macos) fn visible_windows() -> Result<Vec<Visible>, Stri
     on_screen_windows(true)
 }
 
+pub(super) fn scan_windows() -> Result<Vec<Visible>, String> {
+    on_screen_windows(false)
+}
+
 fn on_screen_windows(ordinary_only: bool) -> Result<Vec<Visible>, String> {
     let list = copy_window_info(
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
@@ -96,6 +100,7 @@ fn on_screen_windows(ordinary_only: bool) -> Result<Vec<Visible>, String> {
         "Height",
         "kCGWindowName",
         "kCGWindowNumber",
+        "kCGWindowAlpha",
     ]
     .map(CFString::new);
     let mut result = Vec::new();
@@ -103,6 +108,14 @@ fn on_screen_windows(ordinary_only: bool) -> Result<Vec<Visible>, String> {
         let Some(dict) = dictionary(&value) else {
             continue;
         };
+        if dict
+            .find(&keys[9])
+            .and_then(|v| v.downcast::<CFNumber>())
+            .and_then(|v| v.to_f64())
+            .is_some_and(|alpha| alpha <= 0.0)
+        {
+            continue;
+        }
         let number = |key: &CFString| {
             dict.find(key)
                 .and_then(|v| v.downcast::<CFNumber>())
@@ -158,7 +171,7 @@ fn on_screen_windows(ordinary_only: bool) -> Result<Vec<Visible>, String> {
 
 /// The same retained AX identities serve numbered enumeration and pointer
 /// fallback. Callers choose a finite timeout and cancellation/deadline policy.
-fn application_windows(
+pub(super) fn application_windows(
     pid: i32,
     timeout: c_float,
     ordinary_only: bool,
