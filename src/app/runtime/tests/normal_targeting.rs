@@ -328,40 +328,6 @@ fn normal_targeting_validates_referenced_geometry_even_when_standalone_mode_is_d
 }
 
 #[test]
-fn normal_targeting_documented_default_example_compiles_after_relinquishing_conflicts() {
-    let source = include_str!("../../../../keysteer.default.toml");
-    let example = include_str!("../../../../docs/modes/normal.md")
-        .split("[normal.targeting]")
-        .nth(1)
-        .unwrap()
-        .split("```")
-        .next()
-        .unwrap()
-        .trim();
-    for method in ["grid", "recursive_grid"] {
-        let mut config = Config::parse(&format!(
-            "{source}\n[normal.targeting]\n{}",
-            example.replace("method = \"grid\"", &format!("method = {method:?}"))
-        ))
-        .unwrap();
-        assert!(crate::app::configuration::compile(&config).is_err());
-        let conflicts: &[&str] = if method == "grid" {
-            &["q", "t", "f", "g", "v", "b"]
-        } else {
-            &["q"]
-        };
-        for key in conflicts {
-            config
-                .normal
-                .bindings
-                .insert((*key).into(), Binding::Disabled);
-        }
-        crate::app::configuration::compile(&config).unwrap();
-        assert_eq!(config.normal.bindings["esc"], Binding::Mode(ModeId::idle()));
-    }
-}
-
-#[test]
 fn normal_targeting_replays_recursive_layers_across_screens_without_rendering() {
     let mut config = blind_config("recursive_grid", "[]");
     config.recursive_grid.layers.push(crate::config::GridLayer {

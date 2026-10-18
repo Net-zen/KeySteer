@@ -146,42 +146,27 @@ impl Engine {
             return Ok(());
         }
         let now = Instant::now();
-        let mut due: Vec<String> = self
+        let mut due: SmallVec<[String; 4]> = self
             .scheduler
             .timers
             .iter()
             .filter(|(_, t)| t.fires_at <= now)
             .map(|(id, _)| id.clone())
             .collect();
-        due.sort();
+        due.sort_unstable();
 
         for id in due {
-            let Some(owner) = self
-                .scheduler
-                .timers
-                .get(&id)
-                .map(|timer| timer.owner.clone())
-            else {
+            let Some(timer) = self.scheduler.timers.get_mut(&id) else {
                 continue;
             };
-            let elapsed = self
-                .scheduler
-                .timers
-                .get(&id)
-                .map(|timer| now.saturating_duration_since(timer.last_fired))
-                .unwrap_or_default();
-            match self.scheduler.timers.get_mut(&id) {
-                Some(timer) => match timer.interval {
-                    // Re-arm from now to avoid drift storms after a stall.
-                    Some(interval) => {
-                        timer.last_fired = now;
-                        timer.fires_at = now + interval;
-                    }
-                    None => {
-                        self.scheduler.timers.remove(&id);
-                    }
-                },
-                None => continue,
+            let owner = timer.owner.clone();
+            let elapsed = now.saturating_duration_since(timer.last_fired);
+            if let Some(interval) = timer.interval {
+                // Re-arm from now to avoid drift storms after a stall.
+                timer.last_fired = now;
+                timer.fires_at = now + interval;
+            } else {
+                self.scheduler.timers.remove(&id);
             }
             self.trace_lazy(self.settings.debug.timers, "timer", || {
                 format!("fire id={id:?} owner={} elapsed={elapsed:?}", owner)

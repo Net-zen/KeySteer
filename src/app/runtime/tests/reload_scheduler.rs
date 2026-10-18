@@ -42,6 +42,73 @@ fn zero_delay_work_runs_after_present_in_the_same_runtime_turn() {
 }
 
 #[test]
+fn due_timer_snapshot_preserves_order_cancellation_and_rearming() {
+    struct Timers {
+        seen: Arc<Mutex<Vec<String>>>,
+        rearmed: bool,
+    }
+    impl Mode for Timers {
+        fn id(&self) -> ModeId {
+            ModeId::idle()
+        }
+        fn handle(&mut self, event: &ModeEvent, _: &HostContext<'_>) -> CommandBatch {
+            let ModeEvent::Timer { id, .. } = event else {
+                return CommandBatch::new();
+            };
+            self.seen.lock().unwrap().push(id.clone());
+            if id == "a" && !self.rearmed {
+                self.rearmed = true;
+                CommandBatch::two(
+                    Command::CancelTimer { id: "b".into() },
+                    Command::SetTimer {
+                        id: "a".into(),
+                        delay: Duration::ZERO,
+                        repeating: false,
+                    },
+                )
+            } else {
+                CommandBatch::new()
+            }
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut engine = Engine::new(Config::default(), Appearance::Dark);
+    engine.register(Box::new(Timers {
+        seen: Arc::clone(&seen),
+        rearmed: false,
+    }));
+    let now = Instant::now();
+    // More than four timers also exercises the due snapshot's heap fallback.
+    for id in ["i", "g", "e", "c", "a", "h", "f", "d", "b"] {
+        engine.scheduler.timers.insert(
+            id.into(),
+            Timer {
+                fires_at: now,
+                last_fired: now,
+                interval: (id == "d").then_some(Duration::from_secs(60)),
+                owner: ModeId::idle(),
+            },
+        );
+    }
+    let (mut backend, _) = FakeBackend::new(Vec::new());
+    engine.fire_due_timers(&mut backend).unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["a", "c", "d", "e", "f", "g", "h", "i"]
+    );
+    assert_eq!(engine.scheduler.timers.len(), 2);
+    assert!(engine.scheduler.timers["d"].fires_at > Instant::now());
+
+    engine.fire_due_timers(&mut backend).unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["a", "c", "d", "e", "f", "g", "h", "i", "a"]
+    );
+    assert_eq!(engine.scheduler.timers.len(), 1);
+    assert!(engine.scheduler.timers.contains_key("d"));
+}
+
+#[test]
 fn switching_modes_drops_the_previous_modes_timers() {
     struct Ticker(ModeId);
     impl Mode for Ticker {

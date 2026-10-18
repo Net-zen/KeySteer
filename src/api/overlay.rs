@@ -1034,8 +1034,13 @@ impl OverlayScene {
         if let Some(index) = retained.omitted_label.filter(|&i| i < result.labels.len()) {
             result.labels.remove(index);
         }
-        result.shapes.extend(self.shapes.iter().cloned());
-        result.labels.extend(self.labels.iter().cloned());
+        // An empty foreground must not clone an entire shared retained layer.
+        if !self.shapes.is_empty() {
+            result.shapes.extend(self.shapes.iter().cloned());
+        }
+        if !self.labels.is_empty() {
+            result.labels.extend(self.labels.iter().cloned());
+        }
         result.clip = self.clip;
         result.backdrop = self.backdrop;
         result.cursor_marker = self.cursor_marker.clone();
@@ -1348,6 +1353,22 @@ mod tests {
         assert!(!scene.labels.shares_storage_with(&clone.labels));
         assert_eq!(scene.labels[0].text, "a");
         assert_eq!(clone.labels[0].text, "ab");
+
+        scene.push_shape(OverlayShape::outline(
+            Rect::new(0.0, 0.0, 10.0, 10.0),
+            Color::rgb(20, 30, 40),
+            1.0,
+        ));
+        let retained = OverlayScene {
+            retained: Some(RetainedOverlay {
+                scene: Arc::new(scene.clone()),
+                omitted_label: None,
+            }),
+            ..OverlayScene::new()
+        };
+        let flat = retained.materialized();
+        assert!(scene.labels.shares_storage_with(&flat.labels));
+        assert!(scene.shapes.shares_storage_with(&flat.shapes));
     }
 
     #[test]
