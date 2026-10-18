@@ -7,7 +7,16 @@ outline: 2
 
 ## 0.12.2
 
-- UIHint now supports `scan_scope = "all"` to scan visible windows across all displays.
+- UIHint adds multi-display scanning: **first labels in about 0.28 s with 800 controls on two 4K displays** (Windows / Hybrid, local median).
+
+```toml
+[ui_hint]
+# window (default): pointer window first
+# active: active window first
+# screen: pointer's display
+# all (new): all displays
+scan_scope = "all"
+```
 
 ## 0.12.1
 

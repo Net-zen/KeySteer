@@ -32,6 +32,7 @@ const englishTheme = {
     { text: 'Modes', link: '/en/modes/' },
     { text: 'Configuration', link: '/en/reference/configuration' },
     { text: 'Development', link: '/en/development/architecture' },
+    { text: 'Performance', link: '/en/performance' },
     { text: 'Configuration & simulator', link: '/en/editor/' },
   ],
   sidebar: [
@@ -47,6 +48,7 @@ const englishTheme = {
       { text: 'Modes and actions', link: '/en/reference/modes-and-actions' }, { text: 'Release notes', link: '/en/releases/' },
     ] },
     developmentSidebar('/en', true),
+    { text: 'Performance', items: [{ text: 'Response & memory', link: '/en/performance' }] },
     { text: 'Tools', items: [{ text: 'Configuration & simulator', link: '/en/editor/' }] },
   ],
   search: {
@@ -71,7 +73,7 @@ const languageStateScript = `(() => {
   const englishPages = new Set([
     '', 'guide/getting-started', 'guide/macos', 'modes/', 'modes/grid',
     'modes/window', 'modes/normal', 'modes/recursive-grid', 'modes/ui-hint', 'reference/configuration',
-    'reference/modes-and-actions', 'editor/', 'simulator', 'releases/',
+    'reference/modes-and-actions', 'editor/', 'simulator', 'releases/', 'performance',
     'window-management/', 'window-management/window', 'window-management/quick',
     'window-management/editor', 'window-management/tabs', 'window-management/restore',
     'development/architecture', 'development/extension-guide', 'development/workflow',
@@ -161,6 +163,7 @@ export default async ({ command }: { command: unknown }) => {
       { text: '模式', link: '/modes/' },
       { text: '配置参考', link: '/reference/configuration' },
       { text: '一起开发', link: '/development/architecture' },
+      { text: '性能', link: '/performance' },
       { text: '配置与模拟器', link: '/editor/' },
     ],
     sidebar: [
@@ -191,6 +194,7 @@ export default async ({ command }: { command: unknown }) => {
         ],
       },
       developmentSidebar(),
+      { text: '性能', items: [{ text: '响应与内存', link: '/performance' }] },
       {
         text: '工具',
         items: [{ text: '配置与模拟器', link: '/editor/' }],
@@ -262,6 +266,7 @@ export default async ({ command }: { command: unknown }) => {
           { text: 'Modes', link: '/en/modes/' },
           { text: 'Configuration', link: '/en/reference/configuration' },
           { text: 'Development', link: '/en/development/architecture' },
+          { text: 'Performance', link: '/en/performance' },
           { text: 'Configuration & simulator', link: '/en/editor/' },
         ],
         sidebar: [
@@ -292,6 +297,7 @@ export default async ({ command }: { command: unknown }) => {
             ],
           },
           developmentSidebar('/en', true),
+          { text: 'Performance', items: [{ text: 'Response & memory', link: '/en/performance' }] },
           {
             text: 'Tools',
             items: [{ text: 'Configuration & simulator', link: '/en/editor/' }],

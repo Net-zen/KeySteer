@@ -9,6 +9,77 @@ fn text_input_engine(config: Config) -> Engine {
 }
 
 #[test]
+fn repeated_hint_rescans_and_exit_retire_prewarm_and_reject_old_results() {
+    use crate::api::{SemanticRole, UiScanResult, UiScanScope, UiTarget};
+
+    let primary = if cfg!(target_os = "windows") {
+        "left_alt"
+    } else if cfg!(target_os = "macos") {
+        "left_win"
+    } else {
+        "left_ctrl"
+    };
+    for scope in [UiScanScope::Window, UiScanScope::Active, UiScanScope::Screen, UiScanScope::All] {
+        let mut config = Config::default();
+        config.ui_hint.scan_scope = scope;
+        let mut engine = text_input_engine(config);
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
+        for round in 0..8 {
+            let id = log.lock().unwrap().scan_requests.last().unwrap().id;
+            engine.handle_backend_event(BackendEvent::UiScanned(UiScanResult {
+                id, status: UiScanStatus::Partial, retired: Vec::new(),
+                targets: (0..600).map(|index| UiTarget {
+                    rect: Rect::new((index % 25) as f64 * 35.0, (index / 25) as f64 * 30.0, 25.0, 20.0),
+                    name: format!("Control {round} {index} 设置"),
+                    role: SemanticRole::Button,
+                    details: None,
+                }).collect(),
+            }), &mut backend).unwrap();
+            engine.fire_due_timers(&mut backend).unwrap();
+            assert!(engine.scheduler.timers.contains_key("ui_hint.search_prewarm"));
+            if round % 2 == 0 {
+                point_keys(&mut engine, &mut backend, &["/"]);
+                assert!(log.lock().unwrap().text_capture);
+                // A rescan command also retires a live prompt. Ordinary search
+                // input keeps its existing editing-key precedence.
+                engine.dispatch(ModeEvent::Binding {
+                    binding: Arc::new(Binding::RescanUi),
+                    state: KeyState::Down,
+                    key: Key::new("r").unwrap(),
+                }, &mut backend).unwrap();
+            } else {
+                point_keys(&mut engine, &mut backend, &[primary, "r"]);
+            }
+            assert_eq!(engine.active_mode(), &ModeId::ui_hint());
+            assert_eq!(engine.scan_owners.len(), 1);
+            assert!(log.lock().unwrap().cancelled_scans.contains(&id));
+            assert!(!engine.scheduler.timers.contains_key("ui_hint.search_prewarm"));
+            assert!(engine.scheduler.text_prompt.is_none());
+            assert!(!log.lock().unwrap().text_capture);
+            let scenes = log.lock().unwrap().scenes.len();
+            for status in [UiScanStatus::Partial, UiScanStatus::Success, UiScanStatus::ContextChanged] {
+                engine.handle_backend_event(BackendEvent::UiScanned(UiScanResult {
+                    id, status, targets: Vec::new(), retired: Vec::new(),
+                }), &mut backend).unwrap();
+            }
+            engine.fire_due_timers(&mut backend).unwrap();
+            assert_eq!(log.lock().unwrap().scenes.len(), scenes);
+            let latest = log.lock().unwrap().scan_requests.last().unwrap().id;
+            assert_eq!(engine.scan_owners.get(&latest), Some(&ModeId::ui_hint()));
+            assert!(!log.lock().unwrap().cancelled_scans.contains(&latest));
+        }
+        let latest = log.lock().unwrap().scan_requests.last().unwrap().id;
+        point_keys(&mut engine, &mut backend, &[primary, "q"]);
+        assert_eq!(engine.active_mode(), &ModeId::normal());
+        assert!(engine.scan_owners.is_empty());
+        assert!(log.lock().unwrap().cancelled_scans.contains(&latest));
+        assert!(!engine.scheduler.timers.values().any(|timer| timer.owner == ModeId::ui_hint()));
+    }
+}
+
+#[test]
 fn hint_overlay_search_routes_editing_copy_and_stale_results_by_owner() {
     let mut engine = text_input_engine(Config::default());
     let (mut backend, log) = FakeBackend::new(Vec::new());

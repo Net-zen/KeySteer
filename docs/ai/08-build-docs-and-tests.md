@@ -16,7 +16,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 架构、日志和 unsafe 护栏分别在 `tests/architecture_dependencies.rs`、`tests/logging_policy.rs`、`tests/safety_budget.rs`。不要为通过检查而直接放宽预算。`safety_budget` 另编译实际 macOS CF owner 源码，用检查空指针的模拟 release 验证空 AX 输出、单次释放与所有权转移；可在非 macOS 宿主运行，但不代替原生实机验证。
 
-正式构建使用 `cargo build --locked --release --bin keysteer --no-default-features`。单元测试由 `cfg(test)` 隔离，测试依赖放在 dev-dependencies。主包不暴露基准接口或对应 feature，`--all-features` 不依赖本地性能目录。性能测试、适配代码、独立锁文件及结果只保留本地，不纳入提交；需要访问内部实现时在隔离副本内适配，不能为基准扩大生产 API。
+正式构建使用 `cargo build --locked --release --bin keysteer --no-default-features`。单元测试由 `cfg(test)` 隔离，测试依赖放在 dev-dependencies。主包不暴露基准接口或对应 feature，`--all-features` 不依赖本地性能目录。性能测试、适配代码、独立锁文件及原始结果只保留本地，不纳入提交；用户要求发布的已核验汇总可用于性能页面。需要访问内部实现时在隔离副本内适配，不能为基准扩大生产 API。
 
 ## 性能与原生验证
 
@@ -51,6 +51,8 @@ GPU 设备就绪、首次场景提交完成和输入执行分别记时，不能�
 网页代码位于 `docs/.vitepress/`；变更时按范围运行 `pnpm docs:test`、`pnpm docs:check`、`pnpm docs:build`，视觉交互另做浏览器验证。
 
 用户文档的中英文页面、章节、示例和图表成对维护；改写导读时保留原有标题锚点。开发导航通过 `developmentSidebar` 共用页面清单，新增译文同时加入语言切换脚本的 `englishPages`；正文目录自动收录二、三级标题。
+
+用户性能页面位于 `docs/performance.md` 与英文对应页；`components/Performance.tsx` 从 `.vitepress/data/performance.json` 读取已核验的公开汇总，复用同一组数值生成亮点、图表和表格，不添加图表依赖。Windows 内存主数据采用任务管理器默认口径的专用工作集，采样峰值与系统峰值工作集分开；响应与内存分批测量时保留各自来源。首页卡片、README 与更新日志使用相同测量口径。公开数据不包含具体硬件型号或本地路径；原始采样与诊断记录继续留在本地。
 
 更新日志保留 Markdown 版本标题供发布脚本提取；`release-history.ts` 仅在渲染时折叠旧版本，主题以紧凑分隔行展示。中英文页面的 `outline: 2` 由标题自动生成目录；主题 Layout 在目录点击、带锚点进入和内容更新时展开对应版本，再交给 VitePress 定位。
 

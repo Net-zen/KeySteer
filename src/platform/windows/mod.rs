@@ -420,6 +420,11 @@ impl WindowsBackend {
             return Ok(Some(event));
         }
         if let Some(result) = self.scan_mailbox.take() {
+            if result.status != crate::api::UiScanStatus::Partial {
+                // The engine retires the owner after this terminal event. Stop
+                // optional previews and any remaining providers before then.
+                self.cancel_ui_scan(result.id)?;
+            }
             self.background_budget.record();
             return Ok(Some(BackendEvent::UiScanned(result)));
         }
@@ -1060,24 +1065,21 @@ impl Backend for WindowsBackend {
             Ok(())
         })();
         if result.is_err() {
-            self.scan_fusion.cancel(request_id);
-            self.scan_mailbox.cancel(request_id);
-            for worker in &self.ui_automation {
-                worker.cancel(Some(request_id));
-            }
-            self.vision.cancel(request_id);
+            self.cancel_ui_scan(request_id)?;
         }
         result
     }
 
     fn cancel_ui_scan(&mut self, id: u64) -> Result<(), String> {
-        if self.scan_mailbox.cancel(id) {
-            self.scan_fusion.cancel(id);
-            for worker in &self.ui_automation {
-                worker.cancel(Some(id));
-            }
-            self.vision.cancel(id);
+        // A consumed terminal has already cleared the mailbox identity, but
+        // optional native work may still need cancellation. Each worker checks
+        // the request id, so a stale cancellation preserves newer work.
+        self.scan_mailbox.cancel(id);
+        self.scan_fusion.cancel(id);
+        for worker in &self.ui_automation {
+            worker.cancel(Some(id));
         }
+        self.vision.cancel(id);
         Ok(())
     }
 

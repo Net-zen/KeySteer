@@ -14,112 +14,20 @@ KeySteer brings native keyboard control to Windows and macOS. Move the pointer, 
 
 [Download](https://github.com/dccif/KeySteer/releases/latest) · [Documentation](https://dccif.github.io/KeySteer/en/guide/getting-started) · [Try the simulator](https://dccif.github.io/KeySteer/en/editor/)
 
-**Contents** · [Install](#installation) · [Get started](#get-started) · [Features & demos](#features) · [Configure](#configuration) · [Develop](#development-and-packaging) · [License](#license-and-copyright)
-
-## Installation
-
-Download the ZIP matching your operating system and CPU architecture from [GitHub Releases](https://github.com/dccif/KeySteer/releases/latest):
-
-| System | After extracting |
-| --- | --- |
-| Windows 10/11 · x64, ARM64 | Run `KeySteer.exe` |
-| macOS 14+ · Apple Silicon, Intel | Move `KeySteer.app` to `/Applications` and open it |
-
-On macOS, grant keyboard and mouse control permission before use. UI Hint visual recognition also needs screen recording permission. For authorization or trouble opening the app, see [macOS setup](https://dccif.github.io/KeySteer/en/guide/macos).
-
-<details>
-<summary>Install and upgrade with Scoop or Homebrew</summary>
-
-Exit KeySteer before upgrading.
-
-### Windows: Scoop
-
-```powershell
-scoop bucket add keysteer https://github.com/dccif/KeySteer.git
-scoop install keysteer/keysteer
-
-# Upgrade
-scoop update
-scoop update keysteer
-```
-
-The x64 package uses AVX2 by default; choose the compatible build from Releases for an older CPU. Scoop upgrades retain user configurations and `workspace.ksw` layouts. When migrating from a manual installation, copy these files into the Scoop installation directory.
-
-### macOS: Homebrew
-
-```bash
-brew tap dccif/keysteer https://github.com/dccif/KeySteer.git
-brew install --cask dccif/keysteer/keysteer
-
-# Upgrade
-brew update
-brew upgrade --cask dccif/keysteer/keysteer
-```
-
-Selects the Apple Silicon or Intel package automatically and retains user configuration during upgrades. Complete the permission setup above after installing.
-
-</details>
-
-## Get started
-
-No configuration file is needed. Once launched, KeySteer waits in the Windows tray or macOS status bar while you type as usual.
-
-### Make your first click
-
-1. Press **left `Alt+E`** on Windows / **`Command+E`** on macOS to enter Normal, then release the entry keys.
-2. Hold `H/J/K/L` to move left / down / up / right.
-3. Press `;` for a left click.
-4. Press `Esc` to return to idle and resume typing.
-
-### Move a window next
-
-1. Place the pointer over a window, press **`Alt+W`** on Windows / **`Option+W`** on macOS, then release the entry keys.
-2. Use `H/J/K/L` to move the window.
-3. Press `Z` to undo an adjustment, or `Q` to finish and keep the result.
-
-In Normal or Window, press **`?` (Shift+/)** to show available keys; press it again to hide them. Uppercase letters are for readability; hold Shift only when `Shift+` is written.
-
-In the documentation, `Primary` means left `Alt` on Windows and `Command` on macOS by default. Change it in `[key_aliases]` if needed.
-
-For more practice, see [Getting started](https://dccif.github.io/KeySteer/en/guide/getting-started). Resizing, centring, multiple displays, and audio controls are covered in the [window management guide](https://dccif.github.io/KeySteer/en/window-management/).
-
-<details>
-<summary>Mouse key reference</summary>
-
-### Default keys
-
-Use these in Normal.
-
-| Key | Action |
-| --- | --- |
-| `Caps Lock` / left `Shift` / `V` or `B` | Hold for precision / slow / fast movement; also affects scrolling |
-| `M` / `,` | Scroll down / up |
-| `'` / right `Shift` | Right / middle click |
-| Hold `N`, then tap `;` | Latch the left button to drag; tap `N` alone to release |
-| `Primary+S` | Move the pointer to the next display |
-| `Q` or `Esc` | Return to idle |
-
-See [Normal mode](https://dccif.github.io/KeySteer/en/modes/normal) for all keys and dragging options.
-
-</details>
+**Contents** · [Features](#features) · [Demos](#demos) · [Install](#installation) · [Get started](#get-started) · [Configure](#configuration) · [Performance](#performance) · [Develop](#development-and-packaging)
 
 ## Features
 
-Learn these as you need them. Use targeting keys from Normal and `A/E/T/R` from Window.
+- **UI Hint recognition**: target labelled controls across displays and applications; search text or Chinese initials, copy information, and pick colours.
+- **Normal pointer control**: Vim-style movement, clicks, scrolling, and dragging, with speed adjustment and display switching.
+- **Grid & Recursive Grid**: reach a region with two keys or subdivide it for precise targeting.
+- **Window, Quick & Editor**: move, resize, split, and tile windows, with audio controls too.
+- **Tabs & workspaces**: group windows into tabs and save layouts for reuse.
+- **Appearance & configuration**: customise keys, speed, and styles, with previews in the web simulator.
 
-| What you want to do | Key | Guide |
-| --- | --- | --- |
-| Reach a screen region with two keys | `G` | [Grid](https://dccif.github.io/KeySteer/en/modes/grid) |
-| Subdivide regions to reach a small target | `F` | [Recursive Grid](https://dccif.github.io/KeySteer/en/modes/recursive-grid) |
-| Type labels to select controls; search text or pinyin initials, copy information, or pick colors | `Primary+F` | [UI Hint](https://dccif.github.io/KeySteer/en/modes/ui-hint) |
-| Put a window on half a screen, then adjust its ratio | `A` | [Quick](https://dccif.github.io/KeySteer/en/window-management/quick) |
-| Tile several windows immediately, then adjust regions | `E` | [Editor](https://dccif.github.io/KeySteer/en/window-management/editor) |
-| Collect windows into persistent tab groups | `T` | [Tabs](https://dccif.github.io/KeySteer/en/window-management/tabs) |
-| Restore saved layouts and groups with current windows | `R` | [Restore](https://dccif.github.io/KeySteer/en/window-management/restore) |
+<a id="video-demonstrations"></a>
 
-In Editor or Tabs, press `Ctrl+S`, enter a note or leave it empty, then press `Enter` to save a preset. From a Window submode, press `Q` to return to Window, then again to return to idle.
-
-### Video demonstrations
+## Demos
 
 <details>
 <summary>Pointer and interface targeting: Normal, Grid, Recursive Grid, UI Hint</summary>
@@ -184,37 +92,53 @@ https://github.com/user-attachments/assets/fbb5f750-fcda-4d3f-92da-1f7667387927
 
 </details>
 
+## Installation
+
+Supports **Windows 10/11 (x64, ARM64)** and **macOS 14+ (Apple Silicon, Intel)**.
+
+Download from [GitHub Releases](https://github.com/dccif/KeySteer/releases/latest): on Windows, extract and run `KeySteer.exe`; on macOS, move `KeySteer.app` to `/Applications` and follow the [permission guide](https://dccif.github.io/KeySteer/en/guide/macos). Windows x64 uses AVX2 by default; choose the compatible build for an older CPU.
+
+**Windows (Scoop)**
+
+```powershell
+scoop bucket add keysteer https://github.com/dccif/KeySteer.git
+scoop install keysteer/keysteer
+```
+
+**macOS (Homebrew)**
+
+```bash
+brew tap dccif/keysteer https://github.com/dccif/KeySteer.git
+brew install --cask dccif/keysteer/keysteer
+```
+
+**First launch on macOS:** in **System Settings → Privacy & Security**, allow KeySteer under **Device Control and Data Access** or **Accessibility**. UI Hint visual recognition also needs screen recording permission. Restart the app after granting access.
+
+If macOS blocks an app downloaded from the official Releases page, run:
+
+```bash
+sudo xattr -cr /Applications/KeySteer.app
+```
+
+## Get started
+
+No configuration file is needed. See [Getting started](https://dccif.github.io/KeySteer/en/guide/getting-started) for controls and keys, and the [window management guide](https://dccif.github.io/KeySteer/en/window-management/) for layouts and tab groups.
+
 ## Configuration
 
-To change keys, speed, or colors, open **Configuration & Simulator...** from the tray or status menu. This loads your current configuration in the [web editor](https://dccif.github.io/KeySteer/en/editor/) (network access required).
+Use the [web simulator](https://dccif.github.io/KeySteer/en/editor/) to customise keys and appearance, or edit TOML directly; see the [configuration reference](https://dccif.github.io/KeySteer/en/reference/configuration) for saving and loading.
 
-Export it as `keysteer.user.toml`, place it in the data directory, then choose **Reload Configuration** from the menu:
+## Performance
 
-- Windows: beside `KeySteer.exe`.
-- macOS `.app`: `~/Library/Application Support/KeySteer/`.
+**Responsive controls. Fast recognition across two displays.**
 
-For manual editing, start from the [complete default configuration](https://dccif.github.io/KeySteer/generated/keysteer.default.toml). A custom `bindings` table replaces that mode's entire default key table; keep the movement, exit, and help keys you need.
+![First labels in about 0.28 s with 800 controls on two 4K displays; everyday actions respond in about 9–18 ms; about 11 MiB startup idle memory](assets/performance/windows-0.12.2-en.svg)
 
-See the [configuration reference](https://dccif.github.io/KeySteer/en/reference/configuration) for loading rules, command-line diagnostics, and troubleshooting. Action syntax is in [Modes and actions](https://dccif.github.io/KeySteer/en/reference/modes-and-actions).
+(0.12.2 / Windows; everyday response measured after entering the mode; memory as shown in Task Manager. [More test results](https://dccif.github.io/KeySteer/en/performance).)
 
 ## Development and packaging
 
-<details>
-<summary>Run from source and contribute</summary>
-
-Use the Rust version in [`rust-toolchain.toml`](https://github.com/dccif/KeySteer/blob/main/rust-toolchain.toml). The documentation site uses Node.js 24.
-
-```bash
-cargo run
-```
-
-See the [development workflow](https://dccif.github.io/KeySteer/en/development/workflow) for tests and documentation commands, and the [packaging guide](https://dccif.github.io/KeySteer/en/development/workflow#platform-packaging) for release archives.
-
-### Performance
-
-Measurement methods and input/rendering constraints are covered in [Safety and performance](https://dccif.github.io/KeySteer/en/development/safety-and-performance).
-
-</details>
+See the [development workflow](https://dccif.github.io/KeySteer/en/development/workflow) for running from source, tests, and packaging, and [Safety and performance](https://dccif.github.io/KeySteer/en/development/safety-and-performance) for measurement methods and constraints.
 
 ## License and copyright
 

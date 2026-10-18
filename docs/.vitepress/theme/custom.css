@@ -13,6 +13,13 @@
   --ks-diagram-rose: #be6c9b;
 }
 
+@media (min-width: 60rem) {
+  .Layout aside.VPSidebar { padding-bottom: 32px; }
+  .VPSidebar .VPSidebarItem.level-0 { padding-bottom: 10px; }
+  .VPDoc.has-sidebar > .container > .content { padding-inline: 1rem; }
+  .VPDoc.has-sidebar.has-aside .content-container { max-width: 50rem; }
+}
+
 .VPHomeHero .image-bg {
   background: radial-gradient(circle, rgba(100, 119, 212, 0.34), transparent 68%);
   filter: blur(30px);

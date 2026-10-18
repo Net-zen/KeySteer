@@ -218,8 +218,12 @@ impl UiAutomationWorker {
         let cancel_active = state
             .active
             .is_some_and(|(active_id, _)| request_id.is_none_or(|id| active_id == id));
-        if cancel_active {
+        // A newer queued generation is already cancelling the old active job.
+        // Cancelling that old id must not invalidate its queued replacement.
+        if pending.is_some() || cancel_active && state.pending.is_none() {
             self.shared.latest_generation.store(0, Ordering::Release);
+        }
+        if cancel_active {
             // Keep the queue lock until the request is sent, so this worker
             // cannot finish the old job and begin a newer generation first.
             let thread_id = self.thread_id.load(Ordering::Acquire);
@@ -1823,6 +1827,8 @@ mod tests {
 
     #[test]
     fn unused_worker_cancels_old_work_but_a_stale_id_does_not_cancel_current_work() {
+        use crate::platform::common::{event_queue, scan_fusion, scan_mailbox};
+
         let worker = UiAutomationWorker {
             shared: Arc::new(SharedQueue::default()),
             thread_id: Arc::new(AtomicU32::new(0)),
@@ -1834,6 +1840,121 @@ mod tests {
         assert_eq!(worker.shared.latest_generation.load(Ordering::Acquire), 11);
         worker.cancel(None);
         assert_eq!(worker.shared.latest_generation.load(Ordering::Acquire), 0);
+
+        let output = Arc::new(scan_mailbox::ScanMailbox::default());
+        let generation = output.begin(8);
+        let mut fusion_worker = scan_fusion::Worker::default();
+        let fusion = fusion_worker.prepare(generation).unwrap();
+        let plan = test_scan_plan(UiScanRequest {
+            id: 8,
+            scope: crate::api::UiScanScope::All,
+            bounds: Some(Rect::new(0.0, 0.0, 1920.0, 1080.0)),
+            screen_bounds: Vec::new(),
+            roles: Vec::new(),
+            max_depth: 8,
+            timeout_ms: 1000,
+            visible_only: true,
+            clickable_only: true,
+            strategy: UiScanStrategy::AxTree,
+            vision: VisionOptions::default(),
+            app: None,
+        });
+        let (events, _receiver) = event_queue::channel();
+        let session = super::super::ui_scan::ScanSession::test(
+            Arc::clone(&plan),
+            generation,
+            1,
+            output,
+            super::super::EventSender::without_wake(events),
+            &fusion,
+        );
+        let source = session.source("UI Automation");
+        worker
+            .submit(plan, generation, ScanWork::Preview(source.sink()))
+            .unwrap();
+        worker.cancel(Some(7));
+        assert_eq!(
+            worker.shared.latest_generation.load(Ordering::Acquire),
+            generation,
+            "cancelling the old active job must preserve the newer queued generation"
+        );
+        assert_eq!(
+            worker
+                .shared
+                .state
+                .lock()
+                .unwrap()
+                .pending
+                .as_ref()
+                .unwrap()
+                .request
+                .id,
+            8
+        );
+        worker.cancel(Some(8));
+        assert_eq!(worker.shared.latest_generation.load(Ordering::Acquire), 0);
+        assert!(worker.shared.state.lock().unwrap().pending.is_none());
+        source.finish(UiScanStatus::Success);
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn terminal_scan_retires_pending_native_work() -> Result<(), String> {
+        use crate::api::{Backend, BackendEvent};
+
+        let mut backend = super::super::WindowsBackend::new()?;
+        backend.pending.clear();
+        let shared = Arc::new(SharedQueue::default());
+        backend.ui_automation.push(UiAutomationWorker {
+            shared: Arc::clone(&shared),
+            thread_id: Arc::new(AtomicU32::new(0)),
+            worker: None,
+        });
+        for (index, status) in [
+            UiScanStatus::Success,
+            UiScanStatus::TimedOut,
+            UiScanStatus::ContextChanged,
+            UiScanStatus::Failed("provider failed".into()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = 73 + index as u64 * 2;
+            let generation = backend.scan_mailbox.begin(id);
+            shared.state.lock().unwrap().active = Some((id, generation));
+            shared
+                .latest_generation
+                .store(generation, Ordering::Release);
+            backend.scan_mailbox.publish(
+                generation,
+                id,
+                vec![target(20.0, 20.0, "preview", SemanticRole::Button)],
+                UiScanStatus::Partial,
+            );
+            assert!(
+                matches!(backend.try_event()?, Some(BackendEvent::UiScanned(result))
+                if result.status == UiScanStatus::Partial)
+            );
+            assert_eq!(shared.latest_generation.load(Ordering::Acquire), generation);
+
+            backend
+                .scan_mailbox
+                .publish(generation, id, Vec::new(), status.clone());
+            assert!(
+                matches!(backend.try_event()?, Some(BackendEvent::UiScanned(result))
+                if result.status == status)
+            );
+            assert_eq!(shared.latest_generation.load(Ordering::Acquire), 0);
+
+            let next = backend.scan_mailbox.begin(id + 1);
+            shared.state.lock().unwrap().active = Some((id + 1, next));
+            shared.latest_generation.store(next, Ordering::Release);
+            backend.cancel_ui_scan(id)?;
+            assert_eq!(shared.latest_generation.load(Ordering::Acquire), next);
+            backend.cancel_ui_scan(id + 1)?;
+            assert_eq!(shared.latest_generation.load(Ordering::Acquire), 0);
+        }
+        backend.shutdown()
     }
 
     #[test]

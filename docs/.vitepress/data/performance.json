@@ -1,0 +1,161 @@
+{
+  "version": "0.12.2",
+  "date": "2026-10-18",
+  "revision": "f9bffe0034126ccaba04a5d87f49cd0cdc6eabbb",
+  "processes": 24,
+  "operations": 120,
+  "idle_rss_mib": 38.552734375,
+  "idle_after_rss_mib": 51.203125,
+  "scenarios": {
+    "move": {
+      "first_ms": 0.1483,
+      "repeat_ms": 0.25415,
+      "overall_ms": 0.2536,
+      "minimum_ms": 0.1286,
+      "maximum_ms": 0.3822,
+      "rss_mib": 46.12890625,
+      "peak_rss_mib": 46.89453125,
+      "processes": 3,
+      "operations": 15
+    },
+    "scroll": {
+      "first_ms": 7.52,
+      "repeat_ms": 8.524000000000001,
+      "overall_ms": 8.504,
+      "minimum_ms": 7.2903,
+      "maximum_ms": 9.3074,
+      "rss_mib": 46.38671875,
+      "peak_rss_mib": 46.6328125,
+      "processes": 3,
+      "operations": 15
+    },
+    "grid": {
+      "first_ms": 25.2953,
+      "repeat_ms": 17.4409,
+      "overall_ms": 17.6494,
+      "minimum_ms": 16.9967,
+      "maximum_ms": 33.1774,
+      "rss_mib": 50.453125,
+      "peak_rss_mib": 51.0078125,
+      "processes": 3,
+      "operations": 15
+    },
+    "recursive": {
+      "first_ms": 25.1019,
+      "repeat_ms": 17.25745,
+      "overall_ms": 17.3428,
+      "minimum_ms": 16.8148,
+      "maximum_ms": 25.17,
+      "rss_mib": 49.58203125,
+      "peak_rss_mib": 50.25,
+      "processes": 3,
+      "operations": 15
+    },
+    "window": {
+      "first_ms": 25.0085,
+      "repeat_ms": 9.067250000000001,
+      "overall_ms": 9.0921,
+      "minimum_ms": 8.5946,
+      "maximum_ms": 25.284,
+      "rss_mib": 51.71875,
+      "peak_rss_mib": 52.1875,
+      "processes": 3,
+      "operations": 15
+    },
+    "quick": {
+      "first_ms": 8.8906,
+      "repeat_ms": 9.09405,
+      "overall_ms": 9.0261,
+      "minimum_ms": 8.2284,
+      "maximum_ms": 33.3397,
+      "rss_mib": 51.4453125,
+      "peak_rss_mib": 52.34765625,
+      "processes": 3,
+      "operations": 15
+    },
+    "hint_window": {
+      "first_ms": 167.0075,
+      "repeat_ms": 183.46425,
+      "overall_ms": 183.3341,
+      "minimum_ms": 166.3987,
+      "maximum_ms": 275.0689,
+      "rss_mib": 60.18359375,
+      "peak_rss_mib": 154.2734375,
+      "processes": 3,
+      "operations": 15
+    },
+    "hint_all": {
+      "first_ms": 250.0433,
+      "repeat_ms": 291.8178,
+      "overall_ms": 275.2953,
+      "minimum_ms": 233.0318,
+      "maximum_ms": 408.1357,
+      "rss_mib": 63.03515625,
+      "peak_rss_mib": 190.703125,
+      "processes": 3,
+      "operations": 15
+    }
+  },
+  "memory": {
+    "date": "2026-10-18",
+    "metric": "private_working_set",
+    "requested_sample_interval_ms": 10,
+    "processes": 24,
+    "operations": 120,
+    "scenarios": {
+      "move": {
+        "after_mib": 15.48046875,
+        "sampled_peak_mib": 15.69921875,
+        "working_set_mib": 44.81640625,
+        "peak_working_set_mib": 45.02734375
+      },
+      "scroll": {
+        "after_mib": 15.5390625,
+        "sampled_peak_mib": 16.21484375,
+        "working_set_mib": 44.890625,
+        "peak_working_set_mib": 45.56640625
+      },
+      "grid": {
+        "after_mib": 19.2109375,
+        "sampled_peak_mib": 19.97265625,
+        "working_set_mib": 49.03515625,
+        "peak_working_set_mib": 49.89453125
+      },
+      "recursive": {
+        "after_mib": 18.16015625,
+        "sampled_peak_mib": 18.453125,
+        "working_set_mib": 47.984375,
+        "peak_working_set_mib": 48.265625
+      },
+      "window": {
+        "after_mib": 18.734375,
+        "sampled_peak_mib": 18.94140625,
+        "working_set_mib": 50.4765625,
+        "peak_working_set_mib": 50.68359375
+      },
+      "quick": {
+        "after_mib": 18.66796875,
+        "sampled_peak_mib": 18.96875,
+        "working_set_mib": 50.51171875,
+        "peak_working_set_mib": 50.87109375
+      },
+      "hint_window": {
+        "after_mib": 26.27734375,
+        "sampled_peak_mib": 114.46875,
+        "working_set_mib": 60.53515625,
+        "peak_working_set_mib": 152.890625
+      },
+      "hint_all": {
+        "after_mib": 28.18359375,
+        "sampled_peak_mib": 87.08203125,
+        "working_set_mib": 62.7421875,
+        "peak_working_set_mib": 189.9140625
+      }
+    },
+    "idle_mib": 11.21484375,
+    "idle_after_mib": 18.7734375,
+    "idle_working_set_mib": 37.49609375,
+    "sample_interval_ms": 15.901800000000094,
+    "maximum_sample_gap_ms": 24.3606
+  }
+}
