@@ -450,7 +450,7 @@ fn text_input_temporary_normal_routes_plugin_screen_commands_to_normal() {
             .normal
             .bindings
             .insert("s".into(), Binding::parse("screen next").unwrap());
-        let primary = config.resolved_key_aliases()["primary"].clone();
+        let primary = primary_key(&config);
         config.text_input.temporary_mode_keys = vec![primary.clone()];
         let mut engine = text_input_engine(config);
         let (mut backend, log) = FakeBackend::new(Vec::new());
@@ -651,26 +651,57 @@ fn search_completion_error_and_capture_loss_retire_input_before_owner_is_dropped
 
 #[test]
 fn search_accept_alternatives_close_capture_and_keep_uihint() {
-    for binding in ["enter", "/", "primary+q", "f9"] {
-        let config = if binding == "f9" { Config::parse("[ui_hint.search_edit_keys]\nf9 = 'accept'").unwrap() } else { Config::default() };
-        let primary = if cfg!(target_os = "macos") { "left_win" } else if cfg!(target_os = "windows") { "left_alt" } else { "left_ctrl" };
+    for binding in ["enter", "/", "primary+q", "f9", "Finish", "x"] {
+        let config = Config::parse(&format!(
+            "[key_aliases]\nFinish = 'f9'\n[ui_hint.search_edit_keys]\n{binding:?} = 'accept'"
+        )).unwrap();
+        let chord = KeyChord::parse_with_aliases(binding, config.resolved_key_aliases()).unwrap();
+        let keys: Vec<_> = chord.injection_keys().iter().map(Key::as_str).collect();
         let (mut engine, mut backend, log) = point_search_fixture(config);
-        let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
-        engine.handle_backend_event(BackendEvent::TextPromptChanged { id, text: "button".into() }, &mut backend).unwrap();
-        point_keys(&mut engine, &mut backend, &["tab"]);
-        assert!(log.lock().unwrap().warps.is_empty());
-        let modified = binding == "primary+q";
-        if modified { engine.handle_backend_event(key_down(primary), &mut backend).unwrap(); }
-        let key = if modified { "q" } else { binding };
-        for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
-        if modified { engine.handle_backend_event(key_up(primary), &mut backend).unwrap(); }
-        assert!(engine.scheduler.text_prompt.is_none(), "{binding}");
-        assert!(!log.lock().unwrap().text_capture, "{binding}");
-        assert_eq!(engine.active_mode(), &ModeId::ui_hint());
-        assert_eq!(log.lock().unwrap().warps, [Point::new(40.0, 20.0)], "{binding}");
+        for (round, held) in ["z", "caps_lock", "fn"].into_iter().enumerate() {
+            if round != 0 { point_keys(&mut engine, &mut backend, &["/"]); }
+            engine.handle_backend_event(key_down(held), &mut backend).unwrap();
+            let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+            engine.handle_backend_event(BackendEvent::TextPromptChanged {
+                id, text: "button".into(),
+            }, &mut backend).unwrap();
+            // Both editing and acceptance work while earlier keys remain held.
+            point_keys(&mut engine, &mut backend, &["a", "backspace"]);
+            assert_eq!(log.lock().unwrap().scenes.last().unwrap().labels.iter()
+                .find(|label| label.z_index == 10_002).unwrap().text.as_str(), "button");
+            point_keys(&mut engine, &mut backend, &["tab"]);
+            point_keys(&mut engine, &mut backend, &keys);
+            engine.handle_backend_event(key_up(held), &mut backend).unwrap();
+            assert!(engine.scheduler.text_prompt.is_none(), "{binding}: {held}");
+            assert!(!log.lock().unwrap().text_capture);
+            assert_eq!(engine.active_mode(), &ModeId::ui_hint());
+            assert_eq!(log.lock().unwrap().warps, vec![Point::new(40.0, 20.0); round + 1], "{binding}: {held}");
+        }
     }
 }
 
+#[test]
+fn search_edit_chords_require_members_and_exact_modifiers() {
+    let config = Config::parse("[ui_hint.search_edit_keys]\n'right_ctrl+a+b a+b' = 'accept'").unwrap();
+    let (mut engine, mut backend, _) = point_search_fixture(config);
+    for keys in [
+        &["enter"][..], &["/"], &["b"], &["right_ctrl", "b"],
+        &["left_ctrl", "a", "b"], &["right_ctrl", "left_shift", "a", "b"],
+    ] {
+        point_keys(&mut engine, &mut backend, keys);
+        assert!(engine.scheduler.text_prompt.is_some(), "must not accept {keys:?}");
+    }
+    point_keys(&mut engine, &mut backend, &["z", "right_ctrl", "a", "b"]);
+    assert!(engine.scheduler.text_prompt.is_none());
+    point_keys(&mut engine, &mut backend, &["/"]);
+    point_keys(&mut engine, &mut backend, &["z", "a", "b"]);
+    assert!(engine.scheduler.text_prompt.is_none());
+    point_keys(&mut engine, &mut backend, &["/"]);
+    point_keys(&mut engine, &mut backend, &["left_shift", "esc"]);
+    assert!(engine.scheduler.text_prompt.is_some());
+    point_keys(&mut engine, &mut backend, &["z", "esc"]);
+    assert!(engine.scheduler.text_prompt.is_none());
+}
 
 #[test]
 fn live_search_routes_overlap_modifiers_and_preserves_preview_on_top() {

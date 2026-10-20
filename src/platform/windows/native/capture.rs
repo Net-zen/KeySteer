@@ -34,4 +34,8 @@ impl PreparedCapture {
             consume,
         )
     }
+
+    pub(crate) fn pixels(&self) -> &[u8] {
+        self.surface.pixels()
+    }
 }

@@ -405,10 +405,18 @@ pub(super) fn send_contour_batches(
     mailbox: &ProviderMailbox,
     targets: Vec<UiTarget>,
 ) -> Result<(), VisionError> {
+    send_contour_batch(mailbox, targets)?;
+    mailbox.publish(ProviderEvent::ContourDone)
+}
+
+pub(super) fn send_contour_batch(
+    mailbox: &ProviderMailbox,
+    targets: Vec<UiTarget>,
+) -> Result<(), VisionError> {
     // Move the provider buffer once; the fusion inbox bounds storage and the
     // consumer controls its own processing quanta.
     if !targets.is_empty() {
         mailbox.publish(ProviderEvent::ContourBatch(targets))?;
     }
-    mailbox.publish(ProviderEvent::ContourDone)
+    Ok(())
 }

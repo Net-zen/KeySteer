@@ -6,6 +6,7 @@ pub(crate) const MAX_PIXELS: usize = 2_073_600;
 const LOW: u16 = 70;
 const HIGH: u16 = 220;
 
+pub(crate) mod input;
 mod regions;
 
 pub(crate) fn sources(

@@ -4,7 +4,7 @@
 
 | 位置 | 职责 |
 | --- | --- |
-| `src/main.rs`、`src/app/cli.rs`、`src/app/bootstrap.rs` | CLI、装配与启动 |
+| `src/main.rs`、`src/app/mod.rs`、`src/app/cli.rs`、`src/app/bootstrap.rs` | 总入口、CLI、装配与启动 |
 | `src/api/` | 跨层命令、事件、数据与能力端口 |
 | `src/config/` | TOML 模型、默认值、解析、校验与写回 |
 | `src/app/configuration.rs`、`src/app/mode_catalog.rs` | 编译配置、注册模式 |
@@ -21,3 +21,5 @@
 | `build.rs`、`packaging/`、`.github/workflows/` | 原生构建、打包与发布 |
 
 具体数据流见 [运行时](02-runtime-and-api.md)，依赖方向见 [架构边界](10-architecture-boundaries.md)。
+
+现有 `app::run_cli` 入口经 `platform::run` 进入所选平台的进程入口，再调用 CLI；平台私有工作模式的参数解析及执行留在对应 OS 目录。

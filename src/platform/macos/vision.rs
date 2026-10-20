@@ -1,5 +1,10 @@
 use std::ffi::c_char;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::ptr::NonNull;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::time::{Duration, Instant};
 
 #[derive(Default)]
 pub(super) struct PointSampler {
@@ -35,9 +40,27 @@ impl Drop for PointSampler {
     }
 }
 
+use super::scan_workers::{Signal, Workers};
 use crate::api::command::{UiScanStatus, VisionOptions};
 use crate::api::geometry::{Rect, SemanticRole, UiTarget};
+use crate::platform::common::image_tiles::{MAX_OCR_IN_FLIGHT, OcrLayout, Tile};
 use crate::platform::common::spatial_index::{SpatialIndex, TargetSource};
+
+pub(super) fn run_internal_ocr_helper() -> Option<std::process::ExitCode> {
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--keysteer-vision-ocr"))
+        || arguments.next().is_some()
+    {
+        return None;
+    }
+    // Vision may dispatch work or load models on other threads. Run only after
+    // dyld has completed initialization, before the application runtime starts.
+    Some(if NmkRunVisionOcrProcess() == 0 {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::FAILURE
+    })
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -58,6 +81,21 @@ struct NativeSize {
 struct NativeRect {
     origin: NativePoint,
     size: NativeSize,
+}
+
+impl From<Rect> for NativeRect {
+    fn from(rect: Rect) -> Self {
+        Self {
+            origin: NativePoint {
+                x: rect.x,
+                y: rect.y,
+            },
+            size: NativeSize {
+                width: rect.width,
+                height: rect.height,
+            },
+        }
+    }
 }
 
 #[repr(C)]
@@ -103,15 +141,53 @@ struct NativeResult {
     gray: *mut u8,
     gray_width: u64,
     gray_height: u64,
+    pixel_owner: usize,
+    pixel_length: u64,
+    pixel_stride: u64,
 }
 
 const MAX_VISION_LABEL_BYTES: usize = 64 * 1024;
 const MAX_VISION_MESSAGE_BYTES: usize = 4 * 1024;
 const MAX_CAPTURE_PIXELS: u64 = 8_388_608;
 const MAX_CAPTURE_DIMENSION: u64 = 4_096;
-const VISION_ABI_VERSION: u32 = 3;
+const VISION_ABI_VERSION: u32 = 4;
+const MIN_OCR_TILE_SIDE: u32 = 384;
+const OCR_TILE_OVERLAP: usize = 64;
 
 struct OwnedVisionResult(NonNull<NativeResult>);
+
+// CGImage is immutable. Each provider group owns a separate native retain,
+// independent of the capture result. Only this opaque
+// image handle crosses threads; result buffers stay on their creating thread.
+struct RetainedVisionImage(usize);
+
+impl RetainedVisionImage {
+    fn new(image: usize) -> Result<Self, String> {
+        let image = NmkRetainVisionImage(image);
+        if image == 0 {
+            Err("Vision returned no captured image".into())
+        } else {
+            Ok(Self(image))
+        }
+    }
+
+    fn dimensions(&self) -> Result<(u32, u32), String> {
+        let width =
+            u32::try_from(NmkVisionImageWidth(self.0)).map_err(|_| "invalid OCR image width")?;
+        let height =
+            u32::try_from(NmkVisionImageHeight(self.0)).map_err(|_| "invalid OCR image height")?;
+        if width == 0 || height == 0 {
+            return Err("empty OCR image".into());
+        }
+        Ok((width, height))
+    }
+}
+
+impl Drop for RetainedVisionImage {
+    fn drop(&mut self) {
+        NmkReleaseVisionImage(self.0);
+    }
+}
 
 impl OwnedVisionResult {
     fn new(result: *mut NativeResult) -> Result<Option<Self>, String> {
@@ -130,19 +206,40 @@ impl OwnedVisionResult {
         unsafe { self.0.as_ref() }
     }
 
-    fn gray(&self) -> Result<(&[u8], usize, usize), String> {
+    fn contour_pixels(&self) -> Result<(&[u8], usize, usize, usize), String> {
         let raw = self.as_ref();
         let width = usize::try_from(raw.gray_width).map_err(|_| "invalid contour width")?;
         let height = usize::try_from(raw.gray_height).map_err(|_| "invalid contour height")?;
-        let length = width
+        let stride = usize::try_from(raw.pixel_stride).map_err(|_| "invalid contour stride")?;
+        let area = width
             .checked_mul(height)
-            .filter(|&n| n > 0 && n <= crate::platform::common::contour::MAX_PIXELS)
-            .ok_or("invalid contour frame dimensions")?;
+            .filter(|&n| n > 0)
+            .ok_or("empty contour frame")?;
+        let row_bytes = if stride == 0 {
+            if area > crate::platform::common::contour::MAX_PIXELS {
+                return Err("contour frame exceeds its luma budget".into());
+            }
+            width
+        } else {
+            if raw.pixel_owner == 0
+                || width as u64 > MAX_CAPTURE_DIMENSION
+                || height as u64 > MAX_CAPTURE_DIMENSION
+                || area as u64 > MAX_CAPTURE_PIXELS + 2 * MAX_CAPTURE_DIMENSION + 1
+                || width.checked_mul(4).is_none_or(|row| row > stride)
+            {
+                return Err("invalid packed contour frame".into());
+            }
+            stride
+        };
+        let length = row_bytes
+            .checked_mul(height)
+            .filter(|&n| n <= isize::MAX as usize && n as u64 <= raw.pixel_length)
+            .ok_or("invalid contour byte length")?;
         let pixels = NonNull::new(raw.gray).ok_or("missing contour frame")?;
-        // SAFETY: the version-checked bridge allocates width*height bytes, capped
-        // above; this owner keeps them alive through the scoped contour worker.
-        let gray = unsafe { std::slice::from_raw_parts(pixels.as_ptr(), length) };
-        Ok((gray, width, height))
+        // SAFETY: the version-checked result owns either a bounded luma allocation
+        // or CFData with at least `length` immutable bytes. This borrow ends before Drop.
+        let pixels = unsafe { std::slice::from_raw_parts(pixels.as_ptr(), length) };
+        Ok((pixels, width, height, stride))
     }
 
     fn regions(&self) -> Result<&[NativeRegion], String> {
@@ -200,10 +297,22 @@ unsafe extern "C" {
         rgba: *mut u8,
     ) -> bool;
     safe fn NmkSetLatestVisionScan(scan_id: u64);
+    safe fn NmkRunVisionOcrProcess() -> i32;
+    safe fn NmkVisionOcrPerformanceCores() -> u32;
+    safe fn NmkCreateVisionCaptureContext() -> usize;
+    safe fn NmkReleaseVisionCaptureContext(context: usize);
+    safe fn NmkCancelVisionScan(scan_id: u64);
+    safe fn NmkRetainVisionImage(image: usize) -> usize;
+    safe fn NmkReleaseVisionImage(image: usize);
+    safe fn NmkVisionImageWidth(image: usize) -> u64;
+    safe fn NmkVisionImageHeight(image: usize) -> u64;
+    safe fn NmkWriteVisionOcrImage(image: usize, fd: i32, scan_id: u64) -> bool;
+    safe fn NmkPrepareVisionContourImage(image: usize, scan_id: u64) -> *mut NativeResult;
     safe fn NmkDetectVisionElements(
         bounds: NativeRect,
         config: NativeConfig,
         scan_id: u64,
+        capture_context: usize,
     ) -> *mut NativeResult;
     safe fn NmkRecognizeVisionImage(
         image: usize,
@@ -225,28 +334,91 @@ pub(super) fn mark_latest(scan_id: u64) {
     NmkSetLatestVisionScan(scan_id);
 }
 
+#[derive(Default)]
+pub(super) struct CaptureCache(usize);
+
+impl CaptureCache {
+    fn handle(&mut self) -> Result<usize, String> {
+        if self.0 == 0 {
+            self.0 = NmkCreateVisionCaptureContext();
+        }
+        if self.0 == 0 {
+            Err("cannot create screen capture filter cache".into())
+        } else {
+            Ok(self.0)
+        }
+    }
+}
+
+impl Drop for CaptureCache {
+    fn drop(&mut self) {
+        NmkReleaseVisionCaptureContext(self.0);
+    }
+}
+
+struct RecognitionFrame {
+    image: RetainedVisionImage,
+    captured_bounds: NativeRect,
+    coordinate_bounds: Rect,
+}
+
+// One queue per source for this scan's actual display intersections. A native
+// call owns only its current image; queued images can be drained on cancellation
+// even if an old AX/rectangle call has not returned.
+struct ProviderInput {
+    sender: Option<mpsc::Sender<RecognitionFrame>>,
+    receiver: Arc<Mutex<mpsc::Receiver<RecognitionFrame>>>,
+}
+
+impl Drop for ProviderInput {
+    fn drop(&mut self) {
+        self.sender.take();
+        let receiver = self
+            .receiver
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for frame in receiver.try_iter() {
+            drop(frame);
+        }
+    }
+}
+
 pub fn detect(
-    scan_id: u64,
-    bounds: Rect,
+    (scan_id, cache): (u64, &mut CaptureCache),
+    regions: impl IntoIterator<Item = Rect>,
     options: &VisionOptions,
     strategy: crate::api::UiScanStrategy,
-    cancelled: impl Fn() -> bool + Sync,
-    publish: impl Fn(TargetSource, Vec<UiTarget>) + Sync,
+    workers: &Workers,
+    cancelled: impl Fn() -> bool + Send + Sync + 'static,
+    publish: impl Fn(TargetSource, Vec<UiTarget>) + Send + Sync + 'static,
 ) -> UiScanStatus {
-    detect_inner(scan_id, bounds, options, strategy, &cancelled, &publish)
-        .unwrap_or_else(UiScanStatus::Failed)
+    let run = || {
+        detect_inner(
+            (scan_id, cache.handle()?),
+            regions,
+            options,
+            strategy,
+            workers,
+            cancelled,
+            publish,
+        )
+    };
+    run().unwrap_or_else(UiScanStatus::Failed)
 }
 
 fn detect_inner(
-    scan_id: u64,
-    bounds: Rect,
+    (scan_id, capture_context): (u64, usize),
+    regions: impl IntoIterator<Item = Rect>,
     options: &VisionOptions,
     strategy: crate::api::UiScanStrategy,
-    cancelled: &(impl Fn() -> bool + Sync),
-    publish: &(impl Fn(TargetSource, Vec<UiTarget>) + Sync),
+    workers: &Workers,
+    cancelled: impl Fn() -> bool + Send + Sync + 'static,
+    publish: impl Fn(TargetSource, Vec<UiTarget>) + Send + Sync + 'static,
 ) -> Result<UiScanStatus, String> {
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_millis(options.request_timeout_ms.clamp(1, 30_000));
+    let deadline =
+        Instant::now() + Duration::from_millis(options.request_timeout_ms.clamp(1, 30_000));
+    let cancelled = Arc::new(cancelled);
+    let publish = Arc::new(publish);
     let contour_only = strategy == crate::api::UiScanStrategy::Contour;
     let (detect_text, detect_contours) =
         crate::platform::common::contour::sources(strategy, options);
@@ -265,105 +437,603 @@ fn detect_inner(
         rectangle_min_size: options.rectangle_min_size,
         rectangle_min_aspect: options.rectangle_min_aspect,
         rectangle_max_aspect: options.rectangle_max_aspect,
-        maximum_capture_pixels: MAX_CAPTURE_PIXELS,
-        maximum_capture_dimension: MAX_CAPTURE_DIMENSION,
-    };
-    let native_bounds = NativeRect {
-        origin: NativePoint {
-            x: bounds.x,
-            y: bounds.y,
-        },
-        size: NativeSize {
-            width: bounds.width,
-            height: bounds.height,
-        },
-    };
-    let capture = OwnedVisionResult::new(NmkDetectVisionElements(native_bounds, config, scan_id))?
-        .ok_or("Vision could not allocate a capture result")?;
-    // Validate the complete shared ABI even for an empty region list.
-    capture.regions()?;
-    let raw = capture.as_ref();
-    if raw.status != 0 {
-        return Ok(decode_result(&capture, bounds, options).1);
-    }
-    if cancelled() {
-        return Ok(UiScanStatus::ContextChanged);
-    }
-    if std::time::Instant::now() >= deadline {
-        return Ok(UiScanStatus::TimedOut);
-    }
-    if raw.image == 0 {
-        return Err("Vision returned no captured image".into());
-    }
-    let captured_bounds = raw.captured_bounds;
-    let coordinate_bounds = capture_bounds_or_window(native_rect_to_rect(captured_bounds), bounds);
-    let image = raw.image;
-    let gray = if config.detect_contours {
-        Some(capture.gray()?)
-    } else {
-        None
-    };
-    // Only a borrowed byte slice enters the scoped worker. Native capture and
-    // image ownership stay here, and outlive both recognition and the join.
-    let status = std::thread::scope(|scope| -> Result<UiScanStatus, String> {
-        let contour = gray
-            .map(|(pixels, width, height)| {
-                std::thread::Builder::new()
-                    .name("keysteer-contour".into())
-                    .spawn_scoped(scope, move || {
-                        let targets = crate::platform::common::contour::detect(
-                            pixels,
-                            width,
-                            height,
-                            coordinate_bounds,
-                            candidate_limit,
-                            || cancelled() || std::time::Instant::now() >= deadline,
-                        );
-                        if !cancelled() && std::time::Instant::now() < deadline {
-                            publish(TargetSource::Contour, targets);
-                        }
-                    })
-                    .map_err(|error| format!("cannot start contour worker: {error}"))
-            })
-            .transpose()?;
-        let native_status = if config.detect_text || config.detect_rectangles {
-            match OwnedVisionResult::new(NmkRecognizeVisionImage(
-                image,
-                captured_bounds,
-                config,
-                scan_id,
-            )) {
-                Ok(Some(result)) => {
-                    let (targets, status) = decode_result(&result, coordinate_bounds, options);
-                    if !cancelled() && std::time::Instant::now() < deadline {
-                        publish(TargetSource::NativeVision, targets);
-                    }
-                    status
-                }
-                Ok(None) => {
-                    UiScanStatus::Failed("Vision could not allocate recognition result".into())
-                }
-                Err(error) => UiScanStatus::Failed(error),
-            }
+        // Contours already use this luma budget. Apply it before the GPU
+        // readback too when no OCR/rectangle source needs the original pixels.
+        maximum_capture_pixels: if contour_only {
+            2_073_600
         } else {
-            UiScanStatus::Success
+            MAX_CAPTURE_PIXELS
+        },
+        maximum_capture_dimension: if contour_only {
+            2560
+        } else {
+            MAX_CAPTURE_DIMENSION
+        },
+    };
+    let regions: smallvec::SmallVec<[Rect; 2]> = regions.into_iter().collect();
+    static PERFORMANCE_CORES: OnceLock<usize> = OnceLock::new();
+    let (frame_workers, request_budget) = ocr_concurrency(
+        regions.len(),
+        std::thread::available_parallelism().map_or(2, usize::from),
+        *PERFORMANCE_CORES.get_or_init(|| NmkVisionOcrPerformanceCores() as usize),
+    );
+    let mut providers = smallvec::SmallVec::<[_; 3]>::new();
+    for (source, enabled) in [
+        (TargetSource::SystemOcr, config.detect_text),
+        (TargetSource::NativeRectangles, config.detect_rectangles),
+        (TargetSource::Contour, config.detect_contours),
+    ] {
+        if !enabled {
+            continue;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let input = ProviderInput {
+            sender: Some(sender),
+            receiver: Arc::new(Mutex::new(receiver)),
         };
-        if let Some(worker) = contour {
-            worker.join().map_err(|_| "contour worker panicked")?;
-            if let UiScanStatus::Failed(ref error) = native_status {
-                crate::support::logging::report_error("macos-vision", error);
-                return Ok(UiScanStatus::Success);
+        let batch = workers.start(&[source], {
+            let receiver = Arc::clone(&input.receiver);
+            let options = options.clone();
+            let cancelled = Arc::clone(&cancelled);
+            let publish = Arc::clone(&publish);
+            move |_, stopped| {
+                let cancelled = || stopped.load(Ordering::Acquire) || cancelled();
+                let publish = |targets| publish(source, targets);
+                let provider_config = NativeConfig {
+                    detect_text: source == TargetSource::SystemOcr,
+                    detect_rectangles: source == TargetSource::NativeRectangles,
+                    ..config
+                };
+                let consume = |tile_lanes| {
+                    let mut statuses = smallvec::SmallVec::<[UiScanStatus; 2]>::new();
+                    loop {
+                        if let Some(status) =
+                            super::scan_workers::interrupt_status(deadline, cancelled())
+                        {
+                            return Some(status);
+                        }
+                        let frame = receiver
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+                        let frame = match frame {
+                            Ok(frame) => frame,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                return Some(UiScanStatus::TimedOut);
+                            }
+                        };
+                        // The receive lock has been released before any native work.
+                        let status = if source == TargetSource::SystemOcr {
+                            let (width, height) = match frame.image.dimensions() {
+                                Ok(dimensions) => dimensions,
+                                Err(error) => return Some(UiScanStatus::Failed(error)),
+                            };
+                            let layout = OcrLayout::new(
+                                width,
+                                height,
+                                tile_lanes,
+                                MIN_OCR_TILE_SIDE,
+                                MAX_OCR_IN_FLIGHT,
+                            );
+                            let tiles: Vec<_> =
+                                layout.tiles(width, height, OCR_TILE_OVERLAP).collect();
+                            recognize_ocr_image(
+                                (
+                                    frame.image,
+                                    frame.coordinate_bounds,
+                                    &tiles,
+                                    layout.max_in_flight,
+                                ),
+                                scan_id,
+                                &options,
+                                deadline,
+                                stopped,
+                                &cancelled,
+                                &publish,
+                            )
+                        } else if source == TargetSource::Contour {
+                            recognize_contours(
+                                frame,
+                                scan_id,
+                                candidate_limit,
+                                deadline,
+                                &cancelled,
+                                &publish,
+                            )
+                        } else {
+                            recognize_image(
+                                (frame.image.0, frame.captured_bounds, None),
+                                provider_config,
+                                scan_id,
+                                &options,
+                                deadline,
+                                &cancelled,
+                                &publish,
+                            )
+                        };
+                        if status == UiScanStatus::ContextChanged {
+                            return Some(status);
+                        }
+                        statuses.push(status);
+                    }
+                    (!statuses.is_empty()).then(|| combined_status(&statuses))
+                };
+                if source != TargetSource::SystemOcr || frame_workers == 1 {
+                    return consume(request_budget).unwrap_or(UiScanStatus::Success);
+                }
+                // Split one scan-wide request budget between display workers.
+                // Every worker has at least one lane; the remainder is shared
+                // without exceeding the hardware budget.
+                std::thread::scope(|scope| {
+                    let lanes = |index| display_request_lanes(request_budget, frame_workers, index);
+                    let consume = &consume;
+                    let mut displays = smallvec::SmallVec::<[_; 2]>::new();
+                    for index in 1..frame_workers {
+                        let lane_count = lanes(index);
+                        if let Ok(worker) = std::thread::Builder::new()
+                            .name("keysteer-ocr-display".into())
+                            .spawn_scoped(scope, move || {
+                                objc2::rc::autoreleasepool(|_| consume(lane_count))
+                            })
+                        {
+                            displays.push(worker);
+                        }
+                    }
+                    let mut statuses = smallvec::SmallVec::<[UiScanStatus; 2]>::new();
+                    statuses.extend(consume(lanes(0)));
+                    for display in displays {
+                        statuses.extend(display.join().unwrap_or_else(|_| {
+                            Some(UiScanStatus::Failed("OCR display worker panicked".into()))
+                        }));
+                    }
+                    combined_status(&statuses)
+                })
+            }
+        });
+        providers.push((input, batch));
+    }
+    let mut statuses = smallvec::SmallVec::<[UiScanStatus; 4]>::new();
+    let mut captures = 0;
+    for bounds in regions {
+        if let Some(status) = super::scan_workers::interrupt_status(deadline, cancelled()) {
+            statuses.push(status);
+            break;
+        }
+        let mut capture_config = config;
+        capture_config.timeout_ms = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .clamp(1, 30_000) as u64;
+        let captured_at = Instant::now();
+        let capture = OwnedVisionResult::new(NmkDetectVisionElements(
+            NativeRect::from(bounds),
+            capture_config,
+            scan_id,
+            capture_context,
+        ))?
+        .ok_or("Vision could not allocate a capture result")?;
+        capture.regions()?;
+        let raw = capture.as_ref();
+        if raw.status != 0 {
+            statuses.push(decode_result(&capture, bounds, options).1);
+            continue;
+        }
+        if raw.image == 0 && !providers.is_empty() {
+            return Err("Vision returned no captured image".into());
+        }
+        captures += 1;
+        let coordinate_bounds =
+            capture_bounds_or_window(native_rect_to_rect(raw.captured_bounds), bounds);
+        // Queue all sources before starting the next display's capture.
+        // The single capture permit still prevents overlapping full screenshots.
+        for (input, _) in &providers {
+            let frame = RecognitionFrame {
+                image: RetainedVisionImage::new(raw.image)?,
+                captured_bounds: raw.captured_bounds,
+                coordinate_bounds,
+            };
+            if input
+                .sender
+                .as_ref()
+                .is_some_and(|sender| sender.send(frame).is_err())
+            {
+                statuses.push(UiScanStatus::Failed(
+                    "native source stopped before capture delivery".into(),
+                ));
             }
         }
-        Ok(native_status)
-    })?;
-    if cancelled() {
-        Ok(UiScanStatus::ContextChanged)
-    } else if std::time::Instant::now() >= deadline {
-        Ok(UiScanStatus::TimedOut)
-    } else {
-        Ok(status)
+        crate::log_info!(
+            "macos-ui-scan",
+            "scan {scan_id}: capture delivered after {} ms",
+            captured_at.elapsed().as_millis()
+        );
+        drop(capture);
     }
+    // EOF wakes idle providers. Keep the drain owners until after cancellation
+    // so pending screenshots are freed independently of a stuck native call.
+    for (input, _) in &mut providers {
+        input.sender.take();
+    }
+    for (input, batch) in providers {
+        let completed = batch.wait(deadline, || cancelled());
+        if captures != 0 {
+            statuses.extend(completed);
+        }
+        drop(input);
+    }
+    if let Some(status) = super::scan_workers::interrupt_status(deadline, cancelled()) {
+        NmkCancelVisionScan(scan_id);
+        statuses.push(status);
+    }
+    if captures == 0 && statuses.is_empty() {
+        return Err("screen scan requires display bounds".into());
+    }
+    Ok(combined_status(&statuses))
+}
+
+fn recognize_contours(
+    frame: RecognitionFrame,
+    scan_id: u64,
+    candidate_limit: usize,
+    deadline: Instant,
+    cancelled: &impl Fn() -> bool,
+    publish: &impl Fn(Vec<UiTarget>),
+) -> UiScanStatus {
+    let started = Instant::now();
+    let interrupted = || super::scan_workers::interrupt_status(deadline, cancelled());
+    let run = || -> Result<UiScanStatus, String> {
+        if let Some(status) = interrupted() {
+            return Ok(status);
+        }
+        let result = OwnedVisionResult::new(NmkPrepareVisionContourImage(frame.image.0, scan_id))?
+            .ok_or("Vision could not allocate a contour frame")?;
+        result.regions()?;
+        let raw = result.as_ref();
+        if raw.status != 0 {
+            return Ok(native_status(raw.status, String::new()));
+        }
+        let (native, input) = if raw.pixel_stride != 0 {
+            let (pixels, width, height, stride) = result.contour_pixels()?;
+            let input = crate::platform::common::contour::input::from_bgra(
+                pixels,
+                (width, height, stride),
+                frame.coordinate_bounds,
+                || Ok(interrupted().is_some()),
+            )?;
+            if let Some(status) = interrupted() {
+                return Ok(status);
+            }
+            // Release the full pixel backing before detecting bounded luma.
+            drop(result);
+            (
+                None,
+                Some(input.ok_or("contour conversion returned no pixels")?),
+            )
+        } else {
+            (Some(result), None)
+        };
+        let (pixels, width, height, bounds) = if let Some(input) = &input {
+            (
+                input.gray.as_slice(),
+                input.width,
+                input.height,
+                input.desktop_bounds,
+            )
+        } else {
+            let (pixels, width, height, _) = native
+                .as_ref()
+                .ok_or("missing contour frame")?
+                .contour_pixels()?;
+            (pixels, width, height, frame.coordinate_bounds)
+        };
+        // Detection needs only luma. Do not retain the screenshot during it.
+        drop(frame.image);
+        if let Some(status) = interrupted() {
+            return Ok(status);
+        }
+        let targets = crate::platform::common::contour::detect(
+            pixels,
+            width,
+            height,
+            bounds,
+            candidate_limit,
+            || interrupted().is_some(),
+        );
+        if let Some(status) = interrupted() {
+            return Ok(status);
+        }
+        let count = targets.len();
+        publish(targets);
+        crate::log_info!(
+            "macos-ui-scan",
+            "scan {scan_id}: contour returned {count} targets after {} ms",
+            started.elapsed().as_millis()
+        );
+        Ok(UiScanStatus::Success)
+    };
+    run().unwrap_or_else(UiScanStatus::Failed)
+}
+
+fn ocr_concurrency(displays: usize, cpus: usize, performance_cores: usize) -> (usize, usize) {
+    // Each Accurate request also parallelizes internally. Use half the physical
+    // performance cores as a conservative starting budget; keep input headroom
+    // and the shared safety ceiling. Unknown hardware retains the tested two.
+    let budget = if performance_cores == 0 {
+        2
+    } else {
+        (performance_cores / 2).max(1)
+    }
+    .min(cpus.saturating_sub(1).max(1))
+    .min(MAX_OCR_IN_FLIGHT);
+    let frames = displays.max(1).min(budget);
+    (frames, budget)
+}
+
+fn display_request_lanes(budget: usize, workers: usize, index: usize) -> usize {
+    budget / workers + usize::from(index < budget % workers)
+}
+
+fn combined_status(statuses: &[UiScanStatus]) -> UiScanStatus {
+    let status = crate::platform::common::scan_fusion::combined_status(statuses);
+    if status == UiScanStatus::Success {
+        for status in statuses {
+            if let UiScanStatus::Failed(error) = status {
+                crate::support::logging::report_error("macos-vision", error);
+            }
+        }
+    }
+    status
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum OcrMessage {
+    Tile {
+        index: usize,
+        status: i32,
+        message: String,
+        regions: Vec<OcrRegion>,
+    },
+    Done,
+}
+
+#[derive(serde::Deserialize)]
+struct OcrRegion {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    confidence: f64,
+    label: String,
+}
+
+fn recognize_ocr_image(
+    (image, bounds, tiles, parallelism): (RetainedVisionImage, Rect, &[Tile], usize),
+    scan_id: u64,
+    options: &VisionOptions,
+    deadline: Instant,
+    stopped: &Signal,
+    cancelled: &impl Fn() -> bool,
+    publish: &impl Fn(Vec<UiTarget>),
+) -> UiScanStatus {
+    let started = Instant::now();
+    let interrupted = || super::scan_workers::interrupt_status(deadline, cancelled());
+    let run = || -> Result<UiScanStatus, String> {
+        if let Some(status) = interrupted() {
+            return Ok(status);
+        }
+        let mut command = std::process::Command::new(
+            std::env::current_exe()
+                .map_err(|error| format!("cannot locate OCR executable: {error}"))?,
+        );
+        command.arg("--keysteer-vision-ocr");
+        let mut process = stopped.process(&mut command)?;
+        if let Some(status) = interrupted() {
+            return Ok(status);
+        }
+        let input = process.input.as_mut().ok_or("OCR input pipe is missing")?;
+        let crops: Vec<_> = tiles
+            .iter()
+            .map(|tile| {
+                [
+                    tile.left_halo,
+                    tile.top_halo,
+                    tile.right_halo - tile.left_halo,
+                    tile.bottom_halo - tile.top_halo,
+                ]
+            })
+            .collect();
+        serde_json::to_writer(
+            &mut *input,
+            &serde_json::json!({
+                "tiles": crops,
+                "parallelism": parallelism,
+                "minimum_confidence": options.minimum_confidence,
+            }),
+        )
+        .map_err(|error| format!("cannot send OCR layout: {error}"))?;
+        input
+            .write_all(b"\n")
+            .map_err(|error| format!("cannot send OCR header: {error}"))?;
+        let dimensions = image.dimensions()?;
+        if !NmkWriteVisionOcrImage(image.0, input.as_raw_fd(), scan_id) {
+            return Err("cannot transfer OCR image".into());
+        }
+        // The child owns its pixel backing now; retain no parent screenshot
+        // while waiting for OCR or for the next display's work.
+        drop(image);
+        // Keep the writer open: the helper watches EOF to handle parent death,
+        // including a crash while every Vision lane is permanently blocked.
+        let output = process.output.take().ok_or("OCR output pipe is missing")?;
+        let mut output = BufReader::new(output);
+        let mut bytes = Vec::new();
+        let mut received = vec![false; tiles.len()];
+        let mut published = false;
+        loop {
+            if let Some(status) = interrupted() {
+                return Ok(status);
+            }
+            bytes.clear();
+            // Bound IPC memory, independently of the number of scan targets.
+            const MAX_MESSAGE_BYTES: u64 = 64 * 1024 * 1024;
+            let length = (&mut output)
+                .take(MAX_MESSAGE_BYTES + 1)
+                .read_until(b'\n', &mut bytes)
+                .map_err(|error| format!("cannot read OCR result: {error}"))?;
+            if let Some(status) = interrupted() {
+                return Ok(status);
+            }
+            if length == 0 || length as u64 > MAX_MESSAGE_BYTES {
+                return Err("OCR process stopped before completing its results".into());
+            }
+            let record = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid OCR result: {error}"))?;
+            match record {
+                OcrMessage::Done => {
+                    return if received.iter().all(|received| *received) {
+                        Ok(UiScanStatus::Success)
+                    } else {
+                        Err("OCR process omitted a tile".into())
+                    };
+                }
+                OcrMessage::Tile {
+                    index,
+                    status,
+                    message,
+                    regions,
+                } => {
+                    let tile = tiles.get(index).ok_or("OCR returned an unknown tile")?;
+                    if std::mem::replace(&mut received[index], true) {
+                        return Err("OCR returned a tile twice".into());
+                    }
+                    let status = native_status(status, message);
+                    if status != UiScanStatus::Success {
+                        return Ok(status);
+                    }
+                    let tile_bounds = pixel_rect_to_desktop(
+                        bounds,
+                        dimensions,
+                        Rect::new(
+                            tile.left_halo as f64,
+                            tile.top_halo as f64,
+                            (tile.right_halo - tile.left_halo) as f64,
+                            (tile.bottom_halo - tile.top_halo) as f64,
+                        ),
+                    );
+                    let core = pixel_rect_to_desktop(
+                        bounds,
+                        dimensions,
+                        Rect::new(
+                            tile.x as f64,
+                            tile.y as f64,
+                            (tile.right - tile.x) as f64,
+                            (tile.bottom - tile.y) as f64,
+                        ),
+                    );
+                    let mut candidates = Vec::new();
+                    for region in regions {
+                        if let Some(status) = interrupted() {
+                            return Ok(status);
+                        }
+                        if region.label.len() > MAX_VISION_LABEL_BYTES {
+                            return Err("OCR returned an oversized text label".into());
+                        }
+                        let rect = normalized_to_global(
+                            tile_bounds,
+                            Rect::new(region.x, region.y, region.width, region.height),
+                        );
+                        if rect.is_empty() || !rect.width.is_finite() || !rect.height.is_finite() {
+                            continue;
+                        }
+                        candidates.push(Candidate {
+                            target: UiTarget::recognized_text(rect, region.label),
+                            confidence: region.confidence,
+                            is_text: true,
+                        });
+                    }
+                    let mut targets = merge_candidates(candidates, options.merge_iou_threshold);
+                    targets.retain(|target| core.contains(&target.rect.center()));
+                    if let Some(status) = interrupted() {
+                        return Ok(status);
+                    }
+                    let first = !published && !targets.is_empty();
+                    published |= first;
+                    publish(targets);
+                    if first {
+                        crate::log_info!(
+                            "macos-ui-scan",
+                            "scan {scan_id}: OCR first targets after {} ms",
+                            started.elapsed().as_millis()
+                        );
+                    }
+                }
+            }
+        }
+    };
+    run().unwrap_or_else(|error| interrupted().unwrap_or(UiScanStatus::Failed(error)))
+}
+
+fn native_status(status: i32, message: String) -> UiScanStatus {
+    let message = if message.is_empty() {
+        "Vision scan failed".into()
+    } else {
+        message
+    };
+    match status {
+        0 => UiScanStatus::Success,
+        1 => UiScanStatus::PermissionDenied(message),
+        2 => UiScanStatus::TimedOut,
+        4 => UiScanStatus::ContextChanged,
+        5 => UiScanStatus::Unsupported(message),
+        _ => UiScanStatus::Failed(message),
+    }
+}
+
+fn recognize_image(
+    (image, bounds, core_bounds): (usize, NativeRect, Option<Rect>),
+    config: NativeConfig,
+    scan_id: u64,
+    options: &VisionOptions,
+    deadline: Instant,
+    cancelled: &impl Fn() -> bool,
+    publish: &impl Fn(Vec<UiTarget>),
+) -> UiScanStatus {
+    if let Some(status) = super::scan_workers::interrupt_status(deadline, cancelled()) {
+        return status;
+    }
+    match OwnedVisionResult::new(NmkRecognizeVisionImage(image, bounds, config, scan_id)) {
+        Ok(Some(result)) => {
+            // Drop the owned native buffers immediately when a cancelled or
+            // expired request returns, before allocating Rust strings/targets.
+            if let Some(status) = super::scan_workers::interrupt_status(deadline, cancelled()) {
+                return status;
+            }
+            let (mut targets, status) =
+                decode_result(&result, native_rect_to_rect(bounds), options);
+            if let Some(core) = core_bounds {
+                targets.retain(|target| core.contains(&target.rect.center()));
+            }
+            if let Some(status) = super::scan_workers::interrupt_status(deadline, cancelled()) {
+                return status;
+            }
+            publish(targets);
+            status
+        }
+        Ok(None) => UiScanStatus::Failed("Vision could not allocate recognition result".into()),
+        Err(error) => UiScanStatus::Failed(error),
+    }
+}
+
+fn pixel_rect_to_desktop(bounds: Rect, (width, height): (u32, u32), rect: Rect) -> Rect {
+    let scale_x = bounds.width / f64::from(width);
+    let scale_y = bounds.height / f64::from(height);
+    Rect::new(
+        bounds.x + rect.x * scale_x,
+        bounds.y + rect.y * scale_y,
+        rect.width * scale_x,
+        rect.height * scale_y,
+    )
 }
 
 fn decode_result(
@@ -387,14 +1057,7 @@ fn decode_result(
         Ok(_) => "Vision scan failed".into(),
         Err(error) => return (Vec::new(), UiScanStatus::Failed(error)),
     };
-    let status = match raw.status {
-        0 => UiScanStatus::Success,
-        1 => UiScanStatus::PermissionDenied(message),
-        2 => UiScanStatus::TimedOut,
-        4 => UiScanStatus::ContextChanged,
-        5 => UiScanStatus::Unsupported(message),
-        _ => UiScanStatus::Failed(message),
-    };
+    let status = native_status(raw.status, message);
     let regions = match result.regions() {
         Ok(regions) => regions,
         Err(error) => return (Vec::new(), UiScanStatus::Failed(error)),
@@ -571,6 +1234,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn displays_share_a_hardware_dependent_ocr_request_budget() {
+        for (displays, cpus, performance, frames, budget) in [
+            (0, 0, 0, 1, 1),
+            (1, 8, 4, 1, 2),
+            (2, 8, 4, 2, 2),
+            (2, 12, 6, 2, 3),
+            (4, 12, 6, 3, 3),
+            (4, 12, 8, 4, 4),
+            (6, 24, 16, 6, 8),
+            (32, 128, 64, 16, 16),
+            (4, 32, 0, 2, 2),
+        ] {
+            assert_eq!(
+                ocr_concurrency(displays, cpus, performance),
+                (frames, budget)
+            );
+            let lanes: Vec<_> = (0..frames)
+                .map(|index| display_request_lanes(budget, frames, index))
+                .collect();
+            assert_eq!(lanes.iter().sum::<usize>(), budget);
+            assert!(lanes.iter().all(|&lanes| lanes >= 1));
+            assert!(lanes.iter().max().unwrap() - lanes.iter().min().unwrap() <= 1);
+        }
+    }
+
+    #[test]
     fn converts_vision_bottom_left_coordinates_to_global_top_left() {
         let bounds = Rect::new(100.0, -200.0, 800.0, 600.0);
         let converted = normalized_to_global(bounds, Rect::new(0.25, 0.6, 0.5, 0.2));
@@ -662,7 +1351,7 @@ mod tests {
         .unwrap()
         .target;
         let mut scan = crate::platform::common::scan_accumulator::ScanAccumulator::new();
-        let update = scan.push(TargetSource::NativeVision, vec![target], 0.5);
+        let update = scan.push(TargetSource::SystemOcr, vec![target], 0.5);
         let targets: Vec<_> = update
             .batches
             .into_iter()

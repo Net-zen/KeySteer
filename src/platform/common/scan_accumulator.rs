@@ -634,14 +634,7 @@ mod tests {
 
     #[test]
     fn search_details_keep_ocr_and_accessibility_in_both_arrival_orders() {
-        for (ocr_source, ocr_first) in [
-            TargetSource::SystemOcr,
-            #[cfg(target_os = "macos")]
-            TargetSource::NativeVision,
-        ]
-        .into_iter()
-        .flat_map(|source| [false, true].map(|first| (source, first)))
-        {
+        for ocr_first in [false, true] {
             let mut scan = ScanAccumulator::new();
             let control = UiTarget {
                 rect: Rect::new(0.0, 0.0, 100.0, 40.0),
@@ -650,7 +643,10 @@ mod tests {
                 details: None,
             };
             let ocr = UiTarget::recognized_text(Rect::new(20.0, 10.0, 40.0, 20.0), "复制".into());
-            let mut sources = [(TargetSource::Accessibility, control), (ocr_source, ocr)];
+            let mut sources = [
+                (TargetSource::Accessibility, control),
+                (TargetSource::SystemOcr, ocr),
+            ];
             if ocr_first {
                 sources.reverse();
             }
@@ -675,6 +671,45 @@ mod tests {
                 1
             );
             assert_eq!(scan.search_targets.capacity(), 0);
+        }
+    }
+
+    #[test]
+    fn independent_native_geometry_and_ocr_converge_in_both_arrival_orders() {
+        for ocr_first in [false, true] {
+            let mut scan = ScanAccumulator::new();
+            let rect = Rect::new(0.0, 0.0, 100.0, 30.0);
+            let geometry = UiTarget {
+                rect,
+                name: String::new(),
+                role: SemanticRole::Button,
+                details: None,
+            };
+            let text = UiTarget::recognized_text(rect, "复制 Copy".into());
+            let mut sources = [
+                (TargetSource::NativeRectangles, geometry),
+                (TargetSource::SystemOcr, text),
+            ];
+            if ocr_first {
+                sources.reverse();
+            }
+            let mut visible = Vec::new();
+            for (index, (source, target)) in sources.into_iter().enumerate() {
+                let update = scan.push(source, vec![target], 0.5);
+                remove_retired_targets(&mut visible, &update.retired);
+                visible.extend(update.batches.into_iter().flatten());
+                assert_eq!(
+                    visible.len(),
+                    1,
+                    "first ready source must publish immediately"
+                );
+                if index == 0 && !ocr_first {
+                    assert_eq!(visible[0].role, SemanticRole::Button);
+                    assert_eq!(visible[0].ocr_text(), "");
+                }
+            }
+            assert_eq!(visible[0].role, SemanticRole::StaticText);
+            assert_eq!(visible[0].ocr_text(), "复制 Copy");
         }
     }
 

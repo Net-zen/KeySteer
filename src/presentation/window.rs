@@ -778,6 +778,7 @@ selected_border_width = 2.5
                     scale,
                     ..screens[0].clone()
                 }];
+                let layout_scale = super::super::label_scale(scale);
                 let ctx = HostContext {
                     screens: &screens,
                     palette: &palette,
@@ -802,7 +803,7 @@ selected_border_width = 2.5
                             if label.z_index == 19 {
                                 label.rect.x
                             } else {
-                                label.rect.center().x - label.rect.width * scale / 2.0
+                                label.rect.center().x - label.rect.width * layout_scale / 2.0
                             }
                         };
                         assert_eq!(physical_left(marked), physical_left(plain));

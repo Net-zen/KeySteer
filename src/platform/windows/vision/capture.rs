@@ -2,11 +2,22 @@
 
 use super::*;
 
-pub(super) struct ContourInput {
-    pub(super) gray: Vec<u8>,
-    pub(super) width: usize,
-    pub(super) height: usize,
-    pub(super) desktop_bounds: Rect,
+use crate::platform::common::contour::input::Input as ContourInput;
+
+pub(super) fn capture_geometries(
+    request: &crate::api::command::UiScanRequest,
+    bounds: Rect,
+) -> Result<SmallVec<[CaptureGeometry; 2]>, String> {
+    let regions: SmallVec<[Rect; 2]> =
+        if request.scope == crate::api::UiScanScope::All && !request.screen_bounds.is_empty() {
+            request.capture_regions().collect()
+        } else {
+            smallvec::smallvec![bounds]
+        };
+    if regions.is_empty() {
+        return Err("visual capture has no display intersection".into());
+    }
+    regions.into_iter().map(capture_geometry).collect()
 }
 
 pub(super) fn capture_geometry(bounds: Rect) -> Result<CaptureGeometry, String> {
@@ -26,42 +37,9 @@ pub(super) fn capture_geometry(bounds: Rect) -> Result<CaptureGeometry, String> 
     })
 }
 
-pub(super) fn system_ocr_grid_for_parallelism(width: u32, height: u32, parallelism: usize) -> u32 {
-    let cpu_grid = parallelism.max(1).isqrt().saturating_add(1);
-    let size_grid = (width / MIN_SYSTEM_OCR_TILE_SIDE)
-        .min(height / MIN_SYSTEM_OCR_TILE_SIDE)
-        .max(1) as usize;
-    cpu_grid.min(size_grid).max(1) as u32
-}
+pub(super) use crate::platform::common::image_tiles::OcrLayout as SystemOcrLayout;
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct SystemOcrLayout {
-    pub(super) grid: u32,
-    pub(super) tile_count: usize,
-    pub(super) max_in_flight: usize,
-}
-
-impl SystemOcrLayout {
-    pub(super) fn new(geometry: CaptureGeometry) -> Self {
-        let parallelism =
-            std::thread::available_parallelism().map_or(MAX_SYSTEM_OCR_IN_FLIGHT, usize::from);
-        let grid = system_ocr_grid_for_parallelism(geometry.width, geometry.height, parallelism);
-        let tile_count = (grid as usize).saturating_mul(grid as usize);
-        let max_in_flight = system_ocr_concurrency_for(tile_count, parallelism);
-        Self {
-            grid,
-            tile_count,
-            max_in_flight,
-        }
-    }
-}
-
-pub(super) fn system_ocr_concurrency_for(tile_count: usize, parallelism: usize) -> usize {
-    tile_count
-        .min(parallelism.max(1))
-        .clamp(1, MAX_SYSTEM_OCR_IN_FLIGHT)
-}
-
+#[cfg(test)]
 pub(super) use crate::platform::common::image_tiles::partition as scaled_partition;
 
 pub(super) fn capture_pixel_rect(
@@ -99,50 +77,44 @@ pub(super) fn wechat_full_frame_from_bgra(
 }
 
 pub(super) fn submit_wechat_full_frame(
-    input: &mut Option<mpsc::SyncSender<WechatInput>>,
+    input: &mut Option<WechatSubmission>,
     pixels: &[u8],
     geometry: CaptureGeometry,
     factory: Option<&crate::platform::windows::native::SoftwareBitmapFactory>,
     factory_error: Option<&str>,
-) {
-    let Some(input) = input.take() else {
-        return;
+    cancellation: &ScanCancellation,
+) -> Result<(), String> {
+    let Some(sender) = input.as_ref() else {
+        return Ok(());
     };
-    let Some(factory) = factory else {
-        let _ = input.send(WechatInput::Failed(
-            factory_error
-                .unwrap_or("cannot create the COM apartment for the WeChat OCR bitmap")
-                .into(),
-        ));
-        return;
-    };
-    match wechat_full_frame_from_bgra(pixels, geometry, factory) {
-        Ok(frame) => {
-            let _ = input.send(WechatInput::Frame(frame));
-        }
-        Err(error) => {
-            let _ = input.send(WechatInput::Failed(error));
-        }
+    let sent = sender.send(
+        || match factory.map(|factory| wechat_full_frame_from_bgra(pixels, geometry, factory)) {
+            Some(Ok(frame)) => WechatInput::Frame(frame),
+            Some(Err(error)) => WechatInput::Failed(error),
+            None => WechatInput::Failed(
+                factory_error
+                    .unwrap_or("cannot create the COM apartment for the WeChat OCR bitmap")
+                    .into(),
+            ),
+        },
+        cancellation,
+    )?;
+    if !sent {
+        input.take();
     }
+    Ok(())
 }
 
 pub(super) fn system_ocr_tile_from_bgra(
     pixels: &[u8],
     geometry: CaptureGeometry,
     factory: &crate::platform::windows::native::SoftwareBitmapFactory,
-    core_x: u32,
-    core_y: u32,
-    core_right: u32,
-    core_bottom: u32,
+    tile: crate::platform::common::image_tiles::Tile,
 ) -> Result<SystemOcrTile, String> {
-    let bitmap_x = core_x.saturating_sub(SYSTEM_OCR_TILE_OVERLAP);
-    let bitmap_y = core_y.saturating_sub(SYSTEM_OCR_TILE_OVERLAP);
-    let bitmap_right = core_right
-        .saturating_add(SYSTEM_OCR_TILE_OVERLAP)
-        .min(geometry.width);
-    let bitmap_bottom = core_bottom
-        .saturating_add(SYSTEM_OCR_TILE_OVERLAP)
-        .min(geometry.height);
+    let bitmap_x = tile.left_halo as u32;
+    let bitmap_y = tile.top_halo as u32;
+    let bitmap_right = tile.right_halo as u32;
+    let bitmap_bottom = tile.bottom_halo as u32;
     let tile_width = bitmap_right - bitmap_x;
     let tile_height = bitmap_bottom - bitmap_y;
     let bitmap = factory.bgra_region(
@@ -164,10 +136,10 @@ pub(super) fn system_ocr_tile_from_bgra(
         },
         core_bounds: capture_pixel_rect(
             geometry,
-            core_x,
-            core_y,
-            core_right - core_x,
-            core_bottom - core_y,
+            tile.x as u32,
+            tile.y as u32,
+            (tile.right - tile.x) as u32,
+            (tile.bottom - tile.y) as u32,
         ),
         bitmap: SharedSoftwareBitmap {
             bitmap: Some(bitmap),
@@ -179,68 +151,61 @@ pub(super) fn system_ocr_tile_from_bgra(
 }
 
 pub(super) fn stream_system_ocr_tiles(
-    pixels: &[u8],
-    geometry: CaptureGeometry,
+    frames: &[CapturedFrame],
     factory: &crate::platform::windows::native::SoftwareBitmapFactory,
     submission: &SystemOcrSubmission,
     mut progress: impl FnMut(Option<usize>) -> Result<(), String>,
 ) -> Result<(), String> {
-    let expected = geometry.width as usize * geometry.height as usize * 4;
-    if pixels.len() != expected {
-        return Err("captured BGRA byte length does not match system OCR geometry".into());
+    for frame in frames {
+        let expected = frame.geometry.width as usize * frame.geometry.height as usize * 4;
+        if frame.capture.pixels().len() != expected {
+            return Err("captured BGRA byte length does not match system OCR geometry".into());
+        }
     }
+    let pending = crate::platform::common::image_tiles::round_robin(frames.iter().map(|frame| {
+        frame.layout.tiles(
+            frame.geometry.width,
+            frame.geometry.height,
+            SYSTEM_OCR_TILE_OVERLAP as usize,
+        )
+    }));
+    let tile_count = frames.iter().map(|frame| frame.layout.tile_count).sum();
     if submission
         .sender
-        .send(SystemOcrInput::Begin {
-            tile_count: submission.layout.tile_count,
-        })
+        .send(SystemOcrInput::Begin { tile_count })
         .is_err()
     {
         return Ok(());
     }
-    let mut index = 0usize;
     let mut in_flight = 0usize;
-    for row in 0..submission.layout.grid {
-        for column in 0..submission.layout.grid {
-            while in_flight == submission.layout.max_in_flight {
-                progress(None)?;
-                let remaining = submission
-                    .deadline
-                    .saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
+    for (submitted, (frame_index, tile)) in pending.enumerate() {
+        let frame = &frames[frame_index];
+        while in_flight == submission.max_in_flight {
+            progress(None)?;
+            let remaining = submission
+                .deadline
+                .saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("system OCR tile submission timed out".into());
+            }
+            match submission.credits.recv_timeout(remaining) {
+                Ok(()) => {
+                    in_flight -= 1;
+                    progress(None)?;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
                     return Err("system OCR tile submission timed out".into());
                 }
-                match submission.credits.recv_timeout(remaining) {
-                    Ok(()) => {
-                        in_flight = in_flight.saturating_sub(1);
-                        progress(None)?;
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        return Err("system OCR tile submission timed out".into());
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             }
-            let core_x = scaled_partition(geometry.width, column, submission.layout.grid);
-            let core_right = scaled_partition(geometry.width, column + 1, submission.layout.grid);
-            let core_y = scaled_partition(geometry.height, row, submission.layout.grid);
-            let core_bottom = scaled_partition(geometry.height, row + 1, submission.layout.grid);
-            let tile = system_ocr_tile_from_bgra(
-                pixels,
-                geometry,
-                factory,
-                core_x,
-                core_y,
-                core_right,
-                core_bottom,
-            )?;
-            if submission.sender.send(SystemOcrInput::Tile(tile)).is_err() {
-                return Ok(());
-            }
-            in_flight += 1;
-            progress(Some(index))?;
-            index += 1;
         }
+        let tile =
+            system_ocr_tile_from_bgra(frame.capture.pixels(), frame.geometry, factory, tile)?;
+        if submission.sender.send(SystemOcrInput::Tile(tile)).is_err() {
+            return Ok(());
+        }
+        in_flight += 1;
+        progress(Some(submitted))?;
     }
     let _ = submission.sender.send(SystemOcrInput::Done);
     Ok(())
@@ -258,96 +223,16 @@ pub(super) fn contour_input_from_bgra(
 pub(super) fn contour_input_from_bgra_with_progress(
     pixels: &[u8],
     geometry: CaptureGeometry,
-    mut cancelled: impl FnMut() -> Result<bool, String>,
+    cancelled: impl FnMut() -> Result<bool, String>,
 ) -> Result<Option<ContourInput>, String> {
-    let source_width = geometry.width as usize;
-    let source_height = geometry.height as usize;
-    let expected = source_width
-        .checked_mul(source_height)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or_else(|| "captured image dimensions overflow".to_string())?;
-    if pixels.len() != expected {
-        return Err("captured BGRA length does not match its geometry".into());
-    }
-    let edge_scale = (MAX_CONTOUR_EDGE / source_width.max(source_height) as f64).min(1.0);
-    let pixel_scale = (MAX_CONTOUR_PIXELS / (source_width * source_height) as f64)
-        .sqrt()
-        .min(1.0);
-    let analysis_scale = edge_scale.min(pixel_scale);
-    let width = (source_width as f64 * analysis_scale).floor().max(2.0) as usize;
-    let height = (source_height as f64 * analysis_scale).floor().max(2.0) as usize;
-    let mut gray = Vec::with_capacity(width * height);
-    if width == source_width && height == source_height {
-        // 1080p and smaller captures need no coordinate tables or zero-fill.
-        for (y, row) in pixels.chunks_exact(source_width * 4).enumerate() {
-            if y.is_multiple_of(32) && cancelled()? {
-                return Ok(None);
-            }
-            gray.extend(row.as_chunks::<4>().0.iter().map(|pixel| bgra_luma(pixel)));
-        }
-    } else if source_width.is_multiple_of(width) && source_height.is_multiple_of(height) {
-        // Native 4K commonly becomes an exact 2:1 1080p analysis image.
-        // Stepping source rows and pixels avoids both offset allocations.
-        let x_step = source_width / width;
-        let y_step = source_height / height;
-        for (y, source_y) in (0..source_height).step_by(y_step).enumerate() {
-            if y.is_multiple_of(32) && cancelled()? {
-                return Ok(None);
-            }
-            let row = &pixels[source_y * source_width * 4..][..source_width * 4];
-            gray.extend(
-                row.as_chunks::<4>()
-                    .0
-                    .iter()
-                    .step_by(x_step)
-                    .map(|pixel| bgra_luma(pixel)),
-            );
-        }
-    } else {
-        let source_x_offsets = nearest_offsets(source_width, width);
-        let source_y_offsets = nearest_offsets(source_height, height);
-        for (y, source_y) in source_y_offsets.into_iter().enumerate() {
-            if y.is_multiple_of(32) && cancelled()? {
-                return Ok(None);
-            }
-            let row = &pixels[source_y * source_width * 4..(source_y + 1) * source_width * 4];
-            gray.extend(
-                source_x_offsets
-                    .iter()
-                    .map(|&source_x| bgra_luma(&row[source_x * 4..source_x * 4 + 4])),
-            );
-        }
-    }
-    Ok(Some(ContourInput {
-        gray,
-        width,
-        height,
-        desktop_bounds: geometry.desktop_bounds,
-    }))
-}
-
-#[inline]
-pub(super) fn bgra_luma(pixel: &[u8]) -> u8 {
-    ((u16::from(pixel[2]) * 77 + u16::from(pixel[1]) * 150 + u16::from(pixel[0]) * 29) >> 8) as u8
-}
-
-/// Return the exact `floor(output * source / destination)` mapping without a
-/// division in the per-pixel conversion loop.
-pub(super) fn nearest_offsets(source: usize, destination: usize) -> Vec<usize> {
-    debug_assert!(source != 0 && destination != 0);
-    let step = source / destination;
-    let remainder_step = source % destination;
-    let mut source_index = 0usize;
-    let mut remainder = 0usize;
-    let mut offsets = Vec::with_capacity(destination);
-    for _ in 0..destination {
-        offsets.push(source_index.min(source - 1));
-        source_index += step;
-        remainder += remainder_step;
-        if remainder >= destination {
-            source_index += 1;
-            remainder -= destination;
-        }
-    }
-    offsets
+    crate::platform::common::contour::input::from_bgra(
+        pixels,
+        (
+            geometry.width as usize,
+            geometry.height as usize,
+            geometry.width as usize * 4,
+        ),
+        geometry.desktop_bounds,
+        cancelled,
+    )
 }

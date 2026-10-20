@@ -12,9 +12,9 @@ const MAX_CELLS_PER_RECT: i64 = 32;
 
 /// Stores each rectangle once and keeps only compact indices in grid cells.
 ///
-/// The matching policy remains provider-specific: Windows combines IoU,
-/// containment and text-baseline proximity, while macOS Vision currently uses
-/// IoU only. Queries allocate no temporary candidate list.
+/// Callers choose the matching policy: native candidate de-duplication can use
+/// IoU, while shared fusion also uses containment and text-baseline proximity.
+/// Queries allocate no temporary candidate list.
 pub(crate) struct SpatialIndex {
     cell_size: f64,
     padding: f64,
@@ -180,10 +180,10 @@ impl SpatialIndex {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TargetSource {
     Accessibility,
-    #[cfg(any(target_os = "windows", test))]
+    #[cfg(any(target_os = "windows", target_os = "macos", test))]
     SystemOcr,
-    #[cfg(target_os = "macos")]
-    NativeVision,
+    #[cfg(any(target_os = "macos", test))]
+    NativeRectangles,
     #[cfg(target_os = "windows")]
     WechatOcr,
     Contour,
@@ -392,6 +392,13 @@ impl TargetIndex {
                         .then_with(|| a.y.total_cmp(&b.y))
                         .then_with(|| a.x.total_cmp(&b.x))
                         .is_gt();
+                // macOS' newly independent rectangle provider must converge
+                // with late OCR. Keep this out of the Windows production path.
+                #[cfg(any(target_os = "macos", test))]
+                let preferred_text = preferred_text
+                    || (old.source == TargetSource::NativeRectangles
+                        && source == TargetSource::SystemOcr
+                        && candidate.role == SemanticRole::StaticText);
                 if !expands_text && !preferred_text {
                     return true;
                 }

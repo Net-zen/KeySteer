@@ -1,7 +1,15 @@
 //! Generation-scoped system and WeChat OCR provider execution.
 
 use super::*;
+use crate::platform::common::contour::input::Input as ContourInput;
 use crate::platform::common::spatial_index::TargetSource;
+
+pub(super) struct CapturedFrame {
+    pub(super) geometry: CaptureGeometry,
+    pub(super) capture: crate::platform::windows::native::PreparedCapture,
+    pub(super) layout: SystemOcrLayout,
+    _ledger: crate::support::perf_probe::ResourceGuard,
+}
 
 pub(super) struct WechatFullFrame {
     pub(super) geometry: CaptureGeometry,
@@ -13,6 +21,45 @@ pub(super) enum WechatInput {
     Frame(WechatFullFrame),
     CancelWake,
     Failed(String),
+    Done,
+}
+
+pub(super) struct WechatSubmission {
+    pub(super) sender: mpsc::SyncSender<WechatInput>,
+    pub(super) credits: mpsc::Receiver<()>,
+    pub(super) deadline: Instant,
+}
+
+impl WechatSubmission {
+    pub(super) fn send(
+        &self,
+        message: impl FnOnce() -> WechatInput,
+        cancellation: &ScanCancellation,
+    ) -> Result<bool, String> {
+        // Reserve space before allocating another full bitmap. Cancellation
+        // wakes this same credit wait even when the provider input is full.
+        if cancellation.is_cancelled() {
+            return Err("WeChat OCR input cancelled".into());
+        }
+        match self
+            .credits
+            .recv_timeout(self.deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(false),
+            Err(mpsc::RecvTimeoutError::Timeout) => return Err("WeChat OCR input timed out".into()),
+        }
+        if cancellation.is_cancelled() {
+            return Err("WeChat OCR input cancelled".into());
+        }
+        match self.sender.try_send(message()) {
+            Ok(()) => Ok(true),
+            Err(mpsc::TrySendError::Disconnected(_)) => Ok(false),
+            Err(mpsc::TrySendError::Full(_)) => {
+                Err("WeChat OCR input credit was unavailable".into())
+            }
+        }
+    }
 }
 
 impl WechatFullFrame {
@@ -54,7 +101,7 @@ pub(super) enum SystemOcrInput {
 pub(super) struct SystemOcrSubmission {
     pub(super) sender: mpsc::SyncSender<SystemOcrInput>,
     pub(super) credits: mpsc::Receiver<()>,
-    pub(super) layout: SystemOcrLayout,
+    pub(super) max_in_flight: usize,
     pub(super) deadline: Instant,
 }
 
@@ -161,8 +208,8 @@ fn run_scan_inner(
                 .clamp(250, 30_000),
         );
     let bounds = job.request.scan_bounds();
-    let geometry = match capture_geometry(bounds) {
-        Ok(geometry) => geometry,
+    let geometries = match capture_geometries(&job.request, bounds) {
+        Ok(geometries) => geometries,
         Err(error) => {
             let mut errors = crate::support::errors::ErrorBundle::default();
             errors.push("capture geometry", error);
@@ -177,6 +224,26 @@ fn run_scan_inner(
             );
         }
     };
+    let parallelism =
+        std::thread::available_parallelism().map_or(MAX_SYSTEM_OCR_IN_FLIGHT, usize::from);
+    let layouts: SmallVec<[_; 2]> = geometries
+        .iter()
+        .map(|geometry| {
+            SystemOcrLayout::new(
+                geometry.width,
+                geometry.height,
+                parallelism,
+                MIN_SYSTEM_OCR_TILE_SIDE,
+                MAX_SYSTEM_OCR_IN_FLIGHT,
+            )
+        })
+        .collect();
+    let max_in_flight = layouts
+        .iter()
+        .map(|layout| layout.tile_count)
+        .sum::<usize>()
+        .min(parallelism)
+        .clamp(1, MAX_SYSTEM_OCR_IN_FLIGHT);
     let provider_mailbox = Arc::new(ProviderMailbox::with_output(job.source.sink()));
     let cancellation = ScanCancellation::new(
         shared,
@@ -216,12 +283,12 @@ fn run_scan_inner(
     let mut wechat_input = None;
     let mut pending_ocr = 0usize;
     if let Some(descriptor) = system_descriptor {
-        let layout = SystemOcrLayout::new(geometry);
-        let (image_tx, image_rx) = mpsc::sync_channel(layout.max_in_flight.saturating_add(2));
+        let (image_tx, image_rx) = mpsc::sync_channel(max_in_flight.saturating_add(2));
         let completion_tx = image_tx.clone();
         cancellation.register_system_wake(image_tx.clone());
         let (credit_tx, credit_rx) = mpsc::channel();
-        cancellation.register_system_credit_wake(credit_tx.clone());
+        let credit_tx = Arc::new(credit_tx);
+        cancellation.register_credit_wake(&credit_tx);
         let result_mailbox = Arc::clone(&provider_mailbox);
         let provider_cancellation = cancellation.clone();
         if providers.spawn("keysteer-system-ocr", move || {
@@ -250,7 +317,7 @@ fn run_scan_inner(
             system_input = Some(SystemOcrSubmission {
                 sender: image_tx,
                 credits: credit_rx,
-                layout,
+                max_in_flight,
                 deadline,
             });
             pending_ocr += 1;
@@ -259,6 +326,10 @@ fn run_scan_inner(
     if let Some(descriptor) = wechat_descriptor {
         let (image_tx, image_rx) = mpsc::sync_channel(1);
         cancellation.register_wechat_wake(image_tx.clone());
+        let (credit_tx, credit_rx) = mpsc::channel();
+        let credit_tx = Arc::new(credit_tx);
+        let _ = credit_tx.send(());
+        cancellation.register_credit_wake(&credit_tx);
         let result_mailbox = Arc::clone(&provider_mailbox);
         let provider_cancellation = cancellation.clone();
         let minimum_confidence = job.request.vision.minimum_confidence;
@@ -270,7 +341,7 @@ fn run_scan_inner(
             let started = Instant::now();
             let result = recognize_wechat_provider(
                 descriptor,
-                image_rx,
+                (image_rx, credit_tx),
                 deadline,
                 minimum_confidence,
                 &provider_cancellation,
@@ -284,10 +355,15 @@ fn run_scan_inner(
             });
             crate::support::perf_probe::mark("wechat_ocr_finished");
         }) {
-            wechat_input = Some(image_tx);
+            wechat_input = Some(WechatSubmission {
+                sender: image_tx,
+                credits: credit_rx,
+                deadline,
+            });
             pending_ocr += 1;
         }
     }
+    let mut wechat_sent = 0;
     let mut contour_pending = false;
     let mut early_events = ProviderEvents::new();
 
@@ -297,26 +373,32 @@ fn run_scan_inner(
     // Geometry, the thread-bound DIB and the WinRT apartment are prepared
     // while the renderer is independently hiding its tree. No desktop pixels
     // are read before the hidden ACK.
-    let mut prepared_capture = match crate::platform::windows::native::PreparedCapture::new(
-        geometry.width,
-        geometry.height,
-    ) {
-        Ok(capture) => capture,
-        Err(error) => {
-            let mut errors = crate::support::errors::ErrorBundle::default();
-            errors.push("capture DIB preparation", error);
-            errors.record("capture gate release", capture_lease.release());
-            return UiScanStatus::Failed(
-                errors
-                    .into_result()
-                    .err()
-                    .unwrap_or_else(|| "capture DIB preparation failed without details".into()),
-            );
-        }
-    };
-    let gdi_ledger = crate::support::perf_probe::ResourceGuard::new(
-        crate::support::perf_probe::ResourceKind::GdiSurface,
-    );
+    let mut frames = SmallVec::<[CapturedFrame; 2]>::new();
+    for (geometry, layout) in geometries.into_iter().zip(layouts) {
+        let capture =
+            match crate::platform::windows::native::PreparedCapture::new(
+                geometry.width,
+                geometry.height,
+            ) {
+                Ok(capture) => capture,
+                Err(error) => {
+                    let mut errors = crate::support::errors::ErrorBundle::default();
+                    errors.push("capture DIB preparation", error);
+                    errors.record("capture gate release", capture_lease.release());
+                    return UiScanStatus::Failed(errors.into_result().err().unwrap_or_else(|| {
+                        "capture DIB preparation failed without details".into()
+                    }));
+                }
+            };
+        frames.push(CapturedFrame {
+            geometry,
+            capture,
+            layout,
+            _ledger: crate::support::perf_probe::ResourceGuard::new(
+                crate::support::perf_probe::ResourceKind::GdiSurface,
+            ),
+        });
+    }
     crate::support::perf_probe::mark("capture_dib_prepared");
     let mut bitmap_factory_error = None;
     let bitmap_apartment = if system_input.is_none() && wechat_input.is_none() {
@@ -363,54 +445,75 @@ fn run_scan_inner(
     crate::support::perf_probe::mark("capture_hidden_ack");
     let mut capture_lease = Some(capture_lease);
     let mut context_changed_during_capture = false;
-    let captured = prepared_capture.capture_with(
-        bounds.x.floor() as i32,
-        bounds.y.floor() as i32,
-        bounds.width.ceil() as i32,
-        bounds.height.ceil() as i32,
-        |pixels, width, height| {
-            crate::support::perf_probe::mark("capture_gdi_ready");
-            if width != geometry.width || height != geometry.height {
-                return Err("native capture dimensions changed unexpectedly".into());
+    let captured = (|| -> Result<(), String> {
+        // Capture every real display before releasing the overlay gate. Native
+        // DIB owners keep these pixels without copying or allocating the gaps
+        // in a giant virtual desktop image. No OCR/contour wait holds this gate.
+        for frame in &mut frames {
+            if cancellation.is_cancelled() || Instant::now() >= deadline {
+                return Err("display capture was interrupted".into());
             }
-            if !context_is_current(shared, job.generation, &job.request) {
-                context_changed_during_capture = true;
-                return Err("visual capture context changed".into());
+            let geometry = frame.geometry;
+            let bounds = geometry.desktop_bounds;
+            frame.capture.capture_with(
+                bounds.x.floor() as i32,
+                bounds.y.floor() as i32,
+                bounds.width.ceil() as i32,
+                bounds.height.ceil() as i32,
+                |_, width, height| {
+                    crate::support::perf_probe::mark("capture_gdi_ready");
+                    if width != geometry.width || height != geometry.height {
+                        return Err("native capture dimensions changed unexpectedly".into());
+                    }
+                    if !context_is_current(shared, job.generation, &job.request) {
+                        context_changed_during_capture = true;
+                        return Err("visual capture context changed".into());
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+        if let Some(lease) = capture_lease.take() {
+            lease.release()?;
+        }
+        // Fill the first OCR concurrency window before preparing contour
+        // pixels. Grayscale overlaps in-flight recognition instead of
+        // delaying those tiles; contour starts before the first credit wait.
+        let contour_start_after = system_input.as_ref().map_or(0, |input| input.max_in_flight);
+        let mut contour_attempted = false;
+        let mut launch_contour = || -> Result<(), String> {
+            if contour_attempted {
+                return Ok(());
             }
-            // The DIB already contains a stable desktop frame. Release the
-            // generation gate before constructing OCR/contour artifacts so a
-            // deferred UIA frame can be shown without waiting for pixel work.
-            if let Some(lease) = capture_lease.take() {
-                lease.release()?;
-            }
-            // Fill the first OCR concurrency window before preparing contour
-            // pixels. Grayscale overlaps in-flight recognition instead of
-            // delaying those tiles; contour starts before the first credit wait.
-            let contour_start_after = system_input.as_ref().map_or(0, |input| {
-                input.layout.max_in_flight.min(input.layout.tile_count)
-            });
-            let mut contour_attempted = false;
-            let mut launch_contour = || -> Result<(), String> {
-                if contour_attempted {
+            contour_attempted = true;
+            if detect_contours {
+                let mut images = SmallVec::<[ContourInput; 2]>::new();
+                for frame in &frames {
+                    if let Some(image) = contour_input_from_bgra_with_progress(
+                        frame.capture.pixels(),
+                        frame.geometry,
+                        || Ok(cancellation.is_cancelled() || Instant::now() >= deadline),
+                    )? {
+                        images.push(image);
+                    }
+                }
+                if images.is_empty() {
                     return Ok(());
                 }
-                contour_attempted = true;
-                if detect_contours
-                    && let Some(image) =
-                        contour_input_from_bgra_with_progress(pixels, geometry, || {
-                            Ok(cancellation.is_cancelled() || Instant::now() >= deadline)
-                        })?
-                {
-                    let result_mailbox = Arc::clone(&provider_mailbox);
-                    let provider_cancellation = cancellation.clone();
-                    let limit = crate::platform::common::contour::candidate_limit(
-                        job.request.strategy,
-                        &job.request.vision,
+                let result_mailbox = Arc::clone(&provider_mailbox);
+                let provider_cancellation = cancellation.clone();
+                let limit = crate::platform::common::contour::candidate_limit(
+                    job.request.strategy,
+                    &job.request.vision,
+                );
+                contour_pending = providers.spawn("keysteer-contour", move || {
+                    let _ledger = crate::support::perf_probe::ResourceGuard::new(
+                        crate::support::perf_probe::ResourceKind::Provider,
                     );
-                    contour_pending = providers.spawn("keysteer-contour", move || {
-                        let _ledger = crate::support::perf_probe::ResourceGuard::new(
-                            crate::support::perf_probe::ResourceKind::Provider,
-                        );
+                    for image in images {
+                        if provider_cancellation.is_cancelled() || Instant::now() >= deadline {
+                            break;
+                        }
                         let targets = crate::platform::common::contour::detect(
                             &image.gray,
                             image.width,
@@ -419,75 +522,87 @@ fn run_scan_inner(
                             limit,
                             || provider_cancellation.is_cancelled() || Instant::now() >= deadline,
                         );
-                        let _ = send_contour_batches(&result_mailbox, targets);
-                    });
-                    if !contour_pending {
-                        return Err("cannot start contour provider".into());
+                        if send_contour_batch(&result_mailbox, targets).is_err() {
+                            break;
+                        }
                     }
+                    let _ = result_mailbox.publish(ProviderEvent::ContourDone);
+                });
+                if !contour_pending {
+                    return Err("cannot start contour provider".into());
                 }
-                Ok(())
-            };
-            if let Some(input) = system_input.take() {
-                if let Some(factory) = bitmap_factory.as_ref() {
-                    if let Err(error) =
-                        stream_system_ocr_tiles(pixels, geometry, factory, &input, |index| {
-                            if index.is_some_and(|index| index + 1 == contour_start_after) {
-                                launch_contour()?;
-                            }
-                            if index == Some(0) && wechat_input.is_some() {
-                                submit_wechat_full_frame(
-                                    &mut wechat_input,
-                                    pixels,
-                                    geometry,
-                                    bitmap_factory.as_ref(),
-                                    bitmap_factory_error.as_deref(),
-                                );
-                            }
-                            if !drain_early_ocr_events(
-                                &provider_mailbox,
-                                &job.source,
-                                &mut early_events,
-                                || context_is_current(shared, job.generation, &job.request),
-                            ) {
-                                context_changed_during_capture = true;
-                                return Err("visual capture context changed".into());
-                            }
-                            Ok(())
-                        })
-                    {
-                        let _ = input.sender.send(SystemOcrInput::Failed(error));
-                        let _ = input.sender.send(SystemOcrInput::Done);
-                    }
-                } else {
-                    let _ = input.sender.send(SystemOcrInput::Failed(
-                        bitmap_factory_error.clone().unwrap_or_else(|| {
-                            "cannot create the COM apartment for system OCR tiles".into()
-                        }),
-                    ));
-                    let _ = input.sender.send(SystemOcrInput::Done);
-                }
-            }
-            launch_contour()?;
-            if wechat_input.is_some() {
-                submit_wechat_full_frame(
-                    &mut wechat_input,
-                    pixels,
-                    geometry,
-                    bitmap_factory.as_ref(),
-                    bitmap_factory_error.as_deref(),
-                );
-            }
-            if !drain_early_ocr_events(&provider_mailbox, &job.source, &mut early_events, || {
-                context_is_current(shared, job.generation, &job.request)
-            }) {
-                context_changed_during_capture = true;
-                return Err("visual capture context changed".into());
             }
             Ok(())
-        },
-    );
-    drop(prepared_capture);
-    drop(gdi_ledger);
+        };
+        if let Some(input) = system_input.take() {
+            if let Some(factory) = bitmap_factory.as_ref() {
+                if let Err(error) = stream_system_ocr_tiles(&frames, factory, &input, |index| {
+                    if index.is_some_and(|index| index + 1 == contour_start_after) {
+                        launch_contour()?;
+                    }
+                    if index == Some(0) && wechat_input.is_some() {
+                        submit_wechat_full_frame(
+                            &mut wechat_input,
+                            frames[0].capture.pixels(),
+                            frames[0].geometry,
+                            bitmap_factory.as_ref(),
+                            bitmap_factory_error.as_deref(),
+                            &cancellation,
+                        )?;
+                        wechat_sent = 1;
+                    }
+                    if !drain_early_ocr_events(
+                        &provider_mailbox,
+                        &job.source,
+                        &mut early_events,
+                        || context_is_current(shared, job.generation, &job.request),
+                    ) {
+                        context_changed_during_capture = true;
+                        return Err("visual capture context changed".into());
+                    }
+                    Ok(())
+                }) {
+                    if context_changed_during_capture
+                        || cancellation.is_cancelled()
+                        || Instant::now() >= deadline
+                    {
+                        return Err(error);
+                    }
+                    let _ = input.sender.send(SystemOcrInput::Failed(error));
+                    let _ = input.sender.send(SystemOcrInput::Done);
+                }
+            } else {
+                let _ = input.sender.send(SystemOcrInput::Failed(
+                    bitmap_factory_error.clone().unwrap_or_else(|| {
+                        "cannot create the COM apartment for system OCR tiles".into()
+                    }),
+                ));
+                let _ = input.sender.send(SystemOcrInput::Done);
+            }
+        }
+        launch_contour()?;
+        for frame in std::mem::take(&mut frames).into_iter().skip(wechat_sent) {
+            submit_wechat_full_frame(
+                &mut wechat_input,
+                frame.capture.pixels(),
+                frame.geometry,
+                bitmap_factory.as_ref(),
+                bitmap_factory_error.as_deref(),
+                &cancellation,
+            )?;
+        }
+        if let Some(input) = wechat_input.take() {
+            input.send(|| WechatInput::Done, &cancellation)?;
+        }
+        if !drain_early_ocr_events(&provider_mailbox, &job.source, &mut early_events, || {
+            context_is_current(shared, job.generation, &job.request)
+        }) {
+            context_changed_during_capture = true;
+            return Err("visual capture context changed".into());
+        }
+        Ok(())
+    })();
+    drop(frames);
     if let Some(lease) = capture_lease.take()
         && let Err(error) = lease.release()
     {
@@ -495,7 +610,10 @@ fn run_scan_inner(
     }
     match captured {
         Ok(()) => {}
-        Err(_) if context_changed_during_capture => return UiScanStatus::ContextChanged,
+        Err(_) if context_changed_during_capture || cancellation.is_cancelled() => {
+            return UiScanStatus::ContextChanged;
+        }
+        Err(_) if Instant::now() >= deadline => return UiScanStatus::TimedOut,
         Err(error) => return UiScanStatus::Failed(error),
     }
     if !context_is_current(shared, job.generation, &job.request) {
@@ -636,10 +754,11 @@ fn run_scan_inner(
 }
 
 fn wait_provider_image(
-    receiver: mpsc::Receiver<WechatInput>,
+    receiver: &mpsc::Receiver<WechatInput>,
+    credits: &mpsc::Sender<()>,
     deadline: Instant,
     cancellation: &ScanCancellation,
-) -> Result<WechatFullFrame, VisionError> {
+) -> Result<Option<WechatFullFrame>, VisionError> {
     if cancellation.is_cancelled() {
         return Err(VisionError::Cancelled);
     }
@@ -647,12 +766,18 @@ fn wait_provider_image(
     if remaining.is_zero() {
         return Err(VisionError::TimedOut);
     }
-    match receiver.recv_timeout(remaining) {
-        Ok(WechatInput::Frame(image)) => Ok(image),
-        Ok(WechatInput::CancelWake) => Err(VisionError::Cancelled),
-        Ok(WechatInput::Failed(error)) => Err(VisionError::Operational(error)),
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(VisionError::TimedOut),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(VisionError::Cancelled),
+    let input = receiver
+        .recv_timeout(remaining)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => VisionError::TimedOut,
+            mpsc::RecvTimeoutError::Disconnected => VisionError::Cancelled,
+        })?;
+    let _ = credits.send(());
+    match input {
+        WechatInput::Frame(image) => Ok(Some(image)),
+        WechatInput::Done => Ok(None),
+        WechatInput::CancelWake => Err(VisionError::Cancelled),
+        WechatInput::Failed(error) => Err(VisionError::Operational(error)),
     }
 }
 
@@ -661,7 +786,7 @@ fn recognize_system_provider(
     descriptor: Arc<SystemOcrDescriptor>,
     receiver: mpsc::Receiver<SystemOcrInput>,
     completion_sender: mpsc::SyncSender<SystemOcrInput>,
-    credit_sender: mpsc::Sender<()>,
+    credit_sender: Arc<mpsc::Sender<()>>,
     deadline: Instant,
     cancellation: &ScanCancellation,
     result_mailbox: &ProviderMailbox,
@@ -1036,7 +1161,7 @@ pub(super) fn retain_nonterminal_system_ocr_owner(reason: &str) -> ! {
 
 fn recognize_wechat_provider(
     descriptor: Arc<WechatDescriptor>,
-    receiver: mpsc::Receiver<WechatInput>,
+    (receiver, credits): (mpsc::Receiver<WechatInput>, Arc<mpsc::Sender<()>>),
     deadline: Instant,
     minimum_confidence: f64,
     cancellation: &ScanCancellation,
@@ -1047,31 +1172,46 @@ fn recognize_wechat_provider(
         .map_err(VisionError::Operational)?;
     let mut provider = WechatOcr::start(&descriptor, deadline, &|| cancellation.is_cancelled())
         .map_err(VisionError::Unavailable)?;
-    let result = wait_provider_image(receiver, deadline, cancellation).and_then(|mut input| {
-        let geometry = input.geometry;
-        let bitmap = input.take_bitmap()?;
-        provider
-            .recognize(
-                geometry,
-                bitmap,
-                deadline.saturating_duration_since(Instant::now()),
-                minimum_confidence,
-                || cancellation.is_cancelled(),
-                |targets| {
-                    send_ocr_batches(result_mailbox, "wechat", started, targets)
-                        .map_err(|error| error.to_string())
-                },
-            )
-            .map_err(|error| {
-                if cancellation.is_cancelled() {
-                    VisionError::Cancelled
-                } else if Instant::now() >= deadline {
-                    VisionError::TimedOut
-                } else {
-                    VisionError::Operational(error)
-                }
-            })
-    });
+    let result = (|| {
+        let mut accepted = 0;
+        let mut first_frame = true;
+        while let Some(mut input) =
+            wait_provider_image(&receiver, &credits, deadline, cancellation)?
+        {
+            if !first_frame {
+                // recognize() shuts down its one-image helper before returning.
+                // Keep that isolation contract for each subsequent display.
+                provider = WechatOcr::start(&descriptor, deadline, &|| cancellation.is_cancelled())
+                    .map_err(VisionError::Unavailable)?;
+            }
+            first_frame = false;
+            let geometry = input.geometry;
+            let bitmap = input.take_bitmap()?;
+            let count = provider
+                .recognize(
+                    geometry,
+                    bitmap,
+                    deadline.saturating_duration_since(Instant::now()),
+                    minimum_confidence,
+                    || cancellation.is_cancelled(),
+                    |targets| {
+                        send_ocr_batches(result_mailbox, "wechat", started, targets)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .map_err(|error| {
+                    if cancellation.is_cancelled() {
+                        VisionError::Cancelled
+                    } else if Instant::now() >= deadline {
+                        VisionError::TimedOut
+                    } else {
+                        VisionError::Operational(error)
+                    }
+                })?;
+            accepted += count;
+        }
+        Ok(accepted)
+    })();
     let cleanup = provider.shutdown();
     match (result, cleanup) {
         (Ok(targets), Ok(())) => Ok(targets),

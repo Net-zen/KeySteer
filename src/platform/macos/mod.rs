@@ -15,6 +15,7 @@ pub(crate) mod multi_click;
 mod native;
 mod overlay;
 mod permissions;
+mod scan_workers;
 mod screens;
 mod status_item;
 mod ui_scan;
@@ -23,6 +24,11 @@ mod window_audio;
 mod window_move;
 mod window_tabs;
 mod workspace;
+
+/// Own private process modes before normal application startup.
+pub(crate) fn run(application: impl FnOnce() -> std::process::ExitCode) -> std::process::ExitCode {
+    vision::run_internal_ocr_helper().unwrap_or_else(application)
+}
 
 use crate::platform::common::event_queue::{self, Receiver, Sender};
 use std::cell::{Cell, RefCell};
@@ -295,7 +301,14 @@ impl MacOsBackend {
         let event = self
             .scan_mailbox
             .take()
-            .map(BackendEvent::UiScanned)
+            .map(|result| {
+                if result.status != crate::api::command::UiScanStatus::Partial {
+                    // The engine retires its scan owner after this event.
+                    // Cancel remaining native work before losing that route.
+                    self.cancel_scan(result.id);
+                }
+                BackendEvent::UiScanned(result)
+            })
             .or_else(|| self.pending.pop_front())
             .or_else(|| self.async_rx.try_recv().ok());
         if event.is_some() {
@@ -304,6 +317,12 @@ impl MacOsBackend {
             self.background_budget.reset();
         }
         event
+    }
+
+    fn cancel_scan(&self, id: u64) {
+        self.scan_mailbox.cancel(id);
+        self.scan_fusion.cancel(id);
+        self.scan_worker.cancel_scan(id);
     }
 
     fn release_held_buttons(&self) -> Result<(), String> {
@@ -825,10 +844,7 @@ impl Backend for MacOsBackend {
     }
 
     fn cancel_ui_scan(&mut self, id: u64) -> Result<(), String> {
-        if self.scan_mailbox.cancel(id) {
-            self.scan_fusion.cancel(id);
-            self.scan_worker.cancel_scan(id);
-        }
+        self.cancel_scan(id);
         Ok(())
     }
 

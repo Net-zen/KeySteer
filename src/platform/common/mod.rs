@@ -24,6 +24,10 @@ pub(crate) mod point_sample;
 pub(crate) mod scan_accumulator;
 pub(crate) mod scan_fusion;
 pub(crate) mod scan_mailbox;
+// Run the safe macOS source-lifecycle regressions on every host.
+#[cfg(all(test, not(target_os = "macos")))]
+#[path = "../macos/scan_workers.rs"]
+mod macos_scan_workers;
 pub(crate) mod scroll_worker;
 pub(crate) mod spatial_index;
 pub(crate) mod update;

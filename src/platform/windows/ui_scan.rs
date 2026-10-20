@@ -6,7 +6,7 @@ use crate::api::command::UiScanStatus;
 use crate::api::geometry::UiTarget;
 #[cfg(test)]
 use crate::api::geometry::{Rect, SemanticRole};
-use crate::platform::common::scan_fusion::{Handle, Options, Sink};
+use crate::platform::common::scan_fusion::{Handle, Options, Sink, combined_status};
 use crate::platform::common::scan_mailbox::ScanMailbox;
 use crate::platform::common::spatial_index::TargetSource;
 #[cfg(test)]
@@ -163,38 +163,6 @@ impl Drop for ScanSource {
             )));
         }
     }
-}
-
-fn combined_status(statuses: &[UiScanStatus]) -> UiScanStatus {
-    if statuses
-        .iter()
-        .any(|status| status == &UiScanStatus::ContextChanged)
-    {
-        return UiScanStatus::ContextChanged;
-    }
-    if statuses
-        .iter()
-        .any(|status| status == &UiScanStatus::Success)
-    {
-        return UiScanStatus::Success;
-    }
-    if statuses
-        .iter()
-        .any(|status| status == &UiScanStatus::TimedOut)
-    {
-        return UiScanStatus::TimedOut;
-    }
-    statuses
-        .iter()
-        .find_map(|status| match status {
-            UiScanStatus::PermissionDenied(message) => {
-                Some(UiScanStatus::PermissionDenied(message.clone()))
-            }
-            UiScanStatus::Unsupported(message) => Some(UiScanStatus::Unsupported(message.clone())),
-            UiScanStatus::Failed(message) => Some(UiScanStatus::Failed(message.clone())),
-            _ => None,
-        })
-        .unwrap_or(UiScanStatus::Success)
 }
 
 #[cfg(test)]

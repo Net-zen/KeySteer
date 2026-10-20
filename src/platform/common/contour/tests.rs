@@ -472,3 +472,50 @@ fn row_kernels_match_original_pixels_including_small_frames_and_tile_halos() {
         assert_eq!(actual.state, expected.state);
     }
 }
+
+#[test]
+fn division_free_nearest_offsets_match_reference_mapping() {
+    for (source, destination) in [
+        (3usize, 2usize),
+        (17, 7),
+        (100, 100),
+        (3_840, 2_560),
+        (2_160, 1_440),
+    ] {
+        assert_eq!(
+            input::nearest_offsets(source, destination),
+            (0..destination)
+                .map(|output| output * source / destination)
+                .collect::<Vec<_>>()
+        );
+    }
+    for (width, height, padding) in [(7usize, 5usize, 12usize), (3840, 2160, 16), (4096, 2048, 0)] {
+        let stride = width * 4 + padding;
+        let pixels: Vec<_> = (0..stride * height)
+            .map(|index| (index.wrapping_mul(37) >> 3) as u8)
+            .collect();
+        let bounds = Rect::new(-1920.0, -1080.0, 1920.0, 1080.0);
+        let image = input::from_bgra(&pixels, (width, height, stride), bounds, || Ok(false))
+            .unwrap()
+            .unwrap();
+        assert!(image.gray.len() <= MAX_PIXELS);
+        assert_eq!(image.desktop_bounds, bounds);
+        for y in [0, image.height / 2, image.height - 1] {
+            for x in [0, image.width / 2, image.width - 1] {
+                let source = (y * height / image.height) * stride + (x * width / image.width) * 4;
+                let pixel = &pixels[source..source + 4];
+                let expected = ((u16::from(pixel[2]) * 77
+                    + u16::from(pixel[1]) * 150
+                    + u16::from(pixel[0]) * 29)
+                    >> 8) as u8;
+                assert_eq!(image.gray[y * image.width + x], expected);
+            }
+        }
+        assert!(
+            input::from_bgra(&pixels, (width, height, stride), bounds, || Ok(true))
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert!(input::from_bgra(&[0; 4], (2, 1, 4), Rect::default(), || Ok(false)).is_err());
+}

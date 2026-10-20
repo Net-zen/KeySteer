@@ -553,6 +553,24 @@ fn key_up(name: &str) -> BackendEvent {
     key_event(name, KeyState::Up)
 }
 
+/// Use the same configured aliases and physical modifier side as injection.
+fn primary_key(config: &Config) -> String {
+    KeyChord::parse_with_aliases("primary", config.resolved_key_aliases())
+        .unwrap()
+        .injection_keys()[0]
+        .as_str()
+        .to_owned()
+}
+
+/// Windows rasterises in DPI-scaled pixels; AppKit scenes use logical points.
+fn rendered_label_rect(label: &crate::api::overlay::OverlayLabel, scale: f64) -> Rect {
+    if cfg!(target_os = "windows") {
+        crate::api::overlay::scaled_label_geometry(&label.text, label.rect, &label.style, scale).0
+    } else {
+        label.rect
+    }
+}
+
 /// An engine whose `normal` table contains exactly `chord -> binding`,
 /// with probes registered for idle and normal.
 fn engine_with_normal_binding(chord: &str, binding: &str) -> Engine {

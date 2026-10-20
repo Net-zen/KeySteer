@@ -38,6 +38,14 @@ pub mod unsupported;
 
 use crate::api::{Backend, UiScanStrategy};
 
+#[cfg(target_os = "macos")]
+pub(crate) use macos::run;
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn run(application: impl FnOnce() -> std::process::ExitCode) -> std::process::ExitCode {
+    application()
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) const fn redundant_button_action(
     held: bool,

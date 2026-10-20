@@ -36,16 +36,15 @@ use system_ocr::{OcrOperationGuard, stream_system_targets_from_result};
 pub(super) use system_ocr::{image_to_desktop, trim_string_in_place, valid_target_rect};
 
 // Covers a native 3840x2160 desktop so common 4K scans use the BitBlt fast
-// path. Larger 5K/8K images are still scaled as a single capture.
+// path. Apply this budget to each display in All scope; larger 5K/8K captures
+// are still scaled individually.
 const MAX_CAPTURE_PIXELS: f64 = 8_388_608.0;
 const MAX_CAPTURE_EDGE: f64 = 4_096.0;
-const MAX_CONTOUR_PIXELS: f64 = 2_073_600.0;
-const MAX_CONTOUR_EDGE: f64 = 2_560.0;
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const PROVIDER_STOP_TIMEOUT: Duration = Duration::from_millis(500);
 const MIN_SYSTEM_OCR_TILE_SIDE: u32 = 64;
 const SYSTEM_OCR_TILE_OVERLAP: u32 = 64;
-const MAX_SYSTEM_OCR_IN_FLIGHT: usize = 16;
+const MAX_SYSTEM_OCR_IN_FLIGHT: usize = crate::platform::common::image_tiles::MAX_OCR_IN_FLIGHT;
 
 #[derive(Debug)]
 enum VisionError {
@@ -130,7 +129,7 @@ struct ScanSignal {
     local: AtomicBool,
     mailbox: Arc<ProviderMailbox>,
     system_wake: Mutex<Option<mpsc::SyncSender<SystemOcrInput>>>,
-    system_credit_wake: Mutex<Option<mpsc::Sender<()>>>,
+    credit_wakes: Mutex<SmallVec<[Weak<mpsc::Sender<()>>; 2]>>,
     wechat_wake: Mutex<Option<mpsc::SyncSender<WechatInput>>>,
     discovery: Weak<DiscoveryShared>,
 }
@@ -149,7 +148,7 @@ impl ScanCancellation {
                 local: AtomicBool::new(false),
                 mailbox: Arc::clone(mailbox),
                 system_wake: Mutex::new(None),
-                system_credit_wake: Mutex::new(None),
+                credit_wakes: Mutex::new(SmallVec::new()),
                 wechat_wake: Mutex::new(None),
                 discovery,
             }),
@@ -178,8 +177,8 @@ impl ScanCancellation {
         self.signal.register_wechat_wake(sender);
     }
 
-    fn register_system_credit_wake(&self, sender: mpsc::Sender<()>) {
-        self.signal.register_system_credit_wake(sender);
+    fn register_credit_wake(&self, sender: &Arc<mpsc::Sender<()>>) {
+        self.signal.register_credit_wake(sender);
     }
 }
 
@@ -197,14 +196,15 @@ impl ScanSignal {
             let _ = sender.try_send(SystemOcrInput::CancelWake);
         }
         drop(wake);
-        let credit_wake = self
-            .system_credit_wake
+        for sender in self
+            .credit_wakes
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(sender) = credit_wake.as_ref() {
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .filter_map(Weak::upgrade)
+        {
             let _ = sender.send(());
         }
-        drop(credit_wake);
         let wake = self
             .wechat_wake
             .lock()
@@ -239,15 +239,15 @@ impl ScanSignal {
         *wake = Some(sender);
     }
 
-    fn register_system_credit_wake(&self, sender: mpsc::Sender<()>) {
+    fn register_credit_wake(&self, sender: &Arc<mpsc::Sender<()>>) {
         let mut wake = self
-            .system_credit_wake
+            .credit_wakes
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if self.local.load(Ordering::Acquire) {
             let _ = sender.send(());
         }
-        *wake = Some(sender);
+        wake.push(Arc::downgrade(sender));
     }
 }
 

@@ -585,6 +585,9 @@ fn launch_modifiers_do_not_activate_destination_temporary_layers() {
     for target in ["window", "grid", "recursive_grid", "ui_hint"] {
         for modifier_first in [false, true] {
             let mut config = Config::default();
+            // Exercise the configured temporary key on both platforms, not
+            // the Windows default's Alt shortcut on every host.
+            let primary = primary_key(&config);
             config.hotkeys.insert("alt+w".into(), Binding::Mode(ModeId::new(target).unwrap()));
             let mut engine = Engine::new(config.clone(), Appearance::Dark);
             for mode in crate::app::mode_catalog::built_in(&config) { engine.register(mode); }
@@ -602,9 +605,9 @@ fn launch_modifiers_do_not_activate_destination_temporary_layers() {
             assert!(log.lock().unwrap().scenes.iter().all(|scene| {
                 scene.indicator.as_ref().is_none_or(|indicator| indicator.text != "Normal")
             }), "{target}: activation submitted a Normal badge");
-            engine.handle_backend_event(key_down("left_alt"), &mut backend).unwrap();
+            engine.handle_backend_event(key_down(&primary), &mut backend).unwrap();
             assert_eq!(engine.display_mode(), ModeId::normal());
-            engine.handle_backend_event(key_up("left_alt"), &mut backend).unwrap();
+            engine.handle_backend_event(key_up(&primary), &mut backend).unwrap();
             assert_eq!(engine.display_mode().as_str(), target);
         }
     }

@@ -789,26 +789,30 @@ fn create_tap(
         CGEventTapLocation::HID,
         CGEventTapPlacement::HeadInsertEventTap,
         CGEventTapOptions::Default,
-        vec![
-            CGEventType::KeyDown,
-            CGEventType::KeyUp,
-            CGEventType::FlagsChanged,
-            CGEventType::LeftMouseDown,
-            CGEventType::LeftMouseUp,
-            CGEventType::RightMouseDown,
-            CGEventType::RightMouseUp,
-            CGEventType::OtherMouseDown,
-            CGEventType::OtherMouseUp,
-            CGEventType::MouseMoved,
-            CGEventType::LeftMouseDragged,
-            CGEventType::RightMouseDragged,
-            CGEventType::OtherMouseDragged,
-            CGEventType::TapDisabledByTimeout,
-            CGEventType::TapDisabledByUserInput,
-        ],
+        event_types(),
         callback,
     )
     .map_err(|_| "cannot create a CGEventTap (the keyboard cannot be observed)".to_string())
+}
+
+fn event_types() -> Vec<CGEventType> {
+    // Disabled notifications are out of band and delivered independently of
+    // this mask. Their 0xffff_fffe/ffff values cannot fit a CGEventMask shift.
+    vec![
+        CGEventType::KeyDown,
+        CGEventType::KeyUp,
+        CGEventType::FlagsChanged,
+        CGEventType::LeftMouseDown,
+        CGEventType::LeftMouseUp,
+        CGEventType::RightMouseDown,
+        CGEventType::RightMouseUp,
+        CGEventType::OtherMouseDown,
+        CGEventType::OtherMouseUp,
+        CGEventType::MouseMoved,
+        CGEventType::LeftMouseDragged,
+        CGEventType::RightMouseDragged,
+        CGEventType::OtherMouseDragged,
+    ]
 }
 
 fn handle_event(
@@ -1124,6 +1128,23 @@ fn disposition_for(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn capture_mask_contains_keyboard_events_without_out_of_band_notifications() {
+        use core_graphics::event::CGEventType;
+        let mask = super::event_types().iter().fold(0u64, |mask, event| {
+            mask | 1u64
+                .checked_shl(*event as u32)
+                .expect("ordinary event fits the mask")
+        });
+        for event in [
+            CGEventType::KeyDown,
+            CGEventType::KeyUp,
+            CGEventType::FlagsChanged,
+        ] {
+            assert_ne!(mask & (1u64 << event as u32), 0);
+        }
+    }
 
     #[test]
     fn mouse_side_button_edges_do_not_capture_middle_or_other_buttons() {

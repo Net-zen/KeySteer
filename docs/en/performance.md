@@ -45,5 +45,3 @@ Tested on 2026-10-18 with KeySteer 0.12.2 on Windows. Response and memory were t
 - **Response:** from a test keypress within the mode to a picture change; pointer movement uses position changes. Physical keyboard and monitor delays are excluded.
 - **Recognition:** timing ends when the first labels appear on both displays. More labels continue to arrive. Search and exit time are separate.
 - **Memory:** KeySteer only, excluding other programs and graphics memory. The highest value is the highest usage recorded during testing.
-
-Results vary with applications and system load; equivalent macOS tests are not yet available. UI Hint sometimes timed out when exiting. One Grid run could not confirm a picture change; its failed record was kept and the run was repeated.

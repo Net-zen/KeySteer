@@ -588,6 +588,17 @@ impl Engine {
             .collect()
     }
 
+    fn prompt_chord_matches(chord: &KeyChord, activation: &Key, pressed: &[Key]) -> bool {
+        chord.activation_matches(activation)
+            && chord.matches_pressed(pressed)
+            // Match the parsed user binding, allowing unrelated query keys to
+            // remain held during typing. Every configured member is required;
+            // held modifiers must all belong to this chord.
+            && pressed.iter().filter(|key| key.is_modifier()).all(|key| {
+                chord.keys().iter().any(|configured| Self::keys_match(configured, key))
+            })
+    }
+
     fn point_input_event(&mut self, input: &crate::api::input::InputEvent) -> Option<ModeEvent> {
         let (owner, prompt) = self.scheduler.text_prompt.as_ref()?;
         let keys = prompt.point_keys.as_ref()?;
@@ -597,11 +608,8 @@ impl Engine {
                 // the recorded tap/held owner and must not resolve chords again.
                 let pressed = self.prompt_pressed(&input.key);
                 let state = &mut self.scheduler.point_input;
-                let matches = |chord: &KeyChord| {
-                    chord.activation_matches(&input.key)
-                        && chord.keys().len() == pressed.len()
-                        && chord.matches_pressed(&pressed)
-                };
+                let matches =
+                    |chord: &KeyChord| Self::prompt_chord_matches(chord, &input.key, &pressed);
                 state.tap = if state.available
                     && keys.iter().any(|(key, action)| {
                         *action == crate::api::point_sample::Action::PointToggle && matches(key)
@@ -698,11 +706,7 @@ impl Engine {
         }
         let (owner, prompt) = self.scheduler.text_prompt.as_ref()?;
         let pressed = self.prompt_pressed(&input.key);
-        let matches = |chord: &KeyChord| {
-            chord.activation_matches(&input.key)
-                && chord.keys().len() == pressed.len()
-                && chord.matches_pressed(&pressed)
-        };
+        let matches = |chord: &KeyChord| Self::prompt_chord_matches(chord, &input.key, &pressed);
         // Copy must keep its source alive until the normal clipboard success
         // event clears search. Editing and cancellation keep their own paths.
         if prompt.copy_keys.iter().any(matches)
@@ -815,9 +819,7 @@ impl Engine {
                 } else {
                     let pressed = self.prompt_pressed(&input.key);
                     let matches = |chord: &crate::api::KeyChord| {
-                        chord.activation_matches(&input.key)
-                            && chord.keys().len() == pressed.len()
-                            && chord.matches_pressed(&pressed)
+                        Self::prompt_chord_matches(chord, &input.key, &pressed)
                     };
                     if let Some(index) = prompt.copy_keys.iter().position(matches) {
                         (!input.repeat).then_some(ModeEvent::CopyTextField(index))

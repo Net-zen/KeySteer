@@ -146,7 +146,6 @@ fn window_help_shows_restore_and_complete_descriptions_from_effective_bindings()
 
 #[test]
 fn saved_layout_pages_live_inside_one_bottom_panel_at_each_dpi() {
-    use crate::api::overlay::scaled_label_geometry;
     use crate::api::window_presets::RegionTemplate;
     for scale in [1.0, 1.5, 2.0] {
         let config = Config::default();
@@ -154,6 +153,7 @@ fn saved_layout_pages_live_inside_one_bottom_panel_at_each_dpi() {
         engine.screens[0].scale = scale;
         engine.screens[0].bounds = Rect::new(0.0, 0.0, 1920.0 * scale, 1080.0 * scale);
         engine.screens[0].work_area = engine.screens[0].bounds;
+        let layout_scale = crate::presentation::label_scale(scale);
         for n in 1..=7 { engine.window_presets.store.save(RegionTemplate::Slot { id: 1 }.into(), 1, format!("Saved layout {n}")).unwrap(); }
         enter_window(&mut engine, &mut backend, &log);
         for key in ["r", "page_down"] {
@@ -163,10 +163,10 @@ fn saved_layout_pages_live_inside_one_bottom_panel_at_each_dpi() {
             let panels: Vec<_> = scene.labels.iter().filter(|l| l.z_index == i32::MAX - 1).collect();
             assert_eq!(panels.len(), 1);
             let panel = panels[0].rect;
-            assert!((panel.bottom() - (engine.screens[0].work_area.bottom() - 12.0 * scale)).abs() < 1.0);
+            assert!((panel.bottom() - (engine.screens[0].work_area.bottom() - 12.0 * layout_scale)).abs() < 1.0);
             assert!(panel.y > engine.screens[0].work_area.height / 2.0);
             for label in &scene.labels {
-                let rect = scaled_label_geometry(&label.text, label.rect, &label.style, scale).0;
+                let rect = rendered_label_rect(label, scale);
                 assert!(rect.x >= panel.x - 1.0 && rect.right() <= panel.right() + 1.0 && rect.y >= panel.y - 1.0 && rect.bottom() <= panel.bottom() + 1.0, "{label:?} outside {panel:?}");
             }
             let expected = if key == "r" { "Next page" } else { "Previous page" };
@@ -180,7 +180,6 @@ fn saved_layout_pages_live_inside_one_bottom_panel_at_each_dpi() {
 
 #[test]
 fn window_card_text_stays_inside_its_background_at_each_dpi_without_font_shrinking() {
-    use crate::api::overlay::scaled_label_geometry;
     for scale in [1.0, 1.5, 2.0] {
         let config = Config::default();
         let (mut engine, mut backend, log) = window_test_engine(&config);
@@ -189,7 +188,7 @@ fn window_card_text_stays_inside_its_background_at_each_dpi_without_font_shrinki
         let log = log.lock().unwrap();
         let scene = log.scenes.last().unwrap();
         let physical = |label: &crate::api::overlay::OverlayLabel| {
-            scaled_label_geometry(&label.text, label.rect, &label.style, scale).0
+            rendered_label_rect(label, scale)
         };
         let card = physical(scene.labels.iter().find(|l| l.z_index == 19).unwrap());
         for label in scene.labels.iter().filter(|l| (20..=21).contains(&l.z_index)) {
@@ -374,7 +373,7 @@ fn enter_window(engine: &mut Engine, backend: &mut FakeBackend, log: &Arc<Mutex<
 #[test]
 fn window_temporary_normal_hotkey_enters_normal_once_and_exits_with_one_q() {
     let config = Config::default();
-    let primary = config.resolved_key_aliases()["primary"].clone();
+    let primary = primary_key(&config);
     let (mut engine, mut backend, log) = window_test_engine(&config);
     let session = enter_window(&mut engine, &mut backend, &log).session;
     engine.handle_backend_event(key_down(&primary), &mut backend).unwrap();
@@ -573,7 +572,7 @@ fn window_mode_locks_target_and_uses_normal_movement_and_size() {
 fn window_temporary_normal_uses_custom_movement_and_preserves_size_state() {
     let mut config = Config::default();
     config.normal.bindings.insert("a".into(), Binding::Move(Direction::Left));
-    let primary = config.resolved_key_aliases()["primary"].clone();
+    let primary = primary_key(&config);
     let (mut engine, mut backend, log) = window_test_engine(&config);
     enter_window(&mut engine, &mut backend, &log);
     for event in [key_down("s"), key_up("s"), key_down(&primary), key_down("a"), key_up("a"), key_up(&primary)] {
@@ -1074,7 +1073,7 @@ fn delete_confirmation_cancel_and_empty_library_at_multiple_dpi() {
             let panel = scene.labels.iter().find(|l| l.z_index == i32::MAX - 1).unwrap().rect;
             assert!(scene.labels.iter().any(|l| l.text.contains("Delete me 7")));
             for label in &scene.labels {
-                let rect = crate::api::overlay::scaled_label_geometry(&label.text, label.rect, &label.style, scale).0;
+                let rect = rendered_label_rect(label, scale);
                 assert!(rect.x >= panel.x - 1.0 && rect.right() <= panel.right() + 1.0 && rect.y >= panel.y - 1.0 && rect.bottom() <= panel.bottom() + 1.0);
             }
         }
@@ -1353,13 +1352,13 @@ fn grouped_help_sample(entry: Option<&str>, scale: f64, font_size: f64) -> Overl
 
 #[test]
 fn grouped_window_help_keeps_two_semantic_columns_and_header_exit_at_each_dpi() {
-    use crate::api::overlay::scaled_label_geometry;
     for scale in [1.0, 1.5, 2.0] {
+        let layout_scale = crate::presentation::label_scale(scale);
         for font in [12.0, 16.0] {
             for entry in [None, Some("a"), Some("e"), Some("t"), Some("r")] {
                 let scene = grouped_help_sample(entry, scale, font);
                 let panel = scene.labels.iter().find(|l| l.z_index == i32::MAX - 1).unwrap().rect;
-                let labels: Vec<_> = scene.labels.iter().filter(|l| l.z_index == i32::MAX && !l.text.is_empty()).map(|l| (l, scaled_label_geometry(&l.text, l.rect, &l.style, scale).0)).collect();
+                let labels: Vec<_> = scene.labels.iter().filter(|l| l.z_index == i32::MAX && !l.text.is_empty()).map(|l| (l, rendered_label_rect(l, scale))).collect();
                 for (label, rect) in &labels {
                     assert!(rect.x >= panel.x - 1.0 && rect.right() <= panel.right() + 1.0 && rect.y >= panel.y - 1.0 && rect.bottom() <= panel.bottom() + 1.0, "entry={entry:?} scale={scale} {label:?} outside {panel:?}");
                 }
@@ -1371,13 +1370,13 @@ fn grouped_window_help_keeps_two_semantic_columns_and_header_exit_at_each_dpi() 
                 assert!(panel.y >= -1.0 && panel.bottom() <= 800.0 * scale);
                 let common = labels.iter().find(|(l, _)| l.text == "COMMON").unwrap().1;
                 if entry.is_none() {
-                    let mut separators: Vec<_> = scene.labels.iter().filter(|l| l.text.is_empty() && l.z_index == i32::MAX && (l.rect.height - scale).abs() < 0.01 && l.rect.width > panel.width * 0.8).map(|l| l.rect).collect();
+                    let mut separators: Vec<_> = scene.labels.iter().filter(|l| l.text.is_empty() && l.z_index == i32::MAX && (l.rect.height - layout_scale).abs() < 0.01 && l.rect.width > panel.width * 0.8).map(|l| l.rect).collect();
                     separators.sort_by(|a, b| a.y.total_cmp(&b.y));
                     let upper = separators[0]; let lower = separators[1];
                     let content: Vec<_> = labels.iter().filter(|(_, r)| r.y > upper.bottom() && r.bottom() < lower.y).map(|(_, r)| *r).collect();
                     let top = content.iter().map(|r| r.y).fold(f64::INFINITY, f64::min);
                     let bottom = content.iter().map(|r| r.bottom()).fold(0.0, f64::max);
-                    assert!(((top - upper.bottom()) - (lower.y - bottom)).abs() <= scale, "unequal divider insets at scale={scale}, font={font}");
+                    assert!(((top - upper.bottom()) - (lower.y - bottom)).abs() <= layout_scale, "unequal divider insets at scale={scale}, font={font}");
                 }
 
                 if entry != Some("r") {
@@ -1390,7 +1389,7 @@ fn grouped_window_help_keeps_two_semantic_columns_and_header_exit_at_each_dpi() 
                 let title = labels.iter().find(|(l, _)| l.text == "Window").unwrap().1;
                 assert!((exit.center().y - title.center().y).abs() <= 1.0);
                 assert!(!labels.iter().any(|(l, _)| l.text.starts_with("Input:")));
-                assert!(scene.labels.iter().any(|l| l.text.is_empty() && l.z_index == i32::MAX && (l.rect.height - scale).abs() < 0.01 && l.rect.y > title.bottom() && l.rect.y < common.y));
+                assert!(scene.labels.iter().any(|l| l.text.is_empty() && l.z_index == i32::MAX && (l.rect.height - layout_scale).abs() < 0.01 && l.rect.y > title.bottom() && l.rect.y < common.y));
                 for (label, bounds) in &labels {
                     if label.style.background.a > 0 && bounds.y < title.bottom() {
                         assert!((bounds.center().y - title.center().y).abs() <= 1.0,
@@ -1738,7 +1737,7 @@ fn window_targeting_uses_real_grid_lifecycle_and_keeps_window_session() {
         config.grid.cursor_follow_selection = true;
         config.grid.lifecycle.after_finish = crate::api::LifecycleAction::Keep;
         config.recursive_grid.cursor_follow_selection = true;
-        let primary = config.resolved_key_aliases()["primary"].clone();
+        let primary = primary_key(&config);
         let (mut engine, mut backend, log) = window_test_engine(&config);
         let initial = enter_window(&mut engine, &mut backend, &log);
         let entrance = if recursive { "f" } else { "g" };
@@ -1887,7 +1886,7 @@ fn window_targeting_waits_for_async_acquire_without_losing_the_latest_point() {
 #[test]
 fn window_targeting_help_shows_temporary_entrances_without_holding_modifier() {
     let config = Config::default();
-    let primary = &config.resolved_key_aliases()["primary"];
+    let primary = KeyChord::parse_with_aliases("primary", config.resolved_key_aliases()).unwrap().canonical();
     let (mut engine, mut backend, log) = window_test_engine(&config);
     enter_window(&mut engine, &mut backend, &log);
     let entries = engine.key_help_entries();
@@ -1965,7 +1964,7 @@ fn window_temporary_normal_screen_binding_beats_size_and_keeps_session() {
             name: None,
         });
         log.lock().unwrap().warps.clear();
-        let primary = config.resolved_key_aliases()["primary"].clone();
+        let primary = primary_key(&config);
         engine
             .handle_backend_event(key_down(&primary), &mut backend)
             .unwrap();
@@ -2371,7 +2370,7 @@ fn window_multi_selection_routes_configured_cursor_keys_and_physical_arrows_to_t
             ]);
         }
         config.validate().unwrap();
-        let primary = config.resolved_key_aliases()["primary"].clone();
+        let primary = primary_key(&config);
         let (mut engine, mut backend, log) = window_test_engine(&config);
         enter_window(&mut engine, &mut backend, &log);
         engine.dispatch_to(&ModeId::window(), ModeEvent::Timer { id: "window_inventory".into(),

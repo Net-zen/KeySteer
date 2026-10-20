@@ -6,6 +6,85 @@ use std::sync::Arc;
 use std::time::Instant;
 
 #[test]
+fn page_ax_and_contour_labels_are_visible_before_ocr_completes() {
+    let env = Env::new();
+    let mut mode = crate::app::mode_catalog::hint(&env.config);
+    activate(&mut mode, &env);
+    let id = mode.session.scan_id;
+    let output = Arc::new(scan_mailbox::ScanMailbox::default());
+    let generation = output.begin(id);
+    let mut worker = scan_fusion::Worker::default();
+    let sink = worker
+        .prepare(generation)
+        .unwrap()
+        .begin(scan_fusion::Options {
+            id,
+            generation,
+            threshold: 0.5,
+            output: Arc::clone(&output),
+            wake: Arc::new(|| {}),
+            accepts: Arc::new(|_| true),
+            current: Arc::new(|| true),
+        });
+    let link = UiTarget {
+        rect: Rect::new(100., 200., 100., 24.),
+        role: SemanticRole::Link,
+        name: "中文链接".into(),
+        details: None,
+    };
+    let contour = UiTarget {
+        rect: Rect::new(400., 200., 80., 24.),
+        role: SemanticRole::Control,
+        name: String::new(),
+        details: None,
+    };
+    // OCR has supplied neither targets nor a terminal status. Each ready source
+    // must already reach ShowOverlay while the scan remains active.
+    for (source, target) in [
+        (TargetSource::Accessibility, link.clone()),
+        (TargetSource::Contour, contour),
+    ] {
+        sink.submit(source, vec![target.clone()]);
+        sink.flush();
+        let result = output.take().unwrap();
+        assert_eq!(result.status, UiScanStatus::Partial);
+        let out = mode.handle_owned(ModeEvent::UiScanned(result), &env.ctx());
+        assert_fresh_scene(&mode, &env, &out);
+        assert!(mode.session.scanning);
+        assert!(mode.session.scanned.iter().any(|t| t.rect == target.rect));
+    }
+    let labels: Vec<_> = mode.session.hints.iter().map(|h| h.label.clone()).collect();
+    sink.submit(
+        TargetSource::SystemOcr,
+        vec![UiTarget::recognized_text(link.rect, "中文链接".into())],
+    );
+    sink.flush();
+    mode.handle_owned(ModeEvent::UiScanned(output.take().unwrap()), &env.ctx());
+    assert_eq!(mode.session.scanned.len(), 2);
+    assert_eq!(
+        mode.session
+            .hints
+            .iter()
+            .map(|h| h.label.clone())
+            .collect::<Vec<_>>(),
+        labels
+    );
+    assert!(
+        mode.session
+            .scanned
+            .iter()
+            .any(|t| t.role == SemanticRole::Link && t.ocr_text() == "中文链接")
+    );
+    sink.finish(UiScanStatus::Success);
+    sink.flush();
+    mode.handle_owned(ModeEvent::UiScanned(output.take().unwrap()), &env.ctx());
+    assert!(!mode.session.scanning);
+    worker
+        .stop_until(Instant::now() + Duration::from_secs(5))
+        .unwrap();
+}
+
+#[test]
 fn metadata_refresh_keeps_plain_scene_and_updates_search() {
     for searching in [false, true] {
         let env = Env::new();

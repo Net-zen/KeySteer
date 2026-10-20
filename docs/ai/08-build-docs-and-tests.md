@@ -16,6 +16,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 架构、日志和 unsafe 护栏分别在 `tests/architecture_dependencies.rs`、`tests/logging_policy.rs`、`tests/safety_budget.rs`。不要为通过检查而直接放宽预算。`safety_budget` 另编译实际 macOS CF owner 源码，用检查空指针的模拟 release 验证空 AX 输出、单次释放与所有权转移；可在非 macOS 宿主运行，但不代替原生实机验证。
 
+跨平台按键测试通过配置别名及 `KeyChord` 解析实际修饰键，再转换为物理按键；内置 `primary` 不一定存在于用户别名表。布局断言沿用后端坐标约定：Windows 检查 DPI 缩放后的矩形，macOS 检查 AppKit 逻辑点，不能把 Retina backing scale 再套入 Windows 几何函数。保留包含、重叠、字号及边距断言，不通过跳过平台或放宽容差修复测试。
+
 正式构建使用 `cargo build --locked --release --bin keysteer --no-default-features`。单元测试由 `cfg(test)` 隔离，测试依赖放在 dev-dependencies。主包不暴露基准接口或对应 feature，`--all-features` 不依赖本地性能目录。性能测试、适配代码、独立锁文件及原始结果只保留本地，不纳入提交；用户要求发布的已核验汇总可用于性能页面。需要访问内部实现时在隔离副本内适配，不能为基准扩大生产 API。
 
 ## 性能与原生验证
@@ -40,7 +42,8 @@ GPU 设备就绪、首次场景提交完成和输入执行分别记时，不能�
 基准子进程默认使用 `Normal` 优先级；`-BenchmarkPriority AboveNormal` 可用于排查调度干扰，须单独保存结果，不能替代默认优先级的响应测试。环境记录包含优先级和计时器分辨率；比较器同时检查成对轮次与样本批次，避免工作量不同的结果混比。
 - 原生变更检查对应 target，并在对应 OS 验证输入、权限、窗口、显示与清理。交叉编译只证明编译兼容。`native_macos_window_parity` 还直接检查鼠标窗口枚举回退，并确认恢复的 AX 窗口与编号枚举保留同一身份。
 - macOS 取色回归夹具：`clang -std=c11 -Wall -Wextra -Werror tests/fixtures/macos-point-capture.c -framework CoreGraphics -o /tmp/keysteer-point-capture && /tmp/keysteer-point-capture`；验证 Retina／副屏坐标、固定像素不混入变化的邻域颜色，以及错误尺寸拒绝。非 macOS 可省略 framework，仅运行坐标测试。
-- 失败先区分本轮回退和已有基线问题；忽略测试不等于验收通过。
+- macOS OCR 回归：`cargo test --test macos_ocr -- --nocapture` 在内存生成普通／Retina 网页小字，检查逐块识别、原生请求弱引用、带行填充的只读 BGRA／灰度回退及子图共享像素最终单次释放。夹具直接编译当前桥接；正常重新识别还通过 Cargo 构建的真实应用二进制及其平台入口执行，避免只测夹具、遗漏启动分派。另用同一私有工作入口提交 16 块永久挂起故障注入（GCD 实际调度数可能少于请求并发），验证强制结束／父管道 EOF 后子进程退出，并反复启动新进程识别中文及英文小字。纯 Rust worker 回归在各宿主启动真正不返回的子进程，覆盖取消、替换、超时和丢弃旧会话后同一执行槽恢复，不使用放行通道模拟旧 OCR 结束。回归打印真实取消、重新识别的首个非空结果及完成耗时；并发 A/B、双屏来源时间线和进程内存曲线通过隔离副本保留在本地。首次模型编译长尾与预热后数据分开记录，原始默认设备／CPU／GPU 对照不互相替代。这些是 OCR 诊断样本，未包含截图、AX、融合与系统上屏，不能代替实际交互和进程启动／传输成本测量。
+- 常规回归将同一契约的配置变体合并到已有测试，各种取消路径各检查一次；大轮数重入、压力及性能 A/B 留在本地诊断，不扩大日常测试矩阵。失败先区分本轮回退和已有基线问题；忽略测试不等于验收通过。
 
 ## 网页与发布
 

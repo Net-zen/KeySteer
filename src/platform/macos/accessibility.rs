@@ -25,7 +25,6 @@ const AX_OK: i32 = 0;
 const AX_CANNOT_COMPLETE: i32 = -25204;
 const AX_VALUE_CGPOINT: i32 = 1;
 const AX_VALUE_CGSIZE: i32 = 2;
-const SCAN_BUDGET: Duration = Duration::from_millis(500);
 // Apple declares AXUIElementSetMessagingTimeout's value as a C `float`.
 // Keeping the constant typed prevents an accidental ABI-widening to `double`.
 const NODE_TIMEOUT_SECONDS: c_float = 0.05;
@@ -53,6 +52,13 @@ impl AxApplication {
                 "cannot set the AX messaging timeout for pid {pid}: AXError {error}"
             ));
         }
+        // Some providers activate native accessibility on the application role
+        // query, before exposing window contents. Use the same bounded, read-only
+        // AX entry for every application; do not enable screen-reader modes.
+        drop(copy_attribute(
+            application.as_ptr(),
+            &CFString::new("AXRole"),
+        ));
         Ok(Self(application))
     }
 
@@ -410,9 +416,13 @@ pub(crate) fn scan_process_stream(
     pid: libc::pid_t,
     window_bounds: Rect,
     request: &UiScanRequest,
+    deadline: Instant,
     is_current: impl Fn() -> bool,
     mut on_batch: impl FnMut(Vec<UiTarget>),
 ) -> Result<(), String> {
+    if !is_current() || Instant::now() >= deadline {
+        return Ok(());
+    }
     let application = AxApplication::new(pid)?;
 
     let attributes = AxAttributes::new();
@@ -439,7 +449,7 @@ pub(crate) fn scan_process_stream(
         scan_bounds,
         attributes,
         allowed_roles,
-        deadline: Instant::now() + SCAN_BUDGET,
+        deadline,
         on_batch: &mut on_batch,
         is_current: &is_current,
         seen: HashSet::with_capacity(128),
@@ -453,6 +463,7 @@ pub(crate) fn scan_process_stream(
 /// Inspect only on-screen AX windows, in Quartz front-to-back order, under one budget.
 pub(crate) fn scan_screen_stream(
     request: &UiScanRequest,
+    deadline: Instant,
     is_current: impl Fn() -> bool,
     mut on_batch: impl FnMut(Vec<UiTarget>),
 ) -> Result<(), String> {
@@ -460,7 +471,6 @@ pub(crate) fn scan_screen_stream(
         .bounds
         .ok_or("screen scan requires display bounds")?;
     let visible = window_manager::scan_windows()?;
-    let deadline = Instant::now() + Duration::from_millis(request.timeout_ms.clamp(1, 30_000));
     let mut scan = Scan {
         request,
         scan_bounds: Some(bounds),
@@ -558,7 +568,7 @@ struct Scan<'a> {
 impl Scan<'_> {
     fn visit(&mut self, element: AXUIElementRef, depth: u32) {
         if !is_ax_element(element)
-            || depth > self.request.max_depth
+            || (self.request.max_depth != 0 && depth > self.request.max_depth)
             || Instant::now() >= self.deadline
             || !(self.is_current)()
         {
@@ -610,16 +620,20 @@ impl Scan<'_> {
         {
             let key = normalized_rect(rect);
             if self.seen.insert(key) {
+                let name = accessible_name(element, &self.attributes);
+                if Instant::now() >= self.deadline || !(self.is_current)() {
+                    return;
+                }
                 (self.on_batch)(vec![UiTarget {
                     details: None,
                     rect,
-                    name: accessible_name(element, &self.attributes),
+                    name,
                     role: semantic_role,
                 }]);
             }
         }
 
-        if depth == self.request.max_depth {
+        if self.request.max_depth != 0 && depth == self.request.max_depth {
             return;
         }
         let Some(children) = visible_children_for_role(

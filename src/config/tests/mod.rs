@@ -652,15 +652,18 @@ fn idle_binds_only_mode_launchers() {
 
 #[test]
 fn idle_launchers_resolve_the_platform_neutral_primary_modifier() {
-    // The source default uses `primary`; runtime tables contain its
-    // concrete key so matching never needs to resolve aliases again.
+    // Built-ins need not appear in the user alias map. Compile them through
+    // the same parser as runtime keymaps, including the Windows override.
     let config = Config::default();
+    let aliases = config.resolved_key_aliases();
+    let primary = KeyChord::parse_with_aliases("primary", aliases).unwrap();
     for chord in config.hotkeys.keys() {
-        assert!(
-            !chord.starts_with("primary+"),
-            "unresolved launcher {chord:?}"
-        );
-        assert_eq!(KeyChord::parse(chord).unwrap().keys().len(), 2);
+        let compiled = KeyChord::parse_with_aliases(chord, aliases).unwrap();
+        assert!(!compiled.canonical().contains("primary"), "{chord:?}");
+        assert_eq!(compiled.keys().len(), 2);
+        if compiled.activation_key().as_str() == "e" {
+            assert!(compiled.keys().contains(&primary.keys()[0]));
+        }
     }
 }
 

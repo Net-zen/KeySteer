@@ -5,6 +5,12 @@ outline: 2
 
 # 更新日志 / Release Notes
 
+## 0.12.3
+
+- 修复 macOS UIHint 中文识别错误。
+
+- Fixed Chinese text recognition in macOS UIHint.
+
 ## 0.12.2
 
 - UIHint 新增多屏识别：**双 4K、800 控件，约 0.28 秒显示首批标签**（Windows / Hybrid，本机实测中位数）。

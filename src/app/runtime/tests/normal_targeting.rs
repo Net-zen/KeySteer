@@ -432,7 +432,7 @@ fn screen_plugin_preserves_grid_path_while_temporary_normal_is_held() {
             config.recursive_grid.cursor_follow_selection = true;
             config.normal.bindings.insert("primary+s".into(), Binding::parse("screen next").unwrap());
             config.plugin_modes.entry("plugin:screen-selector".into()).or_default().settings.insert("preserve".into(), toml::Value::Boolean(preserve));
-            let primary = config.resolved_key_aliases()["primary"].clone();
+            let primary = primary_key(&config);
             let (mut engine, mut backend, _) = blind_engine(&config);
             let mut second = engine.screens[0].clone();
             second.bounds.x = 1024.0;

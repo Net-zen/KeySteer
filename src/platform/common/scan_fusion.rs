@@ -16,6 +16,39 @@ const FIRST_FUSION_BATCH: usize = 16;
 // Feedback for the next ready-work quantity, never a wait or publication timer.
 const FUSION_CPU_TARGET: Duration = Duration::from_micros(500);
 const STOP_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Backend-independent terminal precedence for independently published sources.
+pub(crate) fn combined_status(statuses: &[UiScanStatus]) -> UiScanStatus {
+    if statuses
+        .iter()
+        .any(|status| status == &UiScanStatus::ContextChanged)
+    {
+        return UiScanStatus::ContextChanged;
+    }
+    if statuses
+        .iter()
+        .any(|status| status == &UiScanStatus::Success)
+    {
+        return UiScanStatus::Success;
+    }
+    if statuses
+        .iter()
+        .any(|status| status == &UiScanStatus::TimedOut)
+    {
+        return UiScanStatus::TimedOut;
+    }
+    statuses
+        .iter()
+        .find_map(|status| match status {
+            UiScanStatus::PermissionDenied(message) => {
+                Some(UiScanStatus::PermissionDenied(message.clone()))
+            }
+            UiScanStatus::Unsupported(message) => Some(UiScanStatus::Unsupported(message.clone())),
+            UiScanStatus::Failed(message) => Some(UiScanStatus::Failed(message.clone())),
+            _ => None,
+        })
+        .unwrap_or(UiScanStatus::Success)
+}
 type Wake = Arc<dyn Fn() + Send + Sync>;
 type Accept = Arc<dyn Fn(&UiTarget) -> bool + Send + Sync>;
 type Current = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -505,6 +538,35 @@ mod tests {
             receiver,
         )
     }
+    #[test]
+    fn source_completion_preserves_success_and_prioritizes_cancellation_on_both_backends() {
+        for (first, second, expected) in [
+            (
+                UiScanStatus::Success,
+                UiScanStatus::Failed("OCR failed".into()),
+                UiScanStatus::Success,
+            ),
+            (
+                UiScanStatus::Success,
+                UiScanStatus::TimedOut,
+                UiScanStatus::Success,
+            ),
+            (
+                UiScanStatus::Success,
+                UiScanStatus::ContextChanged,
+                UiScanStatus::ContextChanged,
+            ),
+            (
+                UiScanStatus::TimedOut,
+                UiScanStatus::Unsupported("unavailable".into()),
+                UiScanStatus::TimedOut,
+            ),
+        ] {
+            assert_eq!(combined_status(&[first.clone(), second.clone()]), expected);
+            assert_eq!(combined_status(&[second, first]), expected);
+        }
+    }
+
     #[test]
     fn idle_acknowledgment_does_not_overtake_a_racing_submission() {
         let (sink, _receiver) = detached();

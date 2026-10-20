@@ -6,6 +6,17 @@ use std::sync::atomic::AtomicUsize;
 
 const OCR_SAMPLE_COUNT: usize = 10_025;
 
+fn system_ocr_grid_for_parallelism(width: u32, height: u32, parallelism: usize) -> u32 {
+    SystemOcrLayout::new(
+        width,
+        height,
+        parallelism,
+        MIN_SYSTEM_OCR_TILE_SIDE,
+        MAX_SYSTEM_OCR_IN_FLIGHT,
+    )
+    .grid
+}
+
 #[test]
 fn ocr_execution_kind_uses_only_discovered_providers() {
     assert_eq!(
@@ -47,6 +58,42 @@ fn standard_uhd_capture_keeps_native_bitblt_dimensions() {
     assert_eq!(geometry.width, 3_840);
     assert_eq!(geometry.height, 2_160);
     assert_eq!(geometry.scale, 1.0);
+    let screens = vec![
+        Rect::new(-5000.0, -300.0, 3840.0, 2160.0),
+        Rect::new(0.0, 1000.0, 2160.0, 3840.0),
+    ];
+    let bounds = Rect::new(-5000.0, -300.0, 7160.0, 5140.0);
+    let mut request = crate::api::command::UiScanRequest {
+        id: 1,
+        scope: crate::api::UiScanScope::All,
+        screen_bounds: screens.clone(),
+        timeout_ms: 2500,
+        bounds: Some(bounds),
+        roles: Vec::new(),
+        max_depth: 32,
+        visible_only: true,
+        clickable_only: true,
+        strategy: crate::api::UiScanStrategy::Hybrid,
+        vision: crate::api::VisionOptions::default(),
+        app: None,
+    };
+    let frames = capture_geometries(&request, bounds).unwrap();
+    assert_eq!(frames.len(), 2);
+    for (frame, screen) in frames.iter().zip(&screens) {
+        assert_eq!(frame.desktop_bounds, *screen);
+        assert_eq!(
+            (frame.width, frame.height),
+            (screen.width as u32, screen.height as u32)
+        );
+        assert_eq!(frame.scale, 1.0);
+    }
+    request.scope = crate::api::UiScanScope::Window;
+    let window = capture_geometries(&request, bounds).unwrap();
+    assert_eq!(window.len(), 1);
+    assert!(
+        window[0].scale < 1.0,
+        "window captures retain their existing whole-frame budget"
+    );
 }
 
 #[test]
@@ -59,12 +106,16 @@ fn system_ocr_grid_uses_the_next_cpu_square_and_a_64px_size_floor() {
 
 #[test]
 fn system_ocr_credit_limit_covers_production_tile_counts() {
-    for count in [1, 2, 4, 9, 25, 81] {
-        let limit = system_ocr_concurrency_for(count, 64);
-        assert_eq!(limit, count.min(MAX_SYSTEM_OCR_IN_FLIGHT));
+    for cpus in [1, 2, 4, 8, 16, 64] {
+        let layout = SystemOcrLayout::new(3840, 2160, cpus, 64, MAX_SYSTEM_OCR_IN_FLIGHT);
+        assert_eq!(
+            layout.max_in_flight,
+            layout
+                .tile_count
+                .min(cpus)
+                .clamp(1, MAX_SYSTEM_OCR_IN_FLIGHT)
+        );
     }
-    assert_eq!(system_ocr_concurrency_for(25, 2), 2);
-    assert_eq!(system_ocr_concurrency_for(25, 4), 4);
 }
 
 #[test]
@@ -166,24 +217,6 @@ fn overlapping_system_ocr_tiles_map_a_seam_target_to_one_desktop_owner() {
     let center = from_left.center();
     assert!(!left_core.contains(&center));
     assert!(right_core.contains(&center));
-}
-
-#[test]
-fn division_free_nearest_offsets_match_reference_mapping() {
-    for (source, destination) in [
-        (3usize, 2usize),
-        (17, 7),
-        (100, 100),
-        (3_840, 2_560),
-        (2_160, 1_440),
-    ] {
-        assert_eq!(
-            nearest_offsets(source, destination),
-            (0..destination)
-                .map(|output| output * source / destination)
-                .collect::<Vec<_>>()
-        );
-    }
 }
 
 #[test]
@@ -607,9 +640,13 @@ fn scan_cancellation_wakes_system_ocr_without_polling() {
     let cancellation = ScanCancellation::new(&shared, 29, &mailbox, Weak::new());
     let (system_sender, system_receiver) = mpsc::sync_channel(1);
     let (credit_sender, credit_receiver) = mpsc::channel();
+    let credit_sender = Arc::new(credit_sender);
+    let (wechat_credit, wechat_credits) = mpsc::channel();
+    let wechat_credit = Arc::new(wechat_credit);
     let (wechat_sender, wechat_receiver) = mpsc::sync_channel(1);
     cancellation.register_system_wake(system_sender);
-    cancellation.register_system_credit_wake(credit_sender);
+    cancellation.register_credit_wake(&credit_sender);
+    cancellation.register_credit_wake(&wechat_credit);
     cancellation.register_wechat_wake(wechat_sender);
     cancellation.cancel();
     assert!(matches!(
@@ -621,6 +658,12 @@ fn scan_cancellation_wakes_system_ocr_without_polling() {
         Ok(WechatInput::CancelWake)
     ));
     assert_eq!(credit_receiver.try_recv(), Ok(()));
+    assert_eq!(wechat_credits.try_recv(), Ok(()));
+    drop(wechat_credit);
+    assert_eq!(
+        wechat_credits.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    );
     assert!(matches!(
         mailbox.wait_until_ready(Instant::now()),
         Err(VisionError::Cancelled)

@@ -5,6 +5,10 @@ outline: 2
 
 # Release notes
 
+## 0.12.3
+
+- Fixed Chinese text recognition in macOS UIHint.
+
 ## 0.12.2
 
 - UIHint adds multi-display scanning: **first labels in about 0.28 s with 800 controls on two 4K displays** (Windows / Hybrid, local median).
