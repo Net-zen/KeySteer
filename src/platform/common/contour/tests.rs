@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn faint_downsampled_frames_survive_pixel_phase_and_desktop_scaling() {
+    let (w, h, stride) = (3840, 2160, 3840 * 4 + 16);
+    let mut pixels = vec![255; stride * h];
+    let frames = [(101, 101), (200, 101), (301, 200), (400, 200)];
+    for &(left, top) in &frames {
+        for y in top..top + 48 {
+            for x in left..left + 48 {
+                if x == left || x == left + 47 || y == top || y == top + 47 {
+                    pixels[y * stride + x * 4..][..3].fill(215);
+                }
+            }
+        }
+    }
+    let mut input = input::from_bgra(
+        &pixels,
+        (w, h, stride),
+        Rect::new(0., 0., w as f64, h as f64),
+        || Ok(false),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(input.frame_gray.is_some());
+    for scale in [1., 1.5, 2.] {
+        input.desktop_bounds = Rect::new(-300., 50., w as f64 / scale, h as f64 / scale);
+        let serial = detect_input(&input, usize::MAX, &|| false, false);
+        let parallel = detect_input(&input, usize::MAX, &|| false, true);
+        assert_eq!(serial, parallel);
+        for &(x, y) in &frames {
+            let centre = crate::api::Point::new(
+                -300. + (x + 24) as f64 / scale,
+                50. + (y + 24) as f64 / scale,
+            );
+            assert_eq!(
+                serial.iter().filter(|t| t.rect.contains(&centre)).count(),
+                1
+            );
+        }
+        assert_eq!(detect_input(&input, 1, &|| false, true), serial[..1]);
+        assert!(detect_input(&input, 0, &|| false, true).is_empty());
+    }
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = AtomicUsize::new(0);
+    assert!(
+        detect_input(
+            &input,
+            usize::MAX,
+            &|| { calls.fetch_add(1, Ordering::Relaxed) >= 40 },
+            true
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn hybrid_always_combines_sources_and_ignores_legacy_visual_caps() {
     use crate::api::{UiScanStrategy, VisionOptions};
     for detect_text in [false, true] {
@@ -319,11 +373,51 @@ pub(crate) fn reference_detect(
     bounds: Rect,
 ) -> (Vec<UiTarget>, usize) {
     let edges = tiled_edges(gray, w, h, &|| false).unwrap();
-    let dilated = dilate(&edges, w, h, bounds, &|| false).unwrap();
-    drop(edges);
+    let dilated = dilate(edges, w, h, bounds, &|| false).unwrap();
     let mut c = components(dilated, w, h, &|| false).unwrap();
     assert!(reference_hierarchy(&mut c, &|| false));
     (filter(&c, w, h, bounds, 2000, &|| false), c.len())
+}
+
+#[test]
+fn dilation_preserves_identity_axes_and_clipped_even_kernels() {
+    let (w, h) = (7usize, 5usize);
+    for (kw, kh) in [(1, 1), (1, 2), (2, 1), (2, 3), (3, 2), (32, 32)] {
+        let bounds = Rect::new(
+            0.0,
+            0.0,
+            3.5 * w as f64 / kw as f64,
+            2.5 * h as f64 / kh as f64,
+        );
+        for marked in [vec![], vec![0], vec![w * h - 1], vec![3, 16, 23, 28]] {
+            let mut pixels = vec![0; w * h];
+            for &i in &marked {
+                pixels[i] = 255;
+            }
+            // Direct rectangular neighborhoods independently check both axes,
+            // including asymmetric even kernels clipped at image boundaries.
+            let expected: Vec<_> = (0..w * h)
+                .map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    let xs = x.saturating_sub(kw / 2)..=(x + kw - 1 - kw / 2).min(w - 1);
+                    let ys = y.saturating_sub(kh / 2)..=(y + kh - 1 - kh / 2).min(h - 1);
+                    if marked
+                        .iter()
+                        .any(|&j| xs.contains(&(j % w)) && ys.contains(&(j / w)))
+                    {
+                        255
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            assert_eq!(
+                dilate(pixels.clone(), w, h, bounds, &|| false),
+                Some(expected)
+            );
+            assert!(dilate(pixels, w, h, bounds, &|| true).is_none());
+        }
+    }
 }
 
 #[test]

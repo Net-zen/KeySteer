@@ -9,6 +9,9 @@ const MAX_EDGE: f64 = 2560.0;
 
 pub(crate) struct Input {
     pub(crate) gray: Vec<u8>,
+    // Only downsampled captures need this second bounded plane. Keep the
+    // original luma byte-for-byte for existing fragment and image detection.
+    pub(super) frame_gray: Option<Vec<u8>>,
     pub(crate) width: usize,
     pub(crate) height: usize,
     pub(crate) desktop_bounds: Rect,
@@ -38,6 +41,7 @@ pub(crate) fn from_bgra(
     let width = (source_width as f64 * analysis_scale).floor().max(2.0) as usize;
     let height = (source_height as f64 * analysis_scale).floor().max(2.0) as usize;
     let mut gray = Vec::with_capacity(width * height);
+    let mut frame_gray = None;
     if width == source_width && height == source_height {
         // 1080p and smaller captures need no coordinate tables or zero-fill.
         for (y, row) in pixels.chunks_exact(stride).enumerate() {
@@ -49,44 +53,46 @@ pub(crate) fn from_bgra(
                     .as_chunks::<4>()
                     .0
                     .iter()
-                    .map(|pixel| bgra_luma(pixel)),
-            );
-        }
-    } else if source_width.is_multiple_of(width) && source_height.is_multiple_of(height) {
-        // Native 4K commonly becomes an exact 2:1 1080p analysis image.
-        // Stepping source rows and pixels avoids both offset allocations.
-        let x_step = source_width / width;
-        let y_step = source_height / height;
-        for (y, source_y) in (0..source_height).step_by(y_step).enumerate() {
-            if y.is_multiple_of(32) && cancelled()? {
-                return Ok(None);
-            }
-            let row = &pixels[source_y * stride..][..source_width * 4];
-            gray.extend(
-                row.as_chunks::<4>()
-                    .0
-                    .iter()
-                    .step_by(x_step)
-                    .map(|pixel| bgra_luma(pixel)),
+                    .map(bgra_luma),
             );
         }
     } else {
         let source_x_offsets = nearest_offsets(source_width, width);
         let source_y_offsets = nearest_offsets(source_height, height);
+        gray.resize(width * height, 0);
+        let mut mean = vec![0; width * height];
         for (y, source_y) in source_y_offsets.into_iter().enumerate() {
             if y.is_multiple_of(32) && cancelled()? {
                 return Ok(None);
             }
-            let row = &pixels[source_y * stride..source_y * stride + source_width * 4];
-            gray.extend(
-                source_x_offsets
-                    .iter()
-                    .map(|&source_x| bgra_luma(&row[source_x * 4..source_x * 4 + 4])),
-            );
+            let row = pixels[source_y * stride..][..source_width * 4]
+                .as_chunks::<4>()
+                .0;
+            let bottom = pixels[(source_y + 1).min(source_height - 1) * stride..]
+                [..source_width * 4]
+                .as_chunks::<4>()
+                .0;
+            for ((out, averaged), &x) in gray[y * width..][..width]
+                .iter_mut()
+                .zip(&mut mean[y * width..][..width])
+                .zip(&source_x_offsets)
+            {
+                let first = bgra_luma(&row[x]);
+                *out = first;
+                let right = (x + 1).min(source_width - 1);
+                *averaged = ((u16::from(first)
+                    + u16::from(bgra_luma(&row[right]))
+                    + u16::from(bgra_luma(&bottom[x]))
+                    + u16::from(bgra_luma(&bottom[right]))
+                    + 2)
+                    / 4) as u8;
+            }
         }
+        frame_gray = Some(mean);
     }
     Ok(Some(Input {
         gray,
+        frame_gray,
         width,
         height,
         desktop_bounds,
@@ -94,7 +100,7 @@ pub(crate) fn from_bgra(
 }
 
 #[inline]
-fn bgra_luma(pixel: &[u8]) -> u8 {
+fn bgra_luma(pixel: &[u8; 4]) -> u8 {
     ((u16::from(pixel[2]) * 77 + u16::from(pixel[1]) * 150 + u16::from(pixel[0]) * 29) >> 8) as u8
 }
 

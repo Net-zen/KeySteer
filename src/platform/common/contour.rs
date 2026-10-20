@@ -6,6 +6,7 @@ pub(crate) const MAX_PIXELS: usize = 2_073_600;
 const LOW: u16 = 70;
 const HIGH: u16 = 220;
 
+mod frames;
 pub(crate) mod input;
 mod regions;
 
@@ -85,10 +86,9 @@ pub(crate) fn detect_fragments(
     let Some(edges) = tiled_edges(gray, width, height, &cancelled) else {
         return Vec::new();
     };
-    let Some(dilated) = dilate(&edges, width, height, bounds, &cancelled) else {
+    let Some(dilated) = dilate(edges, width, height, bounds, &cancelled) else {
         return Vec::new();
     };
-    drop(edges);
     let Some(mut components) = components(dilated, width, height, &cancelled) else {
         return Vec::new();
     };
@@ -98,6 +98,7 @@ pub(crate) fn detect_fragments(
     filter(&components, width, height, bounds, limit, &cancelled)
 }
 
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn detect(
     gray: &[u8],
     width: usize,
@@ -111,9 +112,87 @@ pub(crate) fn detect(
         return Vec::new();
     }
     let owners = regions::detect(gray, width, height, bounds, &cancelled);
+    let frames = frames::detect(gray, width, height, bounds, &cancelled);
     if cancelled() {
         return Vec::new();
     }
+    assemble(fragments, owners, frames, limit)
+}
+
+/// Only pure Rust luma and cancellation state enter the scoped helper. Each
+/// provider processes one frame at a time, so this adds at most one worker;
+/// cancellation joins it before the provider can release its input or restart.
+pub(crate) fn detect_prepared(
+    input: &input::Input,
+    limit: usize,
+    cancelled: impl Fn() -> bool + Sync,
+) -> Vec<UiTarget> {
+    static PARALLEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let parallel = input.gray.len() >= 512 * 512
+        && *PARALLEL
+            .get_or_init(|| std::thread::available_parallelism().is_ok_and(|cpus| cpus.get() > 1));
+    detect_input(input, limit, &cancelled, parallel)
+}
+
+fn detect_input(
+    input: &input::Input,
+    limit: usize,
+    stop: &(impl Fn() -> bool + Sync),
+    parallel: bool,
+) -> Vec<UiTarget> {
+    if limit == 0 || stop() {
+        return Vec::new();
+    }
+    let input::Input {
+        gray,
+        frame_gray,
+        width,
+        height,
+        desktop_bounds: bounds,
+    } = input;
+    let fragments = || detect_fragments(gray, *width, *height, *bounds, limit, stop);
+    let secondary = || {
+        let owners = regions::detect(gray, *width, *height, *bounds, stop);
+        let frames = frames::detect(
+            frame_gray.as_deref().unwrap_or(gray),
+            *width,
+            *height,
+            *bounds,
+            stop,
+        );
+        (owners, frames)
+    };
+    let (fragments, (owners, frames)) = if parallel {
+        std::thread::scope(|scope| {
+            match std::thread::Builder::new()
+                .name("keysteer-contour-frames".into())
+                .spawn_scoped(scope, secondary)
+            {
+                Ok(worker) => {
+                    let fragments = fragments();
+                    let secondary = worker
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                    (fragments, secondary)
+                }
+                Err(_) => (fragments(), secondary()),
+            }
+        })
+    } else {
+        (fragments(), secondary())
+    };
+    if stop() {
+        return Vec::new();
+    }
+    assemble(fragments, owners, frames, limit)
+}
+
+fn assemble(
+    fragments: Vec<UiTarget>,
+    owners: Vec<Rect>,
+    frames: Vec<UiTarget>,
+    limit: usize,
+) -> Vec<UiTarget> {
     let mut output = Vec::with_capacity(owners.len() + fragments.len());
     for rect in &owners {
         output.push(UiTarget {
@@ -130,6 +209,15 @@ pub(crate) fn detect(
                 .is_some_and(|i| i.width * i.height >= 0.9 * t.rect.width * t.rect.height)
         })
     }));
+    for frame in frames {
+        if !output.iter().any(|old| {
+            old.rect.intersect(&frame.rect).is_some_and(|overlap| {
+                overlap.width * overlap.height >= 0.8 * frame.rect.width * frame.rect.height
+            })
+        }) {
+            output.push(frame);
+        }
+    }
     output.truncate(limit);
     output
 }
@@ -349,7 +437,7 @@ fn neighbors(i: usize, w: usize, h: usize, mut visit: impl FnMut(usize)) {
 }
 
 fn dilate(
-    edges: &[u8],
+    edges: Vec<u8>,
     w: usize,
     h: usize,
     bounds: Rect,
@@ -357,20 +445,34 @@ fn dilate(
 ) -> Option<Vec<u8>> {
     let kw = (3.5 * w as f64 / bounds.width).round().clamp(1.0, 32.0) as usize;
     let kh = (2.5 * h as f64 / bounds.height).round().clamp(1.0, 32.0) as usize;
-    let mut tmp = vec![0u8; edges.len()];
-    let mut out = vec![0u8; edges.len()];
-    for y in 0..h {
-        if stop() {
-            return None;
-        }
-        for x in 0..w {
-            if (x.saturating_sub(kw / 2)..=(x + kw - 1 - kw / 2).min(w - 1))
-                .any(|xx| edges[y * w + xx] != 0)
-            {
-                tmp[y * w + x] = 255;
+    if stop() {
+        return None;
+    }
+    // A one-pixel kernel preserves the binary edge plane. Move it through that
+    // axis instead of allocating and rewriting every pixel.
+    let tmp = if kw == 1 {
+        edges
+    } else {
+        let mut tmp = vec![0u8; edges.len()];
+        for y in 0..h {
+            if stop() {
+                return None;
+            }
+            for x in 0..w {
+                if (x.saturating_sub(kw / 2)..=(x + kw - 1 - kw / 2).min(w - 1))
+                    .any(|xx| edges[y * w + xx] != 0)
+                {
+                    tmp[y * w + x] = 255;
+                }
             }
         }
+        drop(edges);
+        tmp
+    };
+    if kh == 1 {
+        return Some(tmp);
     }
+    let mut out = vec![0u8; tmp.len()];
     for y in 0..h {
         if stop() {
             return None;

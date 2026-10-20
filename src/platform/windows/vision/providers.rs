@@ -514,11 +514,8 @@ fn run_scan_inner(
                         if provider_cancellation.is_cancelled() || Instant::now() >= deadline {
                             break;
                         }
-                        let targets = crate::platform::common::contour::detect(
-                            &image.gray,
-                            image.width,
-                            image.height,
-                            image.desktop_bounds,
+                        let targets = crate::platform::common::contour::detect_prepared(
+                            &image,
                             limit,
                             || provider_cancellation.is_cancelled() || Instant::now() >= deadline,
                         );

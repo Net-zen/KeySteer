@@ -677,7 +677,7 @@ fn recognize_contours(
     scan_id: u64,
     candidate_limit: usize,
     deadline: Instant,
-    cancelled: &impl Fn() -> bool,
+    cancelled: &(impl Fn() -> bool + Sync),
     publish: &impl Fn(Vec<UiTarget>),
 ) -> UiScanStatus {
     let started = Instant::now();
@@ -713,33 +713,29 @@ fn recognize_contours(
         } else {
             (Some(result), None)
         };
-        let (pixels, width, height, bounds) = if let Some(input) = &input {
-            (
-                input.gray.as_slice(),
-                input.width,
-                input.height,
-                input.desktop_bounds,
-            )
-        } else {
-            let (pixels, width, height, _) = native
-                .as_ref()
-                .ok_or("missing contour frame")?
-                .contour_pixels()?;
-            (pixels, width, height, frame.coordinate_bounds)
-        };
         // Detection needs only luma. Do not retain the screenshot during it.
         drop(frame.image);
         if let Some(status) = interrupted() {
             return Ok(status);
         }
-        let targets = crate::platform::common::contour::detect(
-            pixels,
-            width,
-            height,
-            bounds,
-            candidate_limit,
-            || interrupted().is_some(),
-        );
+        let targets = if let Some(input) = &input {
+            crate::platform::common::contour::detect_prepared(input, candidate_limit, || {
+                interrupted().is_some()
+            })
+        } else {
+            let (pixels, width, height, _) = native
+                .as_ref()
+                .ok_or("missing contour frame")?
+                .contour_pixels()?;
+            crate::platform::common::contour::detect(
+                pixels,
+                width,
+                height,
+                frame.coordinate_bounds,
+                candidate_limit,
+                || interrupted().is_some(),
+            )
+        };
         if let Some(status) = interrupted() {
             return Ok(status);
         }
