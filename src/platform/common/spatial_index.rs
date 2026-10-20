@@ -558,10 +558,10 @@ fn distinct_field(a: Rect, b: Rect, left: &str, text: &str, threshold: f64) -> b
     let normalize = |text: &str| {
         let mut output = smol_str::SmolStrBuilder::new();
         let _ = crate::api::presentation::write_ocr_text(&mut output, text);
-        output.finish()
+        output
     };
     let text = normalize(text);
-    !text.is_empty() && normalize(left) != text
+    !text.is_empty() && normalize(left).as_str() != text.as_str()
 }
 
 fn evidence_matches(a: Rect, ae: Evidence, b: Rect, be: Evidence, threshold: f64) -> bool {
