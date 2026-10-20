@@ -8,7 +8,7 @@ outline: 2
 ## 0.12.3
 
 - Fixed Chinese text recognition in macOS UIHint.
-- Optimized UIHint result processing, reducing processing time by about 32% in list text-completion tests.
+- Optimized UIHint fusion, text completion, search indexing, and overlap planning, reducing repeated work and temporary allocations.
 - Optimized configuration saves, reducing processing time by about 8% and allocated bytes by about 26% during repeated edits.
 - Improved UIHint contour detection for faint outlined controls while reducing redundant pixel processing and temporary allocations.
 

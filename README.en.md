@@ -132,9 +132,9 @@ Use the [web simulator](https://dccif.github.io/KeySteer/en/editor/) to customis
 
 **Responsive controls. Fast recognition across two displays.**
 
-![First labels in about 0.28 s with 800 controls on two 4K displays; everyday actions respond in about 9–18 ms; about 11 MiB startup idle memory](assets/performance/windows-0.12.2-en.svg)
+![First labels in about 0.21 s with 800 controls on two 4K displays; everyday actions respond in about 8–18 ms; about 12 MiB startup idle memory](assets/performance/windows-0.12.3-en.svg)
 
-(0.12.2 / Windows; everyday response measured after entering the mode; memory as shown in Task Manager. [More test results](https://dccif.github.io/KeySteer/en/performance).)
+(0.12.3 / Windows; everyday response is the median across repeated actions; memory as shown in Task Manager. [More test results](https://dccif.github.io/KeySteer/en/performance).)
 
 ## Development and packaging
 

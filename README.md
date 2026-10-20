@@ -142,9 +142,9 @@ sudo xattr -cr /Applications/KeySteer.app
 
 **操作跟手，双屏识别也轻快。**
 
-![双 4K、800 控件，约 0.28 秒显示首批标签；日常操作响应约 9–18 毫秒；启动待机内存约 11 MiB](assets/performance/windows-0.12.2-zh.svg)
+![双 4K、800 控件，约 0.21 秒显示首批标签；日常操作响应约 8–18 毫秒；启动待机内存约 12 MiB](assets/performance/windows-0.12.3-zh.svg)
 
-（0.12.2 / Windows；日常响应在进入模式后测量，内存按任务管理器显示统计。[更多实测数据](https://dccif.github.io/KeySteer/performance)）
+（0.12.3 / Windows；日常响应为多次操作的中位数，内存按任务管理器显示统计。[更多实测数据](https://dccif.github.io/KeySteer/performance)）
 
 ## 运行与打包
 

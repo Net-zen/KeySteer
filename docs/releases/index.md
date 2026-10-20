@@ -8,12 +8,12 @@ outline: 2
 ## 0.12.3
 
 - 修复 macOS UIHint 中文识别错误。
-- 优化 UIHint 结果处理，列表文字补全测试中耗时减少约 32%。
+- 优化 UIHint 结果融合、文字补全、搜索索引和重叠层规划，减少重复处理和临时内存分配。
 - 优化配置保存，连续修改时处理耗时减少约 8%，内存分配量减少约 26%。
 - 改进 UIHint 轮廓识别，补全浅色空心控件并减少不必要的像素处理和临时内存分配。
 
 - Fixed Chinese text recognition in macOS UIHint.
-- Optimized UIHint result processing, reducing processing time by about 32% in list text-completion tests.
+- Optimized UIHint fusion, text completion, search indexing, and overlap planning, reducing repeated work and temporary allocations.
 - Optimized configuration saves, reducing processing time by about 8% and allocated bytes by about 26% during repeated edits.
 - Improved UIHint contour detection for faint outlined controls while reducing redundant pixel processing and temporary allocations.
 
