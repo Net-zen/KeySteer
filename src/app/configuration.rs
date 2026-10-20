@@ -139,7 +139,7 @@ impl ConfigurationRepository for ConfigRepository {
     fn set_candidate(&self, path: &str, value: &str) -> Result<ConfigurationCandidate, String> {
         let store = self
             .store
-            .clone()
+            .as_ref()
             .ok_or_else(|| "no writable configuration source is attached".to_string())?;
         let (store, config) = store
             .prepare_set(path, value)
