@@ -1352,12 +1352,7 @@ mod tests {
         .target;
         let mut scan = crate::platform::common::scan_accumulator::ScanAccumulator::new();
         let update = scan.push(TargetSource::SystemOcr, vec![target], 0.5);
-        let targets: Vec<_> = update
-            .batches
-            .into_iter()
-            .flatten()
-            .chain(scan.finish().into_iter().flatten())
-            .collect();
+        let targets = update.targets;
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].ocr_text(), "复制 Copy");
         assert_eq!(targets[0].accessibility_text(), "");

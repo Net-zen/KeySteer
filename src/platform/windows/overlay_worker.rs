@@ -45,15 +45,6 @@ struct CaptureGate {
     deferred_positions: Option<Positions>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OverlayPhase {
-    Normal,
-    HidingForCapture(u64),
-    HiddenForCapture(u64),
-    Releasing(u64),
-    Stopping,
-}
-
 struct State {
     /// Published only after the worker has created its native message queue.
     /// Earlier submissions stay in this mailbox for its first render pass.
@@ -63,7 +54,6 @@ struct State {
     positions: Option<Positions>,
     control: Option<Control>,
     capture: Option<CaptureGate>,
-    phase: OverlayPhase,
     alive: bool,
     wake_pending: bool,
     /// Set after the renderer rejects a position-only update. The Engine
@@ -82,7 +72,6 @@ impl Default for State {
             positions: None,
             control: None,
             capture: None,
-            phase: OverlayPhase::Normal,
             alive: true,
             wake_pending: false,
             position_fast_path_failed: false,
@@ -178,7 +167,6 @@ impl CaptureLease {
             else {
                 return Ok(());
             };
-            state.phase = OverlayPhase::Releasing(self.generation);
             if matches!(state.control, Some(Control::BeginCapture(generation)) if generation == self.generation)
             {
                 state.control = None;
@@ -194,7 +182,6 @@ impl CaptureLease {
                 state.latest = None;
                 state.positions = None;
             }
-            state.phase = OverlayPhase::Normal;
             mark_wake_pending(&mut state)?
         };
         post_wake(&self.shared, should_wake)
@@ -228,7 +215,6 @@ pub(super) fn deferred_capture_fixture(generation: u64) -> (CaptureLease, impl F
             }),
             deferred_positions: None,
         });
-        state.phase = OverlayPhase::HiddenForCapture(generation);
     }
     let lease = CaptureLease {
         shared: Arc::clone(&shared),
@@ -241,7 +227,7 @@ pub(super) fn deferred_capture_fixture(generation: u64) -> (CaptureLease, impl F
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        state.capture.is_none() && state.phase == OverlayPhase::Normal && state.latest.is_some()
+        state.capture.is_none() && state.latest.is_some()
     })
 }
 
@@ -352,7 +338,6 @@ impl OverlayWorker {
             state.positions = None;
             state.position_fast_path_failed = false;
             cancel_capture_locked(&mut state, "overlay was dismissed");
-            state.phase = OverlayPhase::Normal;
             state.control = Some(Control::Dismiss);
             mark_wake_pending(&mut state)?
         };
@@ -389,7 +374,6 @@ impl OverlayWorker {
                 deferred_frame: None,
                 deferred_positions: None,
             });
-            state.phase = OverlayPhase::HidingForCapture(generation);
             state.control = Some(Control::BeginCapture(generation));
             mark_wake_pending(&mut state)?
         };
@@ -422,11 +406,6 @@ impl OverlayWorker {
             state.positions = None;
             cancel_capture_locked(&mut state, "overlay was dismissed");
             let control = make(reply_tx);
-            state.phase = if matches!(control, Control::Shutdown(_)) {
-                OverlayPhase::Stopping
-            } else {
-                OverlayPhase::Normal
-            };
             state.control = Some(control);
             mark_wake_pending(&mut state)?
         };
@@ -980,15 +959,11 @@ fn acknowledge_capture(shared: &Shared, generation: u64, result: Result<(), Stri
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let reply = state
+        state
             .capture
             .as_mut()
             .filter(|gate| gate.generation == generation)
-            .and_then(|gate| gate.ready.take());
-        if reply.is_some() && result.is_ok() {
-            state.phase = OverlayPhase::HiddenForCapture(generation);
-        }
-        reply
+            .and_then(|gate| gate.ready.take())
     };
     if let Some(reply) = reply {
         let _ = reply.send(result);
@@ -1015,9 +990,6 @@ fn cancel_capture_locked(state: &mut State, reason: &str) {
     {
         let _ = reply.send(Err(reason.into()));
     }
-    if state.phase != OverlayPhase::Stopping {
-        state.phase = OverlayPhase::Normal;
-    }
 }
 
 fn ensure_renderer_alive(state: &State) -> Result<(), String> {
@@ -1041,7 +1013,6 @@ fn fail_renderer(shared: &Shared, reason: &str) {
         state.alive = false;
         state.thread_id = None;
         state.wake_pending = false;
-        state.phase = OverlayPhase::Stopping;
         state.latest = None;
         state.positions = None;
         state.sample = None;
@@ -1146,7 +1117,6 @@ mod tests {
                 deferred_frame: None,
                 deferred_positions: None,
             });
-            state.phase = OverlayPhase::HidingForCapture(2);
         }
         let mut stale = CaptureLease {
             shared: Arc::clone(&shared),
@@ -1157,7 +1127,6 @@ mod tests {
         stale.release_inner(true).expect("stale release");
         let state = shared.state.lock().expect("capture state");
         assert_eq!(state.capture.as_ref().map(|gate| gate.generation), Some(2));
-        assert_eq!(state.phase, OverlayPhase::HidingForCapture(2));
     }
 
     #[test]
@@ -1180,7 +1149,6 @@ mod tests {
                     indicator: None,
                 }),
             });
-            state.phase = OverlayPhase::HiddenForCapture(7);
         }
         let mut lease = CaptureLease {
             shared: Arc::clone(&shared),
@@ -1195,7 +1163,7 @@ mod tests {
             state.positions.and_then(|positions| positions.cursor),
             Some(Point::new(9.0, 10.0))
         );
-        assert_eq!(state.phase, OverlayPhase::Normal);
+        assert!(state.capture.is_none());
     }
 
     #[test]
@@ -1209,7 +1177,6 @@ mod tests {
                 deferred_frame: None,
                 deferred_positions: None,
             });
-            state.phase = OverlayPhase::HiddenForCapture(11);
         }
         let worker = OverlayWorker {
             shared: Arc::clone(&shared),
@@ -1239,7 +1206,7 @@ mod tests {
         assert!(state.latest.is_none());
         assert!(state.positions.is_none());
         assert!(!state.wake_pending);
-        assert_eq!(state.phase, OverlayPhase::Normal);
+        assert!(state.capture.is_none());
     }
 
     #[test]
@@ -1324,7 +1291,6 @@ mod tests {
         assert!(state.sample.is_none());
         assert!(state.capture.is_none());
         assert!(state.control.is_none());
-        assert_eq!(state.phase, OverlayPhase::Stopping);
     }
 
     #[test]

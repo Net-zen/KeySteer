@@ -41,7 +41,7 @@ use session::ScanSession;
 #[derive(Debug, Clone, PartialEq)]
 enum Match<T> {
     Complete(T),
-    Partial { remaining: usize },
+    Partial,
     None,
 }
 
@@ -1074,7 +1074,7 @@ impl HintMode {
                 typed.push(ch);
                 match match_compact_input(&self.session.hints, typed) {
                     Match::Complete(index) => self.select(index),
-                    Match::Partial { .. } => {
+                    Match::Partial => {
                         self.refresh_overlap_plan(ctx);
                         self.redraw()
                     }
@@ -1098,22 +1098,21 @@ impl HintMode {
 
 fn match_compact_input(hints: &[CompactHint<usize>], input: &str) -> Match<usize> {
     if input.is_empty() {
-        return Match::Partial {
-            remaining: hints.len(),
-        };
+        return Match::Partial;
     }
-    let mut remaining = 0usize;
-    for hint in hints {
-        let label = hint.label.as_str();
-        if label == input {
-            return Match::Complete(hint.value);
-        }
-        remaining += usize::from(label.starts_with(input));
-    }
-    if remaining == 0 {
-        Match::None
+    // The retained label plan is prefix-free, including streamed replacements.
+    // A longer match therefore rules out an exact match elsewhere. The caller
+    // only needs to know whether input can continue, not the remaining count.
+    let Some(hint) = hints
+        .iter()
+        .find(|hint| hint.label.as_str().starts_with(input))
+    else {
+        return Match::None;
+    };
+    if hint.label.as_str() == input {
+        Match::Complete(hint.value)
     } else {
-        Match::Partial { remaining }
+        Match::Partial
     }
 }
 
@@ -6108,6 +6107,39 @@ mod tests {
             assert!(mode.session.hints.capacity() <= 16_384);
             assert_eq!(mode.session.search_text.capacity(), 0);
             assert!(mode.wide_placements.is_none());
+        }
+    }
+
+    #[test]
+    fn label_prefix_matching_preserves_identity_after_reordering_and_removal() {
+        for alphabet in ["asdf", "甲乙丙丁"] {
+            let alphabet: Vec<_> = alphabet.chars().collect();
+            for direction in [LabelDirection::Normal, LabelDirection::Reverse] {
+                for count in [1, 4, 5, 16, 17, 64, 65] {
+                    let mut hints = Vec::new();
+                    hints::assign_compact_into(
+                        &mut hints,
+                        (0..count).map(|index| (Rect::new(index as f64, 0.0, 1.0, 1.0), index)),
+                        &alphabet,
+                        direction,
+                    )
+                    .unwrap();
+                    hints.reverse();
+                    hints.retain(|hint| hint.value % 3 != 1);
+                    for hint in &hints {
+                        let code = hint.label.as_str();
+                        assert_eq!(
+                            match_compact_input(&hints, code),
+                            Match::Complete(hint.value)
+                        );
+                        for (end, _) in code.char_indices().skip(1) {
+                            assert_eq!(match_compact_input(&hints, &code[..end]), Match::Partial);
+                        }
+                    }
+                    assert_eq!(match_compact_input(&hints, "?"), Match::None);
+                    assert_eq!(match_compact_input(&hints, ""), Match::Partial);
+                }
+            }
         }
     }
 

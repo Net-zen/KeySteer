@@ -342,7 +342,7 @@ fn visual_only_scan_keeps_the_same_regions_without_native_evidence() {
                 mode.handle_owned(
                     ModeEvent::UiScanned(UiScanResult {
                         id: mode.session.scan_id,
-                        targets: update.batches.into_iter().flatten().collect(),
+                        targets: update.targets,
                         retired: update.retired,
                         status: UiScanStatus::Partial,
                     }),

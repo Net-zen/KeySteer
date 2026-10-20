@@ -1263,13 +1263,13 @@ fn ocr_word_and_phrase_converge_across_engines_and_batch_order() {
             for (source, target) in batches {
                 let update = scan.push(source, vec![target], 0.5);
                 crate::api::command::remove_retired_targets(&mut visible, &update.retired);
-                visible.extend(update.batches.into_iter().flatten());
+                visible.extend(update.targets);
             }
             let mut next_row = phrase.clone();
             next_row.rect.y = 36.;
             let update = scan.push(sources[1], vec![next_row.clone()], 0.5);
-            visible.extend(update.batches.into_iter().flatten());
-            visible.extend(scan.finish().into_iter().flatten());
+            visible.extend(update.targets);
+            scan.finish();
             assert_eq!(visible.len(), 2, "reverse={reverse} swap={swap_engines}");
             assert!(visible.iter().any(|t| t.rect == phrase.rect));
             assert!(visible.iter().any(|t| t.rect == next_row.rect));

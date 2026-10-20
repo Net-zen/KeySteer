@@ -824,6 +824,8 @@ pub struct UiScanResult {
     /// refine earlier visual candidates without waiting for the full scan.
     pub retired: Vec<Rect>,
     pub id: u64,
+    /// Complete target metadata, including inherited text for refinements.
+    /// Consumers apply removals and additions without reconstructing evidence.
     pub targets: Vec<UiTarget>,
     pub status: UiScanStatus,
 }
@@ -1027,69 +1029,6 @@ pub trait Mode: Send {
     }
 }
 
-/// Preserve searchable text when overlapping runs or visual fragments are
-/// replaced by a refined target.
-pub(crate) fn enrich_replacements(
-    targets: &mut [UiTarget],
-    previous: &[UiTarget],
-    retired: &[Rect],
-) {
-    let needs_description = |target: &UiTarget| {
-        matches!(
-            target.role,
-            crate::api::SemanticRole::ListItem
-                | crate::api::SemanticRole::Image
-                | crate::api::SemanticRole::StaticText
-        ) && !(target.role == crate::api::SemanticRole::StaticText
-            && target.details.as_ref().is_some_and(|d| {
-                !d.ocr.is_empty() && d.accessibility.is_empty() && d.ocr == target.name
-            }))
-    };
-    if retired.is_empty() || !targets.iter().any(needs_description) {
-        return;
-    }
-    // Filter once per delta, not once per replacement. Large refinements used
-    // to repeat a linear retired lookup for every target/previous pair.
-    let key =
-        |r: Rect| [r.x, r.y, r.width, r.height].map(|v| if v == 0.0 { 0 } else { v.to_bits() });
-    let keys = (retired.len() > 8).then(|| {
-        retired
-            .iter()
-            .map(|&r| key(r))
-            .collect::<rustc_hash::FxHashSet<_>>()
-    });
-    let descriptions: smallvec::SmallVec<[&UiTarget; 8]> = previous
-        .iter()
-        .filter(|old| {
-            !old.name.is_empty()
-                && keys.as_ref().map_or_else(
-                    || retired.contains(&old.rect),
-                    |keys| keys.contains(&key(old.rect)),
-                )
-        })
-        .collect();
-    if descriptions.is_empty() {
-        return;
-    }
-    for target in targets.iter_mut().filter(|t| needs_description(t)) {
-        // Scan evidence already supplied authoritative OCR seam reconstruction.
-        let inherit_descriptions =
-            target.name.is_empty() || target.role == crate::api::SemanticRole::StaticText;
-        for old in &descriptions {
-            if (!inherit_descriptions && old.rect != target.rect)
-                || !target.rect.contains(&old.rect.center())
-                || target.name.contains(&old.name)
-            {
-                continue;
-            }
-            if !target.name.is_empty() {
-                target.name.push(' ');
-            }
-            target.name.push_str(&old.name);
-        }
-    }
-}
-
 /// Apply the removal half of a scan delta. Exact geometry identifies an earlier
 /// published candidate; no fuzzy matching or source policy belongs in a mode.
 pub(crate) fn remove_retired_targets(targets: &mut Vec<UiTarget>, retired: &[Rect]) {
@@ -1109,37 +1048,6 @@ pub(crate) fn remove_retired_targets(targets: &mut Vec<UiTarget>, retired: &[Rec
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn region_replacements_inherit_only_retired_descriptions_and_keep_native_names() {
-        let text = UiTarget {
-            details: None,
-            rect: Rect::new(20.0, 10.0, 40.0, 20.0),
-            name: "member".into(),
-            role: crate::api::SemanticRole::StaticText,
-        };
-        let mut independent = text.clone();
-        independent.rect.x = 80.0;
-        independent.name = "independent action".into();
-        let previous = [text.clone(), independent];
-        let mut row = [UiTarget {
-            details: None,
-            rect: Rect::new(0.0, 0.0, 150.0, 40.0),
-            name: String::new(),
-            role: crate::api::SemanticRole::ListItem,
-        }];
-        enrich_replacements(&mut row, &previous, &[text.rect]);
-        assert_eq!(row[0].name, "member");
-        let mut refinement = row.clone();
-        refinement[0].name = "description".into();
-        enrich_replacements(&mut refinement, &row, &[row[0].rect]);
-        assert_eq!(refinement[0].name, "description member");
-        enrich_replacements(&mut refinement, &row, &[row[0].rect]);
-        assert_eq!(refinement[0].name, "description member");
-        row[0].name = "native name".into();
-        enrich_replacements(&mut row, &previous, &[text.rect]);
-        assert_eq!(row[0].name, "native name");
-    }
 
     #[test]
     fn dismiss_hides_before_switching() {

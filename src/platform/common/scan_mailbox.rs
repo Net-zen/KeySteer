@@ -105,7 +105,7 @@ impl ScanMailbox {
         &self,
         generation: u64,
         request_id: u64,
-        mut targets: Vec<UiTarget>,
+        targets: Vec<UiTarget>,
         retired: Vec<crate::api::Rect>,
         status: UiScanStatus,
     ) -> bool {
@@ -115,7 +115,6 @@ impl ScanMailbox {
         }
         let was_ready =
             !state.targets.is_empty() || !state.retired.is_empty() || state.terminal.is_some();
-        crate::api::command::enrich_replacements(&mut targets, &state.targets, &retired);
         crate::api::command::remove_retired_targets(&mut state.targets, &retired);
         state.retired.extend(retired);
         if state.targets.is_empty() {
@@ -247,13 +246,13 @@ mod tests {
     }
 
     #[test]
-    fn early_text_survives_a_coalesced_visual_owner_replacement() {
+    fn refinements_preserve_authoritative_names_while_coalescing() {
         let mailbox = ScanMailbox::default();
         let generation = mailbox.begin(8);
         let mut text = target("searchable member");
         text.role = SemanticRole::StaticText;
         mailbox.publish(generation, 8, vec![text.clone()], UiScanStatus::Partial);
-        let mut row = target("");
+        let mut row = target("complete replacement");
         row.role = SemanticRole::ListItem;
         row.rect = Rect::new(0.0, 0.0, 100.0, 20.0);
         mailbox.publish_update(
@@ -265,7 +264,7 @@ mod tests {
         );
         let result = mailbox.take().unwrap();
         assert_eq!(result.targets.len(), 1);
-        assert_eq!(result.targets[0].name, text.name);
+        assert_eq!(result.targets[0].name, "complete replacement");
         assert_eq!(result.targets[0].role, SemanticRole::ListItem);
     }
 

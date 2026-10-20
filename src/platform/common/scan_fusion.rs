@@ -73,6 +73,7 @@ struct InboxState {
     ready: VecDeque<usize>,
     terminal: Option<UiScanStatus>,
     finished: bool,
+    #[cfg(test)]
     version: u64,
     #[cfg(test)]
     settled: u64,
@@ -117,7 +118,10 @@ impl Sink {
             state.ready.push_back(index);
         }
         state.lanes[index].batches.push_back(targets.into_iter());
-        state.version += 1;
+        #[cfg(test)]
+        {
+            state.version += 1;
+        }
         drop(state);
         let _ = self.wake.try_send(());
         accepted
@@ -129,7 +133,10 @@ impl Sink {
         }
         state.finished = true;
         state.terminal = Some(status);
-        state.version += 1;
+        #[cfg(test)]
+        {
+            state.version += 1;
+        }
         drop(state);
         let _ = self.wake.try_send(());
     }
@@ -431,7 +438,7 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                     let started = Instant::now();
                     let count = targets.len();
                     targets.retain(|t| (job.options.accepts)(t));
-                    let mut update = accumulator.push(source, targets, job.options.threshold);
+                    let update = accumulator.push(source, targets, job.options.threshold);
                     if source != TargetSource::Accessibility && update.accepted != 0 {
                         crate::support::perf_probe::mark("vision_targets_accepted");
                     }
@@ -455,16 +462,16 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                         current = None;
                         continue;
                     }
-                    for batch in update.batches {
-                        if job.options.output.publish_update(
+                    if (!update.targets.is_empty() || !update.retired.is_empty())
+                        && job.options.output.publish_update(
                             job.options.generation,
                             job.options.id,
-                            batch,
-                            std::mem::take(&mut update.retired),
+                            update.targets,
+                            update.retired,
                             UiScanStatus::Partial,
-                        ) {
-                            (job.options.wake)();
-                        }
+                        )
+                    {
+                        (job.options.wake)();
                     }
                     continue;
                 }
@@ -474,7 +481,7 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                     } else {
                         UiScanStatus::ContextChanged
                     };
-                    drop(accumulator.finish());
+                    accumulator.finish();
                     if job.options.output.publish(
                         job.options.generation,
                         job.options.id,

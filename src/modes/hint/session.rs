@@ -105,8 +105,7 @@ impl ScanSession {
         self.deferred_retired = Vec::new();
     }
 
-    pub(super) fn defer_update(&mut self, mut targets: Vec<UiTarget>, retired: Vec<Rect>) {
-        crate::api::command::enrich_replacements(&mut targets, &self.deferred_targets, &retired);
+    pub(super) fn defer_update(&mut self, targets: Vec<UiTarget>, retired: Vec<Rect>) {
         crate::api::command::remove_retired_targets(&mut self.deferred_targets, &retired);
         self.deferred_targets.extend(targets);
         self.deferred_retired.extend(retired);
@@ -119,9 +118,8 @@ impl ScanSession {
         self.apply_update(targets, &retired);
     }
 
-    pub(super) fn apply_update(&mut self, mut targets: Vec<UiTarget>, retired: &[Rect]) -> bool {
+    pub(super) fn apply_update(&mut self, targets: Vec<UiTarget>, retired: &[Rect]) -> bool {
         self.metadata_only = false;
-        crate::api::command::enrich_replacements(&mut targets, &self.scanned, retired);
         let before = self.scanned.len();
         crate::api::command::remove_retired_targets(&mut self.scanned, retired);
         let removed = self.scanned.len() != before;
@@ -148,7 +146,6 @@ impl ScanSession {
         if targets.is_empty() && retired.is_empty() {
             return (false, true);
         }
-        crate::api::command::enrich_replacements(&mut targets, &self.scanned, retired);
         let mut removed_hints = Vec::new();
         let before = self.scanned.len();
         let mut first_changed = before;
