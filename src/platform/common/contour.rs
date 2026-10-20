@@ -89,7 +89,7 @@ pub(crate) fn detect_fragments(
     let Some(dilated) = dilate(edges, width, height, bounds, &cancelled) else {
         return Vec::new();
     };
-    let Some(mut components) = components(dilated, width, height, &cancelled) else {
+    let Some(mut components) = components(dilated, width, height, &cancelled, |_| true) else {
         return Vec::new();
     };
     if !hierarchy(&mut components, &cancelled) {
@@ -437,7 +437,7 @@ fn neighbors(i: usize, w: usize, h: usize, mut visit: impl FnMut(usize)) {
 }
 
 fn dilate(
-    edges: Vec<u8>,
+    mut edges: Vec<u8>,
     w: usize,
     h: usize,
     bounds: Rect,
@@ -448,51 +448,73 @@ fn dilate(
     if stop() {
         return None;
     }
-    // A one-pixel kernel preserves the binary edge plane. Move it through that
-    // axis instead of allocating and rewriting every pixel.
-    let tmp = if kw == 1 {
-        edges
-    } else {
-        let mut tmp = vec![0u8; edges.len()];
-        for y in 0..h {
+    // Keep the binary plane in place. One source row is enough for horizontal
+    // runs; the vertical pass retains only the rows that can still be read.
+    // Identity axes need neither scratch storage nor a pixel traversal.
+    let mut scratch = vec![
+        0u8;
+        if kh > 1 {
+            kh.min(h) * w
+        } else if kw > 1 {
+            w
+        } else {
+            0
+        }
+    ];
+    if kw > 1 {
+        for row in edges.chunks_exact_mut(w) {
             if stop() {
                 return None;
             }
-            for x in 0..w {
-                if (x.saturating_sub(kw / 2)..=(x + kw - 1 - kw / 2).min(w - 1))
-                    .any(|xx| edges[y * w + xx] != 0)
-                {
-                    tmp[y * w + x] = 255;
+            scratch[..w].copy_from_slice(row);
+            row.fill(0);
+            let mut x = 0;
+            while x < w {
+                if scratch[x] == 0 {
+                    x += 1;
+                    continue;
                 }
+                let left = x.saturating_sub(kw - 1 - kw / 2);
+                while x < w && scratch[x] != 0 {
+                    x += 1;
+                }
+                row[left..(x + kw / 2).min(w)].fill(255);
             }
         }
-        drop(edges);
-        tmp
-    };
-    if kh == 1 {
-        return Some(tmp);
     }
-    let mut out = vec![0u8; tmp.len()];
+    if kh == 1 {
+        return Some(edges);
+    }
+    let rows = kh.min(h);
+    let mut loaded = 0;
     for y in 0..h {
         if stop() {
             return None;
         }
-        for x in 0..w {
-            if (y.saturating_sub(kh / 2)..=(y + kh - 1 - kh / 2).min(h - 1))
-                .any(|yy| tmp[yy * w + x] != 0)
-            {
-                out[y * w + x] = 255;
+        let end = (y + kh - 1 - kh / 2).min(h - 1);
+        while loaded <= end {
+            scratch[(loaded % rows) * w..][..w].copy_from_slice(&edges[loaded * w..][..w]);
+            loaded += 1;
+        }
+        let out = &mut edges[y * w..][..w];
+        out.fill(0);
+        for yy in y.saturating_sub(kh / 2)..=end {
+            for (out, &pixel) in out.iter_mut().zip(&scratch[(yy % rows) * w..][..w]) {
+                *out |= pixel;
             }
         }
     }
-    Some(out)
+    Some(edges)
 }
 
+// Visit horizontal runs, not eight neighbors for every edge pixel. This keeps
+// dense text/photo inputs cheap while preserving eight-connected components.
 fn components(
     mut pixels: Vec<u8>,
     w: usize,
     h: usize,
     stop: &impl Fn() -> bool,
+    keep: impl Fn(&Component) -> bool,
 ) -> Option<Vec<Component>> {
     let mut result = Vec::new();
     let mut stack = Vec::<u32>::new();
@@ -510,28 +532,54 @@ fn components(
             bottom: i / w,
             parent: None,
         };
-        pixels[i] = 0;
         stack.push(i as u32);
         let mut visited = 0usize;
         while let Some(index) = stack.pop() {
             visited += 1;
-            if visited.is_multiple_of(1024) && stop() {
+            if visited.is_multiple_of(256) && stop() {
                 return None;
             }
-            let index = index as usize;
-            let (x, y) = (index % w, index / w);
-            c.left = c.left.min(x);
-            c.right = c.right.max(x);
+            let i = index as usize;
+            if pixels[i] == 0 {
+                continue;
+            }
+            let (x, y) = (i % w, i / w);
+            let row = &mut pixels[y * w..][..w];
+            let mut left = x;
+            let mut right = x;
+            while left > 0 && row[left - 1] != 0 {
+                left -= 1;
+            }
+            while right + 1 < w && row[right + 1] != 0 {
+                right += 1;
+            }
+            row[left..=right].fill(0);
+            c.left = c.left.min(left);
+            c.right = c.right.max(right);
             c.top = c.top.min(y);
             c.bottom = c.bottom.max(y);
-            neighbors(index, w, h, |next| {
-                if pixels[next] != 0 {
-                    pixels[next] = 0;
-                    stack.push(next as u32);
+            for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+                if ny == y {
+                    continue;
                 }
-            });
+                let row = &pixels[ny * w..][..w];
+                let mut x = left.saturating_sub(1);
+                let end = (right + 1).min(w - 1);
+                while x <= end {
+                    if row[x] != 0 {
+                        stack.push((ny * w + x) as u32);
+                        while x <= end && row[x] != 0 {
+                            x += 1;
+                        }
+                    } else {
+                        x += 1;
+                    }
+                }
+            }
         }
-        result.push(c);
+        if keep(&c) {
+            result.push(c);
+        }
     }
     Some(result)
 }

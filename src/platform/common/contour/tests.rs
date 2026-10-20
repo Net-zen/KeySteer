@@ -374,48 +374,54 @@ pub(crate) fn reference_detect(
 ) -> (Vec<UiTarget>, usize) {
     let edges = tiled_edges(gray, w, h, &|| false).unwrap();
     let dilated = dilate(edges, w, h, bounds, &|| false).unwrap();
-    let mut c = components(dilated, w, h, &|| false).unwrap();
+    let mut c = components(dilated, w, h, &|| false, |_| true).unwrap();
     assert!(reference_hierarchy(&mut c, &|| false));
     (filter(&c, w, h, bounds, 2000, &|| false), c.len())
 }
 
 #[test]
 fn dilation_preserves_identity_axes_and_clipped_even_kernels() {
-    let (w, h) = (7usize, 5usize);
-    for (kw, kh) in [(1, 1), (1, 2), (2, 1), (2, 3), (3, 2), (32, 32)] {
-        let bounds = Rect::new(
-            0.0,
-            0.0,
-            3.5 * w as f64 / kw as f64,
-            2.5 * h as f64 / kh as f64,
-        );
-        for marked in [vec![], vec![0], vec![w * h - 1], vec![3, 16, 23, 28]] {
-            let mut pixels = vec![0; w * h];
-            for &i in &marked {
-                pixels[i] = 255;
-            }
-            // Direct rectangular neighborhoods independently check both axes,
-            // including asymmetric even kernels clipped at image boundaries.
-            let expected: Vec<_> = (0..w * h)
-                .map(|i| {
-                    let (x, y) = (i % w, i / w);
-                    let xs = x.saturating_sub(kw / 2)..=(x + kw - 1 - kw / 2).min(w - 1);
-                    let ys = y.saturating_sub(kh / 2)..=(y + kh - 1 - kh / 2).min(h - 1);
-                    if marked
-                        .iter()
-                        .any(|&j| xs.contains(&(j % w)) && ys.contains(&(j / w)))
-                    {
-                        255
-                    } else {
-                        0
-                    }
-                })
-                .collect();
-            assert_eq!(
-                dilate(pixels.clone(), w, h, bounds, &|| false),
-                Some(expected)
+    for (w, h) in [(3usize, 3usize), (7, 5), (17, 37)] {
+        for (kw, kh) in [(1, 1), (1, 2), (2, 1), (2, 3), (3, 2), (32, 32)] {
+            let bounds = Rect::new(
+                0.0,
+                0.0,
+                3.5 * w as f64 / kw as f64,
+                2.5 * h as f64 / kh as f64,
             );
-            assert!(dilate(pixels, w, h, bounds, &|| true).is_none());
+            for marked in [
+                vec![],
+                vec![0],
+                vec![w * h - 1],
+                vec![w / 2, w + 1, w * h / 2, w * h - 2],
+            ] {
+                let mut pixels = vec![0; w * h];
+                for &i in &marked {
+                    pixels[i] = 255;
+                }
+                // Direct rectangular neighborhoods independently check both axes,
+                // including asymmetric even kernels clipped at image boundaries.
+                let expected: Vec<_> = (0..w * h)
+                    .map(|i| {
+                        let (x, y) = (i % w, i / w);
+                        let xs = x.saturating_sub(kw / 2)..=(x + kw - 1 - kw / 2).min(w - 1);
+                        let ys = y.saturating_sub(kh / 2)..=(y + kh - 1 - kh / 2).min(h - 1);
+                        if marked
+                            .iter()
+                            .any(|&j| xs.contains(&(j % w)) && ys.contains(&(j / w)))
+                        {
+                            255
+                        } else {
+                            0
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    dilate(pixels.clone(), w, h, bounds, &|| false),
+                    Some(expected)
+                );
+                assert!(dilate(pixels, w, h, bounds, &|| true).is_none());
+            }
         }
     }
 }
@@ -429,7 +435,7 @@ fn more_than_ten_thousand_candidates_survive_without_truncation() {
     for i in 0..10_001 {
         pixels[(i / 101 * 3) * side + i % 101 * 3] = 255;
     }
-    let mut found = components(pixels, side, side, &|| false).unwrap();
+    let mut found = components(pixels, side, side, &|| false, |_| true).unwrap();
     assert_eq!(found.len(), 10_001);
     for c in &mut found {
         c.right = c.left + 9;
@@ -612,4 +618,73 @@ fn division_free_nearest_offsets_match_reference_mapping() {
         );
     }
     assert!(input::from_bgra(&[0; 4], (2, 1, 4), Rect::default(), || Ok(false)).is_err());
+}
+
+fn reference_components(
+    mut pixels: Vec<u8>,
+    w: usize,
+    h: usize,
+    stop: &impl Fn() -> bool,
+) -> Option<Vec<Component>> {
+    let mut result = Vec::new();
+    let mut stack = Vec::<u32>::new();
+    for i in 0..pixels.len() {
+        if i.is_multiple_of(1024) && stop() {
+            return None;
+        }
+        if pixels[i] == 0 {
+            continue;
+        }
+        let mut c = Component {
+            left: i % w,
+            right: i % w,
+            top: i / w,
+            bottom: i / w,
+            parent: None,
+        };
+        pixels[i] = 0;
+        stack.push(i as u32);
+        let mut visited = 0usize;
+        while let Some(index) = stack.pop() {
+            visited += 1;
+            if visited.is_multiple_of(1024) && stop() {
+                return None;
+            }
+            let index = index as usize;
+            let (x, y) = (index % w, index / w);
+            c.left = c.left.min(x);
+            c.right = c.right.max(x);
+            c.top = c.top.min(y);
+            c.bottom = c.bottom.max(y);
+            neighbors(index, w, h, |next| {
+                if pixels[next] != 0 {
+                    pixels[next] = 0;
+                    stack.push(next as u32);
+                }
+            });
+        }
+        result.push(c);
+    }
+    Some(result)
+}
+
+#[test]
+fn run_components_match_pixel_connectivity_and_cancellation() {
+    for (w, h) in [(3, 3), (17, 21), (128, 97)] {
+        for density in [0, 1, 3, 7, 16, 17] {
+            let pixels: Vec<_> = (0..w * h)
+                .map(|i| u8::from((i * 71 + i * i * 13) % 17 < density))
+                .collect();
+            let expected = reference_components(pixels.clone(), w, h, &|| false).unwrap();
+            let actual = components(pixels.clone(), w, h, &|| false, |_| true).unwrap();
+            let boxes = |parts: Vec<Component>| {
+                parts
+                    .into_iter()
+                    .map(|c| (c.left, c.top, c.right, c.bottom))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(boxes(actual), boxes(expected));
+            assert!(components(pixels, w, h, &|| true, |_| true).is_none());
+        }
+    }
 }

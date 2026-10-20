@@ -40,6 +40,9 @@ impl ScanAccumulator {
     /// Each input batch has one provenance. Semantic owners can retire an
     /// earlier text descendant in the same batch; prune before publication.
     /// The single-writer fusion worker publishes each returned delta atomically.
+    // Keep this large batch pipeline in one function instead of expanding it
+    // into each caller's event-processing loop.
+    #[inline(never)]
     pub(crate) fn push(
         &mut self,
         source: TargetSource,
@@ -170,14 +173,29 @@ impl ScanAccumulator {
         descriptions.extend(previous.into_iter().map(|(_, target)| target));
         // Metadata is a same-geometry delta, so OCR arriving after AX enriches
         // the original semantic target rather than creating an extra label.
-        if has_text {
+        if has_text && !self.search_targets.is_empty() {
             let mut changed = SmallVec::<[usize; 16]>::new();
+            // Grid cells include nearby rows that cannot contain any new text.
+            // One conservative batch bound avoids rebuilding those neighbors,
+            // without comparing every cached target against every new fragment.
+            let mut text_bounds: Option<Rect> = None;
+            for text in &self.visual_text[text_start..] {
+                let r = text.rect;
+                if ![r.x, r.y, r.width, r.height].iter().all(|v| v.is_finite()) {
+                    text_bounds = None;
+                    break;
+                }
+                text_bounds = Some(text_bounds.map_or(r, |bounds| bounds.union(&r)));
+            }
+            // Overflowing native coordinates keep the original query behavior.
+            let text_bounds = text_bounds.filter(|r| r.width.is_finite() && r.height.is_finite());
             // All new text is already indexed. Rebuild each affected target
             // once for this batch, including targets whose metadata is unchanged.
             self.search_spatial.for_each_candidate(
                 self.visual_text[text_start..].iter().map(|text| text.rect),
                 |index, _| {
                     if let Some(target) = &mut self.search_targets[index]
+                        && text_bounds.is_none_or(|bounds| target.rect.intersect(&bounds).is_some())
                         && attach_ocr(
                             target,
                             &self.visual_text,
