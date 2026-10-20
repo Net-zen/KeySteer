@@ -15,6 +15,7 @@ const MAX_CELLS_PER_RECT: i64 = 32;
 /// Callers choose the matching policy: native candidate de-duplication can use
 /// IoU, while shared fusion also uses containment and text-baseline proximity.
 /// Queries allocate no temporary candidate list.
+#[derive(Clone)]
 pub(crate) struct SpatialIndex {
     cell_size: f64,
     padding: f64,
@@ -251,6 +252,31 @@ impl TargetIndex {
 
     pub(crate) fn len(&self) -> usize {
         self.active
+    }
+
+    /// Reuse the first native batch's completed grid for its publication cache.
+    /// Exact identity checks also preserve the fallback for extreme floating
+    /// point rectangles whose geometric matcher can accept identical inputs.
+    pub(super) fn native_cache_snapshot(
+        &self,
+        targets: &[UiTarget],
+        threshold: f64,
+    ) -> Option<SpatialIndex> {
+        if self.evidence.len() != targets.len() || self.active != targets.len() {
+            return None;
+        }
+        let unique = self
+            .evidence
+            .iter()
+            .zip(&self.spatial.rects)
+            .zip(targets)
+            .all(|((&entry, &rect), target)| {
+                entry.source == TargetSource::Accessibility
+                    && entry.role == target.role
+                    && rect == target.rect
+                    && evidence_matches(rect, entry, rect, entry, threshold)
+            });
+        unique.then(|| self.spatial.clone())
     }
 
     pub(crate) fn take_retired(&mut self) -> Vec<Rect> {

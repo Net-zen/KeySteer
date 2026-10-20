@@ -273,8 +273,43 @@ impl SearchText {
         if ocr.is_empty() && accessibility.is_empty() {
             return Self::new(name, target.role);
         }
-        Self::new(&format!("{name} {ocr} {accessibility}"), target.role)
+        Self::fields([name, ocr, accessibility], target.role)
     }
+
+    #[inline(never)]
+    fn fields(fields: [&str; 3], role: SemanticRole) -> Self {
+        if !fields.iter().all(|field| field.is_ascii()) {
+            // Preserve whole-string contextual Unicode case conversion.
+            return Self::new(&format!("{} {} {}", fields[0], fields[1], fields[2]), role);
+        }
+        let role_name = role.as_str();
+        let (translation, initials) = role_terms(role);
+        // Construct the final index directly, without allocating a temporary
+        // joined name for late OCR metadata and then copying it again.
+        let capacity = fields.iter().map(|field| field.len()).sum::<usize>()
+            + 4
+            + role_name.len()
+            + translation.len()
+            + initials.len();
+        let mut text = String::with_capacity(capacity);
+        text.push_str(fields[0]);
+        text.push(' ');
+        text.push_str(fields[1]);
+        text.push(' ');
+        text.push_str(fields[2]);
+        text.make_ascii_lowercase();
+        text.push(' ');
+        text.push_str(role_name);
+        text.push(' ');
+        text.push_str(translation);
+        let initials_start = text.len();
+        text.push_str(initials);
+        Self {
+            text,
+            initials_start,
+        }
+    }
+
     pub(super) fn new(name: &str, role: SemanticRole) -> Self {
         let role_name = role.as_str();
         let (role_translation, role_initials) = role_terms(role);
@@ -318,7 +353,23 @@ impl SearchText {
         // initials copy cannot add a match; retain only the role aliases below.
         if !ascii {
             let mut cursor = 0;
-            while let Some(ch) = text[cursor..name_end].chars().next() {
+            while cursor < name_end {
+                // ASCII cannot produce pinyin. Copy each unchanged run at once,
+                // including spaces and punctuation between Unicode characters.
+                let ascii_len = text.as_bytes()[cursor..name_end]
+                    .iter()
+                    .position(|byte| !byte.is_ascii())
+                    .unwrap_or(name_end - cursor);
+                if ascii_len != 0 {
+                    text.extend_from_within(cursor..cursor + ascii_len);
+                    cursor += ascii_len;
+                    if cursor == name_end {
+                        break;
+                    }
+                }
+                let Some(ch) = text[cursor..name_end].chars().next() else {
+                    break;
+                };
                 cursor += ch.len_utf8();
                 if let Some(py) = ch.to_pinyin() {
                     text.push_str(py.first_letter());
@@ -571,7 +622,14 @@ mod tests {
     #[test]
     fn fixed_role_initials_match_transliteration_for_unicode_names() {
         for role in SemanticRole::ALL {
-            for name in ["Control 设置", "ΟΔΟΣ İẞ", "复制\0面板"] {
+            for name in [
+                "Control 设置",
+                "设置 Control 123",
+                "a复制\0b设置 c!日本語 XYZ",
+                "🙂ASCII设置𠀀tail",
+                "ΟΔΟΣ İẞ",
+                "复制\0面板",
+            ] {
                 let plain = format!(
                     "{} {} {}",
                     name.to_lowercase(),
@@ -760,6 +818,14 @@ mod tests {
     #[test]
     fn fused_fields_are_indexed_once_and_keep_unicode_and_search_semantics() {
         for (name, ocr, accessibility, distinct) in [
+            ("Action 1", "Text 1", "", "Action 1 Text 1 "),
+            (
+                "SAVE Ctrl+S",
+                "",
+                "button\0help",
+                "SAVE Ctrl+S  button\0help",
+            ),
+            ("", "TEXT", "TEXT", " TEXT "),
             ("SAVE 复制", "SAVE 复制", "", "SAVE 复制"),
             ("SAVE 复制", "", "SAVE 复制", "SAVE 复制"),
             ("SAVE 复制", "SAVE 复制", "SAVE 复制", "SAVE 复制"),

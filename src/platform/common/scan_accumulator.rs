@@ -218,35 +218,49 @@ impl ScanAccumulator {
         // Late-text replacements were cloned from the cache just above. Only
         // provider targets and image replacements still need indexing; querying
         // and comparing those appended clones cannot update the cache.
-        for target in &mut targets[..accepted] {
-            let mut existing = None;
-            self.search_spatial
-                .any_match(target.rect, |index, rect, _| {
-                    if rect == target.rect
-                        && self.search_targets[index]
-                            .as_ref()
-                            .is_some_and(|old| old.role == target.role)
-                    {
-                        existing = Some(index);
-                        true
-                    } else {
-                        false
-                    }
-                });
-            if existing.is_some_and(|index| self.search_targets[index].as_ref() == Some(target)) {
-                continue;
-            }
-            attach_ocr(
-                target,
-                &self.visual_text,
-                &mut self.ocr_scratch,
-                &mut self.text_spatial,
-            );
-            inherit_replaced_names(target, &descriptions);
-            if let Some(index) = existing {
-                self.search_targets[index] = Some(target.clone());
-            } else if self.search_spatial.store(target.rect) {
-                self.search_targets.push(Some(target.clone()));
+        let cache_initialized = source == TargetSource::Accessibility
+            && self.search_targets.is_empty()
+            && self.visual_text.is_empty()
+            && retired.is_empty()
+            && self.initialize_native_cache(&targets[..accepted], threshold);
+        if !cache_initialized {
+            for target in &mut targets[..accepted] {
+                let mut existing = None;
+                self.search_spatial
+                    .any_match(target.rect, |index, rect, _| {
+                        if rect == target.rect
+                            && self.search_targets[index]
+                                .as_ref()
+                                .is_some_and(|old| old.role == target.role)
+                        {
+                            existing = Some(index);
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                if existing.is_some_and(|index| self.search_targets[index].as_ref() == Some(target))
+                {
+                    continue;
+                }
+                // Contour images were enriched by image_name before dedup.
+                // Their geometry and this batch's OCR evidence are unchanged,
+                // so rebuilding that description here would repeat the query
+                // and text assembly. Other targets still need enrichment.
+                if source != TargetSource::Contour || target.role != SemanticRole::Image {
+                    attach_ocr(
+                        target,
+                        &self.visual_text,
+                        &mut self.ocr_scratch,
+                        &mut self.text_spatial,
+                    );
+                }
+                inherit_replaced_names(target, &descriptions);
+                if let Some(index) = existing {
+                    self.search_targets[index] = Some(target.clone());
+                } else if self.search_spatial.store(target.rect) {
+                    self.search_targets.push(Some(target.clone()));
+                }
             }
         }
         if source == TargetSource::Contour {
@@ -262,6 +276,18 @@ impl ScanAccumulator {
             targets,
             retired,
         }
+    }
+
+    // Keep the one-time grid copy out of the repeated enrichment pipeline.
+    #[inline(never)]
+    fn initialize_native_cache(&mut self, targets: &[UiTarget], threshold: f64) -> bool {
+        let Some(spatial) = self.index.native_cache_snapshot(targets, threshold) else {
+            return false;
+        };
+        self.search_spatial = spatial;
+        self.search_targets
+            .extend(targets.iter().cloned().map(Some));
+        true
     }
 
     /// Specialize once per ready batch. Scans without layout containers use
@@ -990,5 +1016,88 @@ mod tests {
         let update = scan.push(TargetSource::Accessibility, vec![button.clone()], 0.5);
         assert_eq!(update.retired, vec![visual.rect]);
         assert_eq!(update.targets, [button]);
+    }
+    #[test]
+    fn first_native_cache_keeps_shared_geometry_and_oversized_owners() {
+        let mut scan = ScanAccumulator::new();
+        let rect = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let native: Vec<_> = [
+            (rect, SemanticRole::Button, "button"),
+            (rect, SemanticRole::Checkbox, "checkbox"),
+            (
+                Rect::new(-2000.0, -2000.0, 5000.0, 5000.0),
+                SemanticRole::Button,
+                "large action",
+            ),
+        ]
+        .into_iter()
+        .map(|(rect, role, name)| UiTarget {
+            rect,
+            role,
+            name: name.into(),
+            details: None,
+        })
+        .collect();
+        let initial = scan.push(TargetSource::Accessibility, native.clone(), 0.5);
+        assert_eq!(initial.targets, native);
+        assert!(initial.retired.is_empty());
+        let update = scan.push(
+            TargetSource::SystemOcr,
+            vec![UiTarget::recognized_text(
+                Rect::new(20.0, 10.0, 60.0, 20.0),
+                "caption".into(),
+            )],
+            0.5,
+        );
+        assert_eq!(update.targets.len(), native.len());
+        for (updated, original) in update.targets.iter().zip(&native) {
+            assert_eq!(updated.rect, original.rect);
+            assert_eq!(updated.role, original.role);
+            assert_eq!(updated.name, original.name);
+            assert_eq!(updated.ocr_text(), "caption");
+        }
+    }
+
+    #[test]
+    fn first_native_cache_handles_non_reflexive_geometry_matching() {
+        for (rect, threshold) in [
+            (Rect::new(1e30, 1e30, 10.0, 10.0), 0.5),
+            (Rect::new(0.0, 0.0, 1e200, 1e200), 0.5),
+            (Rect::new(0.0, 0.0, 100.0, 40.0), f64::NAN),
+        ] {
+            let mut scan = ScanAccumulator::new();
+            let targets = ["first", "second"]
+                .map(|name| UiTarget {
+                    rect,
+                    role: SemanticRole::Button,
+                    name: name.into(),
+                    details: None,
+                })
+                .to_vec();
+            let update = scan.push(TargetSource::Accessibility, targets, threshold);
+            assert_eq!(update.targets.len(), 2);
+            assert!(update.retired.is_empty());
+            assert_eq!(scan.search_targets.len(), 1);
+            assert_eq!(scan.search_spatial.len(), 1);
+            assert_eq!(scan.search_targets[0].as_ref().unwrap().name, "second");
+        }
+    }
+
+    #[test]
+    fn first_native_cache_includes_previously_unpublished_ocr() {
+        let mut scan = ScanAccumulator::new();
+        let text = scan.push(
+            TargetSource::SystemOcr,
+            vec![UiTarget::recognized_text(
+                Rect::new(10.0, 10.0, 40.0, 1.0),
+                "thin caption".into(),
+            )],
+            0.5,
+        );
+        assert!(text.targets.is_empty());
+        let native = target(0.0, 100.0, SemanticRole::Button);
+        let update = scan.push(TargetSource::Accessibility, vec![native], 0.5);
+        assert_eq!(update.targets.len(), 1);
+        assert_eq!(update.targets[0].ocr_text(), "thin caption");
     }
 }

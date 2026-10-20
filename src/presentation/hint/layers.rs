@@ -568,12 +568,13 @@ fn build_wide_plan(
 ) {
     let len = placements.len();
     let valid_sweep = prepare_wide_sweep(placements, &mut wide.sweep_order);
-    if valid_sweep
+    if let Some(axis) = valid_sweep
         && !wide_sweep_has_edge(
             placements,
             visually_stacked,
             &wide.sweep_order,
             &mut wide.sweep_active,
+            axis,
         )
     {
         plan.finish_unstacked();
@@ -660,9 +661,9 @@ fn build_wide_edges(
     graph: &mut ConflictGraph,
     order: &[usize],
     active: &mut Vec<usize>,
-    prepared_sweep: bool,
+    prepared_sweep: Option<SweepAxis>,
 ) {
-    if !prepared_sweep {
+    let Some(axis) = prepared_sweep else {
         for right in 1..placements.len() {
             for left in 0..right {
                 if visually_stacked(placements[left].1, placements[right].1) {
@@ -671,11 +672,11 @@ fn build_wide_edges(
             }
         }
         return;
-    }
+    };
     active.clear();
     for &right in order.iter() {
         let right_rect = placements[right].1;
-        active.retain(|left| placements[*left].1.right() >= right_rect.x);
+        active.retain(|left| axis.end(placements[*left].1) >= axis.start(right_rect));
         for &left in active.iter() {
             let left_rect = placements[left].1;
             if left_rect.intersect(&right_rect).is_some() && visually_stacked(left_rect, right_rect)
@@ -687,28 +688,81 @@ fn build_wide_edges(
     }
 }
 
-fn prepare_wide_sweep(placements: &[(usize, Rect)], order: &mut Vec<usize>) -> bool {
-    let valid = placements.iter().all(|(_, rect)| {
-        rect.x.is_finite()
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SweepAxis {
+    X,
+    Y,
+}
+
+impl SweepAxis {
+    #[inline]
+    fn start(self, rect: Rect) -> f64 {
+        match self {
+            Self::X => rect.x,
+            Self::Y => rect.y,
+        }
+    }
+
+    #[inline]
+    fn end(self, rect: Rect) -> f64 {
+        match self {
+            Self::X => rect.right(),
+            Self::Y => rect.bottom(),
+        }
+    }
+
+    #[inline]
+    fn cross(self) -> Self {
+        match self {
+            Self::X => Self::Y,
+            Self::Y => Self::X,
+        }
+    }
+}
+
+fn prepare_wide_sweep(placements: &[(usize, Rect)], order: &mut Vec<usize>) -> Option<SweepAxis> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_right = f64::NEG_INFINITY;
+    let mut max_bottom = f64::NEG_INFINITY;
+    let mut width = 0.0_f64;
+    let mut height = 0.0_f64;
+    for &(_, rect) in placements {
+        if !(rect.x.is_finite()
             && rect.y.is_finite()
             && rect.width.is_finite()
             && rect.height.is_finite()
             && rect.width >= 0.0
-            && rect.height >= 0.0
-    });
-    if !valid {
-        return false;
+            && rect.height >= 0.0)
+        {
+            return None;
+        }
+        min_x = min_x.min(rect.x);
+        min_y = min_y.min(rect.y);
+        max_right = max_right.max(rect.right());
+        max_bottom = max_bottom.max(rect.bottom());
+        width = width.max(rect.width);
+        height = height.max(rect.height);
     }
+    // More label-width bands along an axis usually mean fewer simultaneous
+    // candidates. This choice only affects traversal: exact rectangle and
+    // visual-overlap checks still determine every edge. Degenerate/overflowing
+    // estimates keep the horizontal sweep.
+    let x_bands = (max_right - min_x) / width;
+    let y_bands = (max_bottom - min_y) / height;
+    let axis = if x_bands.is_finite() && y_bands.is_finite() && y_bands > x_bands {
+        SweepAxis::Y
+    } else {
+        SweepAxis::X
+    };
     order.clear();
     order.extend(0..placements.len());
     order.sort_unstable_by(|left, right| {
-        placements[*left]
-            .1
-            .x
-            .total_cmp(&placements[*right].1.x)
+        axis.start(placements[*left].1)
+            .total_cmp(&axis.start(placements[*right].1))
             .then_with(|| left.cmp(right))
     });
-    true
+    Some(axis)
 }
 
 fn wide_sweep_has_edge(
@@ -716,6 +770,7 @@ fn wide_sweep_has_edge(
     visually_stacked: &impl Fn(Rect, Rect) -> bool,
     order: &[usize],
     active: &mut Vec<usize>,
+    axis: SweepAxis,
 ) -> bool {
     active.clear();
     if let [left, right, ..] = order {
@@ -726,31 +781,32 @@ fn wide_sweep_has_edge(
         }
     }
     let mut next_expiry = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_bottom = f64::NEG_INFINITY;
+    let mut cross_min = f64::INFINITY;
+    let mut cross_max = f64::NEG_INFINITY;
+    let cross = axis.cross();
     for &right in order.iter() {
         let right_rect = placements[right].1;
-        // Nothing can expire until the sweep passes the earliest right edge.
-        if next_expiry < right_rect.x {
+        // Nothing can expire until the sweep passes the earliest end.
+        if next_expiry < axis.start(right_rect) {
             next_expiry = f64::INFINITY;
-            min_y = f64::INFINITY;
-            max_bottom = f64::NEG_INFINITY;
+            cross_min = f64::INFINITY;
+            cross_max = f64::NEG_INFINITY;
             active.retain(|left| {
                 let rect = placements[*left].1;
-                let end = rect.right();
-                if end < right_rect.x {
+                let end = axis.end(rect);
+                if end < axis.start(right_rect) {
                     false
                 } else {
                     next_expiry = next_expiry.min(end);
-                    min_y = min_y.min(rect.y);
-                    max_bottom = max_bottom.max(rect.bottom());
+                    cross_min = cross_min.min(cross.start(rect));
+                    cross_max = cross_max.max(cross.end(rect));
                     true
                 }
             });
         }
-        // The union of active vertical intervals is a conservative bound.
+        // Bound active intervals on the perpendicular axis conservatively.
         // Only a rectangle reaching it can conflict with an active label.
-        if right_rect.y < max_bottom && right_rect.bottom() > min_y {
+        if cross.start(right_rect) < cross_max && cross.end(right_rect) > cross_min {
             for &left in active.iter() {
                 let left_rect = placements[left].1;
                 if left_rect.intersect(&right_rect).is_some()
@@ -761,9 +817,9 @@ fn wide_sweep_has_edge(
             }
         }
         active.push(right);
-        next_expiry = next_expiry.min(right_rect.right());
-        min_y = min_y.min(right_rect.y);
-        max_bottom = max_bottom.max(right_rect.bottom());
+        next_expiry = next_expiry.min(axis.end(right_rect));
+        cross_min = cross_min.min(cross.start(right_rect));
+        cross_max = cross_max.max(cross.end(right_rect));
     }
     false
 }
@@ -790,7 +846,9 @@ fn color_component_wide(
         }
         greedy_color(graph, &wide.order, &mut wide.colors, &mut wide.occupied);
         for _ in 0..2 {
-            compact_colors(graph, component, &mut wide.colors, &mut wide.occupied);
+            if !compact_colors(graph, component, &mut wide.colors, &mut wide.occupied) {
+                break;
+            }
         }
         let depth = canonicalize_colors_wide(
             component,
@@ -901,7 +959,9 @@ fn color_component_inline(
         }
         greedy_color(graph, &w.order, &mut w.colors, &mut w.occupied);
         for _ in 0..2 {
-            compact_colors(graph, component, &mut w.colors, &mut w.occupied);
+            if !compact_colors(graph, component, &mut w.colors, &mut w.occupied) {
+                break;
+            }
         }
         let layer_count = canonicalize_colors(
             component,
@@ -994,7 +1054,8 @@ fn compact_colors(
     component: &[usize],
     colors: &mut [u32],
     occupied: &mut [u64],
-) {
+) -> bool {
+    let mut changed = false;
     for &vertex in component.iter().rev() {
         occupied.fill(0);
         graph.for_each_neighbor(vertex, |neighbor| {
@@ -1007,8 +1068,12 @@ fn compact_colors(
         let first_free = first_free_color(occupied) as u32;
         if first_free < colors[vertex] {
             colors[vertex] = first_free;
+            changed = true;
         }
     }
+    // A complete unchanged pass is a fixed point for this deterministic order.
+    // Repeating it cannot improve the next coloring candidate.
+    changed
 }
 
 fn first_free_color(occupied: &[u64]) -> usize {
@@ -1635,10 +1700,49 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_wide_sweep_preserves_streamed_pairs_in_both_orientations() {
+        // The second source appends nearby labels after the whole first source.
+        // Their input order is neither spatial nor consecutive pairs.
+        for transpose in [false, true] {
+            let placements: Vec<_> = (0..2)
+                .flat_map(|source| {
+                    (0..300).map(move |index| {
+                        let mut rect = Rect::new(
+                            (index % 5) as f64 * 100.0 + source as f64 * 5.0,
+                            (index / 5) as f64 * 60.0 + source as f64 * 4.0,
+                            30.0 + (index % 3) as f64,
+                            20.0,
+                        );
+                        if transpose {
+                            rect = Rect::new(rect.y, rect.x, rect.height, rect.width);
+                        }
+                        (source * 300 + index, rect)
+                    })
+                })
+                .collect();
+            let mut order = Vec::new();
+            assert_eq!(
+                prepare_wide_sweep(&placements, &mut order),
+                Some(if transpose {
+                    SweepAxis::X
+                } else {
+                    SweepAxis::Y
+                })
+            );
+            assert_matches_quadratic_reference(&placements);
+            // Shuffled updates must retain the same layer and selected-layer
+            // semantics as the general graph for that exact input ordering.
+            let mut shuffled = placements;
+            shuffled.rotate_left(137);
+            assert_matches_quadratic_reference(&shuffled);
+        }
+    }
+
+    #[test]
     fn wide_sweep_preserves_varying_heights_and_numeric_boundaries() {
         fn verify(placements: &[(usize, Rect)], active: &mut Vec<usize>) {
             let mut order = Vec::new();
-            assert!(prepare_wide_sweep(placements, &mut order));
+            let axis = prepare_wide_sweep(placements, &mut order).unwrap();
             let predicates: [fn(Rect, Rect) -> bool; 2] = [overlap, |left, right| {
                 super::super::visually_stacked(left, right, 4.0, 3.0)
             }];
@@ -1647,7 +1751,7 @@ mod tests {
                     (0..right).any(|left| predicate(placements[left].1, placements[right].1))
                 });
                 assert_eq!(
-                    wide_sweep_has_edge(placements, &predicate, &order, active),
+                    wide_sweep_has_edge(placements, &predicate, &order, active, axis),
                     expected,
                     "{placements:?}"
                 );
