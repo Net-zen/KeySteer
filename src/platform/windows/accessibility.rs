@@ -28,8 +28,9 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_I4};
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomation2, IUIAutomationCacheRequest,
-    IUIAutomationCondition, IUIAutomationElement, TreeScope_Descendants,
+    AutomationElementMode_None, CUIAutomation, IUIAutomation, IUIAutomation2,
+    IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
+    IUIAutomationElementArray, TreeScope_Descendants, TreeScope_Subtree,
     UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId, UIA_IsEnabledPropertyId,
     UIA_IsExpandCollapsePatternAvailablePropertyId, UIA_IsInvokePatternAvailablePropertyId,
     UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
@@ -330,7 +331,12 @@ impl Drop for ComApartment {
 struct UiaQueryPlan {
     cache: IUIAutomationCacheRequest,
     all: IUIAutomationCondition,
-    interactive: Option<(IUIAutomationCondition, IUIAutomationCacheRequest)>,
+    subtree: Option<IUIAutomationCacheRequest>,
+    interactive: Option<(
+        IUIAutomationCondition,
+        IUIAutomationCacheRequest,
+        Option<IUIAutomationCacheRequest>,
+    )>,
 }
 
 impl UiaQueryPlan {
@@ -340,8 +346,12 @@ impl UiaQueryPlan {
         // condition on its owning MTA thread.
         let all = unsafe { automation.CreateTrueCondition() }
             .map_err(|error| format!("cannot create the UIA scan condition: {error}"))?;
+        let subtree = subtree_cache(automation, &cache, &all);
         let interactive = match create_interactive_condition(automation).and_then(|condition| {
-            create_cache_request(automation, true).map(|cache| (condition, cache))
+            create_cache_request(automation, true).map(|cache| {
+                let subtree = subtree_cache(automation, &cache, &condition);
+                (condition, cache, subtree)
+            })
         }) {
             Ok(query) => Some(query),
             Err(error) => {
@@ -355,6 +365,7 @@ impl UiaQueryPlan {
         Ok(Self {
             cache,
             all,
+            subtree,
             interactive,
         })
     }
@@ -362,13 +373,151 @@ impl UiaQueryPlan {
     fn condition(
         &self,
         clickable_only: bool,
-    ) -> (&IUIAutomationCacheRequest, &IUIAutomationCondition, bool) {
-        if clickable_only && let Some((condition, cache)) = self.interactive.as_ref() {
-            (cache, condition, true)
+    ) -> (
+        &IUIAutomationCacheRequest,
+        &IUIAutomationCondition,
+        bool,
+        Option<&IUIAutomationCacheRequest>,
+    ) {
+        if clickable_only && let Some((condition, cache, subtree)) = self.interactive.as_ref() {
+            (cache, condition, true, subtree.as_ref())
         } else {
-            (&self.cache, &self.all, false)
+            (&self.cache, &self.all, false, self.subtree.as_ref())
         }
     }
+}
+
+fn subtree_cache(
+    automation: &IUIAutomation,
+    cache: &IUIAutomationCacheRequest,
+    condition: &IUIAutomationCondition,
+) -> Option<IUIAutomationCacheRequest> {
+    // SAFETY: configure a fresh, worker-local clone using interfaces from the
+    // same MTA. Retain the original cache's view as well as the search condition;
+    // dropping the former would admit additional raw-view elements.
+    let result = unsafe {
+        (|| -> windows::core::Result<_> {
+            let subtree = cache.Clone()?;
+            let filter = automation.CreateAndCondition(condition, &cache.TreeFilter()?)?;
+            subtree.SetTreeFilter(&filter)?;
+            subtree.SetTreeScope(TreeScope_Subtree)?;
+            subtree.SetAutomationElementMode(AutomationElementMode_None)?;
+            Ok(subtree)
+        })()
+    };
+    match result {
+        Ok(cache) => Some(cache),
+        Err(error) => {
+            crate::report_warning!(
+                "windows-uia",
+                "cannot prepare a UIA subtree snapshot; using descendant queries: {error}"
+            );
+            None
+        }
+    }
+}
+
+enum CachedDescendants {
+    Flat {
+        elements: IUIAutomationElementArray,
+        next: i32,
+        count: i32,
+    },
+    Tree {
+        pending: Option<IUIAutomationElement>,
+        parents: SmallVec<[(IUIAutomationElementArray, i32, i32); 8]>,
+    },
+}
+
+impl CachedDescendants {
+    fn query(
+        root: &IUIAutomationElement,
+        condition: &IUIAutomationCondition,
+        cache: &IUIAutomationCacheRequest,
+        subtree: Option<&IUIAutomationCacheRequest>,
+        can_retry: impl Fn() -> bool,
+    ) -> windows::core::Result<Self> {
+        // SAFETY: all interfaces belong to this worker's MTA. The snapshot
+        // contains fresh values for this query only; no live element escapes.
+        // A provider timeout must not trigger another full provider call.
+        unsafe {
+            if let Some(subtree) = subtree {
+                match root.BuildUpdatedCache(subtree) {
+                    Ok(snapshot) => {
+                        return Ok(Self::Tree {
+                            pending: Some(snapshot),
+                            parents: SmallVec::new(),
+                        });
+                    }
+                    Err(error) if subtree_is_unsupported(error.code()) && can_retry() => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            let elements = root.FindAllBuildCache(TreeScope_Descendants, condition, cache)?;
+            let count = elements.Length()?.max(0);
+            Ok(Self::Flat {
+                elements,
+                next: 0,
+                count,
+            })
+        }
+    }
+
+    fn next(&mut self) -> windows::core::Result<Option<IUIAutomationElement>> {
+        // SAFETY: arrays own their cached COM references; all indices are
+        // checked against Length. GetCachedChildren reads the existing snapshot
+        // without a provider query. A successful null child collection is
+        // projected by windows-rs as an error carrying S_OK and denotes a leaf;
+        // actual failed HRESULTs must still be reported.
+        unsafe {
+            match self {
+                Self::Flat {
+                    elements,
+                    next,
+                    count,
+                } => {
+                    if *next >= *count {
+                        return Ok(None);
+                    }
+                    let element = elements.GetElement(*next)?;
+                    *next += 1;
+                    Ok(Some(element))
+                }
+                Self::Tree { pending, parents } => {
+                    if let Some(parent) = pending.take() {
+                        match parent.GetCachedChildren() {
+                            Ok(children) => {
+                                let count = children.Length()?.max(0);
+                                if count != 0 {
+                                    parents.push((children, 0, count));
+                                }
+                            }
+                            Err(error) if error.code().is_ok() => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    while let Some((children, next, count)) = parents.last_mut() {
+                        if *next == *count {
+                            parents.pop();
+                            continue;
+                        }
+                        let element = children.GetElement(*next)?;
+                        *next += 1;
+                        *pending = Some(element.clone());
+                        return Ok(Some(element));
+                    }
+                    Ok(None)
+                }
+            }
+        }
+    }
+}
+
+fn subtree_is_unsupported(code: windows::core::HRESULT) -> bool {
+    use windows::Win32::Foundation::{E_NOINTERFACE, E_NOTIMPL};
+    use windows::Win32::UI::Accessibility::UIA_E_NOTSUPPORTED;
+
+    code == E_NOINTERFACE || code == E_NOTIMPL || code.0 as u32 == UIA_E_NOTSUPPORTED
 }
 
 fn worker_main(shared: Arc<SharedQueue>, thread_id: Arc<AtomicU32>) {
@@ -1244,7 +1393,7 @@ fn stream_scan(
     {
         return Ok(UiScanStatus::Success);
     }
-    let (cache, condition, provider_filters_interactive) =
+    let (cache, condition, provider_filters_interactive, subtree) =
         query_plan.condition(job.request.clickable_only);
     let mut allowed = control_types_for(&job.request.roles);
     if allowed.is_empty() {
@@ -1350,34 +1499,28 @@ fn stream_scan(
         if preview_only {
             continue;
         }
-        // A bulk descendant query is substantially more reliable for Chromium,
-        // WebView2 and other virtualized trees than walking only Control View.
-        // SAFETY: root, condition and cache are live COM interfaces from this
-        // automation instance and remain borrowed through the bulk call.
-        let elements =
-            match unsafe { root.FindAllBuildCache(TreeScope_Descendants, condition, cache) } {
-                Ok(elements) => elements,
-                Err(error) => {
-                    provider_timed_out |= is_timeout_error(&error);
-                    crate::report_warning!(
-                        "windows-uia",
-                        "cannot query UIA descendants for {:?}; continuing: {error}",
-                        window.hwnd()
-                    );
-                    continue;
-                }
-            };
+        // Fetch the filtered subtree once, then stream cached descendants in
+        // preorder. This never walks the live provider one child at a time.
+        // Providers without subtree support retain the original bulk query.
+        let mut elements = match CachedDescendants::query(&root, condition, cache, subtree, || {
+            Instant::now() < deadline && context_is_current(shared, job.generation, &job.request)
+        }) {
+            Ok(elements) => elements,
+            Err(error) => {
+                provider_timed_out |= is_timeout_error(&error);
+                crate::report_warning!(
+                    "windows-uia",
+                    "cannot query UIA descendants for {:?}; continuing: {error}",
+                    window.hwnd()
+                );
+                continue;
+            }
+        };
         queried_window = true;
-        // SAFETY: `elements` is a live array returned by the preceding query.
-        let element_count = unsafe { elements.Length() }
-            .map_err(|error| format!("cannot read UIA descendant count: {error}"))?
-            .max(0) as usize;
-
-        for index in 0..element_count {
-            // SAFETY: `index` is bounded by Length and the returned COM element
-            // is independently reference counted.
-            let element = unsafe { elements.GetElement(index as i32) }
-                .map_err(|error| format!("cannot read UIA descendant {index}: {error}"))?;
+        while let Some(element) = elements
+            .next()
+            .map_err(|error| format!("cannot read cached UIA descendant: {error}"))?
+        {
             visited_count += 1;
             // Check the cheap generation on every node. Window/Active retain
             // their native sampling; fusion validates all scopes on publish.
@@ -1584,11 +1727,10 @@ fn target_from_element(
     within: Rect,
     provider_filters_interactive: bool,
 ) -> Option<UiTarget> {
-    // FindAllBuildCache already populated this element. Reading cached
-    // properties directly avoids a second provider call, which is important
-    // for WebView2/Chromium providers where BuildUpdatedCache may time out or
-    // return E_ELEMENTNOTAVAILABLE after the bulk query.
-    // SAFETY: the element came from a cache-populated array and the cached
+    // The bulk query already populated this element. Read cached properties
+    // directly: refreshing each element would repeat provider calls and could
+    // observe values from a different snapshot or an element that disappeared.
+    // SAFETY: the element came from a cache-populated snapshot and the cached
     // property call returns a value without retaining Rust data.
     let control_type = super::native::CachedElement::new(element)
         .control_type()
@@ -2202,6 +2344,36 @@ mod tests {
         assert!(!cancellation_context_is_gone(
             windows::Win32::Foundation::E_FAIL
         ));
+    }
+
+    #[test]
+    fn snapshot_fallback_is_only_for_unsupported_operations() {
+        use windows::Win32::Foundation::{
+            E_FAIL, E_NOINTERFACE, E_NOTIMPL, E_POINTER, RPC_E_CALL_CANCELED,
+        };
+        use windows::Win32::UI::Accessibility::{UIA_E_ELEMENTNOTAVAILABLE, UIA_E_NOTSUPPORTED};
+
+        for code in [
+            E_NOINTERFACE,
+            E_NOTIMPL,
+            windows::core::HRESULT(UIA_E_NOTSUPPORTED as i32),
+        ] {
+            assert!(subtree_is_unsupported(code));
+        }
+        for code in [
+            E_FAIL,
+            E_POINTER,
+            RPC_E_CALL_CANCELED,
+            windows::core::HRESULT(UIA_E_ELEMENTNOTAVAILABLE as i32),
+            windows::core::HRESULT(0x8013_1505u32 as i32),
+            windows::core::HRESULT(0x8007_05B4u32 as i32),
+            windows::core::HRESULT(0x8001_011Fu32 as i32),
+        ] {
+            assert!(
+                !subtree_is_unsupported(code),
+                "must not retry failed or cancelled provider calls"
+            );
+        }
     }
 
     fn target(x: f64, y: f64, name: &str, role: SemanticRole) -> UiTarget {

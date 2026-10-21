@@ -6,7 +6,7 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use core_foundation::ConcreteCFType;
-use core_foundation::array::CFArray;
+use core_foundation::array::{CFArray, CFArrayRef};
 use core_foundation::base::{CFGetTypeID, CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::string::{CFString, CFStringRef};
@@ -18,6 +18,7 @@ use crate::api::geometry::{Rect, SemanticRole, UiTarget};
 
 use super::native::OwnedCf;
 use super::window_move::WriteError;
+mod attribute_batch;
 pub(super) mod window_manager;
 mod window_tabs;
 
@@ -121,6 +122,12 @@ unsafe extern "C" {
         element: AXUIElementRef,
         attribute: CFStringRef,
         value: *mut CFTypeRef,
+    ) -> c_int;
+    fn AXUIElementCopyMultipleAttributeValues(
+        element: AXUIElementRef,
+        attributes: CFArrayRef,
+        options: u32,
+        values: *mut CFArrayRef,
     ) -> c_int;
     fn AXUIElementCopyActionNames(element: AXUIElementRef, names: *mut *const c_void) -> c_int;
     fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: c_float) -> c_int;
@@ -444,10 +451,13 @@ pub(crate) fn scan_process_stream(
         return Ok(());
     };
     let allowed_roles = ax_roles_for(&request.roles).into_iter().collect();
+    let node_attributes = node_attribute_names(&attributes, request.visible_only);
     let mut scan = Scan {
         request,
         scan_bounds,
         attributes,
+        node_attributes,
+        attribute_reader: attribute_batch::Reader::default(),
         allowed_roles,
         deadline,
         on_batch: &mut on_batch,
@@ -471,10 +481,14 @@ pub(crate) fn scan_screen_stream(
         .bounds
         .ok_or("screen scan requires display bounds")?;
     let visible = window_manager::scan_windows()?;
+    let attributes = AxAttributes::new();
+    let node_attributes = node_attribute_names(&attributes, request.visible_only);
     let mut scan = Scan {
         request,
         scan_bounds: Some(bounds),
-        attributes: AxAttributes::new(),
+        attributes,
+        node_attributes,
+        attribute_reader: attribute_batch::Reader::default(),
         allowed_roles: ax_roles_for(&request.roles).into_iter().collect(),
         deadline,
         on_batch: &mut on_batch,
@@ -543,6 +557,7 @@ pub(crate) fn scan_screen_stream(
             if let [index] = matching.as_slice() {
                 let (window, frame, _) = &windows[*index];
                 scan.scan_bounds = frame.intersect(&bounds);
+                scan.attribute_reader.reset();
                 scan.visit(window.window.as_ptr(), 0);
             }
         }
@@ -557,6 +572,8 @@ struct Scan<'a> {
     request: &'a UiScanRequest,
     scan_bounds: Option<Rect>,
     attributes: AxAttributes,
+    node_attributes: CFArray<CFString>,
+    attribute_reader: attribute_batch::Reader,
     allowed_roles: HashSet<String>,
     deadline: Instant,
     on_batch: &'a mut dyn FnMut(Vec<UiTarget>),
@@ -566,31 +583,53 @@ struct Scan<'a> {
 }
 
 impl Scan<'_> {
+    fn expired(&self) -> bool {
+        Instant::now() >= self.deadline || !(self.is_current)()
+    }
+
     fn visit(&mut self, element: AXUIElementRef, depth: u32) {
         if !is_ax_element(element)
             || (self.request.max_depth != 0 && depth > self.request.max_depth)
-            || Instant::now() >= self.deadline
-            || !(self.is_current)()
+            || self.expired()
         {
             return;
         }
 
         let role = copy_string_attribute(element, &self.attributes.role).unwrap_or_default();
+        if self.expired() {
+            return;
+        }
         let (prefer_visible_rows, prefer_visible_children) =
             visible_collection_preferences(&role, self.request.visible_only);
         let role_allowed =
             self.request.roles.is_empty() || self.allowed_roles.contains(role.as_str());
-        let rect = role_allowed
-            .then(|| element_rect(element, &self.attributes))
-            .flatten()
-            .and_then(|rect| {
-                crate::platform::common::window_visibility::visible_part(
-                    rect,
-                    self.scan_bounds.unwrap_or(rect),
-                    &self.occluders,
-                    &self.request.screen_bounds,
-                )
-            });
+        let (rect, enabled, visible) = if role_allowed {
+            let keys = &self.node_attributes;
+            let deadline = self.deadline;
+            let current = self.is_current;
+            let Some(values) = self.attribute_reader.read(
+                keys.len() as usize,
+                || Instant::now() < deadline && current(),
+                || copy_node_attributes(element, keys),
+                |index| {
+                    let key = keys.get(index as isize)?;
+                    copy_attribute(element, &key).map(into_cf_type)
+                },
+            ) else {
+                return;
+            };
+            decode_node_attributes(values, self.request.visible_only)
+        } else {
+            (None, false, false)
+        };
+        let rect = rect.and_then(|rect| {
+            crate::platform::common::window_visibility::visible_part(
+                rect,
+                self.scan_bounds.unwrap_or(rect),
+                &self.occluders,
+                &self.request.screen_bounds,
+            )
+        });
         let in_bounds = rect.is_some_and(|rect| {
             self.scan_bounds
                 .is_none_or(|bounds| bounds.contains(&rect.center()))
@@ -599,11 +638,9 @@ impl Scan<'_> {
                     .iter()
                     .any(|bounds| bounds.contains(&rect.center()))
         });
-        let enabled =
-            role_allowed && copy_bool_attribute(element, &self.attributes.enabled).unwrap_or(true);
-        let visible = role_allowed
-            && (!self.request.visible_only
-                || !copy_bool_attribute(element, &self.attributes.hidden).unwrap_or(false));
+        if self.expired() {
+            return;
+        }
         // Standard controls are mouse-addressable even when an application does
         // not expose AXPress. Action discovery is the slower fallback for custom
         // controls and only runs for an otherwise eligible candidate.
@@ -611,6 +648,10 @@ impl Scan<'_> {
             || intrinsically_clickable(&role)
             || (enabled && visible && in_bounds && has_actions(element));
         let semantic_role = semantic_role(&role);
+
+        if self.expired() {
+            return;
+        }
 
         if enabled
             && visible
@@ -620,8 +661,8 @@ impl Scan<'_> {
         {
             let key = normalized_rect(rect);
             if self.seen.insert(key) {
-                let name = accessible_name(element, &self.attributes);
-                if Instant::now() >= self.deadline || !(self.is_current)() {
+                let name = accessible_name(element, &self.attributes, || !self.expired());
+                if self.expired() {
                     return;
                 }
                 (self.on_batch)(vec![UiTarget {
@@ -633,7 +674,7 @@ impl Scan<'_> {
             }
         }
 
-        if self.request.max_depth != 0 && depth == self.request.max_depth {
+        if self.expired() || self.request.max_depth != 0 && depth == self.request.max_depth {
             return;
         }
         let Some(children) = visible_children_for_role(
@@ -641,12 +682,13 @@ impl Scan<'_> {
             prefer_visible_rows,
             prefer_visible_children,
             &self.attributes,
+            || !self.expired(),
         ) else {
             return;
         };
         for child in &children {
             self.visit(*child, depth + 1);
-            if Instant::now() >= self.deadline || !(self.is_current)() {
+            if self.expired() {
                 break;
             }
         }
@@ -662,16 +704,21 @@ fn visible_children_for_role(
     prefer_visible_rows: bool,
     prefer_visible_children: bool,
     attributes: &AxAttributes,
+    current: impl Fn() -> bool,
 ) -> Option<CFArray<*const c_void>> {
+    let read = |name| {
+        current()
+            .then(|| copy_array_attribute(element, name))
+            .flatten()
+    };
     let visible = if prefer_visible_rows {
-        copy_array_attribute(element, &attributes.visible_children)
-            .or_else(|| copy_array_attribute(element, &attributes.visible_rows))
+        read(&attributes.visible_children).or_else(|| read(&attributes.visible_rows))
     } else if prefer_visible_children {
-        copy_array_attribute(element, &attributes.visible_children)
+        read(&attributes.visible_children)
     } else {
         None
     };
-    visible.or_else(|| copy_array_attribute(element, &attributes.children))
+    visible.or_else(|| read(&attributes.children))
 }
 
 fn prefers_visible_rows(role: &str) -> bool {
@@ -693,6 +740,90 @@ fn visible_collection_preferences(role: &str, visible_only: bool) -> (bool, bool
     }
 }
 
+fn node_attribute_names(attributes: &AxAttributes, visible_only: bool) -> CFArray<CFString> {
+    let names = [
+        attributes.position.clone(),
+        attributes.size.clone(),
+        attributes.enabled.clone(),
+        attributes.hidden.clone(),
+    ];
+    CFArray::from_CFTypes(&names[..if visible_only { 4 } else { 3 }])
+}
+
+fn copy_node_attributes(
+    element: AXUIElementRef,
+    names: &CFArray<CFString>,
+) -> attribute_batch::Batch<CFType, 4> {
+    let mut values = ptr::null();
+    // SAFETY: the worker owns this live AX element and the immutable CFString
+    // array. AXCopyMultipleAttributeOptions is UInt32, not CFOptionFlags. Zero
+    // keeps errors in their individual slots instead of stopping the batch.
+    // Adopt any returned +1 object even on failure, so it is always released.
+    let (error, values) = unsafe {
+        let error = AXUIElementCopyMultipleAttributeValues(
+            element,
+            names.as_concrete_TypeRef(),
+            0,
+            &mut values,
+        );
+        (error, OwnedCf::from_create_rule(values.cast()))
+    };
+    if error != AX_OK {
+        return if attribute_batch::unsupported(error) {
+            attribute_batch::Batch::Unsupported
+        } else {
+            attribute_batch::Batch::Failed
+        };
+    }
+    let Some(values) = values.and_then(downcast_cf::<CFArray<*const c_void>>) else {
+        return attribute_batch::Batch::Unsupported;
+    };
+    node_values_from_array(values, names.len())
+}
+
+fn node_values_from_array(
+    values: CFArray<*const c_void>,
+    count: isize,
+) -> attribute_batch::Batch<CFType, 4> {
+    if !(0..=4).contains(&count) || values.len() != count {
+        // Never shift slots or silently omit fields in a malformed response.
+        return attribute_batch::Batch::Unsupported;
+    }
+    attribute_batch::Batch::Values(std::array::from_fn(|index| {
+        let value = *values.get(index as isize)?;
+        if value.is_null() {
+            return None;
+        }
+        // SAFETY: AX documents CF objects (including CFNull/AXValue errors) in
+        // this checked array. Retain the borrowed non-null slot before the
+        // array drops. Consumers type-check each field independently.
+        Some(unsafe { CFType::wrap_under_get_rule(value) })
+    }))
+}
+
+fn decode_node_attributes(
+    [position, size, enabled, hidden]: [Option<CFType>; 4],
+    visible_only: bool,
+) -> (Option<Rect>, bool, bool) {
+    // Release every native value before actions, names, publication or
+    // recursion; no per-node attribute arrays accumulate on the stack.
+    (
+        position
+            .as_ref()
+            .zip(size.as_ref())
+            .and_then(|(position, size)| rect_from_values(position, size)),
+        enabled
+            .and_then(|value| value.downcast_into::<CFBoolean>())
+            .map(bool::from)
+            .unwrap_or(true),
+        !visible_only
+            || !hidden
+                .and_then(|value| value.downcast_into::<CFBoolean>())
+                .map(bool::from)
+                .unwrap_or(false),
+    )
+}
+
 fn copy_array_attribute(
     element: AXUIElementRef,
     name: &CFString,
@@ -703,14 +834,12 @@ fn copy_array_attribute(
 fn copy_attribute(element: AXUIElementRef, name: &CFString) -> Option<OwnedCf> {
     let mut value: CFTypeRef = ptr::null();
     // SAFETY: `element` and `name` are live for the call and `value` is a valid
-    // out-pointer that receives a +1 object only on AX_OK.
-    let error =
-        unsafe { AXUIElementCopyAttributeValue(element, name.as_concrete_TypeRef(), &mut value) };
-    if error != AX_OK {
-        return None;
-    }
-    // SAFETY: AX CopyAttributeValue returns a +1 object on success.
-    unsafe { OwnedCf::from_create_rule(value.cast()) }
+    // out-pointer. Adopt any returned +1 object on both success and failure.
+    let (error, value) = unsafe {
+        let error = AXUIElementCopyAttributeValue(element, name.as_concrete_TypeRef(), &mut value);
+        (error, OwnedCf::from_create_rule(value))
+    };
+    (error == AX_OK).then_some(value).flatten()
 }
 
 fn copy_string_attribute(element: AXUIElementRef, name: &CFString) -> Option<String> {
@@ -726,11 +855,13 @@ fn copy_bool_attribute(element: AXUIElementRef, name: &CFString) -> Option<bool>
 }
 
 fn downcast_cf<T: ConcreteCFType>(value: OwnedCf) -> Option<T> {
+    into_cf_type(value).downcast_into::<T>()
+}
+
+fn into_cf_type(value: OwnedCf) -> CFType {
     // SAFETY: OwnedCf holds one live +1 Core Foundation object. Ownership is
-    // transferred into CFType exactly once; downcast_into checks CFTypeID and
-    // releases the object on mismatch.
-    let value = unsafe { CFType::wrap_under_create_rule(value.into_raw().cast()) };
-    value.downcast_into::<T>()
+    // transferred into CFType exactly once, which releases it when dropped.
+    unsafe { CFType::wrap_under_create_rule(value.into_raw().cast()) }
 }
 
 fn is_ax_element(value: *const c_void) -> bool {
@@ -741,24 +872,36 @@ fn is_ax_element(value: *const c_void) -> bool {
 }
 
 fn element_rect(element: AXUIElementRef, attributes: &AxAttributes) -> Option<Rect> {
-    let position = copy_attribute(element, &attributes.position)?;
-    let size = copy_attribute(element, &attributes.size)?;
+    let position = into_cf_type(copy_attribute(element, &attributes.position)?);
+    let size = into_cf_type(copy_attribute(element, &attributes.size)?);
+    rect_from_values(&position, &size)
+}
+
+fn rect_from_values(position: &CFType, size: &CFType) -> Option<Rect> {
     let mut point = CGPoint::new(0.0, 0.0);
     let mut dimensions = CGSize::new(0.0, 0.0);
     // SAFETY: both +1 objects are live Core Foundation values. CFGetTypeID
     // first proves they are AXValue objects before AXValueGetType inspects the
     // payload, and AXValueGetValue writes into correctly sized outputs.
     let (point_ok, size_ok) = unsafe {
-        if CFGetTypeID(position.as_ptr()) != AXValueGetTypeID()
-            || CFGetTypeID(size.as_ptr()) != AXValueGetTypeID()
-            || AXValueGetType(position.as_ptr()) != AX_VALUE_CGPOINT
-            || AXValueGetType(size.as_ptr()) != AX_VALUE_CGSIZE
+        if CFGetTypeID(position.as_CFTypeRef()) != AXValueGetTypeID()
+            || CFGetTypeID(size.as_CFTypeRef()) != AXValueGetTypeID()
+            || AXValueGetType(position.as_CFTypeRef()) != AX_VALUE_CGPOINT
+            || AXValueGetType(size.as_CFTypeRef()) != AX_VALUE_CGSIZE
         {
             return None;
         }
         (
-            AXValueGetValue(position.as_ptr(), AX_VALUE_CGPOINT, (&raw mut point).cast()),
-            AXValueGetValue(size.as_ptr(), AX_VALUE_CGSIZE, (&raw mut dimensions).cast()),
+            AXValueGetValue(
+                position.as_CFTypeRef(),
+                AX_VALUE_CGPOINT,
+                (&raw mut point).cast(),
+            ),
+            AXValueGetValue(
+                size.as_CFTypeRef(),
+                AX_VALUE_CGSIZE,
+                (&raw mut dimensions).cast(),
+            ),
         )
     };
     let rect = Rect::new(point.x, point.y, dimensions.width, dimensions.height);
@@ -810,11 +953,18 @@ fn has_actions(element: AXUIElementRef) -> bool {
     !actions.is_empty()
 }
 
-fn accessible_name(element: AXUIElementRef, attributes: &AxAttributes) -> String {
+fn accessible_name(
+    element: AXUIElementRef,
+    attributes: &AxAttributes,
+    current: impl Fn() -> bool,
+) -> String {
     [&attributes.title, &attributes.description, &attributes.help]
         .into_iter()
         .find_map(|attribute| {
-            copy_string_attribute(element, attribute).filter(|value| !value.trim().is_empty())
+            current()
+                .then(|| copy_string_attribute(element, attribute))
+                .flatten()
+                .filter(|value| !value.trim().is_empty())
         })
         .unwrap_or_default()
 }
@@ -864,6 +1014,207 @@ fn visible_scan_bounds(window: Option<Rect>, requested: Option<Rect>) -> Result<
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    fn native_attribute_values() -> [CFType; 4] {
+        let point = CGPoint::new(-1920.0, 36.0);
+        let size = CGSize::new(120.0, 28.0);
+        let error: c_int = -25205;
+        // SAFETY: each tag matches the exact scalar ABI at its live pointer.
+        // Create-rule values are adopted once; the process-lifetime CFNull is
+        // retained under the get rule. No AX provider or permission is needed.
+        unsafe {
+            [
+                into_cf_type(
+                    OwnedCf::from_create_rule(AXValueCreate(
+                        AX_VALUE_CGPOINT,
+                        (&raw const point).cast(),
+                    ))
+                    .unwrap(),
+                ),
+                into_cf_type(
+                    OwnedCf::from_create_rule(AXValueCreate(
+                        AX_VALUE_CGSIZE,
+                        (&raw const size).cast(),
+                    ))
+                    .unwrap(),
+                ),
+                into_cf_type(
+                    OwnedCf::from_create_rule(AXValueCreate(5, (&raw const error).cast())).unwrap(),
+                ),
+                CFType::wrap_under_get_rule(core_foundation::base::kCFNull),
+            ]
+        }
+    }
+
+    #[test]
+    fn native_batch_decoding_preserves_geometry_and_independent_missing_flags() {
+        let [position, size, error, null] = native_attribute_values();
+        let expected = Rect::new(-1920.0, 36.0, 120.0, 28.0);
+        let counts = (position.retain_count(), size.retain_count());
+        for _ in 0..100 {
+            let values = CFArray::from_CFTypes(&[
+                position.clone(),
+                size.clone(),
+                error.clone(),
+                null.clone(),
+            ]);
+            let attribute_batch::Batch::Values(values) =
+                node_values_from_array(values.into_untyped(), 4)
+            else {
+                panic!("a complete native array must preserve all slots");
+            };
+            assert_eq!(
+                decode_node_attributes(values, true),
+                (Some(expected), true, true)
+            );
+        }
+        assert_eq!((position.retain_count(), size.retain_count()), counts);
+        assert_eq!(
+            decode_node_attributes(
+                [
+                    Some(position.clone()),
+                    Some(size.clone()),
+                    Some(CFBoolean::false_value().into_CFType()),
+                    Some(CFBoolean::true_value().into_CFType())
+                ],
+                true
+            ),
+            (Some(expected), false, false)
+        );
+        assert_eq!(
+            decode_node_attributes(
+                [
+                    Some(position),
+                    Some(size),
+                    None,
+                    Some(CFBoolean::true_value().into_CFType())
+                ],
+                false
+            ),
+            (Some(expected), true, true)
+        );
+        assert!(rect_from_values(&error, &null).is_none());
+        assert!(
+            rect_from_values(
+                &CFString::new("not a position").into_CFType(),
+                &CFBoolean::true_value().into_CFType()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn native_batch_shape_and_request_fields_are_checked() {
+        let attributes = AxAttributes::new();
+        for visible_only in [false, true] {
+            let names = node_attribute_names(&attributes, visible_only);
+            let expected: &[&str] = if visible_only {
+                &["AXPosition", "AXSize", "AXEnabled", "AXHidden"]
+            } else {
+                &["AXPosition", "AXSize", "AXEnabled"]
+            };
+            assert_eq!(
+                names
+                    .iter()
+                    .map(|name| name.to_string())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        let values = native_attribute_values();
+        for count in [3, 5] {
+            assert!(matches!(
+                node_values_from_array(CFArray::from_CFTypes(&values).into_untyped(), count),
+                attribute_batch::Batch::Unsupported
+            ));
+        }
+        let attribute_batch::Batch::Values(values) =
+            node_values_from_array(CFArray::from_CFTypes(&values[..3]).into_untyped(), 3)
+        else {
+            panic!("three requested fields must be valid");
+        };
+        assert!(values[3].is_none());
+    }
+
+    #[test]
+    #[ignore = "requires macOS Accessibility permission and a stable frontmost window"]
+    fn native_ax_batch_matches_individual_reads_and_cancels_after_first_target() {
+        use crate::api::command::{UiScanScope, UiScanStrategy, VisionOptions};
+        use std::cell::Cell;
+
+        let application = AxApplication::new(frontmost_pid().expect("frontmost app")).unwrap();
+        let attributes = AxAttributes::new();
+        let window = copy_attribute(application.as_ptr(), &attributes.focused_window).unwrap();
+        assert!(is_ax_element(window.as_ptr()));
+        let bounds = element_rect(window.as_ptr(), &attributes).unwrap();
+        let request = UiScanRequest {
+            id: 1,
+            scope: UiScanScope::Window,
+            bounds: Some(bounds),
+            screen_bounds: vec![bounds],
+            roles: Vec::new(),
+            max_depth: 0,
+            timeout_ms: 10_000,
+            visible_only: true,
+            clickable_only: true,
+            strategy: UiScanStrategy::AxTree,
+            vision: VisionOptions::default(),
+            app: None,
+        };
+        let read = |reader, cancel_after_first| {
+            let current = Cell::new(true);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut targets = Vec::new();
+            {
+                let mut publish = |batch: Vec<UiTarget>| {
+                    assert_eq!(
+                        batch.len(),
+                        1,
+                        "AX targets must remain streamed individually"
+                    );
+                    targets.extend(batch);
+                    if cancel_after_first {
+                        current.set(false);
+                    }
+                };
+                let attributes = AxAttributes::new();
+                let node_attributes = node_attribute_names(&attributes, true);
+                let mut scan = Scan {
+                    request: &request,
+                    scan_bounds: Some(bounds),
+                    attributes,
+                    node_attributes,
+                    attribute_reader: reader,
+                    allowed_roles: HashSet::new(),
+                    deadline,
+                    on_batch: &mut publish,
+                    is_current: &|| current.get(),
+                    seen: HashSet::new(),
+                    occluders: Vec::new(),
+                };
+                scan.visit(window.as_ptr(), 0);
+                assert!(
+                    Instant::now() < deadline,
+                    "incomplete scan cannot establish equivalence"
+                );
+            }
+            targets
+        };
+        let before = read(attribute_batch::Reader::individual(), false);
+        assert!(
+            !before.is_empty(),
+            "the stable window must expose usable targets"
+        );
+        let batched = read(attribute_batch::Reader::default(), false);
+        let after = read(attribute_batch::Reader::individual(), false);
+        assert_eq!(before, after, "the window changed during the comparison");
+        assert_eq!(
+            batched, before,
+            "batching must preserve target values and order"
+        );
+        let cancelled = read(attribute_batch::Reader::default(), true);
+        assert_eq!(cancelled, before[..1]);
+    }
 
     #[test]
     fn semantic_roles_expand_without_duplicates() {

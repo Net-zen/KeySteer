@@ -75,7 +75,11 @@ use std::path::{Path, PathBuf};
 // existing complete query, to stream a control while that bulk call is pending.
 // It borrows the same worker-owned MTA interfaces and finite provider timeout.
 // No raw pointer ownership, callback, or Send/Sync surface is added.
-const MAX_UNSAFE_EXPRESSIONS: usize = 409;
+// AX batching adds a bounded CopyMultiple call and checked CF-slot retention;
+// single-attribute Copy/adoption now share one ownership scope. A native-only
+// test adds one typed AXValue/CFNull fixture block. Net: two audited blocks,
+// no raw cross-thread references, callbacks or Send/Sync implementations.
+const MAX_UNSAFE_EXPRESSIONS: usize = 411;
 const MAX_UNSAFE_FILES: usize = 42;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
@@ -86,7 +90,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/accessibility/window_tabs.rs", 12),
     ("src/platform/macos/window_tabs.rs", 2),
     ("src/platform/windows/window_tabs/strip.rs", 11),
-    ("src/platform/macos/accessibility.rs", 18),
+    ("src/platform/macos/accessibility.rs", 20),
     ("src/platform/macos/accessibility/window_manager.rs", 13),
     ("src/platform/macos/autostart.rs", 5),
     ("src/platform/macos/display_link.rs", 4),
