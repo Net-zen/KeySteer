@@ -476,11 +476,20 @@ pub(crate) fn scan_screen_stream(
     deadline: Instant,
     is_current: impl Fn() -> bool,
     mut on_batch: impl FnMut(Vec<UiTarget>),
+    progress: impl Fn(crate::platform::common::scan_progress::Progress),
 ) -> Result<(), String> {
+    use crate::platform::common::{scan_progress::Progress, window_visibility::matching_coverage};
     let bounds = request
         .bounds
         .ok_or("screen scan requires display bounds")?;
     let visible = window_manager::scan_windows()?;
+    progress(Progress::Plan(
+        visible
+            .iter()
+            .filter(|w| w.bounds.intersect(&bounds).is_some())
+            .map(|w| matching_coverage(w.bounds))
+            .collect(),
+    ));
     let attributes = AxAttributes::new();
     let node_attributes = node_attribute_names(&attributes, request.visible_only);
     let mut scan = Scan {
@@ -513,6 +522,7 @@ pub(crate) fn scan_screen_stream(
         )
         .is_none()
         {
+            progress(Progress::Complete(matching_coverage(item.bounds)));
             continue;
         }
         {
@@ -564,6 +574,7 @@ pub(crate) fn scan_screen_stream(
         if item.pid as u32 != std::process::id() {
             scan.occluders.push(item.bounds);
         }
+        progress(Progress::Complete(matching_coverage(item.bounds)));
     }
     Ok(())
 }

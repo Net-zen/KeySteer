@@ -390,7 +390,7 @@ pub fn detect(
     strategy: crate::api::UiScanStrategy,
     workers: &Workers,
     cancelled: impl Fn() -> bool + Send + Sync + 'static,
-    publish: impl Fn(TargetSource, Vec<UiTarget>) + Send + Sync + 'static,
+    output: crate::platform::common::scan_fusion::Sink,
 ) -> UiScanStatus {
     let run = || {
         detect_inner(
@@ -400,7 +400,7 @@ pub fn detect(
             strategy,
             workers,
             cancelled,
-            publish,
+            output,
         )
     };
     run().unwrap_or_else(UiScanStatus::Failed)
@@ -413,12 +413,12 @@ fn detect_inner(
     strategy: crate::api::UiScanStrategy,
     workers: &Workers,
     cancelled: impl Fn() -> bool + Send + Sync + 'static,
-    publish: impl Fn(TargetSource, Vec<UiTarget>) + Send + Sync + 'static,
+    output: crate::platform::common::scan_fusion::Sink,
 ) -> Result<UiScanStatus, String> {
     let deadline =
         Instant::now() + Duration::from_millis(options.request_timeout_ms.clamp(1, 30_000));
     let cancelled = Arc::new(cancelled);
-    let publish = Arc::new(publish);
+    use crate::platform::common::scan_progress::Progress;
     let contour_only = strategy == crate::api::UiScanStrategy::Contour;
     let (detect_text, detect_contours) =
         crate::platform::common::contour::sources(strategy, options);
@@ -466,6 +466,7 @@ fn detect_inner(
         if !enabled {
             continue;
         }
+        output.progress(source, Progress::Plan(regions.to_vec()));
         let (sender, receiver) = mpsc::channel();
         let input = ProviderInput {
             sender: Some(sender),
@@ -475,13 +476,16 @@ fn detect_inner(
             let receiver = Arc::clone(&input.receiver);
             let options = options.clone();
             let cancelled = Arc::clone(&cancelled);
-            let publish = Arc::clone(&publish);
+            let output = output.clone();
             move |_, stopped| {
                 if source == TargetSource::SystemOcr {
                     stopped.reuse_processes(frame_workers);
                 }
                 let cancelled = || stopped.load(Ordering::Acquire) || cancelled();
-                let publish = |targets| publish(source, targets);
+                let publish = |targets| {
+                    output.submit(source, targets);
+                };
+                let progress = |progress| output.progress(source, progress);
                 let provider_config = NativeConfig {
                     detect_text: source == TargetSource::SystemOcr,
                     detect_rectangles: source == TargetSource::NativeRectangles,
@@ -507,6 +511,7 @@ fn detect_inner(
                             }
                         };
                         // The receive lock has been released before any native work.
+                        let region = frame.coordinate_bounds;
                         let status = if source == TargetSource::SystemOcr {
                             let (width, height) = match frame.image.dimensions() {
                                 Ok(dimensions) => dimensions,
@@ -521,6 +526,24 @@ fn detect_inner(
                             );
                             let tiles: Vec<_> =
                                 layout.tiles(width, height, OCR_TILE_OVERLAP).collect();
+                            progress(Progress::Refine {
+                                region,
+                                children: tiles
+                                    .iter()
+                                    .map(|tile| {
+                                        pixel_rect_to_desktop(
+                                            region,
+                                            (width, height),
+                                            Rect::new(
+                                                tile.left_halo as f64,
+                                                tile.top_halo as f64,
+                                                (tile.right_halo - tile.left_halo) as f64,
+                                                (tile.bottom_halo - tile.top_halo) as f64,
+                                            ),
+                                        )
+                                    })
+                                    .collect(),
+                            });
                             recognize_ocr_image(
                                 (
                                     frame.image,
@@ -533,7 +556,7 @@ fn detect_inner(
                                 deadline,
                                 stopped,
                                 &cancelled,
-                                &publish,
+                                (&publish, &progress),
                             )
                         } else if source == TargetSource::Contour {
                             recognize_contours(
@@ -555,6 +578,9 @@ fn detect_inner(
                                 &publish,
                             )
                         };
+                        if source != TargetSource::SystemOcr {
+                            progress(Progress::Complete(region));
+                        }
                         if status == UiScanStatus::ContextChanged {
                             return Some(status);
                         }
@@ -628,6 +654,26 @@ fn detect_inner(
         captures += 1;
         let coordinate_bounds =
             capture_bounds_or_window(native_rect_to_rect(raw.captured_bounds), bounds);
+        for source in [
+            TargetSource::SystemOcr,
+            TargetSource::NativeRectangles,
+            TargetSource::Contour,
+        ] {
+            let enabled = match source {
+                TargetSource::SystemOcr => config.detect_text,
+                TargetSource::NativeRectangles => config.detect_rectangles,
+                _ => config.detect_contours,
+            };
+            if enabled {
+                output.progress(
+                    source,
+                    Progress::Refine {
+                        region: bounds,
+                        children: vec![coordinate_bounds],
+                    },
+                );
+            }
+        }
         // Queue all sources before starting the next display's capture.
         // The single capture permit still prevents overlapping full screenshots.
         for (input, _) in &providers {
@@ -814,7 +860,10 @@ fn recognize_ocr_image(
     deadline: Instant,
     stopped: &Signal,
     cancelled: &impl Fn() -> bool,
-    publish: &impl Fn(Vec<UiTarget>),
+    (publish, progress): (
+        &impl Fn(Vec<UiTarget>),
+        &impl Fn(crate::platform::common::scan_progress::Progress),
+    ),
 ) -> UiScanStatus {
     let started = Instant::now();
     let interrupted = || super::scan_workers::interrupt_status(deadline, cancelled());
@@ -963,6 +1012,9 @@ fn recognize_ocr_image(
                     let first = !published && !targets.is_empty();
                     published |= first;
                     publish(targets);
+                    progress(crate::platform::common::scan_progress::Progress::Complete(
+                        tile_bounds,
+                    ));
                     if first {
                         crate::log_info!(
                             "macos-ui-scan",

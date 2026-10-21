@@ -283,6 +283,40 @@ impl TargetIndex {
         std::mem::take(&mut self.retired)
     }
 
+    pub(super) fn expand_pending_text(&self, source: TargetSource, regions: &mut Vec<Rect>) {
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for region in regions.iter_mut() {
+                for (entry, &rect) in self.evidence.iter().zip(&self.spatial.rects) {
+                    if entry.active
+                        && entry.source == source
+                        && entry.role == SemanticRole::StaticText
+                        && super::scan_progress::touches(*region, rect)
+                    {
+                        let union = region.union(&rect);
+                        changed |= union != *region;
+                        *region = union;
+                    }
+                }
+            }
+            let mut i = 0;
+            while i < regions.len() {
+                let mut j = i + 1;
+                while j < regions.len() {
+                    if super::scan_progress::touches(regions[i], regions[j]) {
+                        let other = regions.swap_remove(j);
+                        regions[i] = regions[i].union(&other);
+                        changed = true;
+                    } else {
+                        j += 1;
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+
     /// Join only genuinely overlapping text runs (typically OCR tile seams).
     /// No proximity grouping, widget rules, or native actions participate.
     pub(crate) fn stitch_text(&mut self, target: &mut UiTarget, source: TargetSource) {

@@ -7,7 +7,7 @@
 - 协议：`src/api/command.rs`；消费端：`src/modes/hint/`。
 - Windows：`src/platform/windows/accessibility.rs`、`src/platform/windows/ui_scan.rs`、`src/platform/windows/vision/`。
 - macOS：`src/platform/macos/accessibility.rs`、`src/platform/macos/ui_scan.rs`、`src/platform/macos/scan_workers.rs`、`src/platform/macos/vision.rs`、`src/platform/macos/vision_ocr_process.h`。
-- 共享调度与算法：`src/platform/common/scan_fusion.rs`、`src/platform/common/scan_mailbox.rs`、`src/platform/common/scan_accumulator.rs`、`src/platform/common/image_tiles.rs`、`src/platform/common/spatial_index.rs`、`src/platform/common/contour/`。
+- 共享调度与算法：`src/platform/common/scan_fusion.rs`、`src/platform/common/scan_progress.rs`、`src/platform/common/scan_mailbox.rs`、`src/platform/common/scan_accumulator.rs`、`src/platform/common/image_tiles.rs`、`src/platform/common/spatial_index.rs`、`src/platform/common/contour/`。
 
 ## 必须保持
 
@@ -17,7 +17,7 @@
 - 重扫复用退出的会话清理和后端取消入口，再提交新 generation；连续重扫只保留最新待执行请求，取消旧活动请求不能失效已排队的新一代。两端在交付终态、移除扫描归属前也通过同一入口取消剩余原生任务，避免 Windows 可选 UIA 预览或 macOS 超时原生调用遗漏取消；邮箱已消费终态不能成为跳过任务取消的理由。
 - 目标数量及整屏扫描的窗口数量动态增长，不设固定条数上限；遍历保留期限、深度与 generation 检查，图像和在途原生工作仍有资源边界。取消不能只取消显示而让旧任务无限运行。
 - 去重及多来源融合保持稳定语义，不依赖哈希迭代顺序。
-- 每次融合交付一份目标数组和撤销数组，二者作为同一增量发布，不增加多批次外层容器。启用 OCR 的 Hybrid／Vision 扫描仍按原顺序融合所有来源，但轮廓碎片及 macOS 原生矩形暂存于现有搜索目标缓存，仅增加对应的待发布标记；原生语义、OCR 文字和轮廓图片流式显示。隐藏候选的撤销和元数据更新不发给 Hint；有效终态携带去重后剩余候选及其最新名称，失败／超时也保留已有候选，取消、上下文变化及旧代次直接丢弃。纯 Contour 或关闭 OCR 的 Vision 保持立即显示。不增加固定等待、来源计算屏障、第二份目标缓存或截图持有；终态交付前释放扫描证据。后到 OCR 对已显示目标的元数据替换仍直接交付，不反查空间索引或重复比较完整目标；图片名称仅在变化时复制。
+- 每次融合交付一份目标数组和撤销数组，二者作为同一增量发布，不增加多批次外层容器。启用 OCR 的 Hybrid／Vision 扫描保持来源内顺序和原有去重规则融合所有结果，但轮廓碎片及 macOS 原生矩形暂存于现有搜索目标缓存，仅增加对应的待发布标记；原生语义、OCR 文字和轮廓图片流式显示。隐藏候选的撤销和元数据更新不发给 Hint；共享 `scan_progress` 跟踪所有启用来源尚未完成的区域，区域稳定后即可按 Partial 发布剩余候选及其最新名称。原生层在开始交付前声明完整区域计划，窗口／分块完成通知与结果进入同一来源 FIFO，不能越过尚未融合的目标。Windows UIA 主遍历及可选预览分别占有窗口区域；macOS AX 按窗口交付进度，Quartz 计划覆盖 AX 匹配的几何容差；系统 OCR 用含 halo 的分块区域，微信 OCR、轮廓和原生矩形按帧。候选必须与所有来源的未完成区域分离；OCR 还对相接的未完成块及同来源活动文字做保守包围闭包，避免后续接缝拼接扩展到已发布区域。未声明、异常或无法验证的区域保持等待；有效终态补入剩余候选，失败／超时也保留已有候选，取消、上下文变化及旧代次直接丢弃。纯 Contour 或关闭 OCR 的 Vision 保持立即显示。不增加固定等待、来源计算屏障、第二份目标缓存或截图持有；终态交付前释放扫描证据。后到 OCR 对已显示目标的元数据替换仍直接交付，不反查空间索引或重复比较完整目标；图片名称仅在变化时复制。
 - `ScanAccumulator` 在发布前完成替换目标的名称及搜索元数据；继承文字只来自实际撤销的目标，保留原生名称和 OCR 接缝重建规则。先处理同批证据，再按发布顺序处理已缓存证据。邮箱只合并增量，Hint 只应用或延后增量，不再根据各自消费过的 Partial 重建名称；合并频率和输入期间的延后不能改变最终搜索内容。
 - Contour 图片在去重前已完成 OCR 描述及名称补全；本批后续缓存复用这份结果，不再次查询和拼接相同证据。其他目标仍按原流程补全，退休名称继承和后到 OCR 更新保持不变。
 - 首批原生目标尚无 OCR 证据且没有目标撤销时，若发布目标与去重索引的顺序、角色和几何一一对应，且几何匹配能排除同身份重复项，直接复制已建网格来初始化搜索缓存，避免重复查询、哈希与扩容。同位置的独立角色仍分别保留；不满足条件或浮点几何无法自匹配时沿用常规缓存构建。一次性的索引复制与重复执行的融合路径分开，后续来源仍按原顺序增量补全名称，缓存继续随扫描结束释放。

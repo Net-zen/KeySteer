@@ -59,6 +59,7 @@ pub(crate) struct Options {
     pub(crate) generation: u64,
     pub(crate) threshold: f64,
     pub(crate) defer_visual: bool,
+    pub(crate) progress_sources: Vec<TargetSource>,
     pub(crate) output: Arc<ScanMailbox>,
     pub(crate) wake: Wake,
     pub(crate) accepts: Accept,
@@ -66,7 +67,11 @@ pub(crate) struct Options {
 }
 struct Lane {
     source: TargetSource,
-    batches: VecDeque<std::vec::IntoIter<UiTarget>>,
+    batches: VecDeque<Input>,
+}
+enum Input {
+    Targets(std::vec::IntoIter<UiTarget>),
+    Progress(super::scan_progress::Progress),
 }
 #[derive(Default)]
 struct InboxState {
@@ -81,6 +86,7 @@ struct InboxState {
 }
 struct Inbox {
     id: u64,
+    progress_enabled: bool,
 
     cancelled: AtomicBool,
     state: Mutex<InboxState>,
@@ -100,9 +106,21 @@ impl Sink {
             return 0;
         }
         let accepted = targets.len();
+        if self.enqueue(source, Input::Targets(targets.into_iter())) {
+            accepted
+        } else {
+            0
+        }
+    }
+    pub(crate) fn progress(&self, source: TargetSource, progress: super::scan_progress::Progress) {
+        if self.inbox.progress_enabled {
+            self.enqueue(source, Input::Progress(progress));
+        }
+    }
+    fn enqueue(&self, source: TargetSource, input: Input) -> bool {
         let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.finished || self.inbox.cancelled.load(Ordering::Acquire) {
-            return 0;
+            return false;
         }
         let index = state
             .lanes
@@ -118,14 +136,14 @@ impl Sink {
         if state.lanes[index].batches.is_empty() {
             state.ready.push_back(index);
         }
-        state.lanes[index].batches.push_back(targets.into_iter());
+        state.lanes[index].batches.push_back(input);
         #[cfg(test)]
         {
             state.version += 1;
         }
         drop(state);
         let _ = self.wake.try_send(());
-        accepted
+        true
     }
     pub(crate) fn finish(&self, status: UiScanStatus) {
         let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -163,6 +181,7 @@ impl Sink {
 }
 enum Step {
     Targets(TargetSource, Vec<UiTarget>),
+    Progress(TargetSource, super::scan_progress::Progress),
     Terminal(UiScanStatus),
     Idle,
 }
@@ -175,9 +194,19 @@ impl Inbox {
         }
         if let Some(index) = state.ready.pop_front() {
             let lane = &mut state.lanes[index];
+            let source = lane.source;
+            if matches!(lane.batches.front(), Some(Input::Progress(_))) {
+                let Some(Input::Progress(progress)) = lane.batches.pop_front() else {
+                    unreachable!()
+                };
+                if !lane.batches.is_empty() {
+                    state.ready.push_back(index);
+                }
+                return Step::Progress(source, progress);
+            }
             let mut targets = Vec::with_capacity(limit);
             while targets.len() < limit {
-                let Some(front) = lane.batches.front_mut() else {
+                let Some(Input::Targets(front)) = lane.batches.front_mut() else {
                     break;
                 };
                 targets.extend(front.by_ref().take(limit - targets.len()));
@@ -247,6 +276,7 @@ impl Handle {
     pub(crate) fn begin(&self, options: Options) -> Sink {
         let inbox = Arc::new(Inbox {
             id: options.id,
+            progress_enabled: options.defer_visual && !options.progress_sources.is_empty(),
 
             cancelled: AtomicBool::new(false),
             state: Mutex::new(InboxState::default()),
@@ -419,7 +449,9 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
             if let Some((old, _, _)) = current.take() {
                 old.inbox.discard();
             }
-            let accumulator = ScanAccumulator::new().defer_visual(job.options.defer_visual);
+            let accumulator = ScanAccumulator::new()
+                .defer_visual(job.options.defer_visual)
+                .progress_sources(&job.options.progress_sources);
             current = Some((job, accumulator, Budget::new(shared.maximum)));
         }
         if stopping {
@@ -435,6 +467,39 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                 continue;
             }
             match job.inbox.take(budget.next) {
+                Step::Progress(source, progress) => {
+                    let targets = accumulator.progress(source, progress);
+                    if job.inbox.cancelled.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    if targets.is_empty() {
+                        continue;
+                    }
+                    if !(job.options.current)() {
+                        if job.options.output.publish(
+                            job.options.generation,
+                            job.options.id,
+                            Vec::new(),
+                            UiScanStatus::ContextChanged,
+                        ) {
+                            (job.options.wake)();
+                        }
+                        job.inbox.discard();
+                        current = None;
+                        continue;
+                    }
+                    if !targets.is_empty()
+                        && job.options.output.publish(
+                            job.options.generation,
+                            job.options.id,
+                            targets,
+                            UiScanStatus::Partial,
+                        )
+                    {
+                        (job.options.wake)();
+                    }
+                    continue;
+                }
                 Step::Targets(source, mut targets) => {
                     let started = Instant::now();
                     let count = targets.len();
@@ -534,6 +599,7 @@ mod tests {
             generation,
             threshold: 0.5,
             defer_visual: false,
+            progress_sources: Vec::new(),
             output: Arc::clone(output),
             wake: Arc::new(|| {}),
             accepts: Arc::new(|_| true),
@@ -546,6 +612,7 @@ mod tests {
             Sink {
                 inbox: Arc::new(Inbox {
                     id: 1,
+                    progress_enabled: true,
                     cancelled: AtomicBool::new(false),
                     state: Mutex::new(InboxState::default()),
                     settled: std::sync::Condvar::new(),
@@ -593,6 +660,75 @@ mod tests {
         let state = sink.inbox.state.lock().unwrap();
         assert_eq!(state.settled, 0);
         assert_eq!(state.version, 1);
+    }
+
+    #[test]
+    fn region_completion_cannot_overtake_queued_targets() {
+        use super::super::scan_progress::Progress;
+        let (sink, _) = detached();
+        let region = Rect::new(0.0, 0.0, 1000.0, 1000.0);
+        sink.progress(TargetSource::SystemOcr, Progress::Plan(vec![region]));
+        sink.submit(TargetSource::SystemOcr, targets(0, 259));
+        sink.progress(TargetSource::SystemOcr, Progress::Complete(region));
+        sink.submit(TargetSource::SystemOcr, targets(300, 1));
+        assert!(matches!(
+            sink.inbox.take(128),
+            Step::Progress(_, Progress::Plan(_))
+        ));
+        for count in [128, 128, 3] {
+            let Step::Targets(_, batch) = sink.inbox.take(128) else {
+                panic!("completion overtook results")
+            };
+            assert_eq!(batch.len(), count);
+        }
+        assert!(matches!(
+            sink.inbox.take(128),
+            Step::Progress(_, Progress::Complete(_))
+        ));
+        let Step::Targets(_, batch) = sink.inbox.take(128) else {
+            panic!("missing tail")
+        };
+        assert_eq!(batch.len(), 1);
+    }
+
+    #[test]
+    fn completed_region_streams_before_terminal_and_stale_progress_is_discarded() {
+        use super::super::scan_progress::Progress;
+        let output = Arc::new(ScanMailbox::default());
+        let generation = output.begin(1);
+        let mut worker = Worker::default();
+        let mut config = options(&output, 1, generation);
+        config.defer_visual = true;
+        config.progress_sources = vec![TargetSource::Contour, TargetSource::SystemOcr];
+        let sink = worker.prepare(generation).unwrap().begin(config);
+        let left = Rect::new(-100.0, -100.0, 200.0, 200.0);
+        let right = Rect::new(500.0, -100.0, 200.0, 200.0);
+        sink.progress(TargetSource::Contour, Progress::Plan(vec![left]));
+        sink.progress(TargetSource::SystemOcr, Progress::Plan(vec![left, right]));
+        sink.submit(TargetSource::Contour, targets(0, 1));
+        sink.progress(TargetSource::Contour, Progress::Complete(left));
+        sink.flush();
+        assert!(output.take().is_none());
+        sink.progress(TargetSource::SystemOcr, Progress::Complete(left));
+        sink.flush();
+        let result = output.take().unwrap();
+        assert_eq!(result.status, UiScanStatus::Partial);
+        assert_eq!(result.targets.len(), 1);
+        worker.cancel(1);
+        let generation = output.begin(2);
+        let latest = worker
+            .prepare(generation)
+            .unwrap()
+            .begin(options(&output, 2, generation));
+        sink.progress(TargetSource::SystemOcr, Progress::Complete(right));
+        sink.finish(UiScanStatus::Success);
+        latest.submit(TargetSource::Accessibility, targets(2, 1));
+        latest.finish(UiScanStatus::Success);
+        latest.flush();
+        let result = output.take().unwrap();
+        assert_eq!(result.id, 2);
+        assert_eq!(result.targets.len(), 1);
+        assert_eq!(result.targets[0].name, "2");
     }
 
     #[test]

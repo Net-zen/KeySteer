@@ -86,6 +86,16 @@ pub(super) enum ScanWork {
 }
 
 impl ScanJob {
+    fn complete_region(&self, bounds: Rect) {
+        let sink = match &self.work {
+            ScanWork::Complete(source) => source.sink(),
+            ScanWork::Preview(sink) => sink.clone(),
+        };
+        sink.progress(
+            crate::platform::common::spatial_index::TargetSource::Accessibility,
+            crate::platform::common::scan_progress::Progress::Complete(bounds),
+        );
+    }
     fn publish(&self, targets: Vec<UiTarget>) {
         match &self.work {
             ScanWork::Complete(source) => {
@@ -743,6 +753,18 @@ impl WindowsScanPlan {
 
     pub(super) fn scan_bounds(&self) -> Rect {
         self.scan_bounds
+    }
+
+    pub(super) fn progress_regions(&self, preview: bool) -> Vec<Rect> {
+        self.windows()
+            .iter()
+            .chain(
+                self.windows()
+                    .iter()
+                    .skip(if preview { 1 } else { self.windows().len() }),
+            )
+            .map(|window| window.bounds)
+            .collect()
     }
 
     fn windows(&self) -> &[ScanWindow] {
@@ -1497,6 +1519,7 @@ fn stream_scan(
             }
         }
         if preview_only {
+            job.complete_region(window.bounds);
             continue;
         }
         // Fetch the filtered subtree once, then stream cached descendants in
@@ -1541,6 +1564,7 @@ fn stream_scan(
         if terminal_status == UiScanStatus::TimedOut {
             break;
         }
+        job.complete_region(window.bounds);
     }
     if preview_only {
         return Ok(terminal_status);

@@ -206,6 +206,26 @@ impl PartialPublisher {
                 &job.request.vision,
             )
             .0,
+            progress_sources: {
+                let (text, contours) = crate::platform::common::contour::sources(
+                    job.request.strategy,
+                    &job.request.vision,
+                );
+                let mut sources = Vec::new();
+                if scan_sources(job.request.strategy).0 {
+                    sources.push(TargetSource::Accessibility);
+                }
+                if text {
+                    sources.push(TargetSource::SystemOcr);
+                }
+                if contours {
+                    sources.push(TargetSource::Contour);
+                    if job.request.strategy != UiScanStrategy::Contour {
+                        sources.push(TargetSource::NativeRectangles);
+                    }
+                }
+                sources
+            },
             output: Arc::clone(&job.mailbox),
             wake: Arc::new(move || wake.wake()),
             accepts: Arc::new(move |target| {
@@ -425,10 +445,23 @@ fn stream_ax(
             );
         }
     };
+    let progress = |progress| {
+        publisher
+            .sink
+            .progress(TargetSource::Accessibility, progress)
+    };
     let result = if let Some((pid, bounds)) = target {
-        accessibility::scan_process_stream(pid, bounds, request, deadline, current, publish)
+        progress(crate::platform::common::scan_progress::Progress::Plan(
+            vec![bounds],
+        ));
+        let result =
+            accessibility::scan_process_stream(pid, bounds, request, deadline, current, publish);
+        progress(crate::platform::common::scan_progress::Progress::Complete(
+            bounds,
+        ));
+        result
     } else {
-        accessibility::scan_screen_stream(request, deadline, current, publish)
+        accessibility::scan_screen_stream(request, deadline, current, publish, progress)
     };
     crate::log_info!(
         "macos-ui-scan",
@@ -498,7 +531,6 @@ fn scan_vision(
     providers: &Workers,
     captures: &mut vision::CaptureCache,
 ) -> UiScanStatus {
-    let publisher = publisher.clone();
     vision::detect(
         (generation, captures),
         request.capture_regions(),
@@ -506,7 +538,7 @@ fn scan_vision(
         request.strategy,
         providers,
         move || !scan_id_is_current(generation),
-        move |source, targets| publisher.push(source, targets),
+        publisher.sink.clone(),
     )
 }
 

@@ -19,6 +19,7 @@ pub(crate) struct ScanAccumulator {
     // Parallel to search_targets only when deferral is enabled. Reuse the
     // canonical cache instead of retaining another copy of visual targets.
     deferred: Vec<bool>,
+    progress: super::scan_progress::ScanProgress,
 }
 
 pub(crate) struct ScanUpdate {
@@ -40,12 +41,51 @@ impl ScanAccumulator {
             has_layout_containers: false,
             defer_visual: false,
             deferred: Vec::new(),
+            progress: super::scan_progress::ScanProgress::default(),
         }
     }
 
     pub(crate) fn defer_visual(mut self, enabled: bool) -> Self {
         self.defer_visual = enabled;
         self
+    }
+
+    pub(crate) fn progress_sources(mut self, sources: &[TargetSource]) -> Self {
+        self.progress = super::scan_progress::ScanProgress::new(sources);
+        self
+    }
+
+    pub(crate) fn progress(
+        &mut self,
+        source: TargetSource,
+        progress: super::scan_progress::Progress,
+    ) -> Vec<UiTarget> {
+        self.progress.update(source, progress);
+        self.take_ready()
+    }
+
+    fn take_ready(&mut self) -> Vec<UiTarget> {
+        if !self.defer_visual
+            || !self.deferred.iter().any(|&pending| pending)
+            || !self.progress.prepare(&self.index)
+        {
+            return Vec::new();
+        }
+        self.search_targets
+            .iter()
+            .zip(&mut self.deferred)
+            .filter_map(|(target, pending)| {
+                if *pending
+                    && let Some(target) = target
+                    && self.progress.ready(target.rect)
+                {
+                    *pending = false;
+                    Some(target.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Each input batch has one provenance. Semantic owners can retire an
@@ -280,7 +320,7 @@ impl ScanAccumulator {
                 if let Some(index) = existing {
                     self.search_targets[index] = Some(target.clone());
                     if self.defer_visual {
-                        self.deferred[index] = provisional_visual(source, target);
+                        self.deferred[index] &= provisional_visual(source, target);
                     }
                 } else if self.search_spatial.store(target.rect) {
                     self.search_targets.push(Some(target.clone()));
@@ -305,6 +345,13 @@ impl ScanAccumulator {
                 index += 1;
                 publish
             });
+            if source == TargetSource::Contour {
+                targets.extend(self.take_ready());
+            }
+            #[cfg(any(target_os = "macos", test))]
+            if source == TargetSource::NativeRectangles {
+                targets.extend(self.take_ready());
+            }
         }
         ScanUpdate {
             accepted,
@@ -1160,6 +1207,126 @@ mod tests {
         assert_eq!(update.targets.len(), 1);
         assert_eq!(update.targets[0].ocr_text(), "thin caption");
     }
+    #[test]
+    fn settled_regions_preserve_metadata_and_wait_for_all_overlapping_sources() {
+        use super::super::scan_progress::Progress;
+        let left = Rect::new(0., 0., 500., 200.);
+        let right = Rect::new(1000., 0., 500., 200.);
+        let panel = UiTarget {
+            rect: Rect::new(50., 50., 300., 100.),
+            role: SemanticRole::Control,
+            name: String::new(),
+            details: None,
+        };
+        let sources = [
+            TargetSource::Contour,
+            TargetSource::SystemOcr,
+            TargetSource::Accessibility,
+            TargetSource::NativeRectangles,
+        ];
+        let mut scan = ScanAccumulator::new()
+            .defer_visual(true)
+            .progress_sources(&sources);
+        for source in sources {
+            assert!(
+                scan.progress(source, Progress::Plan(vec![left, right]))
+                    .is_empty()
+            );
+        }
+        assert!(
+            scan.push(TargetSource::Contour, vec![panel.clone()], 0.5)
+                .targets
+                .is_empty()
+        );
+        scan.push(
+            TargetSource::SystemOcr,
+            vec![UiTarget::recognized_text(
+                Rect::new(80., 80., 80., 20.),
+                "inside".into(),
+            )],
+            0.5,
+        );
+        for source in [
+            TargetSource::SystemOcr,
+            TargetSource::Contour,
+            TargetSource::Accessibility,
+        ] {
+            assert!(scan.progress(source, Progress::Complete(left)).is_empty());
+        }
+        let ready = scan.progress(TargetSource::NativeRectangles, Progress::Complete(left));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].rect, panel.rect);
+        assert_eq!(ready[0].ocr_text(), "inside");
+        for source in sources {
+            assert!(scan.progress(source, Progress::Complete(right)).is_empty());
+        }
+        assert!(
+            scan.take_deferred().is_empty(),
+            "early targets must not be duplicated at terminal"
+        );
+    }
+
+    #[test]
+    fn seam_stitch_can_reach_outside_the_last_unfinished_tile() {
+        use super::super::scan_progress::Progress;
+        let frame = Rect::new(0., 0., 600., 400.);
+        let left = Rect::new(0., 0., 120., 100.);
+        let right = Rect::new(80., 0., 220., 100.);
+        let mut scan = ScanAccumulator::new()
+            .defer_visual(true)
+            .progress_sources(&[TargetSource::Contour, TargetSource::SystemOcr]);
+        scan.progress(TargetSource::Contour, Progress::Plan(vec![frame]));
+        scan.progress(TargetSource::SystemOcr, Progress::Plan(vec![left, right]));
+        let fragment = UiTarget {
+            rect: Rect::new(40., 17., 10., 3.),
+            name: String::new(),
+            role: SemanticRole::Control,
+            details: None,
+        };
+        let stable = UiTarget {
+            rect: Rect::new(400., 300., 20., 20.),
+            ..fragment.clone()
+        };
+        assert!(
+            scan.push(
+                TargetSource::Contour,
+                vec![fragment.clone(), stable.clone()],
+                0.5
+            )
+            .targets
+            .is_empty()
+        );
+        scan.push(
+            TargetSource::SystemOcr,
+            vec![UiTarget::recognized_text(
+                Rect::new(0., 20., 100., 20.),
+                "first".into(),
+            )],
+            0.5,
+        );
+        scan.progress(TargetSource::SystemOcr, Progress::Complete(left));
+        let ready = scan.progress(TargetSource::Contour, Progress::Complete(frame));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].rect, stable.rect);
+        let update = scan.push(
+            TargetSource::SystemOcr,
+            vec![UiTarget::recognized_text(
+                Rect::new(90., 17., 150., 25.),
+                "second".into(),
+            )],
+            0.5,
+        );
+        assert!(
+            !update.retired.contains(&fragment.rect),
+            "the fragment was never visible"
+        );
+        assert!(
+            scan.progress(TargetSource::SystemOcr, Progress::Complete(right))
+                .is_empty()
+        );
+        assert!(scan.take_deferred().is_empty());
+    }
+
     #[test]
     fn deferred_geometry_preserves_final_targets_and_late_metadata() {
         let visual = |rect| UiTarget {

@@ -278,6 +278,54 @@ fn run_scan_inner(
 
     let (system_descriptor, wechat_descriptor) =
         OcrExecutionPlan::from_snapshot(&discovery_snapshot, detect_text).into_descriptors();
+    use crate::platform::common::scan_progress::Progress;
+    for (source, enabled) in [
+        (TargetSource::SystemOcr, system_descriptor.is_some()),
+        (TargetSource::WechatOcr, wechat_descriptor.is_some()),
+        (TargetSource::Contour, detect_contours),
+    ] {
+        // All source plans precede the first native result. Unavailable OCR
+        // sources explicitly declare no work; failed work remains conservative.
+        if source != TargetSource::Contour && detect_text || enabled {
+            provider_mailbox.progress(
+                source,
+                Progress::Plan(if enabled {
+                    geometries
+                        .iter()
+                        .map(|geometry| geometry.desktop_bounds)
+                        .collect()
+                } else {
+                    Vec::new()
+                }),
+            );
+        }
+    }
+    if system_descriptor.is_some() {
+        for (geometry, layout) in geometries.iter().zip(&layouts) {
+            provider_mailbox.progress(
+                TargetSource::SystemOcr,
+                Progress::Refine {
+                    region: geometry.desktop_bounds,
+                    children: layout
+                        .tiles(
+                            geometry.width,
+                            geometry.height,
+                            SYSTEM_OCR_TILE_OVERLAP as usize,
+                        )
+                        .map(|tile| {
+                            capture_pixel_rect(
+                                *geometry,
+                                tile.left_halo as u32,
+                                tile.top_halo as u32,
+                                (tile.right_halo - tile.left_halo) as u32,
+                                (tile.bottom_halo - tile.top_halo) as u32,
+                            )
+                        })
+                        .collect(),
+                },
+            );
+        }
+    }
     let mut providers = ProviderThreads::new(cancellation.clone(), shared);
     let mut system_input = None;
     let mut wechat_input = None;
@@ -522,6 +570,10 @@ fn run_scan_inner(
                         if send_contour_batch(&result_mailbox, targets).is_err() {
                             break;
                         }
+                        result_mailbox.progress(
+                            TargetSource::Contour,
+                            Progress::Complete(image.desktop_bounds),
+                        );
                     }
                     let _ = result_mailbox.publish(ProviderEvent::ContourDone);
                 });
@@ -1068,6 +1120,12 @@ fn complete_system_tile(
     if let Err(error) = completed.tile.bitmap.close() {
         cleanup_failures.push(error);
     }
+    result_mailbox.progress(
+        crate::platform::common::spatial_index::TargetSource::SystemOcr,
+        crate::platform::common::scan_progress::Progress::Complete(
+            completed.tile.geometry.desktop_bounds,
+        ),
+    );
     let _ = credit_sender.send(());
     fatal.map_or(Ok(()), Err)
 }
@@ -1206,6 +1264,10 @@ fn recognize_wechat_provider(
                     }
                 })?;
             accepted += count;
+            result_mailbox.progress(
+                crate::platform::common::spatial_index::TargetSource::WechatOcr,
+                crate::platform::common::scan_progress::Progress::Complete(geometry.desktop_bounds),
+            );
         }
         Ok(accepted)
     })();

@@ -24,6 +24,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 以下 `tools/` 命令是本地工具的使用示例，需先在隔离副本中准备相应适配；主包不提供供这些工具调用的公开测试接口。A/B 两边使用同一工作量、工具链、锁定依赖和构建参数。
 
+- 区域提前交付：`scan_progress`、`scan_accumulator` 和 `scan_fusion` 的模块测试覆盖来源未声明、区域重叠／预览重复占用、OCR halo 与接缝扩展、元数据保留、完成标记 FIFO 及旧代次隔离；`window_visibility` 同时检查 macOS Quartz／AX 匹配范围。Windows 实机 A/B 仍须核对各来源完整目标、最终目标及实际提交过又被撤销的轮廓，不能仅统计终态耗时。
 - `src/tests/performance.rs` 和模块内 ignored 测试覆盖分配与原生探针；先读测试的环境要求，分配计数串行运行。
 - `cargo bench --manifest-path tools/perf/Cargo.toml --bench core_hot_paths`：核心 CPU 路径；`--bench notification_queue`：通知队列。
 - `cargo bench --manifest-path tools/perf/Cargo.toml --bench scan_stream -- --fusion-only` 比较就绪数据的融合 CPU 成本；`-- --async` 使用实际融合 worker 比较首份额、提交耗时、大来源期间的小来源延迟与总耗时。`-- --async-hint --common` 补测 200／300／400 标签的实际异步融合与共享 Hint 场景生成，分别记录首次场景、全量完成及后到小来源响应。基准不包含原生识别或系统合成器，不能冒充输入到像素响应。

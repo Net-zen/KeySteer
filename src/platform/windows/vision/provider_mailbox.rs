@@ -74,6 +74,17 @@ struct ContourProviderSlot {
 }
 
 impl ProviderMailbox {
+    pub(super) fn progress(
+        &self,
+        source: TargetSource,
+        progress: crate::platform::common::scan_progress::Progress,
+    ) {
+        if let Some(output) = &self.output
+            && !self.closed.load(Ordering::Acquire)
+        {
+            output.progress(source, progress);
+        }
+    }
     pub(super) fn with_output(output: Sink) -> Self {
         Self::create(Some(output))
     }

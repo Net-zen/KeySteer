@@ -1041,6 +1041,12 @@ impl Backend for WindowsBackend {
         let result = (|| {
             if wants_uia {
                 let source = session.source("UI Automation");
+                source.sink().progress(
+                    crate::platform::common::spatial_index::TargetSource::Accessibility,
+                    crate::platform::common::scan_progress::Progress::Plan(
+                        plan.progress_regions(uia_workers > 1),
+                    ),
+                );
                 if uia_workers > 1 {
                     self.ui_automation[1].submit(
                         Arc::clone(&plan),

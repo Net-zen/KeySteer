@@ -146,16 +146,53 @@ pub(crate) fn visible_candidates(
     }
 }
 
+const WINDOW_MATCH_TOLERANCE: f64 = 2.0;
+
+/// Covers every AX frame that can match a Quartz window. Position and size
+/// may each differ by the matching tolerance, including at the far edge.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn matching_coverage(bounds: Rect) -> Rect {
+    let padding = WINDOW_MATCH_TOLERANCE * 2.0;
+    Rect::new(
+        bounds.x - padding,
+        bounds.y - padding,
+        bounds.width + padding * 2.0,
+        bounds.height + padding * 2.0,
+    )
+}
+
 fn same_rect(a: Rect, b: Rect) -> bool {
-    (a.x - b.x).abs() < 2.0
-        && (a.y - b.y).abs() < 2.0
-        && (a.width - b.width).abs() < 2.0
-        && (a.height - b.height).abs() < 2.0
+    (a.x - b.x).abs() < WINDOW_MATCH_TOLERANCE
+        && (a.y - b.y).abs() < WINDOW_MATCH_TOLERANCE
+        && (a.width - b.width).abs() < WINDOW_MATCH_TOLERANCE
+        && (a.height - b.height).abs() < WINDOW_MATCH_TOLERANCE
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planned_coverage_contains_every_matching_ax_frame() {
+        let shown = Rect::new(-1000.0, 40.0, 800.0, 600.0);
+        let coverage = matching_coverage(shown);
+        for dx in [-1.999, 1.999] {
+            for dy in [-1.999, 1.999] {
+                for dw in [-1.999, 1.999] {
+                    for dh in [-1.999, 1.999] {
+                        let frame = Rect::new(
+                            shown.x + dx,
+                            shown.y + dy,
+                            shown.width + dw,
+                            shown.height + dh,
+                        );
+                        assert!(same_rect(frame, shown));
+                        assert_eq!(frame.intersect(&coverage), Some(frame));
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn visibility_subtracts_combined_occluders_and_clips_partial_controls() {

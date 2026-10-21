@@ -77,6 +77,24 @@ impl ScanSession {
             generation,
             threshold: plan.vision.merge_iou_threshold,
             defer_visual: crate::platform::common::contour::sources(plan.strategy, &plan.vision).0,
+            progress_sources: {
+                let (text, contours) =
+                    crate::platform::common::contour::sources(plan.strategy, &plan.vision);
+                let mut sources = Vec::new();
+                if matches!(
+                    plan.strategy,
+                    crate::api::UiScanStrategy::Hybrid | crate::api::UiScanStrategy::AxTree
+                ) {
+                    sources.push(TargetSource::Accessibility);
+                }
+                if text {
+                    sources.extend([TargetSource::SystemOcr, TargetSource::WechatOcr]);
+                }
+                if contours {
+                    sources.push(TargetSource::Contour);
+                }
+                sources
+            },
             output: mailbox,
             wake: Arc::new(move || wake.wake()),
             accepts: Arc::new(move |target| plan.target_center_is_visible(target)),
