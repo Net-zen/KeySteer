@@ -29,7 +29,7 @@ export const PerformanceHighlights = defineComponent({
       const en = lang.value === 'en-US'
       const response = actions.map(key => measurements.scenarios[key].overall_ms)
       const cards = [
-        { value: `${(measurements.scenarios.hint_all.overall_ms / 1000).toFixed(2)} s`,
+        { value: `${Math.round(measurements.scenarios.hint_all.overall_ms)} ms`,
           title: pick(en, ['双屏首批标签', 'First labels on both displays']),
           detail: pick(en, ['双 4K · 800 控件 · Hybrid', 'Two 4K displays · 800 controls · Hybrid']) },
         { value: `${Math.round(Math.min(...response))}–${Math.round(Math.max(...response))} ms`,

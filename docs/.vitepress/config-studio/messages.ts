@@ -2,6 +2,16 @@ export type StudioLocale = 'zh' | 'en'
 
 /** Display text only. Command values, paths and user content are never localized. */
 export const englishMessages: Record<string, string> = {
+  '选择键盘或鼠标按键，为它设置动作或映射到另一个按键。': 'Select a keyboard or mouse button to assign an action or map it to another key.',
+  '鼠标按键': 'Mouse buttons',
+  '展开鼠标按键': 'Expand mouse buttons',
+  '收起鼠标按键': 'Collapse mouse buttons',
+  '当前按键': 'Current key',
+  '修改鼠标左键绑定': 'Change the left mouse button binding',
+  '这会改变鼠标左键的操作行为，可能影响正常点击。请确认后再修改。': 'This changes the left mouse button’s behavior and may affect normal clicking. Confirm before applying this change.',
+  '确认修改左键绑定': 'Confirm left button change',
+  '点击编辑 · 拖到键盘绑定点击': 'Click to edit · Drag to a key to assign a mouse click',
+  '4 · 侧键 1　5 · 侧键 2': '4 · Side 1   5 · Side 2',
   '选择按键，为它设置动作或映射到另一个按键。': 'Select a key to assign an action or map it to another key.',
   '当前绑定': 'Current binding', '绑定类型': 'Binding type', '动作': 'Action',
   '映射到按键': 'Map to key', '常用目标键': 'Common target keys',

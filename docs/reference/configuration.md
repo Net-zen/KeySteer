@@ -120,12 +120,15 @@ h = "move_left"
 
 常用键名：`a-z`、`0-9`、`space`、`enter`、`esc`、`tab`、`delete`、`backspace`、`up/down/left/right`、`home/end`、`page_up/page_down`、`f1-f20`、`numpad_0-numpad_9`。
 
-### 鼠标侧键
+### 鼠标按键
 
-Windows 和 macOS 都支持把侧键用作快捷键：
+Windows 和 macOS 都支持把以下五个鼠标按键放在绑定的左侧（触发）或右侧（点击）：
 
 | 键名 | 通常对应 | 也可以写成 |
 | --- | --- | --- |
+| `mouse_left` | 左键 | — |
+| `mouse_right` | 右键 | — |
+| `mouse_middle` | 中键（按下滚轮） | — |
 | `mouse_x1` | 后退侧键 | `xbutton1`、`mouse4` |
 | `mouse_x2` | 前进侧键 | `xbutton2`、`mouse5` |
 
@@ -141,17 +144,20 @@ mouse_x2 = "grid"            # 进入网格定位
 "ctrl+mouse_x2" = "ui_hint"  # Ctrl + 第二个侧键进入 UI Hint
 ```
 
-侧键也支持组合键、继承、应用例外和按住滚动。未绑定或设为 `none` 时保留原生前进／后退行为；绑定后由 KeySteer 接管该次按键。
+所有鼠标按键都支持组合键、继承、应用例外和按住滚动。未绑定或设为 `none` 时保留原生行为；绑定后由 KeySteer 接管该次按键。
 
-把侧键名放在动作一侧，可向应用发送侧键点击：
+鼠标映射到键盘、键盘映射到鼠标以及鼠标之间的映射都可以：
 
 ```toml
 [normal.bindings]
+x = "mouse_left"       # X 触发左键点击
+mouse_left = "x"       # 左键发送 X
+mouse_middle = "mouse_right" # 中键触发右键点击
 t = "mouse_x1"  # 模拟第一个侧键
 y = "mouse_x2"  # 模拟第二个侧键
 ```
 
-也支持 `press mouse_x1`、`release mouse_x1`、`toggle mouse_x2`，以及普通点击的长按锁定。是否前进／后退由应用决定。若鼠标驱动已把侧键改成键盘键，请绑定驱动实际输出的键。
+五个按键均支持 `press`、`release`、`toggle`，例如 `press mouse_left`、`release mouse_left`、`toggle mouse_middle`，以及普通点击的长按锁定。`mouse_left`、`mouse_right`、`mouse_middle` 作为动作时分别等价于 `left_click`、`right_click`、`middle_click`。侧键是否前进／后退由应用决定。若鼠标驱动已把按键改成键盘键，请绑定驱动实际输出的键。
 
 ### 自定义别名
 

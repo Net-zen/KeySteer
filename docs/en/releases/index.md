@@ -8,9 +8,12 @@ outline: 2
 ## 0.12.3
 
 - Fixed Chinese text recognition in macOS UIHint.
-- Optimized UIHint fusion, text completion, search indexing, and overlap planning, reducing repeated work and temporary allocations.
+- Optimized UIHint fusion, text completion, search indexing, and overlap planning to reduce repeated work and temporary allocations. Fixed label flickering during recognition.
 - Optimized configuration saves, reducing processing time by about 8% and allocated bytes by about 26% during repeated edits.
 - Improved UIHint contour detection for faint outlined controls while reducing redundant pixel processing and temporary allocations.
+- All five mouse buttons can now be remapped, and configurable keybindings can simulate mouse clicks.
+- **Left-click remapping is supported, but not recommended.** Once remapped, left-click performs its new action instead of clicking. A classic “Congratulations, you played yourself” moment: you finish the clever setup, then realize you need left-click to change it back 😂. Before experimenting, configure a backup keybinding for left-click; simulated clicks do not retrigger mouse bindings, so there is no loop.
+- ⚠️ If you lose left-click, use your configured keybinding in Normal mode to enter Text Input and temporarily restore normal clicking, then fix the binding. If that is unavailable, use the keyboard to open Task Manager (Activity Monitor on macOS), stop KeySteer, and correct the configuration.
 
 ## 0.12.2
 

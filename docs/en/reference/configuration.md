@@ -120,12 +120,15 @@ h = "move_left"
 
 Common names: `a-z`, `0-9`, `space`, `enter`, `esc`, `tab`, `delete`, `backspace`, `up/down/left/right`, `home/end`, `page_up/page_down`, `f1-f20`, and `numpad_0-numpad_9`.
 
-### Mouse side buttons
+### Mouse buttons
 
-Both Windows and macOS support side-button shortcuts:
+On Windows and macOS, all five buttons below can appear on either side of a binding: as a trigger on the left or a click action on the right.
 
 | Name | Usual button | Aliases |
 | --- | --- | --- |
+| `mouse_left` | Left | — |
+| `mouse_right` | Right | — |
+| `mouse_middle` | Middle (wheel press) | — |
 | `mouse_x1` | Back | `xbutton1`, `mouse4` |
 | `mouse_x2` | Forward | `xbutton2`, `mouse5` |
 
@@ -141,17 +144,20 @@ mouse_x2 = "grid"
 "ctrl+mouse_x2" = "ui_hint"
 ```
 
-Side buttons support chords, inheritance, app exceptions, and held scrolling. Unbound buttons, or those set to `none`, keep their native Back/Forward behavior. A matched binding hands that button press to KeySteer.
+All mouse buttons support chords, inheritance, app exceptions, and held scrolling. Unbound buttons, or those set to `none`, keep their native behavior. A matched binding hands that button press to KeySteer.
 
-Use a side-button name as an action to send a click to the app:
+Map mouse buttons to keys, keys to mouse buttons, or one mouse button to another:
 
 ```toml
 [normal.bindings]
+x = "mouse_left"       # X clicks the left button
+mouse_left = "x"       # Left button sends X
+mouse_middle = "mouse_right" # Middle button clicks the right button
 t = "mouse_x1"
 y = "mouse_x2"
 ```
 
-`press mouse_x1`, `release mouse_x1`, `toggle mouse_x2`, and normal click long-press locking also work. The receiving app decides whether to go Back/Forward. If a mouse driver remaps a button to a keyboard key, bind the key the driver actually sends.
+All five buttons support `press`, `release`, `toggle`, and normal click long-press locking; for example, `press mouse_left`, `release mouse_left`, and `toggle mouse_middle`. As actions, `mouse_left`, `mouse_right`, and `mouse_middle` are equivalent to `left_click`, `right_click`, and `middle_click`. The receiving app decides whether side buttons go Back/Forward. If a mouse driver remaps a button to a keyboard key, bind the key the driver actually sends.
 
 ### Custom aliases
 

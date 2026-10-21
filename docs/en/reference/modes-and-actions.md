@@ -222,7 +222,7 @@ h = "move_left"
 
 | Action | Purpose |
 | --- | --- |
-| `left_click` / `right_click` / `middle_click` / `mouse_x1` / `mouse_x2` | Click the button; long presses keep it held by default |
+| `mouse_left` / `mouse_right` / `mouse_middle` / `mouse_x1` / `mouse_x2` | Click the button; the first three also accept `left_click` / `right_click` / `middle_click`; long presses keep it held by default |
 | `double_click` | Short press double-clicks; long press holds only the left button |
 | `left_press` / `right_press` | Hold left / right mouse button |
 | `left_release` / `right_release` | Release left / right mouse button |

@@ -8,14 +8,20 @@ outline: 2
 ## 0.12.3
 
 - 修复 macOS UIHint 中文识别错误。
-- 优化 UIHint 结果融合、文字补全、搜索索引和重叠层规划，减少重复处理和临时内存分配。
+- 优化 UIHint 结果融合、文字补全、搜索索引和重叠层规划，减少重复处理和临时内存分配，并修复识别过程中标签闪烁的问题。
 - 优化配置保存，连续修改时处理耗时减少约 8%，内存分配量减少约 26%。
 - 改进 UIHint 轮廓识别，补全浅色空心控件并减少不必要的像素处理和临时内存分配。
+- 鼠标左右键、中键和两个侧键均支持改绑，也能通过可配置按键模拟鼠标点击。
+- **支持改绑左键，但不建议。** 给左键安排新动作后，它就不再负责普通点击了。小心“赛博灯泡”：改配置时很潇洒，想点“改回去”才发现左键已经下班 😵。尝试前请先为模拟左键点击配置一个备用按键；模拟点击不会再次触发鼠标绑定，不会套娃。
+- ⚠️ 误绑后，可在 Normal 模式使用可配置按键进入临时输入模式（Text Input），临时恢复普通点击，再修改绑定；若无法进入，可用键盘打开任务管理器（macOS 为活动监视器），结束 KeySteer 后修正配置。
 
 - Fixed Chinese text recognition in macOS UIHint.
-- Optimized UIHint fusion, text completion, search indexing, and overlap planning, reducing repeated work and temporary allocations.
+- Optimized UIHint fusion, text completion, search indexing, and overlap planning to reduce repeated work and temporary allocations. Fixed label flickering during recognition.
 - Optimized configuration saves, reducing processing time by about 8% and allocated bytes by about 26% during repeated edits.
 - Improved UIHint contour detection for faint outlined controls while reducing redundant pixel processing and temporary allocations.
+- All five mouse buttons can now be remapped, and configurable keybindings can simulate mouse clicks.
+- **Left-click remapping is supported, but not recommended.** Once remapped, left-click performs its new action instead of clicking. A classic “Congratulations, you played yourself” moment: you finish the clever setup, then realize you need left-click to change it back 😵. Before experimenting, configure a backup keybinding for left-click; simulated clicks do not retrigger mouse bindings, so there is no loop.
+- ⚠️ If you lose left-click, use your configured keybinding in Normal mode to enter Text Input and temporarily restore normal clicking, then fix the binding. If that is unavailable, use the keyboard to open Task Manager (Activity Monitor on macOS), stop KeySteer, and correct the configuration.
 
 ## 0.12.2
 

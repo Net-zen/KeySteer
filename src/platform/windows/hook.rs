@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_UP, MSG, MSLLHOOKSTRUCT, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_MOUSEMOVE,
-    WM_QUIT, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use crate::api::backend::{BackendEvent, KeyDisposition};
@@ -1090,21 +1091,27 @@ fn mask_alt_menu(
     }
 }
 
-fn side_button_input(message: u32, data: u32, timestamp: u32) -> Option<(u32, InputEvent)> {
+fn mouse_button_input(message: u32, data: u32, timestamp: u32) -> Option<(u32, InputEvent)> {
     let state = match message {
-        WM_XBUTTONDOWN => KeyState::Down,
-        WM_XBUTTONUP => KeyState::Up,
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => KeyState::Down,
+        WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP => KeyState::Up,
         _ => return None,
     };
-    let number = match data >> 16 {
-        1 => 1,
-        2 => 2,
+    // Use VK_LBUTTON/RBUTTON/MBUTTON/XBUTTON1/2, separate from keyboard slots.
+    let (number, slot) = match message {
+        WM_LBUTTONDOWN | WM_LBUTTONUP => (0, 1),
+        WM_RBUTTONDOWN | WM_RBUTTONUP => (1, 2),
+        WM_MBUTTONDOWN | WM_MBUTTONUP => (2, 4),
+        WM_XBUTTONDOWN | WM_XBUTTONUP => match data >> 16 {
+            1 => (3, 5),
+            2 => (4, 6),
+            _ => return None,
+        },
         _ => return None,
     };
-    // XBUTTON1/2 occupy unused VK_XBUTTON1/2 slots in native pairing state.
-    let key = Key::mouse_side_button(number)?;
+    let key = Key::mouse_button(number)?;
     Some((
-        4 + u32::from(number),
+        slot,
         InputEvent {
             character: None,
             key,
@@ -1118,7 +1125,20 @@ fn side_button_input(message: u32, data: u32, timestamp: u32) -> Option<(u32, In
 
 unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let message = wparam.0 as u32;
-    if code >= 0 && matches!(message, WM_MOUSEMOVE | WM_XBUTTONDOWN | WM_XBUTTONUP) {
+    if code >= 0
+        && matches!(
+            message,
+            WM_MOUSEMOVE
+                | WM_LBUTTONDOWN
+                | WM_LBUTTONUP
+                | WM_RBUTTONDOWN
+                | WM_RBUTTONUP
+                | WM_MBUTTONDOWN
+                | WM_MBUTTONUP
+                | WM_XBUTTONDOWN
+                | WM_XBUTTONUP
+        )
+    {
         // SAFETY: for a non-negative low-level mouse callback Windows supplies
         // `lparam` as a valid MSLLHOOKSTRUCT for this call's duration.
         let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
@@ -1126,7 +1146,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
             store_latest_pointer(Point::new(info.pt.x as f64, info.pt.y as f64));
         } else if !is_our_input(info.dwExtraInfo)
             && let Some((native_key, mut input)) =
-                side_button_input(message, info.mouseData, info.time)
+                mouse_button_input(message, info.mouseData, info.time)
         {
             let state = input.state;
             input.repeat = update_pressed_state(native_key, state);
@@ -1167,8 +1187,8 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn timeout_acknowledgement_follows_native_keyboard_and_side_button_pairing() {
-        for key in [4, 5, 65, 160, 255, 256] {
+    fn timeout_acknowledgement_follows_native_keyboard_and_mouse_button_pairing() {
+        for key in [1, 2, 4, 5, 6, 65, 160, 255, 256] {
             for pressed in [
                 None,
                 Some(KeyDisposition::Forward),
@@ -1197,11 +1217,19 @@ mod tests {
     }
 
     #[test]
-    fn mouse_side_button_edges_use_distinct_native_pairing_slots() {
-        for (number, name) in [(1, "mouse_x1"), (2, "mouse_x2")] {
-            let (slot, down) = side_button_input(WM_XBUTTONDOWN, number << 16, 123).unwrap();
-            let (_, up) = side_button_input(WM_XBUTTONUP, number << 16, 124).unwrap();
-            assert_eq!(slot, number + 4);
+    fn mouse_button_edges_use_distinct_native_pairing_slots() {
+        for (down_message, up_message, data, expected_slot, name) in [
+            (WM_LBUTTONDOWN, WM_LBUTTONUP, 0, 1, "mouse_left"),
+            (WM_RBUTTONDOWN, WM_RBUTTONUP, 0, 2, "mouse_right"),
+            (WM_MBUTTONDOWN, WM_MBUTTONUP, 0, 4, "mouse_middle"),
+            (WM_XBUTTONDOWN, WM_XBUTTONUP, 1 << 16, 5, "mouse_x1"),
+            (WM_XBUTTONDOWN, WM_XBUTTONUP, 2 << 16, 6, "mouse_x2"),
+        ] {
+            let (slot, down) = mouse_button_input(down_message, data, 123).unwrap();
+            let (up_slot, up) = mouse_button_input(up_message, data, 124).unwrap();
+            assert_eq!(slot, expected_slot);
+            assert_eq!(up_slot, slot);
+            assert_eq!(down.key, up.key);
             assert_eq!(down.key.as_str(), name);
             assert_eq!(down.character, None);
             assert_eq!(down.state, KeyState::Down);
@@ -1216,8 +1244,8 @@ mod tests {
                 KeyDisposition::Consume
             );
         }
-        assert!(side_button_input(WM_MOUSEMOVE, 1 << 16, 0).is_none());
-        assert!(side_button_input(WM_XBUTTONDOWN, 257 << 16, 0).is_none());
+        assert!(mouse_button_input(WM_MOUSEMOVE, 1 << 16, 0).is_none());
+        assert!(mouse_button_input(WM_XBUTTONDOWN, 257 << 16, 0).is_none());
         assert!(is_our_input(input::INJECTED_TAG));
     }
 

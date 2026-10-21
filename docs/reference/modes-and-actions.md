@@ -222,7 +222,7 @@ h = "move_left"
 
 | 动作 | 用途 |
 | --- | --- |
-| `left_click` / `right_click` / `middle_click` / `mouse_x1` / `mouse_x2` | 点击对应鼠标键；默认支持长按后保持按下 |
+| `mouse_left` / `mouse_right` / `mouse_middle` / `mouse_x1` / `mouse_x2` | 点击对应鼠标键；前三项也可写成 `left_click` / `right_click` / `middle_click`；默认支持长按后保持按下 |
 | `double_click` | 短按双击；长按只保持左键 |
 | `left_press` / `right_press` | 保持左／右键按下 |
 | `left_release` / `right_release` | 松开左／右键 |

@@ -1188,7 +1188,7 @@ impl Engine {
             && self.key_may_change_temporary_mode(&input.key)
             && self.temporary_mode_is_active(&self.registry.active);
         let captures = captures_temporary_trigger
-            || (!input.key.is_mouse_side_button()
+            || (!input.key.is_mouse_button()
                 && self
                     .registry
                     .get(&self.registry.active)
@@ -1218,7 +1218,7 @@ impl Engine {
 
         // Raw-mode handling may redraw a large target scene, so it must also
         // happen after the hook has received its disposition.
-        if !input.key.is_mouse_side_button() {
+        if !input.key.is_mouse_button() {
             self.dispatch(
                 ModeEvent::Key {
                     key: input.key.clone(),
@@ -1858,10 +1858,9 @@ impl Engine {
     }
 
     fn replay_target(key: &Key) -> InputTarget {
-        match key.as_str() {
-            "mouse_x1" => InputTarget::Mouse(crate::api::binding::Button::X1),
-            "mouse_x2" => InputTarget::Mouse(crate::api::binding::Button::X2),
-            _ => InputTarget::Key(key.clone()),
+        match key.as_mouse_button() {
+            Some(button) => InputTarget::Mouse(button),
+            None => InputTarget::Key(key.clone()),
         }
     }
 

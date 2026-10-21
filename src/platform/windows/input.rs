@@ -1475,6 +1475,8 @@ mod tests {
             let up = mouse_data(&inputs[1]);
             assert_ne!(down.dwFlags, up.dwFlags, "{button:?}");
             assert_eq!(down.mouseData, up.mouseData, "{button:?}");
+            assert_eq!(down.dwExtraInfo, INJECTED_TAG, "{button:?}");
+            assert_eq!(up.dwExtraInfo, INJECTED_TAG, "{button:?}");
         }
     }
 }

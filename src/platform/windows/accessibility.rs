@@ -1493,14 +1493,12 @@ fn stream_scan(
                 }
             }
         };
-        if matches!(
-            job.request.scope,
-            crate::api::UiScanScope::Screen | crate::api::UiScanScope::All
-        ) && (preview_only || window_index == 0)
-        {
+        if preview_only || window_index == 0 {
             // A whole-window cache can block behind hundreds of provider calls.
             // Publish its first usable control without waiting for that cache;
             // the normal bulk query below still delivers and validates all UI.
+            // Window/Active need this too: provisional contours wait for UIA
+            // coverage, while this confirmed semantic target can stream now.
             // SAFETY: root, condition and cache belong to this worker's MTA and
             // remain live through the bounded, read-only COM call.
             let first =

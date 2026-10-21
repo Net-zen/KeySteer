@@ -1764,6 +1764,111 @@
 .ks-classified .ks-keyboard { --key-unit: 32px; --key-height: 34px; width: max-content; min-width: 0; }
 .ks-classified .ks-main-keyboard .ks-keyboard { --key-unit: 32px; --key-height: 34px; }
 .ks-classified .ks-main-keyboard .ks-keyboard-body { margin-top: 0; }
+
+/* One binding editor for both input devices, with room around its toolbar. */
+.ks-keyboard-card { container: key-mapping / inline-size; }
+.ks-classified .ks-keyboard-card .ks-toolbar { padding-bottom: 14px; }
+.ks-classified .ks-keyboard-card .ks-keyboard-tools {
+  margin: 12px 0 18px;
+  padding: 10px 12px;
+  gap: 10px 20px;
+  border-radius: 10px;
+  background: var(--vp-c-bg-soft);
+}
+.ks-classified .ks-keyboard-tools .ks-modifiers { padding: 0; }
+.ks-input-devices {
+  position: sticky;
+  top: 12px;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 176px;
+  align-items: center;
+  gap: 12px 22px;
+  padding: 18px;
+  margin-bottom: 16px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 14px;
+  background: var(--vp-c-bg-soft);
+}
+.ks-mouse-panel { min-width: 0; }
+.ks-mouse-toggle-row { grid-column: 1 / -1; display: none; align-items: center; gap: 6px; }
+.ks-mouse-toggle-row::before, .ks-mouse-toggle-row::after { content: ''; flex: 1; height: 1px; background: var(--vp-c-divider); }
+.ks-mouse-toggle { display: grid; place-items: center; width: 24px; height: 18px; padding: 0; flex-shrink: 0; border: 0; border-radius: 4px; color: var(--vp-c-text-2); background: transparent; }
+.ks-mouse-toggle:hover { color: var(--vp-c-brand-1); background: var(--vp-c-brand-soft); }
+.ks-mouse-toggle svg { width: 12px; height: 12px; }
+.ks-mouse-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.ks-classified .ks-input-devices .ks-keyboard-scroll {
+  position: static;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+.ks-mouse-map {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 18px;
+  border-left: 1px solid var(--vp-c-divider);
+}
+.ks-mouse-diagram { display: block; width: 156px; max-width: 100%; overflow: visible; }
+.ks-mouse-shadow { fill: var(--vp-c-text-3); opacity: .1; }
+.ks-mouse-shell { stroke: color-mix(in srgb, var(--vp-c-text-3) 55%, var(--vp-c-divider)); stroke-width: 1.4; }
+.ks-mouse-seam, .ks-mouse-palm { fill: none; stroke: var(--vp-c-divider); stroke-width: 1.3; }
+.ks-mouse-palm { opacity: .65; }
+.ks-mouse-mark { fill: var(--vp-c-brand-1); opacity: .3; }
+.ks-mouse-key { cursor: grab; outline: none; touch-action: none; user-select: none; }
+.ks-mouse-key.dragging { cursor: grabbing; }
+.ks-mouse-plate { stroke: var(--vp-c-divider); stroke-width: 1.1; transition: fill .15s, stroke .15s; }
+.ks-mouse-key text { fill: var(--vp-c-text-2); font: 600 12px var(--vp-font-family-base); pointer-events: none; }
+.ks-mouse-wheel { fill: none; stroke: var(--vp-c-text-3); stroke-width: 1.2; pointer-events: none; }
+.ks-mouse-hit { fill: transparent; }
+.ks-mouse-binding-dot { fill: var(--ks-mouse-tone, var(--vp-c-brand-1)); }
+.ks-mouse-key.tone-move { --ks-mouse-tone: #2c9160; }
+.ks-mouse-key.tone-click { --ks-mouse-tone: #c75972; }
+.ks-mouse-key.tone-speed { --ks-mouse-tone: #b48821; }
+.ks-mouse-key.tone-state { --ks-mouse-tone: #b97536; }
+.ks-mouse-key.tone-scroll { --ks-mouse-tone: #388dad; }
+.ks-mouse-key.tone-mode { --ks-mouse-tone: #8370cf; }
+.ks-mouse-key.tone-utility { --ks-mouse-tone: #7887a2; }
+.ks-mouse-key.bound .ks-mouse-plate {
+  fill: color-mix(in srgb, var(--ks-mouse-tone) 12%, var(--vp-c-bg));
+  stroke: var(--ks-mouse-tone);
+}
+.ks-mouse-key:is(:hover, :focus-visible, .selected, .dragging) .ks-mouse-plate {
+  fill: color-mix(in srgb, var(--vp-c-brand-1) 17%, var(--vp-c-bg));
+  stroke: var(--vp-c-brand-1);
+  stroke-width: 2;
+}
+.ks-mouse-key:focus-visible .ks-mouse-plate { stroke-dasharray: 3 2; }
+.ks-mouse-key:is(:hover, :focus-visible, .selected) text { fill: var(--vp-c-brand-1); }
+.ks-mouse-caption { display: grid; gap: 4px; width: 100%; text-align: center; font-size: 11px; line-height: 1.6; }
+.ks-mouse-caption strong { color: var(--vp-c-text-1); font-size: 12px; }
+.ks-mouse-caption span { color: var(--vp-c-text-2); overflow-wrap: anywhere; }
+.ks-mouse-caption small { color: var(--vp-c-text-3); font-size: 10px; white-space: nowrap; }
+.ks-mouse-warning { position: fixed; inset: 0; margin: auto; width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 24px; border: 1px solid var(--vp-c-divider); border-radius: 16px; color: var(--vp-c-text-1); background: var(--vp-c-bg); box-shadow: 0 20px 70px #0003; }
+.ks-mouse-warning::backdrop { background: #10182866; backdrop-filter: blur(3px); }
+.ks-mouse-warning h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; font-size: 18px; }
+.ks-mouse-warning h2 span { display: grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0; border-radius: 50%; color: #a36700; background: #eebc3626; }
+.ks-mouse-warning p { margin: 0 0 18px; font-size: 13px; line-height: 1.8; color: var(--vp-c-text-2); }
+.ks-mouse-warning dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px 18px; margin: 0; padding: 14px; border-radius: 10px; background: var(--vp-c-bg-soft); font-size: 12px; }
+.ks-mouse-warning dt { color: var(--vp-c-text-2); }
+.ks-mouse-warning dd { margin: 0; overflow-wrap: anywhere; }
+.ks-mouse-warning footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+@container key-mapping (max-width: 760px) {
+  .ks-input-devices { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 12px 12px 8px; }
+  .ks-mouse-panel { display: none; }
+  .ks-mouse-panel.is-expanded { display: block; }
+  .ks-mouse-toggle-row { display: flex; }
+  .ks-mouse-map { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 16px; padding: 12px 0 0; border-left: 0; border-top: 1px solid var(--vp-c-divider); }
+  .ks-mouse-diagram { width: 100px; }
+  .ks-mouse-caption { text-align: left; }
+}
 .ks-keyboard-guide { font-size: 11px; color: var(--vp-c-text-2); margin-bottom: 12px; }
 .ks-keyboard-guide summary { cursor: pointer; padding: 6px 0; }
 .ks-classified .ks-keyboard-hint { margin: 0 0 12px; line-height: 1.6; }

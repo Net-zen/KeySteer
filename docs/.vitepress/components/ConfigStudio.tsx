@@ -6,6 +6,7 @@ import SettingsNavigation from '../config-studio/SettingsNavigation'
 import ConfigDiff from '../config-studio/ConfigDiff'
 import PaneDivider from '../config-studio/PaneDivider'
 import FittedKeyboard from '../config-studio/FittedKeyboard'
+import MouseDiagram from '../config-studio/MouseDiagram'
 import NormalTargetingControls from '../config-studio/NormalTargetingControls'
 import KeyMappingEditor from '../config-studio/KeyMappingEditor'
 import { keyMappingTarget } from '../simulator/key-mapping'
@@ -16,7 +17,7 @@ import { cardPositionRatios, packedCardCenters, percentageRegion, rectCenter, re
 import QuickSwitchPreview from '../config-studio/QuickSwitchPreview'
 import SearchPanelsOverlay from '../config-studio/SearchPanelsOverlay'
 import { PREVIEW_WINDOW } from '../config-studio/preview-geometry.ts'
-import { computed, defineComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { withBase } from 'vitepress'
 import { stringify } from 'smol-toml'
 import {
@@ -27,7 +28,7 @@ import {
   movePointer,
   toggleButton,
 } from '../simulator/state'
-import { displayedBindings, effectiveBindings, resolveBinding, resolveLayeredPhysicalBinding, resolvePhysicalBinding, shortcutCaption, temporaryPhysicalKeys } from '../simulator/bindings'
+import { displayedBindings, effectiveBindings, resolveBinding, resolvedChordKeys, resolveLayeredPhysicalBinding, resolvePhysicalBinding, shortcutCaption, temporaryPhysicalKeys } from '../simulator/bindings'
 import { blindTargetingInput, targetingConfig, targetingKeys } from '../simulator/normal-targeting'
 import { applyWindowAction, chooseWindowNumber, switchWindowMode, isWindowMode, finishWindowNumber, hasWindowPresetChanges, replaceWindowPresets, restoreWindowPreset, saveWindowPreset, setDemoWindowCount, temporaryWindow, windowActionAvailable, windowDetail, windowInputStatus, windowSelectionKey, windowTarget, WINDOW_AREA, WINDOW_MOTION } from '../simulator/window'
 import { decodeWorkspaceDocument, encodeWorkspaceFile, WORKSPACE_FILE_NAME, WORKSPACE_STORAGE_KEY, readSavedPresets, presetName, type ModeUsage } from '../simulator/window-presets'
@@ -295,38 +296,53 @@ export default defineComponent({
     const modifiers = reactive<Record<Modifier, boolean>>({ primary: false, shift: false, alt: false })
     const selectedChord = ref('')
     const pendingAction = ref('')
+    const leftMouseWarning = ref<HTMLDialogElement | null>(null)
+    const leftMouseChange = ref<{ mode: EditorMode; chord: string; before: string; after: string; apply: () => void } | null>(null)
     const draggedAction = ref('')
     const dragTarget = ref('')
     const actionQuery = ref('')
     const actionCategory = ref('')
     const bindingKind = ref<'action' | 'key'>('action')
     const fullKeyboard = ref(true)
+    const mouseExpanded = ref(false)
+    const mousePanelId = useId()
     let actionDragStart: { x: number; y: number; action: string } | undefined
     let suppressActionClick = false
     function actionPointerDown(event: PointerEvent, action: string): void {
       if (event.button !== 0) return
       suppressActionClick = false
       actionDragStart = { x: event.clientX, y: event.clientY, action }
-      ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+      ;(event.currentTarget as Element).setPointerCapture(event.pointerId)
+    }
+    function actionDropTarget(event: PointerEvent): HTMLElement | SVGElement | null {
+      return (event.currentTarget as Element).ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement | SVGElement>('[data-map-key]') ?? null
+    }
+    function cancelActionDrag(): void {
+      actionDragStart = undefined
+      draggedAction.value = ''; dragTarget.value = ''
+    }
+    function consumeDragClick(event: MouseEvent | KeyboardEvent): boolean {
+      if (!suppressActionClick || event.detail === 0) return false
+      suppressActionClick = false
+      return true
     }
     function actionPointerMove(event: PointerEvent): void {
       if (!actionDragStart || Math.hypot(event.clientX - actionDragStart.x, event.clientY - actionDragStart.y) < 6) return
       draggedAction.value = actionDragStart.action
-      const target = (event.currentTarget as HTMLElement).ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-map-key]')
+      const target = actionDropTarget(event)
       dragTarget.value = target?.dataset.mapKey ?? ''
     }
     function actionPointerUp(event: PointerEvent): void {
       if (draggedAction.value) {
         suppressActionClick = true
-        const target = (event.currentTarget as HTMLElement).ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-map-key]')
+        const target = actionDropTarget(event)
         if (target) {
           pendingAction.value = ''
           selectKey({ key: target.dataset.mapKey!, label: target.dataset.mapKey!, literal: target.dataset.literal === 'true' })
           setAction(draggedAction.value)
         }
       }
-      actionDragStart = undefined
-      draggedAction.value = ''; dragTarget.value = ''
+      cancelActionDrag()
     }
     const filteredActionGroups = computed(() => actionGroups
       .filter(group => !actionCategory.value || group.name === actionCategory.value)
@@ -591,25 +607,52 @@ export default defineComponent({
 
     function setAction(action: string): void {
       if (!document.value || !effectiveDocument.value || !selectedChord.value) return
-      const table = bindingTable(document.value, activeMode.value, true, effectiveDocument.value)
-      expandConfiguredBinding(table, selectedChord.value)
-      table[selectedChord.value] = action
-      document.value = { ...document.value }
-      customAction.value = action
-      message.value = `${selectedChord.value} → ${action}`
+      if (selectedBinding.value === action && targetsLeftMouse(selectedChord.value)) return
+      const mode = activeMode.value, chord = selectedChord.value
+      confirmLeftMouseChange(action, () => {
+        const table = bindingTable(document.value!, mode, true, effectiveDocument.value!)
+        expandConfiguredBinding(table, chord)
+        table[chord] = action
+        document.value = { ...document.value! }
+        customAction.value = action
+        message.value = `${chord} → ${action}`
+      })
     }
 
     function removeBinding(): void {
-      if (!document.value || !effectiveDocument.value || !selectedChord.value) return
-      const table = bindingTable(document.value, activeMode.value, true, effectiveDocument.value)
-      expandConfiguredBinding(table, selectedChord.value)
-      delete table[selectedChord.value]
-      document.value = { ...document.value }
-      pendingAction.value = ''
-      customAction.value = selectedAction.value
-      message.value = selectedAction.value
-        ? `已移除当前模式绑定，${selectedChord.value} 恢复继承：${selectedAction.value}`
-        : `已移除 ${selectedChord.value}，此键未绑定`
+      if (!document.value || !effectiveDocument.value || !selectedChord.value
+        || resolveBinding(effectiveDocument.value, activeMode.value, selectedChord.value)?.source !== activeMode.value) return
+      const mode = activeMode.value, chord = selectedChord.value
+      confirmLeftMouseChange(t('移除当前模式绑定'), () => {
+        const table = bindingTable(document.value!, mode, true, effectiveDocument.value!)
+        expandConfiguredBinding(table, chord)
+        delete table[chord]
+        document.value = { ...document.value! }
+        pendingAction.value = ''
+        customAction.value = selectedAction.value
+        message.value = selectedAction.value
+          ? `已移除当前模式绑定，${chord} 恢复继承：${selectedAction.value}`
+          : `已移除 ${chord}，此键未绑定`
+      })
+    }
+
+    function targetsLeftMouse(binding: string): boolean {
+      return binding.split(/\s+/).some(chord =>
+        resolvedChordKeys(effectiveDocument.value!, chord, isMac.value).includes('mouse_left'))
+    }
+
+    function confirmLeftMouseChange(after: string, apply: () => void): void {
+      if (!targetsLeftMouse(selectedChord.value)) { apply(); return }
+      releasePreview()
+      leftMouseChange.value = { mode: activeMode.value, chord: selectedChord.value, before: selectedAction.value, after, apply }
+      leftMouseWarning.value?.showModal()
+    }
+
+    function acceptLeftMouseChange(): void {
+      const change = leftMouseChange.value
+      leftMouseChange.value = null
+      leftMouseWarning.value?.close()
+      change?.apply()
     }
 
     function keyBindingInfo(spec: KeySpec): KeyBindingInfo | undefined {
@@ -700,16 +743,16 @@ export default defineComponent({
         return
       }
       if (applyModeAction(simulator, action, effectiveDocument.value?.key_help?.mouse_key_help === true)) return
-      if (action === 'left_click' || action === 'double_click') {
+      if (action === 'left_click' || action === 'mouse_left' || action === 'double_click') {
         clickPulse.value += 1
         if (simulator.mode === 'normal' && (targetingConfig(effectiveDocument.value ?? {})?.reset_on ?? ['move', 'click']).includes('click')) simulator.blindTargeting.pendingReset = true
         simulator.lastEvent = action === 'double_click' ? '双击' : '左键点击'
         return
       }
-      if (action === 'right_click' || action === 'middle_click') {
+      if (['right_click', 'mouse_right', 'middle_click', 'mouse_middle'].includes(action)) {
         clickPulse.value += 1
         if (simulator.mode === 'normal' && (targetingConfig(effectiveDocument.value ?? {})?.reset_on ?? ['move', 'click']).includes('click')) simulator.blindTargeting.pendingReset = true
-        simulator.lastEvent = action === 'right_click' ? '右键点击' : '中键点击'
+        simulator.lastEvent = action === 'right_click' || action === 'mouse_right' ? '右键点击' : '中键点击'
         return
       }
       if (action === 'toggle') {
@@ -989,11 +1032,11 @@ export default defineComponent({
       <div class={{ 'ks-keyboard-scroll': true, 'ks-main-keyboard': !fullKeyboard.value }} aria-label={fullKeyboard.value ? t("ANSI 104 键盘") : t("键盘主键区")}>
         <FittedKeyboard>
         <div class="ks-keyboard">
-          {fullKeyboard.value && <KeyboardRows rows={[functionRow.map(platformKey)]} selected={selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />}
+          {fullKeyboard.value && <KeyboardRows rows={[functionRow.map(platformKey)]} selected={dragTarget.value || selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />}
           <div class="ks-keyboard-body">
-            <KeyboardRows rows={mainRows.map(row => row.map(platformKey))} selected={selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />
-            {fullKeyboard.value && <KeyboardRows rows={navigationRows} selected={selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} compact />}
-            {fullKeyboard.value && <Numpad keys={numpadKeys} selected={selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />}
+            <KeyboardRows rows={mainRows.map(row => row.map(platformKey))} selected={dragTarget.value || selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />
+            {fullKeyboard.value && <KeyboardRows rows={navigationRows} selected={dragTarget.value || selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} compact />}
+            {fullKeyboard.value && <Numpad keys={numpadKeys} selected={dragTarget.value || selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />}
           </div>
         </div>
         </FittedKeyboard>
@@ -1005,7 +1048,7 @@ export default defineComponent({
           <div class="ks-toolbar ks-compact-toolbar">
             <div>
               <h2>{t("按键映射")}</h2>
-              <p>{t("选择按键，为它设置动作或映射到另一个按键。")}</p>
+              <p>{t("选择键盘或鼠标按键，为它设置动作或映射到另一个按键。")}</p>
             </div>
             <button class="ks-button" aria-pressed={fullKeyboard.value} onClick={() => fullKeyboard.value = !fullKeyboard.value}>{fullKeyboard.value ? t("切换主键区") : t("显示完整键盘")}</button>
           </div>
@@ -1025,7 +1068,21 @@ export default defineComponent({
               <input aria-label={t("绑定按键或符号")} placeholder={t("点击键盘或输入符号，如 ?")} value={selectedChord.value} onInput={(event) => { selectedChord.value = (event.target as HTMLInputElement).value }} />
             </div>
           </div>
-          {keyboard()}
+          <div class="ks-input-devices">
+            {keyboard()}
+            <div id={mousePanelId} class={{ 'ks-mouse-panel': true, 'is-expanded': mouseExpanded.value }}>
+              <MouseDiagram selected={dragTarget.value || selectedChord.value} draggedAction={draggedAction.value} bindingInfo={keyBindingInfo}
+                onSelect={(key, event) => { if (!consumeDragClick(event)) selectKey(key) }}
+                onActionStart={actionPointerDown} onActionMove={actionPointerMove} onActionEnd={actionPointerUp} onActionCancel={cancelActionDrag} />
+            </div>
+            <div class="ks-mouse-toggle-row">
+              <button type="button" class="ks-mouse-toggle" aria-expanded={mouseExpanded.value} aria-controls={mousePanelId}
+                aria-label={t(mouseExpanded.value ? '收起鼠标按键' : '展开鼠标按键')} title={t(mouseExpanded.value ? '收起鼠标按键' : '展开鼠标按键')}
+                onClick={() => { mouseExpanded.value = !mouseExpanded.value }}>
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="m5 7.5 5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              </button>
+            </div>
+          </div>
           {draggedAction.value && <p class="ks-pending-action">{t("拖动 ")}{draggedAction.value}{dragTarget.value ? t(" → {0}，松开替换绑定", [dragTarget.value]) : t(" 到目标键帽")}</p>}
           <details class="ks-keyboard-guide"><summary>{t("符号绑定与颜色说明")}</summary><p class="ks-keyboard-hint">{t("点击键帽内的上层符号可按字符绑定（如 ?）；下层按键可搭配上方组合键。彩色圆点表示已有绑定，悬停可查看动作。")}</p>
           <div class="ks-key-legend" aria-label={t("按键颜色分类")}>
@@ -1046,7 +1103,7 @@ export default defineComponent({
               </div>
               {selectedChord.value && <div class="ks-binding-actions">
                 <div>
-                  <button disabled={!selectedAction.value || selectedAction.value === 'none'} onClick={() => { pendingAction.value = ''; setAction('none'); message.value = `已取消 ${selectedChord.value} 的绑定，不再执行本模式或继承的绑定动作` }}>{t("取消绑定")}</button>
+                  <button disabled={!selectedAction.value || selectedAction.value === 'none'} onClick={() => { pendingAction.value = ''; setAction('none') }}>{t("取消绑定")}</button>
                   <button disabled={resolveBinding(effectiveDocument.value!, activeMode.value, selectedChord.value)?.source !== activeMode.value} onClick={removeBinding}>{t("移除当前模式绑定")}</button>
                 </div>
                 <small>{t("取消绑定会禁用此键的绑定动作；移除当前模式绑定后，若有继承动作则恢复继承。")}</small>
@@ -1071,9 +1128,8 @@ export default defineComponent({
                       <button class={{ active: selectedAction.value === action.value || pendingAction.value === action.value }}
                         title={t("{0} · 点击设置或拖到键帽", [action.value])}
                         onPointerdown={event => actionPointerDown(event, action.value)} onPointermove={actionPointerMove} onPointerup={actionPointerUp}
-                        onPointercancel={() => { actionDragStart = undefined; draggedAction.value = ''; dragTarget.value = '' }}
-                        onLostpointercapture={() => { actionDragStart = undefined; draggedAction.value = ''; dragTarget.value = '' }}
-                        onClick={event => { if (suppressActionClick && event.detail !== 0) { suppressActionClick = false; return }; if (selectedChord.value) setAction(action.value); else pendingAction.value = action.value }}><span>{t(action.label)}</span><code>{action.value}</code></button>
+                        onPointercancel={cancelActionDrag} onLostpointercapture={cancelActionDrag}
+                        onClick={event => { if (consumeDragClick(event)) return; if (selectedChord.value) setAction(action.value); else pendingAction.value = action.value }}><span>{t(action.label)}</span><code>{action.value}</code></button>
                     ))}</div>
                   </div>
                 ))}
@@ -1304,6 +1360,18 @@ export default defineComponent({
             <section class="ks-utility-card ks-workspace-files"><header class="ks-utility-heading"><h2>{t("工作区文件")}</h2><code>workspace.ksw</code></header><div class="ks-settings-body"><p>{t("导入或导出布局、标签分组与使用统计。")}</p><div class="ks-file-actions"><input aria-label={t("导入工作区文件")} type="file" accept=".ksw,application/octet-stream" onChange={importLayoutFile} /><button class="ks-button" onClick={downloadLayouts}>{t("下载工作区文件")}</button></div></div></section></div>)
     return () => (
       <div class="ks-studio ks-classified" style={{ '--ks-navigation-width': `${navigationWidth.value}px`, '--ks-settings-share': `${settingsShare.value}fr`, '--ks-preview-share': `${100 - settingsShare.value}fr` }}>
+        <dialog ref={leftMouseWarning} class="ks-mouse-warning" aria-labelledby="ks-mouse-warning-title" aria-describedby="ks-mouse-warning-description"
+          onCancel={() => { leftMouseChange.value = null }} onClose={() => { leftMouseChange.value = null }}>
+          <h2 id="ks-mouse-warning-title"><span aria-hidden="true">!</span>{t('修改鼠标左键绑定')}</h2>
+          <p id="ks-mouse-warning-description">{t('这会改变鼠标左键的操作行为，可能影响正常点击。请确认后再修改。')}</p>
+          <dl>
+            <dt>{t('当前按键')}</dt><dd>{leftMouseChange.value?.mode} · {leftMouseChange.value?.chord}</dd>
+            <dt>{t('变更前')}</dt><dd>{leftMouseChange.value?.before || t('未绑定')}</dd>
+            <dt>{t('变更后')}</dt><dd>{leftMouseChange.value?.after}</dd>
+          </dl>
+          <footer><button class="ks-button" autofocus onClick={() => leftMouseWarning.value?.close()}>{t('取消')}</button>
+            <button class="ks-button ks-button-primary" disabled={!leftMouseChange.value} onClick={acceptLeftMouseChange}>{t('确认修改左键绑定')}</button></footer>
+        </dialog>
         <header class="ks-studio-topbar" inert={expanded.value}>
           <div><strong>{t("配置工作台")}</strong><small role="status" aria-live="polite" title={t(message.value)}>{t(message.value || sourceName.value)}</small></div>
           <div class="ks-settings-search"><input aria-label={t("搜索设置")} placeholder={t("搜索设置、模式或 TOML 路径…")} value={searchQuery.value} onInput={e => searchQuery.value = (e.target as HTMLInputElement).value} />
@@ -1806,7 +1874,7 @@ function shortAction(action: string): string {
     move_left: '← 移动', move_down: '↓ 移动', move_up: '↑ 移动', move_right: '→ 移动',
     wheel_up: '↑ 滚动', wheel_down: '↓ 滚动', scroll_left: '← 滚动', scroll_right: '→ 滚动',
     left_click: '左键', right_click: '右键', middle_click: '中键', double_click: '双击',
-    mouse_x1: '侧键 1', mouse_x2: '侧键 2',
+    mouse_left: '左键', mouse_right: '右键', mouse_middle: '中键', mouse_x1: '侧键 1', mouse_x2: '侧键 2',
     grid: 'Grid', recursive_grid: '递归 Grid', ui_hint: 'UI Hint', normal: 'Normal', idle: 'Idle',
     precision: '精确', slow: '慢速', fast: '快速', finish: '完成', restart_mode: '重启', escape: '返回',
     precision_toggle: '切换精确', slow_toggle: '切换慢速', fast_toggle: '切换快速',

@@ -59,6 +59,8 @@ pub(crate) struct Options {
     pub(crate) generation: u64,
     pub(crate) threshold: f64,
     pub(crate) defer_visual: bool,
+    // Publication is independent of scan scope. Backends select native roots;
+    // confirmed semantic targets stream while regional visual work continues.
     pub(crate) progress_sources: Vec<TargetSource>,
     pub(crate) output: Arc<ScanMailbox>,
     pub(crate) wake: Wake,
@@ -755,6 +757,79 @@ mod tests {
         assert_eq!(terminal.status, UiScanStatus::Success);
         assert!(terminal.targets.is_empty());
         assert!(output.take().is_none());
+    }
+
+    #[test]
+    fn semantic_preview_streams_while_regions_are_pending_and_full_results_stay_complete() {
+        use super::super::scan_progress::Progress;
+
+        let output = Arc::new(ScanMailbox::default());
+        let generation = output.begin(1);
+        let mut worker = Worker::default();
+        let mut config = options(&output, 1, generation);
+        config.defer_visual = true;
+        config.progress_sources = vec![
+            TargetSource::Accessibility,
+            TargetSource::Contour,
+            TargetSource::SystemOcr,
+        ];
+        let sink = worker.prepare(generation).unwrap().begin(config);
+        let region = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        for source in [
+            TargetSource::Accessibility,
+            TargetSource::Contour,
+            TargetSource::SystemOcr,
+        ] {
+            sink.progress(source, Progress::Plan(vec![region]));
+        }
+        // This shared path has no window/screen or platform-specific policy.
+        // The overlapping fragment stays hidden even before native work starts.
+        let fragment = |start| {
+            targets(start, 1)
+                .into_iter()
+                .map(|mut target| {
+                    target.role = SemanticRole::Control;
+                    target.name.clear();
+                    target
+                })
+                .collect()
+        };
+        sink.submit(TargetSource::Contour, fragment(0));
+        sink.submit(TargetSource::Contour, fragment(2));
+        sink.progress(TargetSource::Contour, Progress::Complete(region));
+        sink.flush();
+        assert!(output.take().is_none());
+
+        sink.submit(TargetSource::Accessibility, targets(0, 1));
+        sink.flush();
+        let preview = output.take().unwrap();
+        assert_eq!(preview.status, UiScanStatus::Partial);
+        assert_eq!(preview.targets, targets(0, 1));
+        assert!(preview.retired.is_empty());
+
+        sink.submit(TargetSource::Accessibility, targets(0, 2));
+        sink.progress(TargetSource::Accessibility, Progress::Complete(region));
+        sink.flush();
+        let bulk = output.take().unwrap();
+        assert_eq!(bulk.status, UiScanStatus::Partial);
+        assert_eq!(bulk.targets, targets(1, 1));
+        assert!(bulk.retired.is_empty());
+
+        sink.progress(TargetSource::SystemOcr, Progress::Complete(region));
+        sink.flush();
+        let visual = output.take().unwrap();
+        assert_eq!(visual.status, UiScanStatus::Partial);
+        let mut expected_visual = fragment(2);
+        expected_visual[0].details = Some(Default::default());
+        assert_eq!(visual.targets, expected_visual);
+        assert!(visual.retired.is_empty());
+
+        sink.finish(UiScanStatus::Success);
+        sink.flush();
+        let terminal = output.take().unwrap();
+        assert_eq!(terminal.status, UiScanStatus::Success);
+        assert!(terminal.targets.is_empty());
+        assert!(terminal.retired.is_empty());
     }
     #[test]
     fn deferred_candidates_flush_on_completion_but_never_after_cancellation() {

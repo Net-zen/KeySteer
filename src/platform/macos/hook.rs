@@ -1,7 +1,7 @@
 //! Dedicated CGEventTap thread with per-event disposition handshakes.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -82,7 +82,7 @@ struct TapState {
     // disabled signal crosses from the callback to the surrounding run loop.
     last_flags: AtomicU64,
     caps_lock_down: AtomicBool,
-    side_button_decisions: AtomicU8,
+    mouse_button_decisions: AtomicU16,
     disabled: AtomicU8,
 }
 
@@ -91,7 +91,7 @@ impl Default for TapState {
         Self {
             last_flags: AtomicU64::new(0),
             caps_lock_down: AtomicBool::new(false),
-            side_button_decisions: AtomicU8::new(0),
+            mouse_button_decisions: AtomicU16::new(0),
             disabled: AtomicU8::new(0),
         }
     }
@@ -860,14 +860,22 @@ fn handle_event(
 
     if matches!(
         event_type,
-        CGEventType::OtherMouseDown | CGEventType::OtherMouseUp
-    ) && let Some((number, key_state, key)) = side_button_input(
+        CGEventType::LeftMouseDown
+            | CGEventType::LeftMouseUp
+            | CGEventType::RightMouseDown
+            | CGEventType::RightMouseUp
+            | CGEventType::OtherMouseDown
+            | CGEventType::OtherMouseUp
+    ) && let Some((number, key_state, key)) = mouse_button_input(
         event_type,
         event.get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER),
     ) {
-        let previous = state.side_button_decisions.load(Ordering::Relaxed);
+        if matches!(event_type, CGEventType::LeftMouseUp) {
+            super::window_tabs::mouse_released();
+        }
+        let previous = state.mouse_button_decisions.load(Ordering::Relaxed);
         let held = 1 << number;
-        let consumed = held << 2;
+        let consumed = held << 5;
         let proposed = disposition_for(
             sender,
             mailbox,
@@ -889,16 +897,18 @@ fn handle_event(
             KeyState::Down => (previous | held) & !consumed | if consume { consumed } else { 0 },
             KeyState::Up => previous & !(held | consumed),
         };
-        state.side_button_decisions.store(next, Ordering::Relaxed);
+        state.mouse_button_decisions.store(next, Ordering::Relaxed);
         if key_state == KeyState::Up && !consume {
             let point = event.location();
             let count = event.get_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE);
             if let Ok(mut tracker) = click_tracker.lock() {
                 tracker.observe_completed(
-                    if number == 0 {
-                        MouseButton::X1
-                    } else {
-                        MouseButton::X2
+                    match number {
+                        0 => MouseButton::Left,
+                        1 => MouseButton::Right,
+                        2 => MouseButton::Middle,
+                        3 => MouseButton::X1,
+                        _ => MouseButton::X2,
                     },
                     Point::new(point.x, point.y),
                     count,
@@ -968,40 +978,6 @@ fn handle_event(
                 }),
             )
         }
-        CGEventType::LeftMouseUp | CGEventType::RightMouseUp | CGEventType::OtherMouseUp => {
-            if matches!(event_type, CGEventType::LeftMouseUp) {
-                super::window_tabs::mouse_released();
-            }
-            let button = match event_type {
-                CGEventType::LeftMouseUp => Some(MouseButton::Left),
-                CGEventType::RightMouseUp => Some(MouseButton::Right),
-                CGEventType::OtherMouseUp => {
-                    match event.get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER) {
-                        2 => Some(MouseButton::Middle),
-                        3 => Some(MouseButton::X1),
-                        4 => Some(MouseButton::X2),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            };
-            if let Some(button) = button {
-                let point = event.location();
-                let count = event.get_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE);
-                if let Ok(mut tracker) = click_tracker.lock() {
-                    tracker.observe_completed(
-                        button,
-                        Point::new(point.x, point.y),
-                        count,
-                        Instant::now(),
-                    );
-                }
-            }
-            CallbackResult::Keep
-        }
-        CGEventType::LeftMouseDown | CGEventType::RightMouseDown | CGEventType::OtherMouseDown => {
-            CallbackResult::Keep
-        }
         CGEventType::MouseMoved
         | CGEventType::LeftMouseDragged
         | CGEventType::RightMouseDragged
@@ -1031,18 +1007,25 @@ fn handle_event(
     }
 }
 
-fn side_button_input(event_type: CGEventType, button: i64) -> Option<(u8, KeyState, Key)> {
-    let number = match button {
-        3 => 1,
-        4 => 2,
+fn mouse_button_input(event_type: CGEventType, button: i64) -> Option<(u8, KeyState, Key)> {
+    let number = match event_type {
+        CGEventType::LeftMouseDown | CGEventType::LeftMouseUp => 0,
+        CGEventType::RightMouseDown | CGEventType::RightMouseUp => 1,
+        CGEventType::OtherMouseDown | CGEventType::OtherMouseUp if (2..=4).contains(&button) => {
+            button as u8
+        }
         _ => return None,
     };
     let state = match event_type {
-        CGEventType::OtherMouseDown => KeyState::Down,
-        CGEventType::OtherMouseUp => KeyState::Up,
+        CGEventType::LeftMouseDown | CGEventType::RightMouseDown | CGEventType::OtherMouseDown => {
+            KeyState::Down
+        }
+        CGEventType::LeftMouseUp | CGEventType::RightMouseUp | CGEventType::OtherMouseUp => {
+            KeyState::Up
+        }
         _ => return None,
     };
-    Some((number - 1, state, Key::mouse_side_button(number)?))
+    Some((number, state, Key::mouse_button(number)?))
 }
 
 fn store_latest_pointer(latest_pointer: &SharedPointer, point: Point) -> bool {
@@ -1087,7 +1070,7 @@ fn disposition_for(
     event: BackendEvent,
 ) -> CallbackResult {
     let forwards_on_timeout =
-        matches!(&event, BackendEvent::Input(input) if !input.key.is_mouse_side_button());
+        matches!(&event, BackendEvent::Input(input) if !input.key.is_mouse_button());
     let correlation_id = crate::support::perf_probe::next_correlation_id();
     crate::support::perf_probe::mark_correlated("hook_received", correlation_id);
     let Some(generation) = mailbox.try_begin() else {
@@ -1147,24 +1130,28 @@ mod tests {
     }
 
     #[test]
-    fn mouse_side_button_edges_do_not_capture_middle_or_other_buttons() {
-        for (button, name) in [(3, "mouse_x1"), (4, "mouse_x2")] {
-            let (_, down, key) =
-                super::side_button_input(core_graphics::event::CGEventType::OtherMouseDown, button)
-                    .unwrap();
-            let (_, up, _) =
-                super::side_button_input(core_graphics::event::CGEventType::OtherMouseUp, button)
-                    .unwrap();
+    fn mouse_button_edges_cover_all_supported_buttons() {
+        use core_graphics::event::CGEventType::*;
+        for (down_type, up_type, button, name) in [
+            (LeftMouseDown, LeftMouseUp, 0, "mouse_left"),
+            (RightMouseDown, RightMouseUp, 1, "mouse_right"),
+            (OtherMouseDown, OtherMouseUp, 2, "mouse_middle"),
+            (OtherMouseDown, OtherMouseUp, 3, "mouse_x1"),
+            (OtherMouseDown, OtherMouseUp, 4, "mouse_x2"),
+        ] {
+            let (number, down, key) = super::mouse_button_input(down_type, button).unwrap();
+            let (up_number, up, up_key) = super::mouse_button_input(up_type, button).unwrap();
+            assert_eq!(i64::from(number), button);
+            assert_eq!(number, up_number);
+            assert_eq!(key, up_key);
             assert_eq!(key.as_str(), name);
             assert_eq!(down, crate::api::KeyState::Down);
             assert_eq!(up, crate::api::KeyState::Up);
         }
-        for button in [0, 1, 2, 5, -1] {
-            assert!(
-                super::side_button_input(core_graphics::event::CGEventType::OtherMouseDown, button)
-                    .is_none()
-            );
+        for button in [0, 1, 5, -1] {
+            assert!(super::mouse_button_input(OtherMouseDown, button).is_none());
         }
+        assert!(super::mouse_button_input(MouseMoved, 0).is_none());
     }
     use super::*;
 

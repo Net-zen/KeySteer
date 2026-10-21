@@ -467,9 +467,9 @@ impl Binding {
             "wheel_full_down" | "scroll_full_down" => B::Scroll(Down, Full),
             "wheel_full_up" | "scroll_full_up" => B::Scroll(Up, Full),
 
-            "left_click" => B::Click(Left),
-            "right_click" => B::Click(Right),
-            "middle_click" => B::Click(Middle),
+            "left_click" | "mouse_left" => B::Click(Left),
+            "right_click" | "mouse_right" => B::Click(Right),
+            "middle_click" | "mouse_middle" => B::Click(Middle),
             "mouse_x1" | "xbutton1" | "mouse4" | "x1_click" => B::Click(X1),
             "mouse_x2" | "xbutton2" | "mouse5" | "x2_click" => B::Click(X2),
             "x1_double_click" => B::DoubleClick(X1),
