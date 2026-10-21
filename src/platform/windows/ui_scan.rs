@@ -76,6 +76,7 @@ impl ScanSession {
 
             generation,
             threshold: plan.vision.merge_iou_threshold,
+            defer_visual: crate::platform::common::contour::sources(plan.strategy, &plan.vision).0,
             output: mailbox,
             wake: Arc::new(move || wake.wake()),
             accepts: Arc::new(move |target| plan.target_center_is_visible(target)),
@@ -194,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn late_accessible_row_retires_both_immediately_published_visual_fragments() {
+    fn late_accessible_row_resolves_unpublished_visual_fragments() {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(41);
         let (events, _) = crate::platform::common::event_queue::channel();
@@ -220,10 +221,10 @@ mod tests {
         };
         visual.push_from(TargetSource::Contour, vec![fragment(20.0)]);
         session.flush();
-        assert_eq!(mailbox.take().unwrap().targets.len(), 1);
+        assert!(mailbox.take().is_none());
         visual.push_from(TargetSource::Contour, vec![fragment(200.0)]);
         session.flush();
-        assert_eq!(mailbox.take().unwrap().targets.len(), 1);
+        assert!(mailbox.take().is_none());
         let row = UiTarget {
             details: None,
             rect: rect(10.0, 95.0, 400.0, 32.0),
@@ -234,7 +235,7 @@ mod tests {
         session.flush();
         let update = mailbox.take().unwrap();
         assert_eq!(update.targets, vec![row]);
-        assert_eq!(update.retired.len(), 2);
+        assert!(update.retired.is_empty());
         visual.finish(UiScanStatus::Success);
         ax.finish(UiScanStatus::Success);
         session.flush();

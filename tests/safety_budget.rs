@@ -79,8 +79,11 @@ use std::path::{Path, PathBuf};
 // single-attribute Copy/adoption now share one ownership scope. A native-only
 // test adds one typed AXValue/CFNull fixture block. Net: two audited blocks,
 // no raw cross-thread references, callbacks or Send/Sync implementations.
-const MAX_UNSAFE_EXPRESSIONS: usize = 411;
-const MAX_UNSAFE_FILES: usize = 42;
+// macOS updates add four audited operations in one native owner: create a
+// kqueue, adopt its fd, submit/wait for a process-exit event, and atomically
+// exchange two complete bundles. No executable bytes are overwritten in place.
+const MAX_UNSAFE_EXPRESSIONS: usize = 415;
+const MAX_UNSAFE_FILES: usize = 43;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
     // with one bounded diagnostic callback into centralized logging.
@@ -95,6 +98,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/autostart.rs", 5),
     ("src/platform/macos/display_link.rs", 4),
     ("src/platform/macos/native.rs", 7),
+    ("src/platform/macos/update_installer/native.rs", 4),
     ("src/platform/macos/overlay.rs", 7),
     ("src/platform/macos/permissions.rs", 5),
     // Shutdown adds only NSObjectProtocol / NSApplicationDelegate conformance on

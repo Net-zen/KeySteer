@@ -19,6 +19,7 @@ mod scan_workers;
 mod screens;
 mod status_item;
 mod ui_scan;
+mod update_installer;
 mod vision;
 mod window_audio;
 mod window_move;
@@ -27,7 +28,9 @@ mod workspace;
 
 /// Own private process modes before normal application startup.
 pub(crate) fn run(application: impl FnOnce() -> std::process::ExitCode) -> std::process::ExitCode {
-    vision::run_internal_ocr_helper().unwrap_or_else(application)
+    update_installer::run_internal_helper()
+        .or_else(vision::run_internal_ocr_helper)
+        .unwrap_or_else(application)
 }
 
 use crate::platform::common::event_queue::{self, Receiver, Sender};
@@ -113,6 +116,7 @@ pub struct MacOsBackend {
     workspace: workspace::Workspace,
     status_item: Option<status_item::StatusItem>,
     update_worker: Option<crate::platform::common::update::UpdateWorker>,
+    update_ready_signaled: bool,
     window_worker: Option<crate::platform::common::window_session::WindowWorker>,
     held_buttons: Cell<u8>,
     click_tracker: Arc<Mutex<ClickTracker>>,
@@ -202,6 +206,7 @@ impl MacOsBackend {
             workspace,
             status_item: Some(status_item),
             update_worker: None,
+            update_ready_signaled: false,
             window_worker: None,
             held_buttons: Cell::new(0),
             click_tracker,
@@ -601,6 +606,11 @@ impl Backend for MacOsBackend {
     }
 
     fn poll(&mut self, timeout: Duration) -> Result<Option<BackendEvent>, String> {
+        // Engine has loaded its environment and activated Idle before first poll.
+        if !self.update_ready_signaled {
+            update_installer::signal_ready()?;
+            self.update_ready_signaled = true;
+        }
         self.reap_update_worker();
         let deadline = Instant::now().checked_add(timeout);
         loop {

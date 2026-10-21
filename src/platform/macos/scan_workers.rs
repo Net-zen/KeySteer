@@ -12,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 const STOP_TIMEOUT: Duration = Duration::from_millis(500);
+const OCR_IDLE_TIMEOUT: Duration = Duration::from_secs(6);
 const SOURCES: [TargetSource; 4] = [
     TargetSource::Accessibility,
     TargetSource::SystemOcr,
@@ -44,6 +45,58 @@ pub(crate) struct Signal {
     cancelled: AtomicBool,
     events: mpsc::Sender<Event>,
     process: Mutex<ProcessSlots>,
+    idle: Arc<Mutex<IdleProcesses>>,
+}
+
+#[derive(Default)]
+struct IdleProcesses {
+    children: Vec<IdleProcess>,
+    limit: usize,
+}
+struct IdleProcess {
+    child: Option<Child>,
+    input: Option<ChildStdin>,
+    output: Option<ChildStdout>,
+    until: Instant,
+}
+impl Drop for IdleProcess {
+    fn drop(&mut self) {
+        self.input.take();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            if let Err(error) = child.wait() {
+                crate::support::logging::report_error("macos-ocr-process", error.to_string());
+            }
+        }
+    }
+}
+impl IdleProcesses {
+    fn expired(&mut self, all: bool) -> Vec<IdleProcess> {
+        let now = Instant::now();
+        let mut expired = Vec::new();
+        let mut index = 0;
+        while index < self.children.len() {
+            if all || self.children[index].until <= now || index >= self.limit {
+                expired.push(self.children.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        expired
+    }
+}
+// This guard belongs to the OCR source thread, including during unwinding.
+// Neither idle expiry nor shutdown reaps children on the engine thread.
+struct IdleCleanup<'a>(&'a Mutex<IdleProcesses>);
+impl Drop for IdleCleanup<'_> {
+    fn drop(&mut self) {
+        let children = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .expired(true);
+        drop(children);
+    }
 }
 // Inline capacity avoids allocation on dual-display scans; it is not a limit.
 type ProcessSlots = SmallVec<[ProcessSlot; 2]>;
@@ -57,11 +110,16 @@ pub(super) struct Process<'a> {
     slot: usize,
     pub(super) input: Option<ChildStdin>,
     pub(super) output: Option<ChildStdout>,
+    reusable: bool,
+}
+impl Process<'_> {
+    /// Called only after every tile and the frame terminator were validated.
+    pub(super) fn completed(&mut self) {
+        self.reusable = true;
+    }
 }
 impl Drop for Process<'_> {
     fn drop(&mut self) {
-        // EOF also terminates the helper if the parent dies during native OCR.
-        self.input.take();
         let child = {
             let mut slots = self
                 .signal
@@ -70,16 +128,30 @@ impl Drop for Process<'_> {
                 .unwrap_or_else(|e| e.into_inner());
             slots[self.slot].child.take()
         };
-        if let Some(mut child) = child {
-            let _ = child.kill();
-            // Only this background source reaps its child; never hold the
-            // cancellation lock or wait for Vision itself to return.
-            if let Err(error) = child.wait() {
-                crate::support::logging::report_error("macos-ocr-process", error.to_string());
+        let mut owner = Some(IdleProcess {
+            child,
+            input: self.input.take(),
+            output: self.output.take(),
+            until: Instant::now() + OCR_IDLE_TIMEOUT,
+        });
+        if self.reusable
+            && owner
+                .as_ref()
+                .is_some_and(|owner| owner.input.is_some() && owner.output.is_some())
+            && !self.signal.load(Ordering::Acquire)
+        {
+            let mut idle = self.signal.idle.lock().unwrap_or_else(|e| e.into_inner());
+            if idle.children.len() < idle.limit
+                && let Some(owner) = owner.take()
+            {
+                idle.children.push(owner);
             }
         }
+        // Incomplete, cancelled and excess owners are killed and reaped here,
+        // outside both locks, before returning their process reservation.
+        drop(owner);
         // A sibling display may already be ready to spawn. Keep this slot
-        // reserved until the old OS process is actually reaped, so even that
+        // reserved until its owner is cached or reaped, so even that
         // handoff cannot briefly exceed the process/memory budget.
         self.signal
             .process
@@ -89,6 +161,14 @@ impl Drop for Process<'_> {
     }
 }
 impl Signal {
+    pub(super) fn reuse_processes(&self, limit: usize) {
+        let expired = {
+            let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+            idle.limit = limit.min(MAX_OCR_IN_FLIGHT);
+            idle.expired(false)
+        };
+        drop(expired);
+    }
     pub(super) fn load(&self, order: Ordering) -> bool {
         self.cancelled.load(order)
     }
@@ -119,8 +199,25 @@ impl Signal {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000); // Host regression: no console window.
         }
+        let mut cached = self
+            .idle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .children
+            .pop();
+        if cached.as_mut().is_some_and(|owner| {
+            owner.until <= Instant::now()
+                || !matches!(owner.child.as_mut().map(Child::try_wait), Some(Ok(None)))
+        }) {
+            drop(cached.take());
+        }
         // Spawn outside the cancellation lock: exiting never waits for exec.
-        let spawned = command.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn();
+        let spawned = if let Some(child) = cached.as_mut().and_then(|owner| owner.child.take()) {
+            Ok(child)
+        } else {
+            drop(cached.take());
+            command.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()
+        };
         let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
@@ -128,8 +225,14 @@ impl Signal {
                 return Err(format!("cannot start OCR process: {error}"));
             }
         };
-        let input = child.stdin.take();
-        let output = child.stdout.take();
+        let input = cached
+            .as_mut()
+            .and_then(|owner| owner.input.take())
+            .or_else(|| child.stdin.take());
+        let output = cached
+            .as_mut()
+            .and_then(|owner| owner.output.take())
+            .or_else(|| child.stdout.take());
         let mut slots = self.process.lock().unwrap_or_else(|e| e.into_inner());
         if input.is_none() || output.is_none() {
             drop(slots);
@@ -151,6 +254,7 @@ impl Signal {
             slot,
             input,
             output,
+            reusable: false,
         })
     }
 
@@ -183,16 +287,52 @@ struct State {
 struct Shared {
     state: Mutex<State>,
     ready: [Condvar; SOURCES.len()],
+    idle: Arc<Mutex<IdleProcesses>>,
 }
 impl Shared {
     fn run(&self, index: usize) {
+        let ocr = SOURCES[index] == TargetSource::SystemOcr;
+        let _cleanup = ocr.then(|| IdleCleanup(self.idle.as_ref()));
         loop {
+            if ocr {
+                let expired = self
+                    .idle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .expired(false);
+                drop(expired);
+            }
             let Task { signal, work } = {
                 let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                while state.pending[index].is_none() && !state.stopping {
-                    state = self.ready[index]
-                        .wait(state)
-                        .unwrap_or_else(|e| e.into_inner());
+                if state.pending[index].is_none() && !state.stopping {
+                    let until = ocr
+                        .then(|| {
+                            self.idle
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .children
+                                .iter()
+                                .map(|owner| owner.until)
+                                .min()
+                        })
+                        .flatten();
+                    if let Some(until) = until {
+                        drop(
+                            self.ready[index]
+                                .wait_timeout(
+                                    state,
+                                    until.saturating_duration_since(Instant::now()),
+                                )
+                                .unwrap_or_else(|e| e.into_inner()),
+                        );
+                    } else {
+                        drop(
+                            self.ready[index]
+                                .wait(state)
+                                .unwrap_or_else(|e| e.into_inner()),
+                        );
+                    }
+                    continue;
                 }
                 if state.stopping {
                     return;
@@ -261,7 +401,8 @@ impl Shared {
 }
 
 /// One executing task and one replaceable latest task for each fixed source.
-/// Idle threads retain no screenshot or native request.
+/// Idle threads retain no screenshot or native request; completed OCR helpers
+/// can retain model state for a short, bounded reuse window.
 #[derive(Default)]
 pub(crate) struct Workers {
     shared: Arc<Shared>,
@@ -291,6 +432,7 @@ impl Workers {
             cancelled: AtomicBool::new(false),
             events: sender,
             process: Mutex::new(ProcessSlots::default()),
+            idle: Arc::clone(&self.shared.idle),
         });
         let work: Work = Arc::new(work);
         let mut batch = Batch {
@@ -485,10 +627,18 @@ mod tests {
     #[test]
     #[ignore = "child-process fixture; invoked only by the cancellation regression"]
     fn ocr_process_child_fixture() {
-        use std::io::Write;
+        use std::io::{BufRead, Write};
         let Ok(mode) = std::env::var("KEYSTEER_OCR_CHILD_FIXTURE") else {
             return;
         };
+        if mode == "reuse" {
+            for line in std::io::stdin().lock().lines() {
+                let line = line.unwrap();
+                println!("frame:{}:{line}", std::process::id());
+                std::io::stdout().flush().unwrap();
+            }
+            return;
+        }
         if mode == "hang" {
             std::io::stdout().write_all(b"ocr-ready\n").unwrap();
             std::io::stdout().flush().unwrap();
@@ -499,6 +649,75 @@ mod tests {
         assert_eq!(mode, "fresh");
         std::io::stdout().write_all(b"fresh-result\n").unwrap();
         std::io::stdout().flush().unwrap();
+    }
+
+    #[test]
+    fn completed_helpers_are_reused_across_generations_and_expire_on_the_worker() {
+        use std::io::{BufRead, BufReader, Write};
+        let workers = Workers::default();
+        let (sent, received) = mpsc::channel();
+        let frame = |sent: mpsc::Sender<u32>| {
+            move |_: TargetSource, signal: &Signal| {
+                signal.reuse_processes(1);
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args(["--ignored", "--nocapture", "ocr_process_child_fixture"])
+                    .env("KEYSTEER_OCR_CHILD_FIXTURE", "reuse");
+                let mut process = signal.process(&mut command).unwrap();
+                writeln!(process.input.as_mut().unwrap(), "next").unwrap();
+                let mut output = BufReader::new(process.output.take().unwrap());
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    assert_ne!(output.read_line(&mut line).unwrap(), 0);
+                    if let Some(id) = line
+                        .strip_prefix("frame:")
+                        .and_then(|line| line.strip_suffix(":next\n"))
+                    {
+                        sent.send(id.parse().unwrap()).unwrap();
+                        break;
+                    }
+                }
+                process.output = Some(output.into_inner());
+                process.completed();
+                UiScanStatus::Success
+            }
+        };
+        let first = workers.start(&[TargetSource::SystemOcr], frame(sent.clone()));
+        let id = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Keep the old Batch alive until the next generation owns its helper.
+        // Wait for completed ownership transfer without consuming that Batch.
+        let transfer_deadline = Instant::now() + Duration::from_secs(5);
+        while workers.shared.idle.lock().unwrap().children.is_empty() {
+            assert!(
+                Instant::now() < transfer_deadline,
+                "helper was not returned"
+            );
+            std::thread::yield_now();
+        }
+        let second = workers.start(&[TargetSource::SystemOcr], frame(sent.clone()));
+        drop(first);
+        assert_eq!(received.recv_timeout(Duration::from_secs(5)).unwrap(), id);
+        assert_eq!(
+            second.wait(Instant::now() + Duration::from_secs(5), || false)[0],
+            UiScanStatus::Success
+        );
+        {
+            let mut idle = workers.shared.idle.lock().unwrap();
+            assert_eq!(idle.children.len(), 1);
+            idle.children[0].until = Instant::now();
+        }
+        workers.shared.ready[1].notify_one();
+        let third = workers.start(&[TargetSource::SystemOcr], frame(sent));
+        assert_ne!(received.recv_timeout(Duration::from_secs(5)).unwrap(), id);
+        assert_eq!(
+            third.wait(Instant::now() + Duration::from_secs(5), || false)[0],
+            UiScanStatus::Success
+        );
+        workers
+            .stop_until(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        assert!(workers.shared.idle.lock().unwrap().children.is_empty());
     }
 
     #[test]
@@ -593,6 +812,7 @@ mod tests {
             cancelled: AtomicBool::new(false),
             events,
             process: Mutex::new(ProcessSlots::default()),
+            idle: Arc::default(),
         };
         let command = || {
             let mut command = Command::new(std::env::current_exe().unwrap());
@@ -657,6 +877,7 @@ mod tests {
             cancelled: AtomicBool::new(false),
             events,
             process: Mutex::new(ProcessSlots::default()),
+            idle: Arc::default(),
         };
         signal.cancel();
         let mut command = Command::new("this-ocr-executable-must-never-be-resolved");
@@ -698,6 +919,7 @@ mod tests {
                 id: 2,
                 generation,
                 threshold: 0.5,
+                defer_visual: false,
                 output: Arc::clone(&output),
                 wake: Arc::new(|| {}),
                 accepts: Arc::new(|_| true),
@@ -893,6 +1115,7 @@ mod tests {
             id,
             generation,
             threshold: 0.5,
+            defer_visual: false,
             output: Arc::clone(&output),
             wake: Arc::new(|| {}),
             accepts: Arc::new(|_| true),

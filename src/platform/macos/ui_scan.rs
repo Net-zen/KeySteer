@@ -201,6 +201,11 @@ impl PartialPublisher {
 
             generation,
             threshold: job.request.vision.merge_iou_threshold,
+            defer_visual: crate::platform::common::contour::sources(
+                job.request.strategy,
+                &job.request.vision,
+            )
+            .0,
             output: Arc::clone(&job.mailbox),
             wake: Arc::new(move || wake.wake()),
             accepts: Arc::new(move |target| {

@@ -109,6 +109,8 @@ pub enum UpdateCheckResult {
         current: String,
         latest: String,
         path: PathBuf,
+        /// Digest supplied directly by the publisher's release API, if available.
+        sha256: Option<String>,
     },
     Failed(String),
 }

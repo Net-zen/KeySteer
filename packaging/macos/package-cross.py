@@ -12,6 +12,8 @@ import tempfile
 import tomllib
 import zipfile
 
+from signing import sign_bundle
+
 
 CPUS = {'aarch64-apple-darwin': 0x0100000C, 'x86_64-apple-darwin': 0x01000007}
 
@@ -108,27 +110,15 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix='macos-package-', dir=dist) as staging:
         app, version = make_bundle(root, target, Path(staging))
         archive = Path(staging) / f'KeySteer-v{version}-{target}.zip'
+        signed = sign_bundle(app, notarize=bool(notary_key))
+        # rcodesign checks Mach-O integrity; native macOS validation remains
+        # necessary for the complete bundle and platform trust policy.
+        verify_signature(app / 'Contents/MacOS/KeySteer', ad_hoc=not signed)
+        if not (app / 'Contents/_CodeSignature/CodeResources').is_file():
+            raise ValueError('Signing did not produce bundle resource seals')
+        make_archive(app.parent, archive)
         with tempfile.TemporaryDirectory(prefix='keysteer-macos-sign-') as credentials:
             secret_dir = Path(credentials)
-            sign = ['rcodesign', 'sign']
-            if certificate:
-                p12 = secret_dir / 'identity.p12'
-                password = secret_dir / 'password'
-                p12.write_bytes(base64.b64decode(certificate, validate=True))
-                password.write_text(os.environ.get('MACOS_SIGNING_PASSWORD', '') + '\n')
-                p12.chmod(0o600)
-                password.chmod(0o600)
-                sign += ['--p12-file', str(p12), '--p12-password-file', str(password),
-                         '--code-signature-flags', 'runtime']
-                if notary_key:
-                    sign += ['--for-notarization']
-            subprocess.run([*sign, str(app)], check=True)
-            # rcodesign verifies Mach-O signatures, not Apple's full bundle or
-            # Gatekeeper policy. Native validation is still a release test.
-            verify_signature(app / 'Contents/MacOS/KeySteer', ad_hoc=not certificate)
-            if not (app / 'Contents/_CodeSignature/CodeResources').is_file():
-                raise ValueError('Signing did not produce bundle resource seals')
-            make_archive(app.parent, archive)
             if notary_key:
                 api_key = secret_dir / 'notary.json'
                 api_key.write_bytes(base64.b64decode(notary_key, validate=True))

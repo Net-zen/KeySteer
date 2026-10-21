@@ -1,7 +1,6 @@
 //! Native top-status-item controls.
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -36,7 +35,8 @@ struct StatusTargetIvars {
     note: RefCell<Option<NotePanel>>,
     cached_note: RefCell<Option<NotePanel>>,
     update_alert: RefCell<Option<Retained<NSPanel>>>,
-    downloaded_update: RefCell<Option<PathBuf>>,
+    downloaded_update: RefCell<Option<super::update_installer::Download>>,
+    installer: RefCell<Option<super::update_installer::Installer>>,
 }
 
 struct NotePanel {
@@ -177,26 +177,29 @@ define_class!(
             self.dismiss_update_alert();
         }
 
-        #[unsafe(method(showDownloadedUpdate:))]
-        fn show_downloaded_update(&self, _sender: Option<&AnyObject>) {
-            let downloaded_update = self.ivars().downloaded_update.borrow();
-            let Some(path) = downloaded_update.as_deref() else {
-                return;
-            };
-            let full_path = NSString::from_str(&path.to_string_lossy());
-            let root_path = NSString::from_str(
-                &path
-                    .parent()
-                    .unwrap_or(path)
-                    .to_string_lossy(),
-            );
-            if !NSWorkspace::sharedWorkspace()
-                .selectFile_inFileViewerRootedAtPath(Some(&full_path), &root_path)
+        #[unsafe(method(installDownloadedUpdate:))]
+        fn install_downloaded_update(&self, _sender: Option<&AnyObject>) {
+            let Some(download) = self.ivars().downloaded_update.borrow().clone() else { return; };
+            let sender = SENDER.get().and_then(|s| s.lock().unwrap_or_else(|e| e.into_inner()).clone());
+            let Some(sender) = sender else { return; };
             {
-                crate::support::logging::report_error(
-                    "macos-update",
-                    format!("Finder could not reveal {}", path.display()),
-                );
+                let mut installer = self.ivars().installer.borrow_mut();
+                if installer.as_mut().is_some_and(|worker| !worker.finished()) { return; }
+                installer.take();
+            }
+            match super::update_installer::Installer::start(download, sender) {
+                Ok(worker) => {
+                    *self.ivars().installer.borrow_mut() = Some(worker);
+                    self.dismiss_update_alert();
+                    if let Err(error) = show_panel(self.mtm(), self, "Preparing KeySteer update", "KeySteer will restart after the update has been verified. Your settings will be preserved.", PanelAction::None) {
+                        crate::support::logging::report_error("macos-update", error);
+                    }
+                }
+                Err(error) => {
+                    if let Err(presentation) = show_panel(self.mtm(), self, "Could not install update", &error, PanelAction::None) {
+                        crate::support::logging::report_error("macos-update", presentation);
+                    }
+                }
             }
         }
 
@@ -246,12 +249,17 @@ impl StatusTarget {
             cached_note: RefCell::new(None),
             update_alert: RefCell::new(None),
             downloaded_update: RefCell::new(None),
+            installer: RefCell::new(None),
         });
         // SAFETY: The NSObject superclass is initialized after Rust ivars.
         unsafe { msg_send![super(this), init] }
     }
 
-    fn show_update_alert(&self, alert: Retained<NSPanel>, downloaded_update: Option<PathBuf>) {
+    fn show_update_alert(
+        &self,
+        alert: Retained<NSPanel>,
+        downloaded_update: Option<super::update_installer::Download>,
+    ) {
         self.dismiss_update_alert();
         *self.ivars().downloaded_update.borrow_mut() = downloaded_update;
         *self.ivars().update_alert.borrow_mut() = Some(alert);
@@ -612,16 +620,16 @@ impl StatusItem {
         self.set_update_menu(&title, true);
         match result {
             UpdateCheckResult::UpdateDownloaded {
-                current,
                 latest,
                 path,
+                sha256,
+                ..
             } => self.show_alert(
-                "KeySteer update downloaded",
+                "KeySteer update ready",
                 &format!(
-                    "KeySteer {latest} was saved to {}. Quit KeySteer, extract the ZIP, then move the new app to Applications to replace version {current}.",
-                    path.display()
+                    "Install KeySteer {latest} and restart? Your settings will be preserved. If startup fails, the previous app will be restored.\n\nLocally signed builds may require permission approval again."
                 ),
-                Some(path),
+                Some(&super::update_installer::Download { path: path.clone(), latest: latest.clone(), sha256: sha256.clone() }),
             ),
             UpdateCheckResult::UpToDate { current } => self.show_alert(
                 "KeySteer is up to date",
@@ -643,12 +651,12 @@ impl StatusItem {
         &self,
         title: &str,
         details: &str,
-        downloaded_update: Option<&Path>,
+        downloaded_update: Option<&super::update_installer::Download>,
     ) -> Result<(), String> {
         let mtm = MainThreadMarker::new().ok_or_else(|| {
             "update result must be presented on the macOS main thread".to_string()
         })?;
-        let action = downloaded_update.map_or(PanelAction::None, PanelAction::RevealInFinder);
+        let action = downloaded_update.map_or(PanelAction::None, PanelAction::Install);
         show_panel(mtm, &self._target, title, details, action)
     }
 }
@@ -656,7 +664,7 @@ impl StatusItem {
 #[derive(Clone, Copy)]
 enum PanelAction<'a> {
     None,
-    RevealInFinder(&'a Path),
+    Install(&'a super::update_installer::Download),
 }
 
 fn show_standard_about(mtm: MainThreadMarker) {
@@ -774,17 +782,21 @@ fn show_panel(
         // matching Objective-C signatures; AppKit retains no Rust borrow.
         let (button, secondary_button) = unsafe {
             let button = NSButton::buttonWithTitle_target_action(
-                &NSString::from_str("OK"),
+                &NSString::from_str(if matches!(action, PanelAction::Install(_)) {
+                    "Later"
+                } else {
+                    "OK"
+                }),
                 Some(target),
                 Some(sel!(dismissUpdateAlert:)),
                 mtm,
             );
             let secondary_button = match action {
                 PanelAction::None => None,
-                PanelAction::RevealInFinder(_) => Some(NSButton::buttonWithTitle_target_action(
-                    &NSString::from_str("Show in Finder"),
+                PanelAction::Install(_) => Some(NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str("Install and Restart"),
                     Some(target),
-                    Some(sel!(showDownloadedUpdate:)),
+                    Some(sel!(installDownloadedUpdate:)),
                     mtm,
                 )),
             };
@@ -794,20 +806,27 @@ fn show_panel(
             NSPoint::new(412.0, 16.0),
             NSSize::new(80.0, 32.0),
         ));
-        button.setKeyEquivalent(&NSString::from_str("\r"));
+        button.setKeyEquivalent(&NSString::from_str(
+            if matches!(action, PanelAction::Install(_)) {
+                "\u{1b}"
+            } else {
+                "\r"
+            },
+        ));
         content.addSubview(&button);
 
         if let Some(secondary_button) = secondary_button {
             secondary_button.setFrame(NSRect::new(
-                NSPoint::new(276.0, 16.0),
-                NSSize::new(124.0, 32.0),
+                NSPoint::new(224.0, 16.0),
+                NSSize::new(176.0, 32.0),
             ));
+            secondary_button.setKeyEquivalent(&NSString::from_str("\r"));
             content.addSubview(&secondary_button);
         }
 
         panel.setContentView(Some(&content));
         let downloaded_update = match action {
-            PanelAction::RevealInFinder(path) => Some(path.to_path_buf()),
+            PanelAction::Install(download) => Some(download.clone()),
             PanelAction::None => None,
         };
         target.show_update_alert(panel, downloaded_update);
@@ -876,6 +895,7 @@ fn status_icon(size: f64) -> Option<Retained<NSImage>> {
 
 impl Drop for StatusItem {
     fn drop(&mut self) {
+        self._target.ivars().installer.borrow_mut().take();
         self.release_text_prompt();
         self._target.dismiss_update_alert();
         if let Some(mutex) = SENDER.get() {

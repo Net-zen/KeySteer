@@ -58,6 +58,7 @@ pub(crate) struct Options {
 
     pub(crate) generation: u64,
     pub(crate) threshold: f64,
+    pub(crate) defer_visual: bool,
     pub(crate) output: Arc<ScanMailbox>,
     pub(crate) wake: Wake,
     pub(crate) accepts: Accept,
@@ -418,7 +419,7 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
             if let Some((old, _, _)) = current.take() {
                 old.inbox.discard();
             }
-            let accumulator = ScanAccumulator::new();
+            let accumulator = ScanAccumulator::new().defer_visual(job.options.defer_visual);
             current = Some((job, accumulator, Budget::new(shared.maximum)));
         }
         if stopping {
@@ -481,11 +482,19 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                     } else {
                         UiScanStatus::ContextChanged
                     };
+                    let targets = if status == UiScanStatus::ContextChanged {
+                        Vec::new()
+                    } else {
+                        accumulator.take_deferred()
+                    };
                     accumulator.finish();
+                    if job.inbox.cancelled.load(Ordering::Acquire) {
+                        continue;
+                    }
                     if job.options.output.publish(
                         job.options.generation,
                         job.options.id,
-                        Vec::new(),
+                        targets,
                         status,
                     ) {
                         (job.options.wake)();
@@ -524,6 +533,7 @@ mod tests {
             id,
             generation,
             threshold: 0.5,
+            defer_visual: false,
             output: Arc::clone(output),
             wake: Arc::new(|| {}),
             accepts: Arc::new(|_| true),
@@ -609,6 +619,66 @@ mod tests {
         assert_eq!(terminal.status, UiScanStatus::Success);
         assert!(terminal.targets.is_empty());
         assert!(output.take().is_none());
+    }
+    #[test]
+    fn deferred_candidates_flush_on_completion_but_never_after_cancellation() {
+        for status in [
+            UiScanStatus::Success,
+            UiScanStatus::TimedOut,
+            UiScanStatus::Failed("OCR failed".into()),
+            UiScanStatus::ContextChanged,
+        ] {
+            let output = Arc::new(ScanMailbox::default());
+            let generation = output.begin(1);
+            let mut worker = Worker::default();
+            let mut config = options(&output, 1, generation);
+            config.defer_visual = true;
+            let sink = worker.prepare(generation).unwrap().begin(config);
+            sink.submit(TargetSource::Contour, targets(0, 4));
+            sink.flush();
+            assert!(output.take().is_none());
+            sink.finish(status.clone());
+            sink.flush();
+            let result = output.take().unwrap();
+            assert_eq!(result.status, status);
+            assert_eq!(
+                result.targets.len(),
+                if status == UiScanStatus::ContextChanged {
+                    0
+                } else {
+                    4
+                }
+            );
+            assert!(result.retired.is_empty());
+        }
+
+        let output = Arc::new(ScanMailbox::default());
+        let generation = output.begin(1);
+        let mut worker = Worker::default();
+        let mut config = options(&output, 1, generation);
+        config.defer_visual = true;
+        let old = worker.prepare(generation).unwrap().begin(config);
+        old.submit(TargetSource::Contour, targets(0, 4));
+        old.flush();
+        worker.cancel(1);
+        let generation = output.begin(2);
+        let latest = worker
+            .prepare(generation)
+            .unwrap()
+            .begin(options(&output, 2, generation));
+        latest.submit(TargetSource::Contour, targets(4, 1));
+        latest.flush();
+        assert_eq!(
+            output.take().unwrap().targets.len(),
+            1,
+            "contour-only remains immediate"
+        );
+        old.finish(UiScanStatus::Success);
+        latest.finish(UiScanStatus::Success);
+        latest.flush();
+        let result = output.take().unwrap();
+        assert_eq!(result.id, 2);
+        assert!(result.targets.is_empty());
     }
     #[test]
     fn empty_and_large_submissions_do_not_starve_other_sources() {

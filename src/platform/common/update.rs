@@ -258,6 +258,12 @@ fn check_latest_release(
         current: current.to_string(),
         latest: latest.version.to_string(),
         path,
+        // Ad-hoc macOS builds have no publisher certificate to compare. Mirror
+        // metadata checks download integrity but cannot establish that identity.
+        sha256: match latest.source {
+            ReleaseSource::GitHub => latest.asset.sha256,
+            ReleaseSource::GhProxy => None,
+        },
     })
 }
 

@@ -578,6 +578,7 @@ pub(super) fn present_update_result(result: &UpdateCheckResult) -> Result<(), St
                     current,
                     latest,
                     path,
+                    ..
                 } => show_message(
                         "KeySteer Update",
                         &format!(
@@ -990,6 +991,7 @@ mod tests {
             current: "0.5.0".into(),
             latest: "0.6.0".into(),
             path: "KeySteer.zip".into(),
+            sha256: None,
         });
         assert_eq!(
             update_menu_entry(),

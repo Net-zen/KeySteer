@@ -1,4 +1,4 @@
-//! Shared fusion; each ready input produces an immediate atomic delta.
+//! Shared fusion; semantic targets stream while provisional geometry settles.
 
 use smallvec::SmallVec;
 
@@ -15,6 +15,10 @@ pub(crate) struct ScanAccumulator {
     ocr_scratch: OcrScratch,
     search_spatial: super::spatial_index::SpatialIndex,
     has_layout_containers: bool,
+    defer_visual: bool,
+    // Parallel to search_targets only when deferral is enabled. Reuse the
+    // canonical cache instead of retaining another copy of visual targets.
+    deferred: Vec<bool>,
 }
 
 pub(crate) struct ScanUpdate {
@@ -34,7 +38,14 @@ impl ScanAccumulator {
             ocr_scratch: OcrScratch::default(),
             search_spatial: super::spatial_index::SpatialIndex::new(64.0, 8.0, 2.0),
             has_layout_containers: false,
+            defer_visual: false,
+            deferred: Vec::new(),
         }
+    }
+
+    pub(crate) fn defer_visual(mut self, enabled: bool) -> Self {
+        self.defer_visual = enabled;
+        self
     }
 
     /// Each input batch has one provenance. Semantic owners can retire an
@@ -149,22 +160,30 @@ impl ScanAccumulator {
             }
         }
         let accepted = targets.len();
-        // The asynchronous fusion scheduler owns processing quanta. Never hold
-        // ready data for another source or a cumulative count boundary here.
-        // Retirements and replacements stay in the same observable transaction.
+        // Fusion order remains unchanged even for unpublished visual candidates.
+        // Only retire identities that have actually reached the consumer.
         let mut previous = Vec::new();
+        let mut visible_retired = Vec::new();
         let preserve_names = !retired.is_empty() && targets.iter().any(needs_replaced_names);
         for &rect in &retired {
+            let mut visible = false;
             self.search_spatial.any_match(rect, |index, old, _| {
                 if old == rect
                     && let Some(target) = self.search_targets[index].take()
-                    && preserve_names
-                    && !target.name.is_empty()
                 {
-                    previous.push((index, target));
+                    visible |= !self.deferred.get(index).copied().unwrap_or(false);
+                    if preserve_names && !target.name.is_empty() {
+                        previous.push((index, target));
+                    }
                 }
                 false
             });
+            if self.defer_visual && visible {
+                visible_retired.push(rect);
+            }
+        }
+        if self.defer_visual {
+            retired = visible_retired;
         }
         // Cache order is publication order, independent of spatial bucket order.
         // Move retired evidence instead of making the mailbox and Hint recover
@@ -209,7 +228,9 @@ impl ScanAccumulator {
             );
             changed.sort_unstable();
             for index in changed {
-                if let Some(target) = &self.search_targets[index] {
+                if !self.deferred.get(index).copied().unwrap_or(false)
+                    && let Some(target) = &self.search_targets[index]
+                {
                     retired.push(target.rect);
                     targets.push(target.clone());
                 }
@@ -258,8 +279,14 @@ impl ScanAccumulator {
                 inherit_replaced_names(target, &descriptions);
                 if let Some(index) = existing {
                     self.search_targets[index] = Some(target.clone());
+                    if self.defer_visual {
+                        self.deferred[index] = provisional_visual(source, target);
+                    }
                 } else if self.search_spatial.store(target.rect) {
                     self.search_targets.push(Some(target.clone()));
+                    if self.defer_visual {
+                        self.deferred.push(provisional_visual(source, target));
+                    }
                 }
             }
         }
@@ -270,6 +297,14 @@ impl ScanAccumulator {
                     .filter(|t| t.role == SemanticRole::Image)
                     .cloned(),
             );
+        }
+        if self.defer_visual {
+            let mut index = 0;
+            targets.retain(|target| {
+                let publish = index >= accepted || !provisional_visual(source, target);
+                index += 1;
+                publish
+            });
         }
         ScanUpdate {
             accepted,
@@ -287,6 +322,9 @@ impl ScanAccumulator {
         self.search_spatial = spatial;
         self.search_targets
             .extend(targets.iter().cloned().map(Some));
+        if self.defer_visual {
+            self.deferred.resize(self.search_targets.len(), false);
+        }
         true
     }
 
@@ -335,8 +373,30 @@ impl ScanAccumulator {
     }
 
     pub(crate) fn finish(&mut self) {
-        // Every push already published its tail. Release scan-only evidence.
+        // On cancellation, unpublished geometry is simply dropped here.
         *self = Self::new();
+    }
+
+    /// Called once at a valid terminal, before releasing scan-only evidence.
+    /// Move surviving candidates with their latest metadata; no replay or
+    /// changed fusion order, extra timer, or retained screenshot is needed.
+    pub(crate) fn take_deferred(&mut self) -> Vec<UiTarget> {
+        self.search_targets
+            .iter_mut()
+            .zip(&mut self.deferred)
+            .filter_map(|(target, deferred)| {
+                std::mem::take(deferred).then(|| target.take()).flatten()
+            })
+            .collect()
+    }
+}
+
+fn provisional_visual(source: TargetSource, target: &UiTarget) -> bool {
+    match source {
+        TargetSource::Contour => target.role != SemanticRole::Image,
+        #[cfg(any(target_os = "macos", test))]
+        TargetSource::NativeRectangles => true,
+        _ => false,
     }
 }
 
@@ -1099,5 +1159,98 @@ mod tests {
         let update = scan.push(TargetSource::Accessibility, vec![native], 0.5);
         assert_eq!(update.targets.len(), 1);
         assert_eq!(update.targets[0].ocr_text(), "thin caption");
+    }
+    #[test]
+    fn deferred_geometry_preserves_final_targets_and_late_metadata() {
+        let visual = |rect| UiTarget {
+            rect,
+            role: SemanticRole::Control,
+            name: String::new(),
+            details: None,
+        };
+        let panel = Rect::new(300., 0., 200., 100.);
+        let sources = [
+            (
+                TargetSource::Contour,
+                vec![
+                    visual(Rect::new(0., 0., 20., 20.)),
+                    visual(Rect::new(30., 0., 20., 20.)),
+                    visual(panel),
+                    visual(Rect::new(600., 0., 80., 30.)),
+                ],
+            ),
+            (
+                TargetSource::SystemOcr,
+                vec![
+                    UiTarget::recognized_text(Rect::new(0., 0., 80., 20.), "文章的一行".into()),
+                    UiTarget::recognized_text(Rect::new(320., 20., 100., 20.), "框内文字".into()),
+                    UiTarget::recognized_text(Rect::new(800., 0., 80., 30.), "矩形标题".into()),
+                ],
+            ),
+            (
+                TargetSource::Accessibility,
+                vec![UiTarget {
+                    rect: Rect::new(600., 0., 80., 30.),
+                    role: SemanticRole::Button,
+                    name: "native action".into(),
+                    details: None,
+                }],
+            ),
+            (
+                TargetSource::NativeRectangles,
+                vec![UiTarget {
+                    rect: Rect::new(800., 0., 80., 30.),
+                    role: SemanticRole::Button,
+                    name: String::new(),
+                    details: None,
+                }],
+            ),
+        ];
+        for order in [[0, 1, 2, 3], [2, 0, 3, 1], [3, 1, 2, 0]] {
+            for chunk in [1, 8] {
+                let mut reference = None;
+                for defer in [false, true] {
+                    let mut scan = ScanAccumulator::new().defer_visual(defer);
+                    let mut visible = Vec::new();
+                    for lane in order {
+                        let (source, targets) = &sources[lane];
+                        for batch in targets.chunks(chunk) {
+                            let update = scan.push(*source, batch.to_vec(), 0.5);
+                            if defer {
+                                assert!(
+                                    update
+                                        .retired
+                                        .iter()
+                                        .all(|r| visible.iter().any(|t: &UiTarget| t.rect == *r))
+                                );
+                                assert!(update.targets.iter().all(|t| t.rect != panel));
+                            }
+                            remove_retired_targets(&mut visible, &update.retired);
+                            visible.extend(update.targets);
+                        }
+                    }
+                    visible.extend(scan.take_deferred());
+                    assert!(scan.take_deferred().is_empty());
+                    assert_eq!(
+                        visible.iter().find(|t| t.rect == panel).unwrap().ocr_text(),
+                        "框内文字"
+                    );
+                    visible.sort_by(|a, b| {
+                        a.rect
+                            .x
+                            .total_cmp(&b.rect.x)
+                            .then(a.rect.y.total_cmp(&b.rect.y))
+                    });
+                    if let Some(reference) = &reference {
+                        assert_eq!(&visible, reference, "order={order:?}, chunk={chunk}");
+                    } else {
+                        reference = Some(visible);
+                    }
+                    scan.finish();
+                    assert_eq!(scan.deferred.capacity(), 0);
+                    assert_eq!(scan.search_targets.capacity(), 0);
+                }
+            }
+        }
     }
 }

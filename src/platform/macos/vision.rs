@@ -477,6 +477,9 @@ fn detect_inner(
             let cancelled = Arc::clone(&cancelled);
             let publish = Arc::clone(&publish);
             move |_, stopped| {
+                if source == TargetSource::SystemOcr {
+                    stopped.reuse_processes(frame_workers);
+                }
                 let cancelled = || stopped.load(Ordering::Acquire) || cancelled();
                 let publish = |targets| publish(source, targets);
                 let provider_config = NativeConfig {
@@ -887,10 +890,14 @@ fn recognize_ocr_image(
                 .map_err(|error| format!("invalid OCR result: {error}"))?;
             match record {
                 OcrMessage::Done => {
-                    return if received.iter().all(|received| *received) {
+                    return if received.iter().all(|received| *received)
+                        && output.buffer().is_empty()
+                    {
+                        process.output = Some(output.into_inner());
+                        process.completed();
                         Ok(UiScanStatus::Success)
                     } else {
-                        Err("OCR process omitted a tile".into())
+                        Err("OCR process omitted a tile or sent data after completion".into())
                     };
                 }
                 OcrMessage::Tile {

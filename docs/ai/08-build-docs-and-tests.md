@@ -88,7 +88,7 @@ Pages 通过 `workflow_call` 在 Build 内执行，同时保留独立手动入�
 
 `.github/actions/setup-llvm` 为两个平台共用官方 LLVM 安装缓存和 apt 下载缓存。LLVM 仅在未命中时下载、验 SHA256、解压，随后裁剪为两平台共用的编译工具、共享库及 Clang 资源目录；安装验证成功即保存。不缓存 LLVM 调试器、分析工具和开发静态库。系统包先检查 runner 已安装内容，只补缺失项，安装失败时才刷新 apt 索引；Windows 签名工具仅在 Windows 任务安装。apt 下载缓存按 runner 镜像版本和包列表复用。SDK/CRT 由 `cargo xwin cache xwin` 独立准备并立即保存。macOS SDK 和 rcodesign 同样在安装后保存。缓存恢复有传输/解压开销，apt 仍需安装；闲置缓存淘汰见上面的部署清理流程。签名证书不进入缓存，项目与依赖每次重新编译。
 
-macOS 默认从 `joseluisq/macosx-sdks` 社区清单自动选择最新 SDK 并校验摘要（可用仓库变量覆盖），配合官方 LLVM 的 Clang 与 Mach-O LLD，在 Linux 编译 Objective-C 桥接并打包。`packaging/macos/prepare-sdk.py` 校验 SDK 结构；`configure-cross.sh` 为目标配置编译器、归档器及链接器；`package-cross.py` 保持应用身份与 ZIP 布局，生成 PNG-backed ICNS，调用 rcodesign 签名并可选公证/装订。默认 ad-hoc 签名与原生工作流一致。配置变量、证书及工具限制见 [Linux macOS 打包](../../packaging/macos/README-cross.md)。
+macOS 默认从 `joseluisq/macosx-sdks` 社区清单自动选择最新 SDK 并校验摘要（可用仓库变量覆盖），配合官方 LLVM 的 Clang 与 Mach-O LLD，在 Linux 编译 Objective-C 桥接并打包。`packaging/macos/prepare-sdk.py` 校验 SDK 结构；`configure-cross.sh` 为目标配置编译器、归档器及链接器；`package-cross.py` 保持应用身份与 ZIP 布局，生成 PNG-backed ICNS，调用 rcodesign 签名并可选公证/装订。两种构建模式共用 `signing.py`：从 P12 提取公开证书、校验源码中的固定 SHA256 指纹，再生成固定 bundle identifier 与叶证书哈希组成的签名规则；公开 DER 与编译规则只存在于临时目录，成功或失败后均清理，无需纳入 Git。CI 使用 `MACOS_SIGNING_P12_BASE64`／`MACOS_SIGNING_PASSWORD`，发布缺少身份时失败，仅非发布构建允许 ad-hoc。原生 GitHub runner 显式开启临时证书的系统信任以验证自签名，普通本地构建不修改信任；自签名不支持 Apple 公证。其他配置与工具限制见 [Linux macOS 打包](../../packaging/macos/README-cross.md)。
 
 Windows x64 固定三个编译级别：兼容版 Rust `target-cpu=x86-64`、C `/clang:-march=x86-64`；AVX2 版两者使用 `x86-64-v3`；AVX-512 版两者使用 `x86-64-v4`。不使用 runner 的 `native`，兼容版遵循工具链的 Windows x64 基线且不要求 AVX／AVX2／AVX-512。Windows ARM64 和 macOS 保持各目标默认 CPU。release 的 O3、fat LTO 和单代码生成单元不变。
 

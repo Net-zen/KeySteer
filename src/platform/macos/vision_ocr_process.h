@@ -2,6 +2,7 @@
 // initialization, screen capture, temporary images or extra packaged binary.
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/event.h>
 #include <signal.h>
 #include <stdio.h>
 
@@ -109,10 +110,18 @@ static void releaseOcrPixels(void *info, const void *bytes, size_t size) {
 
 static void *watchOcrParent(void *unused) {
     (void)unused;
-    // The parent keeps stdin open until the scan is done. EOF is also an
-    // event-driven parent-death signal while any Vision thread is stuck.
-    char byte;
-    while (read(STDIN_FILENO, &byte, 1) < 0 && errno == EINTR) {}
+    // Observe pipe EOF without consuming the next frame's bytes. EV_CLEAR
+    // avoids spinning on unread input while Vision is busy or stuck.
+    int queue = kqueue();
+    if (queue < 0) _exit(1);
+    struct kevent input, event;
+    EV_SET(&input, STDIN_FILENO, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(queue, &input, 1, NULL, 0, NULL) < 0) _exit(1);
+    for (;;) {
+        int count = kevent(queue, NULL, 0, &event, 1, NULL);
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0 || (count > 0 && (event.flags & (EV_EOF | EV_ERROR)))) break;
+    }
     _exit(1);
 }
 
@@ -122,9 +131,8 @@ static bool writeOcrMessage(NSDictionary *message) {
         && writeOcrBytes(STDOUT_FILENO, "\n", 1);
 }
 
-int32_t NmkRunVisionOcrProcess(void) {
+static int32_t recognizeOcrFrame(void) {
     @autoreleasepool {
-        signal(SIGPIPE, SIG_IGN);
         char metadata[65536];
         if (fgets(metadata, sizeof(metadata), stdin) == NULL || strchr(metadata, '\n') == NULL) return 1;
         NSData *json = [NSData dataWithBytes:metadata length:strlen(metadata)];
@@ -154,9 +162,6 @@ int32_t NmkRunVisionOcrProcess(void) {
         if (space != NULL) CGColorSpaceRelease(space);
         CGDataProviderRelease(provider);
         if (image == NULL) return 1;
-        pthread_t parentWatcher;
-        if (pthread_create(&parentWatcher, NULL, watchOcrParent, NULL) != 0) { CGImageRelease(image); return 1; }
-        pthread_detach(parentWatcher);
         NmkSetLatestVisionScan(1);
         NSLock *output = [[NSLock alloc] init];
         _Atomic size_t next = 0;
@@ -213,4 +218,15 @@ int32_t NmkRunVisionOcrProcess(void) {
         CGImageRelease(image);
         return writeOcrMessage(@{@"kind": @"done"}) ? 0 : 1;
     }
+}
+
+int32_t NmkRunVisionOcrProcess(void) {
+    signal(SIGPIPE, SIG_IGN);
+    pthread_t parentWatcher;
+    if (pthread_create(&parentWatcher, NULL, watchOcrParent, NULL) != 0) return 1;
+    pthread_detach(parentWatcher);
+    // Each frame drains its pixels, requests and results before accepting the
+    // next header. Only Vision's process-local model state survives reuse.
+    while (recognizeOcrFrame() == 0) {}
+    return 1;
 }

@@ -17,7 +17,7 @@ case "$target" in
   *) echo "unsupported macOS target: $target" >&2; exit 2 ;;
 esac
 
-for tool in cargo codesign ditto iconutil plutil sips; do
+for tool in cargo codesign ditto iconutil plutil sips python3; do
   command -v "$tool" >/dev/null || {
     echo "required packaging tool is missing: $tool" >&2
     exit 1
@@ -83,16 +83,10 @@ iconutil -c icns "$iconset" -o "$app/Contents/Resources/KeySteer.icns"
 
 plutil -lint "$app/Contents/Info.plist"
 
-# An ad-hoc signature is enough for local double-click builds. Release builds
-# should provide a stable Developer ID identity so TCC permissions survive
-# upgrades and Gatekeeper can verify the publisher.
-identity="${KEYSTEER_CODESIGN_IDENTITY:--}"
-sign_args=(--force --sign "$identity")
-if [[ "$identity" != "-" ]]; then
-  sign_args+=(--options runtime --timestamp)
-fi
-codesign "${sign_args[@]}" "$app"
+# Native and cross builds derive the same code requirement from the portable P12.
+python3 "$project_root/packaging/macos/signing.py" sign "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
+identity="${KEYSTEER_CODESIGN_IDENTITY:--}"
 
 # Keep the editable shipped profile beside the app in the release archive.
 # macOS application data itself remains in Application Support at runtime.
