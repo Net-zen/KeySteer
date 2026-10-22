@@ -32,7 +32,7 @@ const range = values => `${Math.round(Math.min(...values))}–${Math.round(Math.
 
 从引擎收到按键测到动作请求返回或标签场景提交，不含外部验收截图与屏幕刷新，并非完整的按键到屏幕延迟。
 
-UI Hint 使用真实 Hybrid 识别：单 4K 窗口、400 个按钮的首行标签约 **{{ scenarios.hint_window.overall_ms.toFixed(1) }} 毫秒**提交；双 4K、800 个按钮约 **{{ scenarios.hint_all.overall_ms.toFixed(1) }} 毫秒**完成两屏首行标签提交，后续结果继续补全。
+UI Hint 使用真实 Hybrid 识别：单 4K 窗口、400 个按钮的首行标签约 **{{ scenarios.hint_window.overall_ms.toFixed(1) }} 毫秒**提交；双 4K、800 个按钮约 **{{ scenarios.hint_all.overall_ms.toFixed(1) }} 毫秒**完成两屏首行标签提交。
 
 <PerformanceLatency />
 
@@ -44,23 +44,17 @@ UI Hint 使用真实 Hybrid 识别：单 4K 窗口、400 个按钮的首行标�
 
 启动待机约 **{{ Math.round(memory.idle_mib) }} MiB**，日常操作后约 **{{ range(dailyMemory) }} MiB**，UI Hint 识别后约 **{{ range(hintMemory) }} MiB**。
 
-按任务管理器默认的专用工作集统计；含系统共享部分时，启动约 **{{ memory.idle_working_set_mib.toFixed(1) }} MiB**。识别期间的采样峰值另列于图中。
+按任务管理器默认的专用工作集统计；含系统共享部分时，启动约 **{{ memory.idle_working_set_mib.toFixed(1) }} MiB**。
 
 <PerformanceMemory />
 
 ## 详细数据
 
-“首次”为本场景第一次操作，“重复”为后续使用；“典型”耗时和“操作后”内存取 15 次操作的中位数。各场景的时间单位分别标明。
+“首次”为本场景第一次操作，“重复”为后续使用；“典型”耗时和“操作后”内存取 15 次操作的中位数。
 
 <PerformanceDetails />
 
-<a id="测试条件"></a>
-<a id="如何理解这些数字"></a>
-
 ## 测试说明
-
-<a id="核心-cpu"></a>
-<a id="原生阶段与内存"></a>
 
 响应与内存分批测量，每组覆盖 8 个场景、120 次操作，每场景 3 个进程、每进程 5 次。UI Hint 采用 Hybrid 识别：单窗口 400 个控件，双屏各 400 个。
 

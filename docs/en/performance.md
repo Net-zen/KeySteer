@@ -32,7 +32,7 @@ These measure internal CPU work, excluding system input, recognition, rendering,
 
 Timing runs from engine key receipt to action request return or label scene submission, excluding external verification screenshots and display refresh. These are not full key-to-screen timings.
 
-Real Hybrid recognition submits top-row labels in about **{{ scenarios.hint_window.overall_ms.toFixed(1) }} ms** for one 4K window with 400 buttons, or **{{ scenarios.hint_all.overall_ms.toFixed(1) }} ms** for both 4K displays with 800 buttons. More results continue to arrive.
+Real Hybrid recognition submits top-row labels in about **{{ scenarios.hint_window.overall_ms.toFixed(1) }} ms** for one 4K window with 400 buttons, or **{{ scenarios.hint_all.overall_ms.toFixed(1) }} ms** for both 4K displays with 800 buttons.
 
 <PerformanceLatency />
 
@@ -44,23 +44,17 @@ The table separates label submission on each display from the scan terminal resu
 
 About **{{ Math.round(memory.idle_mib) }} MiB** at startup idle, **{{ range(dailyMemory) }} MiB** after everyday actions, and **{{ range(hintMemory) }} MiB** after UI Hint recognition.
 
-Memory uses Task Manager's default private working set. Including shared memory, startup usage is about **{{ memory.idle_working_set_mib.toFixed(1) }} MiB**. The chart also shows sampled peaks during recognition.
+Memory uses Task Manager's default private working set. Including shared memory, startup usage is about **{{ memory.idle_working_set_mib.toFixed(1) }} MiB**.
 
 <PerformanceMemory />
 
 ## Detailed results
 
-“First” is the scenario's first action; “Repeat” is continued use. “Typical” time and “After” memory are medians across 15 actions. Time units appear beside each scenario.
+“First” is the scenario's first action; “Repeat” is continued use. “Typical” time and “After” memory are medians across 15 actions.
 
 <PerformanceDetails />
 
-<a id="test-conditions"></a>
-<a id="reading-the-results"></a>
-
 ## About these tests
-
-<a id="core-cpu"></a>
-<a id="native-stages-and-memory"></a>
 
 Response and memory are measured in separate batches, each covering eight scenarios and 120 actions: three processes per scenario, five actions per process. UI Hint uses Hybrid recognition, with 400 controls in one window or 400 per display.
 
