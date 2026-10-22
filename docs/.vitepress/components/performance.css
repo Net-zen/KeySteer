@@ -94,6 +94,8 @@
 .vp-doc .ks-perf-table tbody th { font-weight: 500; }
 .vp-doc .ks-perf-table tbody :is(th, td) { background: transparent; }
 .vp-doc .ks-perf-table td { white-space: nowrap; text-align: right; }
+.ks-perf-recognition { overflow-x: auto; }
+.vp-doc .ks-perf-recognition table { min-width: 620px; }
 @media (max-width: 639px) {
   .ks-perf-highlights { grid-template-columns: 1fr; }
   .ks-perf-highlight { gap: 6px; padding: 16px 20px; }

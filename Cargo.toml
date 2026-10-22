@@ -34,7 +34,7 @@ smallvec = { version = "1.16.3", features = ["union"] }
 toml = "1.1.8"
 toml_edit = "0.25.17"
 # update.rs selects NativeTls; its HTTPS connector requires `native-tls`.
-ureq = { version = "3.4.2", default-features = false, features = ["json", "native-tls"] }
+ureq = { version = "3.5.0", default-features = false, features = ["json", "native-tls"] }
 smol_str = "0.3.7"
 rustc-hash = "2.1.3"
 pinyin = { version = "0.11.0", default-features = false, features = ["plain"] }

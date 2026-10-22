@@ -1,15 +1,20 @@
 ---
 title: Performance
-description: Measured KeySteer 0.12.3 response latency and memory usage across everyday actions, single-window recognition, and dual-display UI Hint.
+description: KeySteer 0.12.3 response time and memory usage for everyday actions, single-window UI Hint, and dual-display recognition.
 ---
 
 <script setup>
-import { PerformanceHighlights, PerformanceLatency, PerformanceMemory, PerformanceDetails } from '../.vitepress/components/Performance'
+import { PerformanceHighlights, PerformanceCore, PerformanceLatency, PerformanceRecognition, PerformanceMemory, PerformanceDetails } from '../.vitepress/components/Performance'
+import measurements from '../.vitepress/data/performance.json'
+const { memory, scenarios } = measurements
+const dailyMemory = ['move', 'scroll', 'grid', 'recursive', 'window', 'quick'].map(key => memory.scenarios[key].after_mib)
+const hintMemory = ['hint_window', 'hint_all'].map(key => memory.scenarios[key].after_mib)
+const range = values => `${Math.round(Math.min(...values))}–${Math.round(Math.max(...values))}`
 </script>
 
 # Performance
 
-**Responsive controls. Fast recognition across two displays.**
+**Core processing in nanoseconds. A light memory footprint.**
 
 <PerformanceHighlights />
 
@@ -17,21 +22,35 @@ Measured with KeySteer 0.12.3 on Windows.
 
 ## Response time
 
-Scrolling, targeting, and window actions typically respond in **8–17 ms**. First labels appear in about **143 ms** with 400 controls in one window, or **225 ms** on both displays with 800 controls across two 4K displays. Start typing as soon as you see your target.
+Core key dispatch and movement frame calculation take **nanoseconds**; label creation from ready targets takes **microseconds**.
+
+<PerformanceCore />
+
+These measure internal CPU work, excluding system input, recognition, rendering, and refresh.
+
+## Native stage measurements
+
+Timing runs from engine key receipt to action request return or label scene submission, excluding external verification screenshots and display refresh. These are not full key-to-screen timings.
+
+Real Hybrid recognition submits top-row labels in about **{{ scenarios.hint_window.overall_ms.toFixed(1) }} ms** for one 4K window with 400 buttons, or **{{ scenarios.hint_all.overall_ms.toFixed(1) }} ms** for both 4K displays with 800 buttons. More results continue to arrive.
 
 <PerformanceLatency />
 
+The table separates label submission on each display from the scan terminal result, all in milliseconds. Every scan verifies all targets, including 400 buttons per display.
+
+<PerformanceRecognition />
+
 ## Memory usage
 
-About **12 MiB** at startup idle, **16–19 MiB** after everyday actions, and **27–31 MiB** after UI Hint recognition. Recognition briefly uses more memory, so the chart also shows the highest usage recorded during testing.
+About **{{ Math.round(memory.idle_mib) }} MiB** at startup idle, **{{ range(dailyMemory) }} MiB** after everyday actions, and **{{ range(hintMemory) }} MiB** after UI Hint recognition.
 
-Memory uses the private working set shown by default in Task Manager. Including the parts shared with Windows, startup usage is about **38.1 MiB**.
+Memory uses Task Manager's default private working set. Including shared memory, startup usage is about **{{ memory.idle_working_set_mib.toFixed(1) }} MiB**. The chart also shows sampled peaks during recognition.
 
 <PerformanceMemory />
 
 ## Detailed results
 
-“First” is the first test action after the app is ready; “Repeat” is continued use. “Typical” response and “After” memory show the medians across repeated tests.
+“First” is the scenario's first action; “Repeat” is continued use. “Typical” time and “After” memory are medians across 15 actions. Time units appear beside each scenario.
 
 <PerformanceDetails />
 
@@ -40,10 +59,13 @@ Memory uses the private working set shown by default in Task Manager. Including 
 
 ## About these tests
 
-Response and memory were measured in separate batches, each covering eight scenarios and 120 actions: three processes per scenario, with five actions per process. UI Hint used Hybrid recognition, with 400 controls in one window or 400 per display.
+<a id="core-cpu"></a>
+<a id="native-stages-and-memory"></a>
 
-Everyday response and memory use the earlier full-scenario retest; UI Hint response uses the post-fix, same-scene A/B retest. Each process waits three seconds after startup before its first action.
+Response and memory are measured in separate batches, each covering eight scenarios and 120 actions: three processes per scenario, five actions per process. UI Hint uses Hybrid recognition, with 400 controls in one window or 400 per display.
 
-- **Response:** from a test keypress to a picture change; pointer movement uses position changes. Physical keyboard and monitor delays are excluded.
-- **Recognition:** fixed top-row label regions are observed, using the slower display for dual-display results. More labels continue to arrive; this is not full-scan completion time. Search and exit time are separate.
-- **Memory:** KeySteer only, excluding other programs and graphics memory. The highest value is the highest usage sampled during testing.
+Native response tests wait three seconds after engine readiness; memory tests wait three seconds after startup. The required modes are prepared before the first action.
+
+- **Response:** from engine receipt of the test key to action request return or label scene submission. Includes measurement overhead, excluding later system execution and display refresh.
+- **Recognition:** records label submission in fixed top-row regions, using the slower display for dual-display results. Full-scan completion is listed separately. Captures needed for recognition are included; external verification screenshots are excluded.
+- **Memory:** KeySteer's private working set only, excluding other programs and graphics memory. Peaks are medians of the three processes' individual sampled peaks.

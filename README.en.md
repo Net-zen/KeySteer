@@ -130,11 +130,11 @@ Use the [web simulator](https://dccif.github.io/KeySteer/en/editor/) to customis
 
 ## Performance
 
-**Responsive controls. Fast recognition across two displays.**
+**Core processing in nanoseconds. A light memory footprint.**
 
-![First labels in about 225 ms with 800 controls on two 4K displays; everyday actions respond in about 8–17 ms; about 12 MiB startup idle memory](assets/performance/windows-0.12.3-en.svg)
+![Core key dispatch: 157 ns; movement frame calculation: 15 ns; startup idle memory: about 12 MiB](assets/performance/windows-0.12.3-en.svg)
 
-(2026-10-21, 0.12.3 / Windows; first labels in about 143 ms with 400 controls in one window. Response values are medians across repeated actions; memory uses Task Manager’s default view. Response and memory were measured separately. [More test results](https://dccif.github.io/KeySteer/en/performance).)
+(0.12.3 / Windows. Core CPU figures are batch averages per event/frame, excluding system input, recognition, and display work. [Full results and methods](https://dccif.github.io/KeySteer/en/performance).)
 
 ## Development and packaging
 

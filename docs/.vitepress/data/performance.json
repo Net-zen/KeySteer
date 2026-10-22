@@ -1,164 +1,265 @@
 {
   "version": "0.12.3",
+  "date": "2026-10-22",
   "processes": 24,
   "operations": 120,
   "scenarios": {
     "move": {
-      "first_ms": 0.1199,
-      "repeat_ms": 0.18105,
-      "overall_ms": 0.1678,
-      "minimum_ms": 0.1156,
-      "maximum_ms": 0.3019,
-      "rss_mib": 45.328125,
-      "peak_rss_mib": 46.42578125,
+      "first_ms": 0.0963,
+      "repeat_ms": 0.11324999999999999,
+      "overall_ms": 0.1128,
+      "minimum_ms": 0.0668,
+      "maximum_ms": 0.1279,
+      "input_handled_ms": 0.1128,
+      "effect_observed_ms": 0.1663,
       "processes": 3,
-      "operations": 15
+      "operations": 15,
+      "endpoint": "engine key handling and native request submission return"
     },
     "scroll": {
-      "first_ms": 8.1211,
-      "repeat_ms": 8.422550000000001,
-      "overall_ms": 8.3884,
-      "minimum_ms": 8.0198,
-      "maximum_ms": 9.0839,
-      "rss_mib": 45.85546875,
-      "peak_rss_mib": 46.0078125,
+      "first_ms": 0.0401,
+      "repeat_ms": 0.0191,
+      "overall_ms": 0.0216,
+      "minimum_ms": 0.0121,
+      "maximum_ms": 0.0724,
+      "input_handled_ms": 0.0216,
+      "effect_observed_ms": 0.8439,
       "processes": 3,
-      "operations": 15
+      "operations": 15,
+      "endpoint": "engine key handling and native request submission return"
     },
     "grid": {
-      "first_ms": 25.263,
-      "repeat_ms": 17.10565,
-      "overall_ms": 17.149,
-      "minimum_ms": 16.6332,
-      "maximum_ms": 25.2643,
-      "rss_mib": 49.67578125,
-      "peak_rss_mib": 50.265625,
+      "first_ms": 0.1478,
+      "repeat_ms": 0.06985,
+      "overall_ms": 0.0773,
+      "minimum_ms": 0.0494,
+      "maximum_ms": 0.2091,
+      "input_handled_ms": 0.0773,
+      "effect_observed_ms": 7.03,
       "processes": 3,
-      "operations": 15
+      "operations": 15,
+      "endpoint": "engine key handling and native request submission return",
+      "render_commit_ms": 6.6969
     },
     "recursive": {
-      "first_ms": 24.8693,
-      "repeat_ms": 17.0896,
-      "overall_ms": 17.1673,
-      "minimum_ms": 16.5522,
-      "maximum_ms": 25.1515,
-      "rss_mib": 49.21875,
-      "peak_rss_mib": 49.48828125,
+      "first_ms": 0.1488,
+      "repeat_ms": 0.030850000000000002,
+      "overall_ms": 0.0363,
+      "minimum_ms": 0.0235,
+      "maximum_ms": 0.1527,
+      "input_handled_ms": 0.0363,
+      "effect_observed_ms": 5.3121,
       "processes": 3,
-      "operations": 15
+      "operations": 15,
+      "endpoint": "engine key handling and native request submission return",
+      "render_commit_ms": 4.9723
     },
     "window": {
-      "first_ms": 8.3659,
-      "repeat_ms": 8.78435,
-      "overall_ms": 8.6522,
-      "minimum_ms": 8.2315,
-      "maximum_ms": 9.2869,
-      "rss_mib": 50.25390625,
-      "peak_rss_mib": 50.796875,
+      "first_ms": 0.0942,
+      "repeat_ms": 0.048949999999999994,
+      "overall_ms": 0.0542,
+      "minimum_ms": 0.0438,
+      "maximum_ms": 0.1387,
+      "input_handled_ms": 0.0542,
+      "effect_observed_ms": 0.5993,
       "processes": 3,
-      "operations": 15
+      "operations": 15,
+      "endpoint": "engine key handling and native request submission return"
     },
     "quick": {
-      "first_ms": 8.8338,
-      "repeat_ms": 8.77815,
-      "overall_ms": 8.8338,
-      "minimum_ms": 8.3389,
-      "maximum_ms": 9.1788,
-      "rss_mib": 50.5703125,
-      "peak_rss_mib": 50.90625,
+      "first_ms": 0.0851,
+      "repeat_ms": 0.09895,
+      "overall_ms": 0.091,
+      "minimum_ms": 0.0574,
+      "maximum_ms": 0.2039,
+      "input_handled_ms": 0.091,
+      "effect_observed_ms": 0.616,
       "processes": 3,
-      "operations": 15
+      "operations": 15,
+      "endpoint": "engine key handling and native request submission return"
     },
     "hint_window": {
-      "first_ms": 142.2828,
-      "repeat_ms": 149.7793,
-      "overall_ms": 142.7316,
-      "minimum_ms": 141.0321,
-      "maximum_ms": 159.3032,
-      "rss_mib": 61.09765625,
-      "peak_rss_mib": 154.43359375,
+      "first_ms": 49.4839,
+      "repeat_ms": 48.91125,
+      "overall_ms": 49.2368,
+      "minimum_ms": 43.2997,
+      "maximum_ms": 52.866,
+      "input_handled_ms": 0.7176,
+      "effect_observed_ms": 49.5906,
       "processes": 3,
-      "operations": 15
+      "operations": 15,
+      "endpoint": "top-row label scene native commit return on every tested display",
+      "primary_first_labels_ms": 49.2368,
+      "secondary_first_labels_ms": null,
+      "scan_complete_ms": 702.555,
+      "verified_buttons": 400,
+      "input_handled_first_ms": 0.8552
     },
     "hint_all": {
-      "first_ms": 208.1462,
-      "repeat_ms": 224.84115,
-      "overall_ms": 224.7961,
-      "minimum_ms": 207.793,
-      "maximum_ms": 241.8688,
-      "rss_mib": 66.36328125,
-      "peak_rss_mib": 197.328125,
+      "first_ms": 80.3893,
+      "repeat_ms": 80.60245,
+      "overall_ms": 80.4028,
+      "minimum_ms": 68.3154,
+      "maximum_ms": 86.3007,
+      "input_handled_ms": 0.5692,
+      "effect_observed_ms": 80.6079,
       "processes": 3,
-      "operations": 15
+      "operations": 15,
+      "endpoint": "top-row label scene native commit return on every tested display",
+      "primary_first_labels_ms": 80.4028,
+      "secondary_first_labels_ms": 80.4028,
+      "scan_complete_ms": 1387.6866,
+      "verified_buttons": 800,
+      "input_handled_first_ms": 0.921
     }
   },
-  "idle_rss_mib": 38.138671875,
-  "idle_after_rss_mib": 50.2109375,
   "memory": {
     "metric": "private_working_set",
     "requested_sample_interval_ms": 10,
     "processes": 24,
     "operations": 120,
+    "aggregation": "After: median of 15 actions; sampled peak: median of the three per-process maximum samples.",
     "scenarios": {
       "move": {
-        "after_mib": 16.08984375,
-        "sampled_peak_mib": 16.19921875,
-        "working_set_mib": 45.8125,
-        "peak_working_set_mib": 45.9453125
+        "after_mib": 16.1484375,
+        "sampled_peak_mib": 16.1484375,
+        "working_set_mib": 45.8359375,
+        "peak_working_set_mib": 45.83984375
       },
       "scroll": {
-        "after_mib": 16.4765625,
-        "sampled_peak_mib": 16.55859375,
-        "working_set_mib": 46.09765625,
-        "peak_working_set_mib": 46.1796875
+        "after_mib": 16.29296875,
+        "sampled_peak_mib": 16.29296875,
+        "working_set_mib": 45.859375,
+        "peak_working_set_mib": 45.86328125
       },
       "grid": {
-        "after_mib": 19.3203125,
-        "sampled_peak_mib": 19.73046875,
-        "working_set_mib": 49.453125,
-        "peak_working_set_mib": 49.8984375
+        "after_mib": 19.546875,
+        "sampled_peak_mib": 20.03515625,
+        "working_set_mib": 49.6328125,
+        "peak_working_set_mib": 50.25390625
       },
       "recursive": {
-        "after_mib": 18.83203125,
-        "sampled_peak_mib": 19.2265625,
-        "working_set_mib": 48.921875,
-        "peak_working_set_mib": 49.3203125
+        "after_mib": 18.86328125,
+        "sampled_peak_mib": 19.1171875,
+        "working_set_mib": 48.91796875,
+        "peak_working_set_mib": 49.1640625
       },
       "window": {
-        "after_mib": 18.453125,
+        "after_mib": 18.63671875,
         "sampled_peak_mib": 18.82421875,
-        "working_set_mib": 50.0390625,
-        "peak_working_set_mib": 50.47265625
+        "working_set_mib": 50.078125,
+        "peak_working_set_mib": 50.265625
       },
       "quick": {
-        "after_mib": 18.8046875,
-        "sampled_peak_mib": 19.37890625,
-        "working_set_mib": 50.51171875,
-        "peak_working_set_mib": 51.16796875
+        "after_mib": 18.84765625,
+        "sampled_peak_mib": 18.87890625,
+        "working_set_mib": 50.41015625,
+        "peak_working_set_mib": 50.53125
       },
       "hint_window": {
-        "after_mib": 26.546875,
-        "sampled_peak_mib": 115.7734375,
-        "working_set_mib": 60.9921875,
-        "peak_working_set_mib": 153.5625
+        "after_mib": 26.5234375,
+        "sampled_peak_mib": 113.11328125,
+        "working_set_mib": 98.7578125,
+        "peak_working_set_mib": 189.3203125
       },
       "hint_all": {
-        "after_mib": 31.19921875,
-        "sampled_peak_mib": 161.01171875,
-        "working_set_mib": 65.91015625,
-        "peak_working_set_mib": 197.33203125
+        "after_mib": 32.46875,
+        "sampled_peak_mib": 160.828125,
+        "working_set_mib": 130.28125,
+        "peak_working_set_mib": 260.20703125
       }
     },
-    "idle_mib": 11.615234375,
-    "idle_after_mib": 18.943359375,
-    "idle_working_set_mib": 38.115234375,
-    "sample_interval_ms": 15.753300000000309,
-    "maximum_sample_gap_ms": 24.7974
+    "idle_mib": 11.6953125,
+    "idle_after_mib": 19.08984375,
+    "idle_working_set_mib": 38.169921875,
+    "sample_interval_ms": 16.66319999999996,
+    "maximum_sample_gap_ms": 28.407899999999998
   },
-  "date": "2026-10-21",
+  "core_cpu": {
+    "date": "2026-10-22",
+    "revision": "bff0f24c7fb15692a0c7fe42871022c40d11f92c",
+    "platform": "Windows x64",
+    "processes": 6,
+    "rounds": 3,
+    "samples_per_process": 20000,
+    "priority": "Normal",
+    "logical_cpu_affinity": [
+      2
+    ],
+    "aggregation": "Median across three process-level percentiles; key/frame percentiles describe per-call batch averages, not individual-event tail latency.",
+    "scope": "In-process Engine dispatch, Normal movement frame calculation, and label creation from ready UI targets; no native input, scanning, rendering, screenshot, or display refresh.",
+    "warmup": "10000 Engine events and 10000 movement frames; Hint uses a fresh activated mode and prepared targets before each timed delivery.",
+    "metrics": {
+      "hint_100": {
+        "p50_ns": 5700,
+        "p95_ns": 6000,
+        "p99_ns": 8200,
+        "calls_per_sample": 1
+      },
+      "hint_128": {
+        "p50_ns": 7200,
+        "p95_ns": 11200,
+        "p99_ns": 23000,
+        "calls_per_sample": 1
+      },
+      "hint_2000": {
+        "p50_ns": 107900,
+        "p95_ns": 198800,
+        "p99_ns": 230000,
+        "calls_per_sample": 1
+      },
+      "hint_24": {
+        "p50_ns": 1800,
+        "p95_ns": 2000,
+        "p99_ns": 2900,
+        "calls_per_sample": 1
+      },
+      "hint_500": {
+        "p50_ns": 26400,
+        "p95_ns": 44300,
+        "p99_ns": 56400,
+        "calls_per_sample": 1
+      },
+      "hint_64": {
+        "p50_ns": 3900,
+        "p95_ns": 4400,
+        "p99_ns": 8600,
+        "calls_per_sample": 1
+      },
+      "normal_frame": {
+        "p50_ns": 15,
+        "p95_ns": 15,
+        "p99_ns": 23,
+        "calls_per_sample": 1000
+      },
+      "runtime_default_keys": {
+        "p50_ns": 157,
+        "p95_ns": 160,
+        "p99_ns": 264,
+        "calls_per_sample": 100
+      },
+      "runtime_wasd_keys": {
+        "p50_ns": 163,
+        "p95_ns": 166,
+        "p99_ns": 274,
+        "calls_per_sample": 100
+      }
+    }
+  },
+  "native_method": {
+    "start": "Engine receives the injected test key-down, timestamped with QPC.",
+    "everyday_end": "Key handling and native request submission return; actual pointer, scroll or window effects validated separately.",
+    "hint_end": "Native renderer successfully presents/commits a scene containing labels in the same fixed top-row regions on all tested displays.",
+    "hint_complete": "Hint consumes the successful scan terminal result after fusion; not final monitor scan-out.",
+    "build": "Isolated current-code release build with shared-memory atomic timestamps; no perf-probe, logging or file I/O in measured intervals.",
+    "observation": "No external screenshot/readback observer; native scene commit is not physical monitor display time.",
+    "memory_build": "Separate freshly built uninstrumented production release.",
+    "fixture": "400 native buttons in one 4K window, or 400 per display on two real 4K displays; all buttons retained on every measured scan."
+  },
   "sources": {
-    "everyday_latency": "Full-scenario retest",
-    "ui_hint_latency": "Post-fix same-scene A/B retest",
-    "memory": "Earlier full-scenario retest, measured separately from latency"
+    "core_cpu": "2026-10-22: three-round current-code CPU microbenchmarks, six processes, matching the historical measurement scope.",
+    "everyday_latency": "2026-10-22: fresh three-round in-process native request stage measurements.",
+    "ui_hint_latency": "2026-10-22: fresh three-round real Hybrid scans, including per-display first-label native commits and scan terminal times.",
+    "memory": "2026-10-22: fresh three-round uninstrumented release measurements, separately sampled across all eight scenarios."
   }
 }
