@@ -459,8 +459,7 @@ impl WindowWorker {
                             );
                         }
                     });
-                    let audio_active = A::native_batch(|| {
-                        let active = access.maintain_audio();
+                    A::native_batch(|| {
                         if (access.persistent() || !frames.is_empty() || layout.is_some())
                             && let Err(error) =
                                 access.pump(&displays, &|| input.stop.load(Ordering::Acquire))
@@ -471,7 +470,6 @@ impl WindowWorker {
                                 format_args!("operation=maintain"),
                             );
                         }
-                        active
                     });
                     let pending = {
                         let mut queue = input.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -483,8 +481,6 @@ impl WindowWorker {
                                     Some(Duration::ZERO)
                                 } else if !frames.is_empty() || layout.is_some() {
                                     Some(Duration::from_millis(16))
-                                } else if audio_active {
-                                    Some(Duration::from_millis(250))
                                 } else {
                                     None
                                 };
@@ -497,7 +493,6 @@ impl WindowWorker {
                                 && (access.persistent()
                                     || !frames.is_empty()
                                     || layout.is_some()
-                                    || audio_active
                                     || access.native_deadline().is_some())
                             {
                                 input.native_waiting.store(true, Ordering::Release);

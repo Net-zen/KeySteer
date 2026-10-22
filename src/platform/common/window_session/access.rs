@@ -257,10 +257,6 @@ pub(crate) trait WindowAccess {
         let point = self.pointer()?;
         Ok(self.acquire(point, screens)?.map(|window| window.id))
     }
-    /// Reap native audio routes; true requests a bounded maintenance wakeup.
-    fn maintain_audio(&self) -> bool {
-        false
-    }
     fn audio_factory(&self) -> Option<crate::platform::common::audio_worker::AudioFactory> {
         None
     }

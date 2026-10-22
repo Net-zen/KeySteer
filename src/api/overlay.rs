@@ -1024,6 +1024,24 @@ impl OverlayScene {
             && self.indicator.is_none()
     }
 
+    /// Whether the already-rendered static background can serve this retained
+    /// frame. Backends must separately invalidate for surface geometry or DPI.
+    pub(crate) fn retains_static_content_from(&self, previous: &Self) -> bool {
+        let Some(base) = &self.retained else {
+            return false;
+        };
+        base.scene.retained.is_none()
+            && match &previous.retained {
+                Some(previous_base) => Arc::ptr_eq(&previous_base.scene, &base.scene),
+                None => {
+                    previous.shapes.shares_storage_with(&base.scene.shapes)
+                        && previous.labels.shares_storage_with(&base.scene.labels)
+                }
+            }
+            && previous.clip == self.clip
+            && previous.backdrop == self.backdrop
+    }
+
     /// Materialize for consumers without retained-layer support. Native fast
     /// paths keep the immutable source shared instead of calling this.
     pub fn materialized(&self) -> Self {

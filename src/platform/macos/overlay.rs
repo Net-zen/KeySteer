@@ -67,6 +67,34 @@ impl Overlay {
     }
 
     pub fn present(&mut self, scene: Arc<OverlayScene>, screens: &[Screen]) -> Result<(), String> {
+        self.present_inner(scene, screens, false)
+    }
+
+    /// Native display changes can leave the logical scene and panel area equal.
+    /// Reapply placement/scale without waiting for a mode to produce new content.
+    pub fn refresh_screens(&mut self, screens: &[Screen]) -> Result<(), String> {
+        let Some(surface) = self.surfaces.first() else {
+            return Ok(());
+        };
+        let Some(scene) = surface.scene.as_ref() else {
+            return Ok(());
+        };
+        let mut scene = scene.as_ref().clone();
+        if let (Some(marker), Some(center)) = (&mut scene.cursor_marker, surface.positions.0) {
+            marker.center = center;
+        }
+        if let (Some(indicator), Some(position)) = (&mut scene.indicator, surface.positions.1) {
+            indicator.position = position;
+        }
+        self.present_inner(Arc::new(scene), screens, true)
+    }
+
+    fn present_inner(
+        &mut self,
+        scene: Arc<OverlayScene>,
+        screens: &[Screen],
+        display_changed: bool,
+    ) -> Result<(), String> {
         autoreleasepool(|_| {
             let areas = display_areas(scene.clip, screens);
             if areas.is_empty() {
@@ -82,10 +110,10 @@ impl Overlay {
             self.surfaces.retain(|surface| surface.visible);
             for area in areas {
                 if let Some(surface) = self.surfaces.iter_mut().find(|s| s.area == Some(area)) {
-                    surface.present_inner(scene.clone(), area)?;
+                    surface.present_inner(scene.clone(), area, display_changed)?;
                 } else {
                     let mut surface = Surface::new();
-                    surface.present_inner(scene.clone(), area)?;
+                    surface.present_inner(scene.clone(), area, display_changed)?;
                     self.surfaces.push(surface);
                 }
             }
@@ -160,6 +188,8 @@ fn display_areas(clip: Option<Rect>, screens: &[Screen]) -> SmallVec<[Rect; 4]> 
 /// Native objects are created lazily, keeping logic tests independent of AppKit.
 struct Surface {
     scene: Option<Arc<OverlayScene>>,
+    // Position-only updates do not mutate/copy the shared complete scene.
+    positions: (Option<Point>, Option<Point>),
     area: Option<Rect>,
     visible: bool,
     content: Option<WindowContent>,
@@ -273,6 +303,7 @@ impl Surface {
     pub fn new() -> Self {
         Self {
             scene: None,
+            positions: (None, None),
             area: None,
             visible: false,
             content: None,
@@ -302,52 +333,77 @@ impl Surface {
             .scene
             .as_deref()
             .ok_or("macOS overlay scene is unavailable")?;
-        let content = self
-            .content
-            .as_mut()
-            .ok_or("macOS overlay layer tree is unavailable")?;
-        let _transaction = DisabledActions::begin();
-        if let Some(center) = cursor {
-            let marker = scene
-                .cursor_marker
-                .as_ref()
-                .ok_or("macOS cursor layer has no complete scene")?;
-            content.cursor.setFrame(to_window_rect(
-                Rect::new(
-                    center.x - marker.radius,
-                    center.y - marker.radius,
-                    marker.radius * 2.0,
-                    marker.radius * 2.0,
-                ),
-                area,
-            ));
+        if cursor.is_some() && scene.cursor_marker.is_none() {
+            return Err("macOS cursor layer has no complete scene".into());
         }
-        if let Some(position) = indicator {
-            if scene.indicator.is_none() {
-                return Err("macOS indicator layer has no complete scene".into());
+        if indicator.is_some() && scene.indicator.is_none() {
+            return Err("macOS indicator layer has no complete scene".into());
+        }
+        if !cfg!(test) {
+            let content = self
+                .content
+                .as_mut()
+                .ok_or("macOS overlay layer tree is unavailable")?;
+            let _transaction = DisabledActions::begin();
+            if let Some(center) = cursor {
+                let marker = scene
+                    .cursor_marker
+                    .as_ref()
+                    .ok_or("macOS cursor layer has no complete scene")?;
+                content.cursor.setFrame(to_window_rect(
+                    Rect::new(
+                        center.x - marker.radius,
+                        center.y - marker.radius,
+                        marker.radius * 2.0,
+                        marker.radius * 2.0,
+                    ),
+                    area,
+                ));
             }
-            let (width, height) = content.indicator_size;
-            content.indicator_root.setFrame(to_window_rect(
-                Rect::new(position.x - width, position.y, width, height),
-                area,
-            ));
+            if let Some(position) = indicator {
+                let (width, height) = content.indicator_size;
+                content.indicator_root.setFrame(to_window_rect(
+                    Rect::new(position.x - width, position.y, width, height),
+                    area,
+                ));
+            }
         }
+        self.positions.0 = cursor.or(self.positions.0);
+        self.positions.1 = indicator.or(self.positions.1);
         Ok(true)
     }
 
-    fn present_inner(&mut self, scene: Arc<OverlayScene>, area: Rect) -> Result<(), String> {
-        if self.visible && self.scene.as_ref() == Some(&scene) && self.area == Some(area) {
+    fn present_inner(
+        &mut self,
+        scene: Arc<OverlayScene>,
+        area: Rect,
+        display_changed: bool,
+    ) -> Result<(), String> {
+        let area_changed = self.area != Some(area) || display_changed;
+        let window_changes = if cfg!(test) {
+            WindowChanges::default()
+        } else {
+            self.ensure_window(area, area_changed)?
+        };
+        let positions = (
+            scene.cursor_marker.as_ref().map(|marker| marker.center),
+            scene.indicator.as_ref().map(|indicator| indicator.position),
+        );
+        if self.visible
+            && !area_changed
+            && window_changes == WindowChanges::default()
+            && self.positions == positions
+            && self.scene.as_ref() == Some(&scene)
+        {
             return Ok(());
         }
         let mut changes = scene_changes(self.scene.as_deref(), scene.as_ref());
-        let area_changed = self.area != Some(area);
         changes.static_content |= area_changed;
-        changes.cursor_position |= area_changed;
-        changes.indicator_position |= area_changed;
+        changes.cursor_position = area_changed || self.positions.0 != positions.0;
+        changes.indicator_position = area_changed || self.positions.1 != positions.1;
         let was_visible = self.visible;
 
         if !cfg!(test) {
-            let window_changes = self.ensure_window(area, area_changed)?;
             changes.static_content |= window_changes.created || window_changes.scale;
             changes.cursor_content |= window_changes.created || window_changes.scale;
             changes.cursor_position |= window_changes.created || window_changes.geometry;
@@ -375,6 +431,7 @@ impl Surface {
             self.static_updates = self.static_updates.wrapping_add(1);
         }
         self.area = Some(area);
+        self.positions = positions;
         self.scene = Some(scene);
         self.visible = true;
         Ok(())
@@ -394,6 +451,7 @@ impl Surface {
             // committed; dropping `content` after this point releases them.
         }
         self.scene = None;
+        self.positions = (None, None);
         self.area = None;
         self.visible = false;
         Ok(())
@@ -530,7 +588,14 @@ impl WindowContent {
                 && previous
                     .and_then(|previous| previous.retained.as_ref())
                     .is_some_and(|old| Arc::ptr_eq(&old.scene, &retained.scene));
-            if !same {
+            let promoted = !force
+                && previous.is_some_and(|old| {
+                    old.retained.is_none() && scene.retains_static_content_from(old)
+                });
+            // The preceding plain frame already owns these native slots.
+            // Keep `same` false for promotion: its shapes/labels are background,
+            // not a previous foreground that could validate unconfigured slots.
+            if !same && !promoted {
                 let old_base = previous.map(|old| {
                     old.retained
                         .as_ref()
@@ -1763,7 +1828,7 @@ mod tests {
         let mut overlay = Surface::new();
         assert!(!overlay.is_visible());
         overlay
-            .present_inner(scene(), Rect::new(0.0, 0.0, 1920.0, 1080.0))
+            .present_inner(scene(), Rect::new(0.0, 0.0, 1920.0, 1080.0), false)
             .unwrap();
         assert!(overlay.is_visible());
         overlay.dismiss().unwrap();
@@ -1821,12 +1886,81 @@ mod tests {
         let mut second = first.clone();
         second.cursor_marker.as_mut().unwrap().center = Point::new(30.0, 40.0);
         overlay
-            .present_inner(Arc::new(first), Rect::new(0.0, 0.0, 1920.0, 1080.0))
+            .present_inner(Arc::new(first), Rect::new(0.0, 0.0, 1920.0, 1080.0), false)
             .unwrap();
         overlay
-            .present_inner(Arc::new(second), Rect::new(0.0, 0.0, 1920.0, 1080.0))
+            .present_inner(Arc::new(second), Rect::new(0.0, 0.0, 1920.0, 1080.0), false)
             .unwrap();
         assert_eq!(overlay.static_updates, 1);
+    }
+
+    #[test]
+    fn display_refresh_keeps_live_positions_and_static_storage() {
+        let mut screens = displays();
+        let mut scene = OverlayScene::new();
+        scene.labels.push(OverlayLabel::new(
+            "AA",
+            Rect::new(10.0, 10.0, 25.0, 20.0),
+            LabelStyle::default(),
+        ));
+        scene.cursor_marker = Some(CursorMarker {
+            center: Point::new(8.0, 9.0),
+            radius: 13.0,
+            fill: Color::rgb(4, 5, 6),
+            stroke: Color::rgb(7, 8, 9),
+            stroke_width: 2.0,
+        });
+        scene.indicator = Some(Indicator {
+            text: "Normal".into(),
+            held_text: None,
+            position: Point::new(10.0, 20.0),
+            style: Default::default(),
+        });
+        let scene = Arc::new(scene);
+        let original = (
+            scene.cursor_marker.as_ref().map(|marker| marker.center),
+            scene.indicator.as_ref().map(|indicator| indicator.position),
+        );
+        let moved = (Some(Point::new(50.0, 60.0)), Some(Point::new(70.0, 80.0)));
+        let mut overlay = Overlay::new();
+        overlay.present(scene.clone(), &screens).unwrap();
+        overlay.update_positions(moved.0, moved.1).unwrap();
+        // Reusing the same complete scene must undo the intervening fast move.
+        overlay.present(scene.clone(), &screens).unwrap();
+        assert!(
+            overlay
+                .surfaces
+                .iter()
+                .all(|surface| surface.positions == original)
+        );
+        overlay.update_positions(moved.0, moved.1).unwrap();
+        // Same logical rectangles, new Retina scale: repaint without resetting
+        // the live marker or copying/replacing the static scene storage.
+        screens[0].scale = 1.0;
+        overlay.refresh_screens(&screens).unwrap();
+        for surface in &overlay.surfaces {
+            assert_eq!(surface.positions, moved);
+            assert_eq!(surface.static_updates, 2);
+            assert!(
+                surface
+                    .scene
+                    .as_ref()
+                    .unwrap()
+                    .labels
+                    .shares_storage_with(&scene.labels)
+            );
+        }
+        // Even equal snapshots can represent an AppKit display reconfiguration.
+        overlay.refresh_screens(&screens).unwrap();
+        assert!(
+            overlay
+                .surfaces
+                .iter()
+                .all(|surface| surface.static_updates == 3)
+        );
+        overlay.refresh_screens(&screens[..1]).unwrap();
+        assert_eq!(overlay.surfaces.len(), 1);
+        assert_eq!(overlay.surfaces[0].positions, moved);
     }
 
     #[test]

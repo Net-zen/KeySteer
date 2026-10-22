@@ -2053,9 +2053,6 @@ impl<A: WindowAccess> WindowAccess for Grouped<A> {
         };
         self.native.audio_process(target)
     }
-    fn maintain_audio(&self) -> bool {
-        self.native.maintain_audio()
-    }
     fn system_audio(&self, change: crate::api::audio::AudioAction) -> Result<String, String> {
         self.native.system_audio(change)
     }

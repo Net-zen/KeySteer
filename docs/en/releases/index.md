@@ -5,6 +5,13 @@ outline: 2
 
 # Release notes
 
+## 0.12.5
+
+- Improved grid and UIHint rendering and label switching on Windows and macOS, and fixed overlay refresh issues.
+- Improved responsiveness and resource cleanup during repeated UIHint scans, reducing temporary memory use.
+- Fixed brief input stalls that could occur when quitting or reloading configuration.
+- Fixed state handling when repeatedly checking for updates or opening the About window.
+
 ## 0.12.3
 
 - Fixed Chinese text recognition in macOS UIHint.

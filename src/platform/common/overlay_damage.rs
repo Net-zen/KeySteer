@@ -59,16 +59,8 @@ pub(crate) fn shape_bounds(shape: &OverlayShape) -> Rect {
     }
 }
 
-pub(crate) fn same_source(previous: &OverlayScene, next: &OverlayScene) -> bool {
-    previous
-        .retained
-        .as_ref()
-        .zip(next.retained.as_ref())
-        .is_some_and(|(a, b)| Arc::ptr_eq(&a.scene, &b.scene) && a.scene.retained.is_none())
-        && previous.clip == next.clip
-        && previous.backdrop == next.backdrop
-}
-
+/// Call only after `next.retains_static_content_from(previous)`: a plain
+/// previous scene is the entire background, with no old foreground to erase.
 pub(crate) fn damage(
     previous: &OverlayScene,
     next: &OverlayScene,
@@ -91,8 +83,18 @@ pub(crate) fn damage(
             }
         }
     }
-    for i in 0..previous.shapes.len().max(next.shapes.len()) {
-        let old = previous.shapes.get(i);
+    let old_shapes = if previous.retained.is_some() {
+        &previous.shapes[..]
+    } else {
+        &[]
+    };
+    let old_labels = if previous.retained.is_some() {
+        &previous.labels[..]
+    } else {
+        &[]
+    };
+    for i in 0..old_shapes.len().max(next.shapes.len()) {
+        let old = old_shapes.get(i);
         let new = next.shapes.get(i);
         if old != new {
             for shape in old.into_iter().chain(new) {
@@ -100,8 +102,8 @@ pub(crate) fn damage(
             }
         }
     }
-    for i in 0..previous.labels.len().max(next.labels.len()) {
-        let old = previous.labels.get(i);
+    for i in 0..old_labels.len().max(next.labels.len()) {
+        let old = old_labels.get(i);
         let new = next.labels.get(i);
         if old != new {
             for label in old.into_iter().chain(new) {
@@ -190,9 +192,62 @@ mod tests {
         assert_eq!(index.hits, [0, 1]);
         index.query(regions[1]);
         assert_eq!(index.hits, [2]);
-        assert!(same_source(&previous, &next));
+        assert!(next.retains_static_content_from(&previous));
         next.retained.as_mut().unwrap().scene =
             Arc::new(next.retained.as_ref().unwrap().scene.as_ref().clone());
-        assert!(!same_source(&previous, &next));
+        assert!(!next.retains_static_content_from(&previous));
+    }
+
+    #[test]
+    fn first_retained_frame_only_damages_the_new_foreground_and_omission() {
+        let mut base = OverlayScene::new();
+        for x in [10.0, 900.0] {
+            base.labels.push(OverlayLabel::new(
+                "a",
+                Rect::new(x, 10.0, 20.0, 20.0),
+                LabelStyle::default(),
+            ));
+        }
+        base.shapes.push(OverlayShape::fill(
+            Rect::new(700.0, 300.0, 40.0, 40.0),
+            crate::api::Color::rgb(10, 20, 30),
+        ));
+        let mut next = OverlayScene::new();
+        next.retained = Some(RetainedOverlay {
+            scene: Arc::new(base.clone()),
+            omitted_label: Some(0),
+        });
+        let area = Rect::new(0.0, 0.0, 1000.0, 500.0);
+        assert!(next.retains_static_content_from(&base));
+        assert_eq!(
+            damage(&base, &next, area).as_slice(),
+            [label_bounds(&base.labels[0]).intersect(&area).unwrap()]
+        );
+        next.retained.as_mut().unwrap().omitted_label = None;
+        assert!(damage(&base, &next, area).is_empty());
+        next.labels.push(base.labels[1].clone());
+        assert_eq!(
+            damage(&base, &next, area).as_slice(),
+            [label_bounds(&base.labels[1]).intersect(&area).unwrap()]
+        );
+
+        let mut changed = base.clone();
+        changed.labels[0].text = "changed".into();
+        assert!(!next.retains_static_content_from(&changed));
+        changed = base.clone();
+        changed.shapes.clear();
+        assert!(!next.retains_static_content_from(&changed));
+        changed = base.clone();
+        changed.clip = Some(area);
+        assert!(!next.retains_static_content_from(&changed));
+        changed = base.clone();
+        changed.backdrop = Some(crate::api::Color::rgb(0, 0, 0));
+        assert!(!next.retains_static_content_from(&changed));
+        next.retained.as_mut().unwrap().scene = Arc::new(next.clone());
+        assert!(
+            !next.retains_static_content_from(&base),
+            "nested layers require full drawing"
+        );
+        assert!(!base.retains_static_content_from(&base));
     }
 }

@@ -133,7 +133,6 @@ pub struct WindowsBackend {
     overlay: OverlayWorker,
     /// Events produced off-thread (scan results).
     async_rx: Receiver,
-    background_budget: event_queue::BackgroundBudget,
     event_tx: EventSender,
     scan_mailbox: Arc<ScanMailbox>,
     scan_fusion: crate::platform::common::scan_fusion::Worker,
@@ -291,7 +290,6 @@ impl WindowsBackend {
             hook: None,
             overlay,
             async_rx,
-            background_budget: event_queue::BackgroundBudget::default(),
             event_tx,
             scan_mailbox,
             scan_fusion: crate::platform::common::scan_fusion::Worker::with_setup(|| {
@@ -402,11 +400,8 @@ impl WindowsBackend {
         if let Some(event) = self.next_hook_event()? {
             return Ok(Some(event));
         }
-        if let Some(frame) = self
-            .background_budget
-            .take_ready_frame(|| self.frame_clock.try_next())
-        {
-            return Ok(Some(frame));
+        if let Some(elapsed) = self.frame_clock.try_next() {
+            return Ok(Some(BackendEvent::Frame(elapsed)));
         }
         if self.prewarm_ocr {
             self.vision.begin_discovery();
@@ -416,7 +411,6 @@ impl WindowsBackend {
             return Ok(Some(event));
         }
         if let Some(event) = self.pending.pop_front() {
-            self.background_budget.record();
             return Ok(Some(event));
         }
         if let Some(result) = self.scan_mailbox.take() {
@@ -425,14 +419,11 @@ impl WindowsBackend {
                 // optional previews and any remaining providers before then.
                 self.cancel_ui_scan(result.id)?;
             }
-            self.background_budget.record();
             return Ok(Some(BackendEvent::UiScanned(result)));
         }
         if let Ok(event) = self.async_rx.try_recv() {
-            self.background_budget.record();
             return Ok(Some(event));
         }
-        self.background_budget.reset();
         if let Some(elapsed) = self.frame_clock.try_next() {
             return Ok(Some(BackendEvent::Frame(elapsed)));
         }
@@ -501,6 +492,7 @@ impl WindowsBackend {
         let now = Instant::now();
         let deadline = now.checked_add(BACKEND_SHUTDOWN_TIMEOUT).unwrap_or(now);
         let mut errors = crate::support::errors::ErrorBundle::default();
+        self.stop_input_capture();
         self.scroll_worker.request_stop();
         self.scan_fusion.request_stop();
         if let Some(worker) = self.window_worker.as_mut() {
@@ -1145,6 +1137,12 @@ impl Backend for WindowsBackend {
         "windows"
     }
 
+    fn stop_input_capture(&mut self) {
+        if let Some(hook) = self.hook.as_mut() {
+            hook.close_dispositions();
+        }
+    }
+
     fn shutdown(&mut self) -> Result<(), String> {
         self.shutdown_attempted = true;
         self.shutdown_resources()
@@ -1288,6 +1286,9 @@ mod tests {
     #[ignore = "requires an interactive Windows desktop"]
     fn backend_shutdown_stops_vision_and_is_idempotent() -> Result<(), String> {
         let mut backend = WindowsBackend::new()?;
+        backend.start()?;
+        backend.stop_input_capture();
+        backend.stop_input_capture();
         hook::set_pointer_wake_enabled(true);
         backend.shutdown_resources()?;
         assert!(!hook::pointer_wake_enabled());

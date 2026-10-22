@@ -179,7 +179,13 @@ fn macos_shutdown_releases_input_before_waiting_for_workers() {
         .and_then(|body| body.split_once("impl Drop for MacOsBackend"))
         .map(|(body, _)| body)
         .expect("macOS shutdown must remain inspectable");
-    let release_input = shutdown.find("hook.request_stop()").unwrap();
+    let release_input = shutdown.find("self.stop_input_capture()").unwrap();
+    let stop_input = backend
+        .split_once("fn stop_input_capture(&mut self)")
+        .and_then(|(_, body)| body.split_once("fn shutdown(&mut self)"))
+        .map(|(body, _)| body)
+        .expect("macOS input shutdown must remain inspectable");
+    assert!(stop_input.contains("hook.request_stop()"));
     let remove_status_item = shutdown.find("self.status_item.take()").unwrap();
     let stop_scan = shutdown.find("self.scan_worker.request_stop()").unwrap();
     let join_hook = shutdown.find("hook.stop_until(deadline)").unwrap();

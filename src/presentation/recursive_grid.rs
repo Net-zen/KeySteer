@@ -1,18 +1,11 @@
 //! Central recursive grid composition from a borrowed semantic view.
-use crate::api::overlay::{Color, LabelStyle, OverlayLabel, OverlayScene, OverlayShape};
+use crate::api::overlay::{
+    Color, LabelStyle, OverlayLabel, OverlayScene, OverlayShape, OverlayText, SharedLabelStyle,
+};
 use crate::api::presentation::RecursiveGridView;
 use crate::api::{Palette, Point, Rect};
 
 impl RecursiveGridView<'_> {
-    /// Label text for a cell key, honouring `label_char`.
-    fn label_text(&self, key: char) -> String {
-        if self.ui.label_char.is_empty() {
-            key.to_string()
-        } else {
-            self.ui.label_char.clone()
-        }
-    }
-
     /// A label is hidden once its cell is too small to read it in.
     fn label_fits(&self, cell: Rect, font_size: f64, multiplier: f64) -> bool {
         if multiplier <= 0.0 {
@@ -78,6 +71,8 @@ impl RecursiveGridView<'_> {
             layout.keys.len()
         };
         let mut scene = OverlayScene::with_capacity(shape_capacity, label_capacity);
+        // The native overlay remains scoped to the original screen at every depth.
+        scene.clip = self.root;
 
         if self.terminal {
             scene.push_shape(OverlayShape::Rect {
@@ -89,7 +84,6 @@ impl RecursiveGridView<'_> {
                 z_index: 0,
             });
             scene.backdrop = Some(Color::rgba(0, 0, 0, 0x40));
-            scene.clip = self.root;
             return scene;
         }
 
@@ -130,88 +124,97 @@ impl RecursiveGridView<'_> {
         }
 
         // Cell keys, plus an optional preview of the next level's keys.
-        let next_keys: String = if self.ui.sub_key_preview && self.can_descend {
-            self.next_layout
-                .keys
-                .iter()
-                .map(|k| {
-                    if self.ui.label_char.is_empty() {
-                        *k
-                    } else {
-                        self.ui.label_char.as_str().chars().next().unwrap_or(*k)
-                    }
-                })
-                .collect()
+        let mut next_keys = OverlayText::default();
+        if self.ui.sub_key_preview && self.can_descend {
+            let replacement = self.ui.label_char.chars().next();
+            for &key in self.next_layout.keys {
+                next_keys.push(replacement.unwrap_or(key));
+            }
+        }
+
+        let Some(first_cell) = area.subdivision(layout.rows, layout.cols, 0) else {
+            return scene;
+        };
+        // Every cell has the same size and label length, including a custom
+        // multi-character label. Resolve fitting and visibility once per scene.
+        let sample_text = if self.ui.label_char.is_empty() {
+            "X"
         } else {
-            String::new()
+            &self.ui.label_char
+        };
+        let scale = base_style.fit_scale(sample_text, first_cell);
+        let fitted_font_size = base_style.font_size * scale;
+        let label_style = base_style.scaled(scale);
+        let label_style: Option<SharedLabelStyle> = (fitted_font_size
+            >= self.ui.label_min_font_size.max(1) as f64
+            && self.label_fits(
+                first_cell,
+                label_style.font_size,
+                self.ui.label_autohide_multiplier,
+            ))
+        .then(|| label_style.into());
+
+        let preview_size = Rect::new(0.0, 0.0, first_cell.width, first_cell.height * 0.3);
+        let sub_style: Option<SharedLabelStyle> = if next_keys.is_empty() {
+            None
+        } else {
+            let sub_style = LabelStyle {
+                font_size: self.ui.sub_key_preview_font_size.max(1) as f64,
+                text_color: resolve(
+                    self.ui.sub_key_preview_text_color.as_ref(),
+                    appearance,
+                    palette.text.with_opacity(0.6),
+                ),
+                background: Color::TRANSPARENT,
+                border_color: Color::TRANSPARENT,
+                border_width: 0.0,
+                bold: false,
+                ..base_style
+            };
+            let scale = sub_style.fit_scale(&next_keys, preview_size);
+            let fitted_font_size = sub_style.font_size * scale;
+            let sub_style = sub_style.scaled(scale);
+            (fitted_font_size >= 4.0
+                && self.label_fits(
+                    preview_size,
+                    sub_style.font_size,
+                    self.ui.sub_key_preview_autohide_multiplier,
+                ))
+            .then(|| sub_style.into())
         };
 
         for (index, key) in layout.keys.iter().copied().enumerate() {
             let Some(cell) = area.subdivision(layout.rows, layout.cols, index) else {
                 break;
             };
-            let text = self.label_text(key);
-            let scale = base_style.fit_scale(&text, cell);
-            let fitted_font_size = base_style.font_size * scale;
-            if fitted_font_size >= self.ui.label_min_font_size.max(1) as f64 {
-                let label_style = base_style.scaled(scale);
-                if self.label_fits(
-                    cell,
-                    label_style.font_size,
-                    self.ui.label_autohide_multiplier,
-                ) {
-                    scene.push_label(
-                        OverlayLabel::new(text, cell, label_style)
-                            .fitted()
-                            .with_z_index(3),
-                    );
-                }
+            if let Some(style) = &label_style {
+                let text = if self.ui.label_char.is_empty() {
+                    OverlayText::from(key)
+                } else {
+                    OverlayText::from(self.ui.label_char.as_str())
+                };
+                scene.push_label(
+                    OverlayLabel::new(text, cell, style.clone())
+                        .fitted()
+                        .with_z_index(3),
+                );
             }
-
-            if !next_keys.is_empty() {
-                // Sit the preview in the lower part of the cell, then fit the
-                // complete next-key string inside that smaller rectangle.
+            if let Some(style) = &sub_style {
+                // Sit the preview in the lower part of the cell.
                 let preview = Rect::new(
                     cell.x,
                     cell.center().y + cell.height * 0.15,
-                    cell.width,
-                    cell.height * 0.3,
+                    preview_size.width,
+                    preview_size.height,
                 );
-                let sub_style = LabelStyle {
-                    font_size: self.ui.sub_key_preview_font_size.max(1) as f64,
-                    text_color: resolve(
-                        self.ui.sub_key_preview_text_color.as_ref(),
-                        appearance,
-                        palette.text.with_opacity(0.6),
-                    ),
-                    background: Color::TRANSPARENT,
-                    border_color: Color::TRANSPARENT,
-                    border_width: 0.0,
-                    bold: false,
-                    ..base_style.clone()
-                };
-                let scale = sub_style.fit_scale(&next_keys, preview);
-                let fitted_font_size = sub_style.font_size * scale;
-                let sub_style = sub_style.scaled(scale);
-                if fitted_font_size >= 4.0
-                    && self.label_fits(
-                        preview,
-                        sub_style.font_size,
-                        self.ui.sub_key_preview_autohide_multiplier,
-                    )
-                {
-                    scene.push_label(
-                        OverlayLabel::new(next_keys.clone(), preview, sub_style)
-                            .fitted()
-                            .with_z_index(2),
-                    );
-                }
+                scene.push_label(
+                    OverlayLabel::new(next_keys.clone(), preview, style.clone())
+                        .fitted()
+                        .with_z_index(2),
+                );
             }
         }
 
-        // Keep the window scoped to the original active screen while the
-        // visible cell narrows through successive recursive selections.
-        scene.clip = self.root;
         scene
     }
 }

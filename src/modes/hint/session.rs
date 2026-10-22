@@ -107,8 +107,18 @@ impl ScanSession {
 
     pub(super) fn defer_update(&mut self, targets: Vec<UiTarget>, retired: Vec<Rect>) {
         crate::api::command::remove_retired_targets(&mut self.deferred_targets, &retired);
-        self.deferred_targets.extend(targets);
-        self.deferred_retired.extend(retired);
+        // Keep the incoming buffers when there is nothing left to append to.
+        // Typing must not allocate and move a full first deferred batch again.
+        if self.deferred_targets.is_empty() {
+            self.deferred_targets = targets;
+        } else {
+            self.deferred_targets.extend(targets);
+        }
+        if self.deferred_retired.is_empty() {
+            self.deferred_retired = retired;
+        } else {
+            self.deferred_retired.extend(retired);
+        }
         self.pending_relabel = true;
     }
 
@@ -1038,7 +1048,13 @@ mod tests {
         };
         session.append_targets(vec![old.clone()]);
         session.ensure_search_names();
-        session.defer_update(vec![middle.clone()], vec![old.rect]);
+        let targets = vec![middle.clone()];
+        let retired = vec![old.rect];
+        let target_storage = targets.as_ptr();
+        let retired_storage = retired.as_ptr();
+        session.defer_update(targets, retired);
+        assert_eq!(session.deferred_targets.as_ptr(), target_storage);
+        assert_eq!(session.deferred_retired.as_ptr(), retired_storage);
         session.defer_update(vec![final_target.clone()], vec![middle.rect]);
         assert_eq!(session.scanned, vec![old]);
         session.apply_deferred();

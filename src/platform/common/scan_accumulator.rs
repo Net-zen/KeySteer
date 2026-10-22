@@ -419,11 +419,6 @@ impl ScanAccumulator {
         self.index.clear_batch_captions();
     }
 
-    pub(crate) fn finish(&mut self) {
-        // On cancellation, unpublished geometry is simply dropped here.
-        *self = Self::new();
-    }
-
     /// Called once at a valid terminal, before releasing scan-only evidence.
     /// Move surviving candidates with their latest metadata; no replay or
     /// changed fusion order, extra timer, or retained screenshot is needed.
@@ -783,13 +778,9 @@ mod tests {
                     remove_retired_targets(&mut visible, &update.retired);
                     visible.extend(update.targets);
                 }
-                scan.finish();
                 assert_eq!(visible.len(), 1);
                 assert_eq!(visible[0].name, "支持搜索和复制结果");
                 assert_eq!(visible[0].ocr_text(), "支持搜索和复制结果");
-                assert_eq!(scan.ocr_scratch.text.capacity(), 0);
-                assert!(!scan.ocr_scratch.runs.spilled());
-                assert_eq!(scan.visual_text.capacity(), 0);
             }
         }
     }
@@ -887,7 +878,6 @@ mod tests {
             let repeated = scan.push(TargetSource::SystemOcr, vec![ocr], 0.5);
             assert!(repeated.targets.is_empty());
             assert!(repeated.retired.is_empty());
-            scan.finish();
             let control = visible
                 .iter()
                 .find(|t| t.role == SemanticRole::Button)
@@ -901,7 +891,6 @@ mod tests {
                     .count(),
                 1
             );
-            assert_eq!(scan.search_targets.capacity(), 0);
         }
     }
 
@@ -942,27 +931,6 @@ mod tests {
             assert_eq!(visible[0].role, SemanticRole::StaticText);
             assert_eq!(visible[0].ocr_text(), "复制 Copy");
         }
-    }
-
-    #[test]
-    fn finish_releases_fusion_evidence_and_description_caches() {
-        let mut scan = ScanAccumulator::new();
-        scan.push(
-            TargetSource::SystemOcr,
-            vec![UiTarget {
-                details: None,
-                rect: Rect::new(0., 0., 20., 20.),
-                name: "text".into(),
-                role: SemanticRole::StaticText,
-            }],
-            0.5,
-        );
-        scan.images.reserve(1000);
-        scan.finish();
-        assert_eq!(scan.index.len(), 0);
-        assert_eq!(scan.images.capacity(), 0);
-        assert_eq!(scan.visual_text.capacity(), 0);
-        assert_eq!(scan.search_targets.capacity(), 0);
     }
 
     #[test]
@@ -1008,7 +976,6 @@ mod tests {
             let repeated = scan.push(TargetSource::SystemOcr, vec![text.clone()], 0.5);
             assert!(repeated.targets.is_empty(), "{order:?}");
             assert!(repeated.retired.is_empty(), "{order:?}");
-            scan.finish();
             assert_eq!(visible.len(), 2, "{order:?}");
             assert!(
                 visible
@@ -1101,7 +1068,6 @@ mod tests {
         assert_eq!(update.retired.len(), 2);
         assert!(update.retired.contains(&a.rect));
         assert!(update.retired.contains(&b.rect));
-        scan.finish();
     }
 
     #[test]
@@ -1413,9 +1379,6 @@ mod tests {
                     } else {
                         reference = Some(visible);
                     }
-                    scan.finish();
-                    assert_eq!(scan.deferred.capacity(), 0);
-                    assert_eq!(scan.search_targets.capacity(), 0);
                 }
             }
         }

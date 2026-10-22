@@ -409,29 +409,54 @@ fn unknown_keys_are_ignored() {
 
 #[test]
 fn label_char_replaces_every_cell_key() {
-    let mut config = legacy_config();
-    config.recursive_grid.ui.label_char = "\u{B7}".into();
-    let env = Env::with(config);
-    let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
-    let out = activate(&mut mode, &env);
+    for text in ["\u{B7}", "界🙂", "a label longer than inline storage"] {
+        let mut config = legacy_config();
+        config.recursive_grid.ui.label_char = text.into();
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
+        let out = activate(&mut mode, &env);
 
-    let scene = scene_of(&out);
-    assert!(!scene.labels.is_empty());
-    assert!(scene.labels.iter().all(|l| l.text == "\u{B7}"));
+        let scene = scene_of(&out);
+        assert_eq!(scene.labels.len(), 9);
+        assert!(scene.labels.iter().all(|label| label.text == text));
+        let View::RecursiveGrid(view) = mode.view() else {
+            panic!("expected recursive grid");
+        };
+        let style = view.ui.label.resolve(
+            &env.palette,
+            Color::TRANSPARENT,
+            env.palette.text,
+            Color::TRANSPARENT,
+        );
+        for label in &scene.labels {
+            assert_eq!(
+                label.style.font_size,
+                style.fit_to(text, label.rect).font_size
+            );
+        }
+    }
 }
 
 #[test]
 fn sub_key_preview_adds_a_second_label_per_cell() {
-    let mut config = legacy_config();
-    config.recursive_grid.ui.sub_key_preview = true;
-    let env = Env::with(config);
-    let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
-    let out = activate(&mut mode, &env);
+    for (replacement, expected_preview) in [("", "rtyfghvbn"), ("界🙂", "界界界界界界界界界")]
+    {
+        let mut config = legacy_config();
+        config.recursive_grid.ui.sub_key_preview = true;
+        config.recursive_grid.ui.label_char = replacement.into();
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
+        let out = activate(&mut mode, &env);
 
-    let scene = scene_of(&out);
-    // Nine cell keys plus nine previews.
-    assert_eq!(scene.labels.len(), 18, "{:?}", scene.labels.len());
-    assert!(scene.labels.iter().any(|l| l.text == "rtyfghvbn"));
+        let scene = scene_of(&out);
+        // Nine cell keys plus nine previews, retaining their per-cell paint order.
+        assert_eq!(scene.labels.len(), 18);
+        for pair in scene.labels.as_chunks::<2>().0 {
+            assert_eq!(pair[0].z_index, 3);
+            assert_eq!(pair[1].z_index, 2);
+            assert_eq!(pair[1].text, expected_preview);
+        }
+    }
 }
 
 #[test]

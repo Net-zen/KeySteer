@@ -590,6 +590,11 @@ impl Engine {
     // Keep deferred-work recovery out of the common input turn's instruction path.
     #[inline(never)]
     fn run_scheduled_work(&mut self, backend: &mut dyn Backend) -> Result<(), String> {
+        // The event just handled may have requested exit. Leave deferred work
+        // for finish_runtime to discard instead of running it before cleanup.
+        if self.should_quit {
+            return Ok(());
+        }
         let long_press_result = self.fire_due_long_press_toggles(backend);
         self.fire_quick_switch(backend)?;
         if let Err(error) = long_press_result
@@ -624,6 +629,7 @@ impl Engine {
         backend: &mut dyn Backend,
         result: Result<(), String>,
     ) -> Result<(), String> {
+        backend.stop_input_capture();
         let mut errors = crate::support::errors::ErrorBundle::default();
         errors.record("runtime", result);
         self.scheduler.text_prompt = None;

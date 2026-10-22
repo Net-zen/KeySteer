@@ -273,11 +273,9 @@ impl Overlay {
 /// rectangle and cap the scale so text cannot overflow it.
 #[derive(Default)]
 pub(super) struct DpiSceneCache {
-    retained_source: Option<Arc<OverlayScene>>,
-    retained_scaled: Option<Arc<OverlayScene>>,
+    retained: Option<(Arc<OverlayScene>, Arc<OverlayScene>)>,
     scale_bits: Option<u64>,
-    source_labels: Option<OverlayItems<OverlayLabel>>,
-    scaled_labels: Option<OverlayItems<OverlayLabel>>,
+    labels: Option<(OverlayItems<OverlayLabel>, OverlayItems<OverlayLabel>)>,
 }
 
 impl DpiSceneCache {
@@ -298,23 +296,26 @@ impl DpiSceneCache {
             return Cow::Borrowed(scene);
         }
 
+        // Both caches use the same scale. Invalidate before either lookup so
+        // refreshing the background cannot validate stale foreground metrics.
+        if self.scale_bits != Some(scale.to_bits()) {
+            self.clear();
+            self.scale_bits = Some(scale.to_bits());
+        }
         let mut scaled = scene.clone();
         if let Some(retained) = &scene.retained {
             let cached = self
-                .retained_source
+                .retained
                 .as_ref()
-                .zip(self.retained_scaled.as_ref())
-                .filter(|(source, _)| {
-                    self.scale_bits == Some(scale.to_bits()) && Arc::ptr_eq(source, &retained.scene)
-                })
+                .filter(|(source, _)| Arc::ptr_eq(source, &retained.scene))
                 .map(|(_, scaled)| scaled.clone());
             let source = cached.unwrap_or_else(|| {
                 let mut base = retained.scene.materialized();
-                scale_labels(&mut base.labels, scale);
+                // The first retained background is usually the preceding plain
+                // scene. Preserve its scaled storage and native paint identity.
+                base.labels = self.labels_for_dpi(&base.labels, scale);
                 let base = Arc::new(base);
-                self.retained_source = Some(retained.scene.clone());
-                self.retained_scaled = Some(base.clone());
-                self.scale_bits = Some(scale.to_bits());
+                self.retained = Some((retained.scene.clone(), base.clone()));
                 base
             });
             scaled.retained = Some(crate::api::overlay::RetainedOverlay {
@@ -322,37 +323,34 @@ impl DpiSceneCache {
                 omitted_label: retained.omitted_label,
             });
         } else {
-            self.retained_source = None;
-            self.retained_scaled = None;
+            self.retained = None;
         }
         if scene.labels.is_empty() {
-            // Entering a lightweight/empty scene must not leave the previous
-            // high-DPI grid retained solely by this cache.
-            if scene.retained.is_none() {
-                self.clear();
-            }
+            self.labels = None;
         } else {
-            let cached_labels = self
-                .source_labels
-                .as_ref()
-                .zip(self.scaled_labels.as_ref())
-                .filter(|(source, _)| {
-                    self.scale_bits == Some(scale.to_bits())
-                        && source.shares_storage_with(&scene.labels)
-                })
-                .map(|(_, labels)| labels.clone());
-            if let Some(labels) = cached_labels {
-                scaled.labels = labels;
-            } else {
-                scale_labels(&mut scaled.labels, scale);
-                self.scale_bits = Some(scale.to_bits());
-                self.source_labels = Some(scene.labels.clone());
-                self.scaled_labels = Some(scaled.labels.clone());
-            }
+            scaled.labels = self.labels_for_dpi(&scene.labels, scale);
         }
         // Indicator layout is already resolved in scene coordinates. Scaling
         // it again here would move its left edge away from the cached anchor.
         Cow::Owned(scaled)
+    }
+
+    fn labels_for_dpi(
+        &mut self,
+        labels: &OverlayItems<OverlayLabel>,
+        scale: f64,
+    ) -> OverlayItems<OverlayLabel> {
+        if let Some((_, scaled)) = self
+            .labels
+            .as_ref()
+            .filter(|(source, _)| source.shares_storage_with(labels))
+        {
+            return scaled.clone();
+        }
+        let mut scaled = labels.clone();
+        scale_labels(&mut scaled, scale);
+        self.labels = Some((labels.clone(), scaled.clone()));
+        scaled
     }
 }
 
@@ -1350,12 +1348,25 @@ mod tests {
         ));
         let base = Arc::new(base);
         let mut frame = OverlayScene::new();
+        frame.labels.push(OverlayLabel::new(
+            "foreground",
+            Rect::new(40.0, 40.0, 180.0, 24.0),
+            LabelStyle::default(),
+        ));
+        frame.labels[0].fixed_bounds = true;
         frame.retained = Some(crate::api::overlay::RetainedOverlay {
             scene: base.clone(),
             omitted_label: None,
         });
         let mut cache = DpiSceneCache::default();
+        let plain = cache.scene_for_dpi(&base, 1.5).into_owned();
         let first = cache.scene_for_dpi(&frame, 1.5).into_owned();
+        assert!(
+            plain
+                .labels
+                .shares_storage_with(&first.retained.as_ref().unwrap().scene.labels)
+        );
+        assert!(first.retains_static_content_from(&plain));
         frame.retained.as_mut().unwrap().omitted_label = Some(0);
         let second = cache.scene_for_dpi(&frame, 1.5).into_owned();
         assert!(Arc::ptr_eq(
@@ -1371,8 +1382,19 @@ mod tests {
             &second.retained.as_ref().unwrap().scene,
             &third.retained.as_ref().unwrap().scene
         ));
+        assert_eq!(third, scene_for_dpi(&frame, 2.0).into_owned());
+        assert_ne!(
+            second.labels[0].style.font_size,
+            third.labels[0].style.font_size
+        );
+        frame.labels.clear();
+        cache.scene_for_dpi(&frame, 2.0);
+        assert!(
+            cache.labels.is_none(),
+            "empty foreground releases its cache"
+        );
         cache.clear();
-        assert!(cache.retained_source.is_none());
+        assert!(cache.retained.is_none());
     }
     #[test]
     #[ignore = "creates a small owned native window; requires an interactive Windows desktop"]
@@ -1837,7 +1859,6 @@ mod tests {
         assert!(first.labels.shares_storage_with(&second.labels));
         let empty = OverlayScene::new();
         let _ = cache.scene_for_dpi(&empty, 1.5);
-        assert!(cache.source_labels.is_none());
-        assert!(cache.scaled_labels.is_none());
+        assert!(cache.labels.is_none());
     }
 }

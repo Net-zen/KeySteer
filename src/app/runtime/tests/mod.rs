@@ -72,6 +72,7 @@ struct Recorder {
     scan_requests: Vec<crate::api::UiScanRequest>,
     cancelled_scans: Vec<u64>,
     opened_urls: Vec<String>,
+    input_capture_stopped: bool,
     shutdowns: usize,
     /// Button press/release/click calls, in order.
     buttons: Vec<(MouseButton, ButtonAction)>,
@@ -384,6 +385,9 @@ impl Backend for FakeBackend {
     fn open_url(&mut self, url: &str) -> Result<(), String> {
         self.log.lock().unwrap().opened_urls.push(url.to_string());
         Ok(())
+    }
+    fn stop_input_capture(&mut self) {
+        self.log.lock().unwrap().input_capture_stopped = true;
     }
     fn shutdown(&mut self) -> Result<(), String> {
         self.log.lock().unwrap().shutdowns += 1;

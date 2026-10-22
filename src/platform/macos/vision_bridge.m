@@ -451,7 +451,7 @@ void NmkFreeVisionResult(NmkVisionResult *result);
     uint8_t pixel[4];
     CGContextRef context;
 }
-@property(nonatomic, strong) SCContentFilter *filter;
+@property(nonatomic, strong) NmkCaptureFilter *filter;
 @property(nonatomic) CGDirectDisplayID displayID;
 @end
 
@@ -503,13 +503,18 @@ bool NmkSamplePoint(void **owner, double x, double y, bool reset, uint8_t *rgba)
             configuration.showsCursor = NO;
             [SCScreenshotManager captureImageWithFilter:filter configuration:configuration completionHandler:^(CGImageRef image, NSError *error) {
                 if (error == nil && image != NULL) captured = CGImageRetain(image);
+                if (error != nil || image == NULL) {
+                    @synchronized(state) {
+                        if (state.filter.filter == filter) state.filter = nil;
+                    }
+                }
                 releaseCapture();
                 dispatch_group_leave(group);
             }];
         };
-        SCContentFilter *cached = nil;
+        NmkCaptureFilter *cached = nil;
         @synchronized(state) { if (state.displayID == displayID) cached = state.filter; }
-        if (cached != nil) capture(cached);
+        if (captureFilterIsCurrent(cached, displayID, bounds)) capture(cached.filter);
         else [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *error) {
             SCDisplay *display = nil;
             for (SCDisplay *item in content.displays) if (item.displayID == displayID) { display = item; break; }
@@ -518,9 +523,9 @@ bool NmkSamplePoint(void **owner, double x, double y, bool reset, uint8_t *rgba)
             for (SCRunningApplication *app in content.applications) if (app.processID == getpid()) [excluded addObject:app];
             // Never cache a filter that could capture our own marker or panel.
             if (excluded.count == 0) { capture(nil); return; }
-            SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display excludingApplications:excluded exceptingWindows:@[]];
+            NmkCaptureFilter *filter = captureFilter(display, excluded);
             @synchronized(state) { state.displayID = displayID; state.filter = filter; }
-            capture(filter);
+            capture(filter.filter);
         }];
         if (dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC)) != 0) {
             dispatch_group_notify(group, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{

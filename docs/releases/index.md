@@ -5,6 +5,18 @@ outline: 2
 
 # 更新日志 / Release Notes
 
+## 0.12.5
+
+- 优化 Windows 和 macOS 的网格与 UIHint 绘制和标签切换，修复部分覆盖层刷新异常。
+- 改善 UIHint 连续扫描的响应与资源回收，减少临时内存占用。
+- 修复退出或重载配置时可能出现的短暂输入卡顿。
+- 修复重复触发更新检查或打开“关于”窗口时的状态异常。
+
+- Improved grid and UIHint rendering and label switching on Windows and macOS, and fixed overlay refresh issues.
+- Improved responsiveness and resource cleanup during repeated UIHint scans, reducing temporary memory use.
+- Fixed brief input stalls that could occur when quitting or reloading configuration.
+- Fixed state handling when repeatedly checking for updates or opening the About window.
+
 ## 0.12.3
 
 - 修复 macOS UIHint 中文识别错误。

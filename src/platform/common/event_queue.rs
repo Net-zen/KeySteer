@@ -143,32 +143,20 @@ impl Receiver {
     }
 }
 
-/// Bound background work between display opportunities without changing key
-/// priority, starting a timer, or assigning deadlines to reliable results.
+/// Give the fallback macOS run loop a chance to pump native sources during
+/// background bursts. Ready frames always take priority independently of this.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 pub(crate) struct BackgroundBudget(u8);
 
+#[cfg(any(target_os = "macos", test))]
 impl BackgroundBudget {
-    /// Synchronous keys are handled first by the caller. A ready display frame
-    /// then outranks background maintenance on every poll, not every eighth
-    /// completion. The closure only reads an already-delivered native frame.
-    pub(crate) fn take_ready_frame(
-        &mut self,
-        take: impl FnOnce() -> Option<std::time::Duration>,
-    ) -> Option<BackendEvent> {
-        take().map(|elapsed| {
-            self.reset();
-            BackendEvent::Frame(elapsed)
-        })
-    }
-
     pub(crate) fn record(&mut self) {
         self.0 = self.0.saturating_add(1);
     }
     pub(crate) fn reset(&mut self) {
         self.0 = 0;
     }
-    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn yield_due(&mut self) -> bool {
         if self.0 < 8 {
             return false;
@@ -193,29 +181,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ready_frame_does_not_wait_for_a_background_batch() {
-        for count in 0..=8 {
-            let mut budget = BackgroundBudget::default();
-            for _ in 0..count {
-                budget.record();
-            }
-            let elapsed = std::time::Duration::from_millis(8);
-            assert!(
-                matches!(budget.take_ready_frame(|| Some(elapsed)), Some(BackendEvent::Frame(value)) if value == elapsed)
-            );
-            assert_eq!(budget.0, 0);
-        }
-        let mut budget = BackgroundBudget::default();
-        budget.record();
-        assert!(budget.take_ready_frame(|| None).is_none());
-        assert_eq!(
-            budget.0, 1,
-            "no frame must not starve native source pumping"
-        );
-    }
-
-    #[test]
-    fn background_bursts_offer_a_frame_every_eight_events() {
+    fn background_bursts_pump_native_sources_every_eight_events() {
         let mut budget = BackgroundBudget::default();
         for _ in 0..100 {
             for _ in 0..8 {

@@ -430,7 +430,13 @@ pub trait Backend {
         Ok(())
     }
 
-    /// Called once after the engine loop ends.
+    /// Stop synchronous physical-input capture without waiting for workers.
+    /// Called before exit cleanup can block; synthetic releases must remain
+    /// available until shutdown. Repeated calls must be harmless.
+    fn stop_input_capture(&mut self) {}
+
+    /// Release native resources, including after startup failure. Runtime exit
+    /// finishes persistence attempts before this final acknowledgement.
     fn shutdown(&mut self) -> Result<(), String> {
         Ok(())
     }

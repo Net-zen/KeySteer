@@ -91,8 +91,8 @@ impl NativeDialogGuard {
     fn acquire() -> Option<Self> {
         NATIVE_DIALOG_VISIBLE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-            .then_some(Self)
+            .ok()?;
+        Some(Self)
     }
 }
 
@@ -958,7 +958,9 @@ mod tests {
     #[test]
     fn native_dialog_is_single_instance_and_releases_its_guard() {
         let first = NativeDialogGuard::acquire().expect("first dialog should acquire the guard");
-        assert!(NativeDialogGuard::acquire().is_none());
+        for _ in 0..3 {
+            assert!(NativeDialogGuard::acquire().is_none());
+        }
 
         drop(first);
         assert!(NativeDialogGuard::acquire().is_some());

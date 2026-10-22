@@ -1,5 +1,7 @@
 //! Central grid composition from a borrowed semantic view.
-use crate::api::overlay::{Color, LabelStyle, OverlayLabel, OverlayScene, OverlayShape};
+use crate::api::overlay::{
+    Color, LabelStyle, OverlayLabel, OverlayScene, OverlayShape, SharedLabelStyle,
+};
 use crate::api::presentation::GridView;
 use crate::api::{Palette, Point, Rect};
 
@@ -118,6 +120,16 @@ impl GridView<'_> {
             bold: false,
             ..style.clone()
         };
+        let Some(first_outer) = area.subdivision(self.layout.rows, self.layout.cols, 0) else {
+            return;
+        };
+        let Some(first_inner) = first_outer.subdivision(self.layout.rows, self.layout.cols, 0)
+        else {
+            return;
+        };
+        // Subdivision preserves cell sizes, and every key is one Unicode scalar.
+        // Fit once per layer and share the style across all of its labels.
+        let preview_style: SharedLabelStyle = preview_style.fit_to("X", first_inner).into();
         for outer_index in 0..self.layout.keys.len() {
             let Some(outer) = area.subdivision(self.layout.rows, self.layout.cols, outer_index)
             else {
@@ -128,10 +140,8 @@ impl GridView<'_> {
                 else {
                     break;
                 };
-                let text = suffix.to_string();
-                let label_style = preview_style.fit_to(&text, rect);
                 scene.push_label(
-                    OverlayLabel::new(text, rect, label_style)
+                    OverlayLabel::new(suffix, rect, preview_style.clone())
                         .fitted()
                         .with_z_index(2),
                 );
@@ -143,28 +153,30 @@ impl GridView<'_> {
         // relative to the outer cell rather than capped by the ordinary label
         // font, so the first key remains readable at a glance on any display.
         let primary_color = style.matched_text_color.with_opacity(0.92);
+        let primary_style: SharedLabelStyle = LabelStyle {
+            font_size: style
+                .font_size
+                .max(first_outer.width.min(first_outer.height) * 0.62),
+            text_color: primary_color,
+            matched_text_color: primary_color,
+            background: Color::TRANSPARENT,
+            border_color: Color::TRANSPARENT,
+            border_width: 0.0,
+            border_radius: 0.0,
+            padding_x: 0.0,
+            padding_y: 0.0,
+            bold: false,
+            ..style.clone()
+        }
+        .fit_to("X", first_outer)
+        .into();
         for (outer_index, prefix) in self.layout.keys.iter().copied().enumerate() {
             let Some(outer) = area.subdivision(self.layout.rows, self.layout.cols, outer_index)
             else {
                 break;
             };
-            let text = prefix.to_string();
-            let primary_style = LabelStyle {
-                font_size: style.font_size.max(outer.width.min(outer.height) * 0.62),
-                text_color: primary_color,
-                matched_text_color: primary_color,
-                background: Color::TRANSPARENT,
-                border_color: Color::TRANSPARENT,
-                border_width: 0.0,
-                border_radius: 0.0,
-                padding_x: 0.0,
-                padding_y: 0.0,
-                bold: false,
-                ..style.clone()
-            }
-            .fit_to(&text, outer);
             scene.push_label(
-                OverlayLabel::new(text, outer, primary_style)
+                OverlayLabel::new(prefix, outer, primary_style.clone())
                     .fitted()
                     .with_z_index(3),
             );
@@ -242,25 +254,25 @@ impl GridView<'_> {
                 1,
             );
 
-            let text_style = LabelStyle {
-                background: Color::TRANSPARENT,
-                border_color: Color::TRANSPARENT,
-                border_width: 0.0,
-                border_radius: 0.0,
-                ..style.clone()
-            };
             if preview_second_layer {
                 self.push_second_layer_preview(&mut scene, area, &style, palette);
-            } else {
+            } else if let Some(cell) = area.subdivision(self.layout.rows, self.layout.cols, 0) {
+                let text_style: SharedLabelStyle = LabelStyle {
+                    background: Color::TRANSPARENT,
+                    border_color: Color::TRANSPARENT,
+                    border_width: 0.0,
+                    border_radius: 0.0,
+                    ..style
+                }
+                .fit_to("X", cell)
+                .into();
                 for (index, key) in self.layout.keys.iter().copied().enumerate() {
                     let Some(rect) = area.subdivision(self.layout.rows, self.layout.cols, index)
                     else {
                         break;
                     };
-                    let text = key.to_string();
-                    let label_style = text_style.fit_to(&text, rect);
                     scene.push_label(
-                        OverlayLabel::new(text, rect, label_style)
+                        OverlayLabel::new(key, rect, text_style.clone())
                             .fitted()
                             .with_z_index(2),
                     );

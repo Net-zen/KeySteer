@@ -238,8 +238,8 @@ impl Engine {
             )
         });
 
-        // Skip identical frames: overlay presentation is the most expensive
-        // thing we do, and modes redraw on every keystroke.
+        // Skip identical frames only at the live position: the complete-scene
+        // snapshot is deliberately not copied on position-only updates.
         let positions = OverlayPositions {
             cursor: dynamic.cursor.then_some(self.cursor),
             indicator: dynamic
@@ -247,6 +247,7 @@ impl Engine {
                 .map(|geometry| geometry.position(self.cursor, &self.screens)),
         };
         if self.overlay.visible
+            && self.overlay.positions == Some(positions)
             && self
                 .overlay
                 .last_scene

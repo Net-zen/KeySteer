@@ -197,16 +197,32 @@ impl Inbox {
         if let Some(index) = state.ready.pop_front() {
             let lane = &mut state.lanes[index];
             let source = lane.source;
-            if matches!(lane.batches.front(), Some(Input::Progress(_))) {
-                let Some(Input::Progress(progress)) = lane.batches.pop_front() else {
-                    unreachable!()
-                };
-                if !lane.batches.is_empty() {
-                    state.ready.push_back(index);
+            let Some(input) = lane.batches.pop_front() else {
+                unreachable!("ready lane has input")
+            };
+            let mut targets = match input {
+                Input::Targets(mut front) => {
+                    if front.len() <= limit {
+                        // Consuming a complete provider buffer can transfer its
+                        // allocation directly to fusion instead of moving every
+                        // target through another temporary Vec.
+                        front.collect()
+                    } else {
+                        let targets: Vec<_> = front.by_ref().take(limit).collect();
+                        lane.batches.push_front(Input::Targets(front));
+                        targets
+                    }
                 }
-                return Step::Progress(source, progress);
+                Input::Progress(progress) => {
+                    if !lane.batches.is_empty() {
+                        state.ready.push_back(index);
+                    }
+                    return Step::Progress(source, progress);
+                }
+            };
+            if targets.len() < limit && matches!(lane.batches.front(), Some(Input::Targets(_))) {
+                targets.reserve(limit - targets.len());
             }
-            let mut targets = Vec::with_capacity(limit);
             while targets.len() < limit {
                 let Some(Input::Targets(front)) = lane.batches.front_mut() else {
                     break;
@@ -216,7 +232,6 @@ impl Inbox {
                     lane.batches.pop_front();
                 }
             }
-            let source = lane.source;
             if !lane.batches.is_empty() {
                 state.ready.push_back(index);
             }
@@ -554,7 +569,6 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                     } else {
                         accumulator.take_deferred()
                     };
-                    accumulator.finish();
                     if job.inbox.cancelled.load(Ordering::Acquire) {
                         continue;
                     }
@@ -567,6 +581,8 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                         (job.options.wake)();
                     }
                     job.inbox.discard();
+                    // Release scan evidence with its task, immediately after
+                    // publication; do not rebuild an empty accumulator first.
                     current = None;
                     continue;
                 }
@@ -691,6 +707,36 @@ mod tests {
             panic!("missing tail")
         };
         assert_eq!(batch.len(), 1);
+    }
+
+    #[test]
+    fn complete_provider_buffers_move_into_fusion_and_keep_batch_boundaries() {
+        let (sink, _) = detached();
+        for count in [1, 16, 128] {
+            let input = targets(0, count);
+            let storage = input.as_ptr();
+            sink.submit(TargetSource::Accessibility, input);
+            let Step::Targets(TargetSource::Accessibility, batch) = sink.inbox.take(128) else {
+                panic!("missing provider buffer")
+            };
+            assert_eq!(batch.as_ptr(), storage);
+            assert_eq!(batch, targets(0, count));
+        }
+        sink.submit(TargetSource::Accessibility, targets(0, 4));
+        sink.submit(TargetSource::Accessibility, targets(4, 20));
+        sink.submit(TargetSource::SystemOcr, targets(99, 1));
+        for (source, start, count) in [
+            (TargetSource::Accessibility, 0, 16),
+            (TargetSource::SystemOcr, 99, 1),
+            (TargetSource::Accessibility, 16, 8),
+        ] {
+            let Step::Targets(actual_source, batch) = sink.inbox.take(16) else {
+                panic!("missing bounded batch")
+            };
+            assert_eq!(actual_source, source);
+            assert_eq!(batch, targets(start, count));
+        }
+        assert!(matches!(sink.inbox.take(16), Step::Idle));
     }
 
     #[test]

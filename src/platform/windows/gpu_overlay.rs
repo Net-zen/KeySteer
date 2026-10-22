@@ -133,6 +133,8 @@ struct WindowContent {
     cursor_surface: Option<LayerSurface>,
     indicator_surface: Option<LayerSurface>,
     last_scene: Option<Arc<OverlayScene>>,
+    // Fast position updates leave the shared complete scene unchanged.
+    positions: (Option<Point>, Option<Point>),
     area: Rect,
     width: u32,
     height: u32,
@@ -310,13 +312,18 @@ impl GpuOverlay {
         let height = dimensions.height_u32();
         let area_changed = self.ensure_content(area, width, height)?;
         self.ensure_static_layer(scene_has_static_content(&scene), width, height)?;
-        let (hwnd, changes) = self
+        let (show, changes) = self
             .content
             .as_ref()
             .map(|content| {
                 (
-                    content.window.raw(),
-                    scene_changes(content.last_scene.as_deref(), scene.as_ref(), area_changed),
+                    content.last_scene.is_none().then_some(content.window.raw()),
+                    scene_changes(
+                        content.last_scene.as_deref(),
+                        scene.as_ref(),
+                        content.positions,
+                        area_changed,
+                    ),
                 )
             })
             .ok_or("DirectComposition content was not retained")?;
@@ -331,9 +338,9 @@ impl GpuOverlay {
                     .as_ref()
                     .and_then(|content| content.last_scene.clone());
                 if !area_changed
-                    && let Some(previous) = previous.as_deref().filter(|previous| {
-                        crate::platform::common::overlay_damage::same_source(previous, &scene)
-                    })
+                    && let Some(previous) = previous
+                        .as_deref()
+                        .filter(|previous| scene.retains_static_content_from(previous))
                 {
                     self.draw_damage(&static_surface, previous, &scene, area)?;
                 } else {
@@ -342,15 +349,30 @@ impl GpuOverlay {
             }
         }
         if changes.cursor_changed {
+            if let Some(content) = self.content.as_mut() {
+                content.positions.0 = None;
+            }
             self.draw_cursor(scene.cursor_marker.as_ref(), area, changes.cursor_repaint)?;
+            if let Some(content) = self.content.as_mut() {
+                content.positions.0 = scene.cursor_marker.as_ref().map(|marker| marker.center);
+            }
         }
         if changes.indicator_changed {
+            if let Some(content) = self.content.as_mut() {
+                content.positions.1 = None;
+            }
             self.draw_indicator(scene.indicator.as_ref(), area, changes.indicator_repaint)?;
+            if let Some(content) = self.content.as_mut() {
+                content.positions.1 = scene.indicator.as_ref().map(|indicator| indicator.position);
+            }
         }
+        // A new HWND stays hidden until its first complete frame is committed.
+        // Dismiss destroys the HWND, so later frames need no repeated show call.
+        self.commit(show)?;
         if let Some(content) = self.content.as_mut() {
             content.last_scene = Some(scene);
         }
-        self.commit(Some(hwnd))
+        Ok(())
     }
 
     /// Move existing dynamic visuals without opening a Direct2D surface.
@@ -361,7 +383,7 @@ impl GpuOverlay {
     ) -> Result<(), String> {
         let content = self
             .content
-            .as_ref()
+            .as_mut()
             .ok_or("DirectComposition content is unavailable")?;
         if let Some(center) = cursor {
             let marker = content
@@ -373,12 +395,16 @@ impl GpuOverlay {
                 return Err("cursor visual surface is unavailable".into());
             }
             let bounds = cursor_bounds(marker, center);
+            // Retry after a partial native offset failure as well as after a
+            // later complete scene returns to its original coordinates.
+            content.positions.0 = None;
             configure_visual(
                 &content.cursor_visual,
                 None,
                 bounds.x - content.area.x,
                 bounds.y - content.area.y,
             )?;
+            content.positions.0 = Some(center);
         }
         if let Some(position) = indicator {
             let item = content
@@ -390,12 +416,14 @@ impl GpuOverlay {
                 return Err("indicator visual surface is unavailable".into());
             }
             let bounds = indicator_bounds(item, position);
+            content.positions.1 = None;
             configure_visual(
                 &content.indicator_visual,
                 None,
                 bounds.x - content.area.x,
                 bounds.y - content.area.y,
             )?;
+            content.positions.1 = Some(position);
         }
         self.commit(None)
     }
@@ -466,8 +494,8 @@ impl GpuOverlay {
         let visual = create_composition_visual(&self.dcomp)
             .map_err(|error| format!("CreateVisual failed: {error}"))?;
         // SAFETY: every interface belongs to this device and stays alive in
-        // WindowContent. Null reference visuals place static at the bottom and
-        // dynamic visuals successively above it.
+        // WindowContent. Use an explicit sibling when placing the indicator above
+        // the cursor; with a null sibling, insertAbove=true means bottommost.
         let cursor_visual = create_composition_visual(&self.dcomp)
             .map_err(|error| format!("Create cursor visual failed: {error}"))?;
         // SAFETY: the compositor device returns a newly owned visual on this
@@ -479,7 +507,7 @@ impl GpuOverlay {
         unsafe {
             visual
                 .AddVisual(&cursor_visual, false, None)
-                .and_then(|()| visual.AddVisual(&indicator_visual, true, None))
+                .and_then(|()| visual.AddVisual(&indicator_visual, true, Some(&cursor_visual)))
                 .and_then(|()| target.SetRoot(&visual))
                 .and_then(|()| self.dcomp.Commit())
         }
@@ -495,6 +523,7 @@ impl GpuOverlay {
             cursor_surface: None,
             indicator_surface: None,
             last_scene: None,
+            positions: (None, None),
             area,
             width,
             height,
@@ -638,17 +667,15 @@ impl GpuOverlay {
         scene: &OverlayScene,
         area: Rect,
     ) -> Result<(), String> {
-        let mut index = scene.retained.as_ref().map(|retained| {
-            self.paint_index
-                .take()
-                .filter(|index| Arc::ptr_eq(&index.source, &retained.scene))
-                .unwrap_or_else(|| {
-                    Box::new(crate::platform::common::overlay_damage::PaintIndex::new(
-                        retained.scene.clone(),
-                    ))
-                })
+        // Full draws do not query the spatial index. Keep a matching one warm,
+        // but build it only when a later frame actually needs damage queries.
+        self.paint_index = self.paint_index.take().filter(|index| {
+            scene
+                .retained
+                .as_ref()
+                .is_some_and(|retained| Arc::ptr_eq(&index.source, &retained.scene))
         });
-        let result = self.draw_surface(
+        self.draw_surface(
             surface,
             Point::new(area.x, area.y),
             scene.backdrop,
@@ -671,9 +698,7 @@ impl GpuOverlay {
                 }
                 Ok(())
             },
-        );
-        self.paint_index = index.take();
-        result
+        )
     }
 
     fn draw_damage(
@@ -1385,24 +1410,26 @@ fn indicator_content_eq(left: Option<&Indicator>, right: Option<&Indicator>) -> 
 fn scene_changes(
     previous: Option<&OverlayScene>,
     next: &OverlayScene,
+    positions: (Option<Point>, Option<Point>),
     area_changed: bool,
 ) -> SceneChanges {
+    let cursor_repaint = previous.is_none_or(|previous| {
+        !cursor_content_eq(previous.cursor_marker.as_ref(), next.cursor_marker.as_ref())
+    });
+    let indicator_repaint = previous.is_none_or(|previous| {
+        !indicator_content_eq(previous.indicator.as_ref(), next.indicator.as_ref())
+    });
     SceneChanges {
         static_changed: area_changed
             || previous.is_none_or(|previous| !static_scene_eq(previous, next)),
         cursor_changed: area_changed
-            || previous.is_none_or(|previous| {
-                previous.cursor_marker.as_ref() != next.cursor_marker.as_ref()
-            }),
-        cursor_repaint: previous.is_none_or(|previous| {
-            !cursor_content_eq(previous.cursor_marker.as_ref(), next.cursor_marker.as_ref())
-        }),
+            || cursor_repaint
+            || positions.0 != next.cursor_marker.as_ref().map(|marker| marker.center),
+        cursor_repaint,
         indicator_changed: area_changed
-            || previous
-                .is_none_or(|previous| previous.indicator.as_ref() != next.indicator.as_ref()),
-        indicator_repaint: previous.is_none_or(|previous| {
-            !indicator_content_eq(previous.indicator.as_ref(), next.indicator.as_ref())
-        }),
+            || indicator_repaint
+            || positions.1 != next.indicator.as_ref().map(|indicator| indicator.position),
+        indicator_repaint,
     }
 }
 
@@ -1530,6 +1557,7 @@ mod tests {
         let mut capture = crate::platform::windows::native::PreparedCapture::new(480, 240)?;
         let mut base = OverlayScene::new();
         base.clip = Some(area);
+        base.backdrop = Some(Color::rgb(245, 245, 245));
         for (text, x) in [("aa", 80.0), ("ab", 95.0), ("ac", 380.0)] {
             base.labels.push(
                 OverlayLabel::new(text, Rect::new(x, 75.0, 48.0, 32.0), LabelStyle::default())
@@ -1537,8 +1565,10 @@ mod tests {
             );
         }
         let base = Arc::new(base);
-        let mut previous: Option<Arc<OverlayScene>> = None;
-        for transparent in [false, true] {
+        for (scale, transparent) in [(1.0, false), (1.0, true), (1.5, true), (2.0, true)] {
+            let mut dpi = super::super::overlay::DpiSceneCache::default();
+            renderer.present(Arc::new(dpi.scene_for_dpi(&base, scale).into_owned()), area)?;
+            crate::platform::windows::native::wait_for_dwm_frame().map_err(|e| e.to_string())?;
             for selected in [Some(0), Some(1), Some(2), Some(0), None] {
                 let mut frame = OverlayScene::new();
                 frame.clip = Some(area);
@@ -1572,15 +1602,13 @@ mod tests {
                     )
                     .with_z_index(10_001),
                 );
-                let frame = Arc::new(frame);
+                let frame = Arc::new(dpi.scene_for_dpi(&frame, scale).into_owned());
                 let started = renderer.begin_draws;
                 renderer.present(frame.clone(), area)?;
-                if previous.is_some() {
-                    assert!(
-                        renderer.begin_draws - started >= 2,
-                        "use separate dirty regions"
-                    );
-                }
+                assert!(
+                    renderer.begin_draws - started >= 2,
+                    "use separate dirty regions, including the first retained frame"
+                );
                 crate::platform::windows::native::wait_for_dwm_frame()
                     .map_err(|e| e.to_string())?;
                 let partial =
@@ -1594,9 +1622,8 @@ mod tests {
                 let difference = partial.iter().zip(&full).filter(|(a, b)| a != b).count();
                 assert_eq!(
                     difference, 0,
-                    "selection={selected:?} transparent={transparent}"
+                    "selection={selected:?} transparent={transparent} scale={scale}"
                 );
-                previous = Some(frame);
             }
         }
         renderer.present(Arc::new(OverlayScene::new()), area)?;
@@ -1691,7 +1718,12 @@ mod tests {
         moved.cursor_marker.as_mut().unwrap().center = Point::new(100.0, 200.0);
         moved.indicator.as_mut().unwrap().position = Point::new(120.0, 240.0);
         assert_eq!(
-            scene_changes(Some(&first), &moved, false),
+            scene_changes(
+                Some(&first),
+                &moved,
+                (Some(Point::new(10.0, 20.0)), Some(Point::new(30.0, 40.0))),
+                false,
+            ),
             SceneChanges {
                 static_changed: false,
                 cursor_changed: true,
@@ -1701,7 +1733,21 @@ mod tests {
             }
         );
 
-        let area_moved = scene_changes(Some(&moved), &moved, true);
+        let positions = (
+            Some(Point::new(100.0, 200.0)),
+            Some(Point::new(120.0, 240.0)),
+        );
+        let restored = scene_changes(Some(&first), &first, positions, false);
+        assert!(restored.cursor_changed);
+        assert!(restored.indicator_changed);
+        assert!(!restored.cursor_repaint && !restored.indicator_repaint);
+        let already_moved = scene_changes(Some(&first), &moved, positions, false);
+        assert!(!already_moved.cursor_changed && !already_moved.indicator_changed);
+        let partial_failure = scene_changes(Some(&first), &moved, (None, positions.1), false);
+        assert!(partial_failure.cursor_changed);
+        assert!(!partial_failure.indicator_changed);
+
+        let area_moved = scene_changes(Some(&moved), &moved, positions, true);
         assert!(area_moved.static_changed);
         assert!(area_moved.cursor_changed);
         assert!(!area_moved.cursor_repaint);
@@ -1729,7 +1775,12 @@ mod tests {
         let mut changed = first.clone();
         changed.cursor_marker.as_mut().unwrap().radius = 12.0;
         changed.indicator.as_mut().unwrap().held_text = Some("Ctrl".into());
-        let changes = scene_changes(Some(&first), &changed, false);
+        let changes = scene_changes(
+            Some(&first),
+            &changed,
+            (Some(Point::new(10.0, 20.0)), Some(Point::new(30.0, 40.0))),
+            false,
+        );
         assert!(changes.cursor_changed);
         assert!(changes.cursor_repaint);
         assert!(changes.indicator_changed);
@@ -1747,11 +1798,12 @@ mod tests {
     #[test]
     #[ignore = "requires an interactive Windows compositor"]
     fn directcomposition_smoke() -> Result<(), String> {
+        super::super::screens::enable_dpi_awareness()?;
         let mut renderer = GpuOverlay::new()?;
         let mut scene = OverlayScene::new();
         let area = Rect::new(0.0, 0.0, 256.0, 128.0);
         scene.clip = Some(area);
-        scene.backdrop = Some(Color::rgba(0, 0, 0, 8));
+        scene.backdrop = Some(Color::rgb(255, 255, 255));
         scene.shapes.push(OverlayShape::fill(
             Rect::new(8.0, 8.0, 64.0, 48.0),
             Color::rgba(20, 40, 80, 128),
@@ -1770,8 +1822,8 @@ mod tests {
         scene.cursor_marker = Some(crate::api::overlay::CursorMarker {
             center: Point::new(180.0, 32.0),
             radius: 8.0,
-            fill: Color::rgba(255, 255, 255, 32),
-            stroke: Color::rgb(255, 255, 255),
+            fill: Color::rgb(255, 0, 0),
+            stroke: Color::rgb(255, 0, 0),
             stroke_width: 1.0,
         });
         scene.indicator = Some(crate::api::overlay::Indicator {
@@ -1780,11 +1832,63 @@ mod tests {
             position: Point::new(248.0, 72.0),
             style: LabelStyle::default(),
         });
-        renderer.present(Arc::new(scene), area)?;
+        let scene = Arc::new(scene);
+        renderer.present(Arc::clone(&scene), area)?;
+        assert!(super::super::native::is_window_visible(
+            renderer.content.as_ref().unwrap().window.raw()
+        ));
+        let mut capture = super::super::native::PreparedCapture::new(256, 128)?;
+        let mut read = || -> Result<Vec<u8>, String> {
+            assert!(super::super::native::pump_window_messages());
+            super::super::native::wait_for_dwm_frame().map_err(|error| error.to_string())?;
+            capture.capture_with(0, 0, 256, 128, |pixels, _, _| Ok(pixels.to_vec()))
+        };
+        let original = read()?;
+        let rgb = |pixels: &[u8], x: usize, y: usize| {
+            let index = (y * 256 + x) * 4;
+            [pixels[index + 2], pixels[index + 1], pixels[index]]
+        };
+        assert_eq!(rgb(&original, 180, 32), [255, 0, 0]);
+        assert_ne!(
+            rgb(&original, 235, 80),
+            [255, 255, 255],
+            "indicator must be above the static backdrop"
+        );
+        let draws = renderer.begin_draws;
+        renderer.update_positions(Some(Point::new(140.0, 52.0)), Some(Point::new(208.0, 92.0)))?;
+        let moved = read()?;
+        assert_eq!(rgb(&moved, 180, 32), [255, 255, 255]);
+        assert_eq!(rgb(&moved, 140, 52), [255, 0, 0]);
+        assert_eq!(rgb(&moved, 235, 80), [255, 255, 255]);
+        assert_ne!(
+            rgb(&moved, 195, 100),
+            [255, 255, 255],
+            "indicator must move independently of the cursor"
+        );
+        renderer.present(Arc::clone(&scene), area)?;
+        assert!(
+            read()? == original,
+            "a complete scene must restore its positions"
+        );
+        assert_eq!(
+            renderer.begin_draws, draws,
+            "restoring positions must not repaint"
+        );
         renderer.utf16.reserve(8192);
         renderer.dismiss()?;
         assert_eq!(renderer.utf16.capacity(), 0);
         assert!(renderer.content.is_none());
+        renderer.present(Arc::clone(&scene), area)?;
+        assert!(
+            read()? == original,
+            "a recreated window must show its first frame"
+        );
+        renderer.present(scene, Rect::new(0.0, 0.0, 288.0, 160.0))?;
+        assert!(
+            read()? == original,
+            "a resized window must show its first frame"
+        );
+        renderer.dismiss()?;
         Ok(())
     }
 
@@ -1868,7 +1972,7 @@ mod tests {
         let area = Rect::new(0.0, 0.0, 480.0, 80.0);
         let mut scene = OverlayScene::new();
         scene.clip = Some(area);
-        let query = "ahd dhad dha had dhad h ".repeat(80);
+        let query = "ahd 汉字🙂 dha had dhad h ".repeat(80);
         let mut input = OverlayLabel::new(
             query.as_str(),
             Rect::new(12.0, 12.0, 420.0, 56.0),
@@ -1905,8 +2009,11 @@ mod tests {
         renderer.present(Arc::new(scene.clone()), area)?;
         assert_eq!(renderer.edit_layout.as_ref().unwrap().layout, layout);
         scene.labels[0].trailing_text_len = 0;
-        renderer.present(Arc::new(scene), area)?;
+        renderer.present(Arc::new(scene.clone()), area)?;
         assert_ne!(renderer.edit_layout.as_ref().unwrap().layout, layout);
+        scene.labels[0].scroll_to_cursor = false;
+        renderer.present(Arc::new(scene), area)?;
+        assert!(renderer.edit_layout.is_none());
         renderer.dismiss()?;
         assert!(renderer.edit_layout.is_none());
         Ok(())

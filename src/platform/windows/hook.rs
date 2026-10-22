@@ -589,7 +589,15 @@ impl HookThread {
         self.stop_until(deadline)
     }
 
+    /// Stop waiting for Engine decisions before joining unrelated workers.
+    /// Keep the native hook alive to execute queued input releases.
+    pub(super) fn close_dispositions(&mut self) {
+        self.mailbox.close();
+        self.pending = None;
+    }
+
     pub fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
+        self.close_dispositions();
         if self.worker.is_none() {
             return Ok(());
         }
@@ -823,7 +831,7 @@ fn begin_disposition(event: BackendEvent) -> Option<(Arc<DispositionMailbox>, u6
     let result = EVENT_SINK.with(|current| {
         let sink = current.borrow();
         let sink = sink.as_ref()?;
-        let generation = sink.mailbox.begin();
+        let generation = sink.mailbox.try_begin()?;
         try_deliver(
             &sink.sender,
             Envelope {
@@ -831,11 +839,10 @@ fn begin_disposition(event: BackendEvent) -> Option<(Arc<DispositionMailbox>, u6
                 generation: Some(generation),
             },
         )
-        .then(|| (Arc::clone(&sink.mailbox), generation))?
-        .into()
-    });
+        .then(|| (Arc::clone(&sink.mailbox), generation))
+    })?;
     wake_owner();
-    result
+    Some(result)
 }
 
 #[inline(always)]
@@ -1520,6 +1527,50 @@ mod tests {
 
         assert!(hook.set_disposition(KeyDisposition::Forward).is_err());
         assert!(hook.pending.is_none());
+    }
+
+    #[test]
+    fn shutdown_releases_pending_disposition_and_rejects_new_callbacks() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let mailbox = Arc::new(DispositionMailbox::default());
+        let callback_mailbox = Arc::clone(&mailbox);
+        let (completed, result) = mpsc::channel();
+        let callback = std::thread::spawn(move || {
+            EVENT_SINK.with(|sink| {
+                *sink.borrow_mut() = Some(EventSink {
+                    sender,
+                    mailbox: callback_mailbox,
+                });
+            });
+            let event = || BackendEvent::Warning("shutdown callback".into());
+            let (mailbox, generation) = begin_disposition(event()).unwrap();
+            completed
+                .send(mailbox.wait(generation, Duration::from_secs(5)))
+                .unwrap();
+            assert!(begin_disposition(event()).is_none());
+            EVENT_SINK.with(|sink| sink.borrow_mut().take());
+        });
+        let mut hook = HookThread {
+            receiver,
+            mailbox,
+            injection: Arc::new(InjectionQueue::default()),
+            pending: None,
+            thread_id: 0,
+            worker: None,
+            retry_after: None,
+        };
+        let event = hook.receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        hook.pending = event.generation;
+        hook.close_dispositions();
+        assert_eq!(result.recv_timeout(Duration::from_secs(1)).unwrap(), None);
+        callback.join().unwrap();
+        assert!(hook.pending.is_none());
+        assert!(hook.receiver.try_recv().is_err());
+        assert!(
+            !hook
+                .mailbox
+                .complete(event.generation.unwrap(), KeyDisposition::Forward)
+        );
     }
 
     #[test]

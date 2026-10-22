@@ -943,6 +943,17 @@ mod point_sample_tests {
                 covered,
                 "gpu={gpu}: cancellation restores the region"
             );
+            foreground.dismiss_for_capture().unwrap();
+            assert_eq!(read(), baseline, "gpu={gpu}: capture must hide the overlay");
+            foreground
+                .present(scene(Color::rgb(255, 0, 0)), area)
+                .unwrap();
+            native::wait_for_dwm_frame().unwrap();
+            assert_eq!(
+                read(),
+                covered,
+                "gpu={gpu}: capture completion restores the overlay"
+            );
             foreground.dismiss().unwrap();
         }
         background.dismiss().unwrap();
