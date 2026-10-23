@@ -33,7 +33,7 @@ use crate::api::overlay::{
 };
 
 use crate::platform::common::display_target::DisplayTargetCache;
-use crate::platform::common::overlay_reconcile::matched_previous_indices;
+use crate::platform::common::overlay_reconcile::{matched_previous_indices, reorder_matched_slots};
 
 const MAX_CACHED_COLORS: usize = 64;
 
@@ -773,51 +773,8 @@ impl WindowContent {
     ) -> SmallVec<[Option<usize>; 128]> {
         let old_count = self.labels.len();
         let previous_indices = matched_previous_indices(previous, current, old_count);
-
-        let mut desired_slots = SmallVec::<[Option<usize>; 128]>::new();
-        desired_slots.resize(current.len(), None);
-        let mut used = SmallVec::<[bool; 128]>::new();
-        used.resize(old_count.max(current.len()), false);
-
-        for (index, previous_index) in previous_indices.iter().copied().enumerate() {
-            let Some(previous_index) = previous_index else {
-                continue;
-            };
-            desired_slots[index] = Some(previous_index);
-            used[previous_index] = true;
-        }
-
         self.ensure_labels(current.len());
-        used.resize(self.labels.len(), false);
-        let mut next_unused = 0;
-        for desired in &mut desired_slots {
-            if desired.is_some() {
-                continue;
-            }
-            while used[next_unused] {
-                next_unused += 1;
-            }
-            *desired = Some(next_unused);
-            used[next_unused] = true;
-        }
-
-        let mut old_at_position: SmallVec<[usize; 128]> = (0..self.labels.len()).collect();
-        let mut position_of_old = old_at_position.clone();
-        for (target_position, desired) in desired_slots.iter().enumerate() {
-            let Some(desired_old) = *desired else {
-                debug_assert!(false, "every current label must have a native slot");
-                continue;
-            };
-            let source_position = position_of_old[desired_old];
-            if source_position == target_position {
-                continue;
-            }
-            let displaced_old = old_at_position[target_position];
-            self.labels.swap(target_position, source_position);
-            old_at_position.swap(target_position, source_position);
-            position_of_old[desired_old] = target_position;
-            position_of_old[displaced_old] = source_position;
-        }
+        reorder_matched_slots(&mut self.labels, &previous_indices);
         self.trim_labels(current.len());
         previous_indices
     }

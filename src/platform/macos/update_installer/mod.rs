@@ -155,27 +155,35 @@ fn prepare(download: &Download, cancel: &AtomicBool) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| e.to_string())?;
-    let armed = (|| {
-        let mut stream = accept_until(&listener, &mut helper, ARM_WAIT, cancel)?;
-        stream
-            .set_read_timeout(Some(ARM_WAIT))
-            .map_err(|e| e.to_string())?;
-        stream
-            .set_write_timeout(Some(ARM_WAIT))
-            .map_err(|e| e.to_string())?;
-        read_token(&mut stream, b'R')?;
-        candidate::cancelled(cancel)?;
-        stream.write_all(b"C").map_err(|e| e.to_string())?;
-        read_token(&mut stream, b'A')
-    })();
-    if let Err(error) = armed {
+    if let Err(error) = arm_helper(&listener, &mut helper, cancel) {
         let _ = helper.kill();
         let _ = helper.wait();
-        return Err(error);
+        return Err(format!("cannot arm the update helper: {error}"));
     }
     // The helper now owns staged files and waits for this exact process to exit.
     stage.1 = false;
     Ok(())
+}
+
+fn arm_helper(
+    listener: &UnixListener,
+    helper: &mut Child,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let mut stream = accept_until(listener, helper, ARM_WAIT, cancel)?;
+    // Darwin inherits O_NONBLOCK from the listener. The handshake must wait
+    // for each reply; socket timeouts alone do not clear nonblocking mode.
+    stream.set_nonblocking(false).map_err(|e| e.to_string())?;
+    stream
+        .set_read_timeout(Some(ARM_WAIT))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(ARM_WAIT))
+        .map_err(|e| e.to_string())?;
+    read_token(&mut stream, b'R')?;
+    candidate::cancelled(cancel)?;
+    stream.write_all(b"C").map_err(|e| e.to_string())?;
+    read_token(&mut stream, b'A')
 }
 
 fn read_token(stream: &mut UnixStream, expected: u8) -> Result<(), String> {
@@ -372,6 +380,42 @@ pub(super) fn signal_ready() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_helper_handshake_waits_for_delayed_acknowledgement() {
+        let root = std::env::temp_dir().join(format!(
+            "keysteer-arm-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let _cleanup = Stage(root.clone(), true);
+        let socket = root.join("arm.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut child = Command::new("/bin/sleep").arg("10").spawn().unwrap();
+        let peer = std::thread::spawn(move || -> Result<(), String> {
+            let mut stream = UnixStream::connect(socket).map_err(|e| e.to_string())?;
+            stream
+                .set_read_timeout(Some(ARM_WAIT))
+                .map_err(|e| e.to_string())?;
+            stream.write_all(b"R").map_err(|e| e.to_string())?;
+            read_token(&mut stream, b'C')?;
+            // The acknowledgement must arrive after the parent starts reading,
+            // as it can when the helper is scheduled on another CPU.
+            std::thread::sleep(Duration::from_millis(100));
+            stream.write_all(b"A").map_err(|e| e.to_string())
+        });
+        let result = arm_helper(&listener, &mut child, &AtomicBool::new(false));
+        let _ = child.kill();
+        child.wait().unwrap();
+        let peer_result = peer.join().unwrap();
+        assert!(result.is_ok(), "{result:?}");
+        peer_result.unwrap();
+    }
 
     #[test]
     fn startup_acknowledgement_survives_immediate_peer_close() {

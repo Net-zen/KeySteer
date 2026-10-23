@@ -5,8 +5,6 @@
 //! has been visited, while input and tray handling remain responsive.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -45,12 +43,12 @@ use windows::core::{BOOL, Interface};
 use super::ui_scan::ScanSource;
 use crate::api::command::{UiScanRequest, UiScanStatus};
 use crate::api::geometry::{Rect, SemanticRole, UiTarget};
+use crate::platform::common::spatial_index::NativeTargetDeduper;
 use crate::support::worker::WorkerJoin;
 
 const MAX_SCAN_WINDOWS: usize = 16;
 type InlineScanWindows = SmallVec<[ScanWindow; MAX_SCAN_WINDOWS]>;
 type InlineOccluders = SmallVec<[Rect; MAX_SCAN_WINDOWS]>;
-const MINIMUM_SPACING: f64 = 8.0;
 const MIN_SCAN_TIMEOUT_MS: u64 = 250;
 const MAX_SCAN_TIMEOUT_MS: u64 = 30_000;
 const UIA_SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
@@ -1424,7 +1422,7 @@ fn stream_scan(
     let scan_bounds = job.request.scan_bounds();
     let deadline =
         Instant::now() + Duration::from_millis(u64::from(scan_timeout_ms(job.request.timeout_ms)));
-    let mut deduper = SpatialDeduper::new(MINIMUM_SPACING);
+    let mut deduper = NativeTargetDeduper::new(job.request.vision.merge_iou_threshold);
     let mut visited_count = 0usize;
     let mut queried_window = false;
     let mut provider_timed_out = false;
@@ -1912,77 +1910,6 @@ fn rect_is_usable(rect: &Rect, within: Rect) -> bool {
         && within.intersect(rect).is_some()
 }
 
-struct DedupEntry {
-    x: f64,
-    y: f64,
-    semantic_index: usize,
-}
-
-struct SpatialDeduper {
-    cell_size: f64,
-    cells: HashMap<(i32, i32), SmallVec<[DedupEntry; 2]>>,
-    semantics: Vec<(String, SemanticRole)>,
-    semantic_buckets: HashMap<u64, SmallVec<[usize; 2]>>,
-}
-
-impl SpatialDeduper {
-    fn new(minimum_spacing: f64) -> Self {
-        Self {
-            cell_size: minimum_spacing.max(1.0),
-            cells: HashMap::new(),
-            semantics: Vec::new(),
-            semantic_buckets: HashMap::new(),
-        }
-    }
-
-    fn insert(&mut self, target: &UiTarget) -> bool {
-        let center = target.rect.center();
-        let semantic_index = self.semantic_index(target);
-        let cell = (
-            (center.x / self.cell_size).floor() as i32,
-            (center.y / self.cell_size).floor() as i32,
-        );
-        for y in cell.1.saturating_sub(1)..=cell.1.saturating_add(1) {
-            for x in cell.0.saturating_sub(1)..=cell.0.saturating_add(1) {
-                if self.cells.get(&(x, y)).is_some_and(|entries| {
-                    entries.iter().any(|entry| {
-                        (entry.x - center.x).abs() < self.cell_size
-                            && (entry.y - center.y).abs() < self.cell_size
-                            && entry.semantic_index == semantic_index
-                    })
-                }) {
-                    return false;
-                }
-            }
-        }
-        self.cells.entry(cell).or_default().push(DedupEntry {
-            x: center.x,
-            y: center.y,
-            semantic_index,
-        });
-        true
-    }
-
-    fn semantic_index(&mut self, target: &UiTarget) -> usize {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        target.name.hash(&mut hasher);
-        target.role.hash(&mut hasher);
-        let hash = hasher.finish();
-        if let Some(index) = self.semantic_buckets.get(&hash).and_then(|indices| {
-            indices.iter().copied().find(|&index| {
-                let (name, role) = &self.semantics[index];
-                name == &target.name && role == &target.role
-            })
-        }) {
-            return index;
-        }
-        let index = self.semantics.len();
-        self.semantics.push((target.name.clone(), target.role));
-        self.semantic_buckets.entry(hash).or_default().push(index);
-        index
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2438,91 +2365,6 @@ mod tests {
     fn semantic_roles_are_case_and_whitespace_tolerant() {
         assert_eq!(control_types_for(&["  BUTTON  ".into()]), [50000]);
         assert_eq!(control_types_for(&["UIA:50042".into()]), [50042]);
-    }
-
-    #[test]
-    fn spatial_deduper_keeps_overlapping_distinct_controls() {
-        let mut deduper = SpatialDeduper::new(8.0);
-        assert!(deduper.insert(&target(10.0, 10.0, "Save", SemanticRole::Button)));
-        assert!(!deduper.insert(&target(11.0, 11.0, "Save", SemanticRole::Button)));
-        assert!(deduper.insert(&target(11.0, 11.0, "Cancel", SemanticRole::Button)));
-        assert!(deduper.insert(&target(11.0, 11.0, "Save", SemanticRole::Link)));
-    }
-
-    #[test]
-    fn spatial_deduper_handles_extreme_native_coordinates() {
-        let mut deduper = SpatialDeduper::new(8.0);
-        let coordinate = f64::from(i32::MAX) * 8.0;
-        assert!(deduper.insert(&target(coordinate, coordinate, "Max", SemanticRole::Button)));
-        let coordinate = f64::from(i32::MIN) * 8.0;
-        assert!(deduper.insert(&target(coordinate, coordinate, "Min", SemanticRole::Button)));
-    }
-
-    #[test]
-    #[ignore = "microbenchmark probe; run in release with --test-threads=1"]
-    fn deduper_inline_buckets_performance_probe() {
-        const WARMUP: usize = 2_000;
-        const SAMPLES: usize = 20_000;
-        const BUCKETS: usize = 100;
-
-        fn fill_inline() {
-            let mut cells: HashMap<usize, SmallVec<[usize; 2]>> = HashMap::new();
-            for index in 0..BUCKETS {
-                cells.entry(index).or_default().push(index);
-            }
-            std::hint::black_box(cells);
-        }
-
-        fn fill_heap() {
-            let mut cells: HashMap<usize, Vec<usize>> = HashMap::new();
-            for index in 0..BUCKETS {
-                cells.entry(index).or_default().push(index);
-            }
-            std::hint::black_box(cells);
-        }
-
-        fn percentiles(samples: &mut [u128]) -> (u128, u128, u128) {
-            samples.sort_unstable();
-            let last = samples.len() - 1;
-            (
-                samples[last * 50 / 100],
-                samples[last * 95 / 100],
-                samples[last * 99 / 100],
-            )
-        }
-
-        for _ in 0..WARMUP {
-            fill_inline();
-            fill_heap();
-        }
-        let mut inline_samples = Vec::with_capacity(SAMPLES);
-        let mut heap_samples = Vec::with_capacity(SAMPLES);
-        for sample in 0..SAMPLES {
-            let measure = |operation: fn(), samples: &mut Vec<u128>| {
-                let started = Instant::now();
-                operation();
-                samples.push(started.elapsed().as_nanos());
-            };
-            if sample % 2 == 0 {
-                measure(fill_inline, &mut inline_samples);
-                measure(fill_heap, &mut heap_samples);
-            } else {
-                measure(fill_heap, &mut heap_samples);
-                measure(fill_inline, &mut inline_samples);
-            }
-        }
-
-        let inline_region = Region::new(&INSTRUMENTED_SYSTEM);
-        fill_inline();
-        let inline_allocations = inline_region.change().allocations;
-        let heap_region = Region::new(&INSTRUMENTED_SYSTEM);
-        fill_heap();
-        let heap_allocations = heap_region.change().allocations;
-        println!(
-            "uia_deduper_bucket_probe samples={SAMPLES} buckets={BUCKETS} inline={:?} heap={:?} inline_allocations={inline_allocations} heap_allocations={heap_allocations}",
-            percentiles(&mut inline_samples),
-            percentiles(&mut heap_samples),
-        );
     }
 
     #[test]

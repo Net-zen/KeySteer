@@ -1015,14 +1015,7 @@ pub fn key_for_virtual_key(vk: u32) -> Option<Key> {
 static KEY_BY_VK: OnceLock<[Option<Key>; 256]> = OnceLock::new();
 
 fn key_map() -> &'static [Option<Key>; 256] {
-    KEY_BY_VK.get_or_init(|| {
-        std::array::from_fn(|index| {
-            VIRTUAL_KEYS
-                .iter()
-                .find(|(code, _)| usize::from(*code) == index)
-                .and_then(|(_, name)| Key::new(name).ok())
-        })
-    })
+    KEY_BY_VK.get_or_init(|| crate::platform::common::build_key_map(VIRTUAL_KEYS))
 }
 
 pub(super) fn prewarm_key_map() {

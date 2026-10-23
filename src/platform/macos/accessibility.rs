@@ -15,6 +15,7 @@ use objc2_app_kit::NSWorkspace;
 
 use crate::api::command::UiScanRequest;
 use crate::api::geometry::{Rect, SemanticRole, UiTarget};
+use crate::platform::common::spatial_index::NativeTargetDeduper;
 
 use super::native::OwnedCf;
 use super::window_move::WriteError;
@@ -462,7 +463,7 @@ pub(crate) fn scan_process_stream(
         deadline,
         on_batch: &mut on_batch,
         is_current: &is_current,
-        seen: HashSet::with_capacity(128),
+        seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
         occluders: Vec::new(),
     };
     scan.visit(root.cast(), 0);
@@ -502,7 +503,7 @@ pub(crate) fn scan_screen_stream(
         deadline,
         on_batch: &mut on_batch,
         is_current: &is_current,
-        seen: HashSet::with_capacity(128),
+        seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
         occluders: Vec::new(),
     };
     let mut applications = HashMap::new();
@@ -589,7 +590,7 @@ struct Scan<'a> {
     deadline: Instant,
     on_batch: &'a mut dyn FnMut(Vec<UiTarget>),
     is_current: &'a dyn Fn() -> bool,
-    seen: HashSet<(i64, i64, i64, i64)>,
+    seen: NativeTargetDeduper,
     occluders: Vec<Rect>,
 }
 
@@ -670,18 +671,18 @@ impl Scan<'_> {
             && in_bounds
             && let Some(rect) = rect
         {
-            let key = normalized_rect(rect);
-            if self.seen.insert(key) {
-                let name = accessible_name(element, &self.attributes, || !self.expired());
-                if self.expired() {
-                    return;
-                }
-                (self.on_batch)(vec![UiTarget {
-                    details: None,
-                    rect,
-                    name,
-                    role: semantic_role,
-                }]);
+            let name = accessible_name(element, &self.attributes, || !self.expired());
+            if self.expired() {
+                return;
+            }
+            let target = UiTarget {
+                details: None,
+                rect,
+                name,
+                role: semantic_role,
+            };
+            if self.seen.insert(&target) {
+                (self.on_batch)(vec![target]);
             }
         }
 
@@ -1002,15 +1003,6 @@ fn semantic_role(native_role: &str) -> SemanticRole {
     }
 }
 
-fn normalized_rect(rect: Rect) -> (i64, i64, i64, i64) {
-    (
-        (rect.x * 2.0).round() as i64,
-        (rect.y * 2.0).round() as i64,
-        (rect.width * 2.0).round() as i64,
-        (rect.height * 2.0).round() as i64,
-    )
-}
-
 /// Restrict AX targets to the visible portion of the focused window on the
 /// requested display. `Err(())` means the two regions do not overlap at all.
 fn visible_scan_bounds(window: Option<Rect>, requested: Option<Rect>) -> Result<Option<Rect>, ()> {
@@ -1200,7 +1192,7 @@ mod tests {
                     deadline,
                     on_batch: &mut publish,
                     is_current: &|| current.get(),
-                    seen: HashSet::new(),
+                    seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
                     occluders: Vec::new(),
                 };
                 scan.visit(window.as_ptr(), 0);
@@ -1264,13 +1256,6 @@ mod tests {
             visible_collection_preferences("AXTable", false),
             (false, false)
         );
-    }
-
-    #[test]
-    fn normalized_rect_deduplicates_subpixel_noise() {
-        let first = normalized_rect(Rect::new(10.01, 20.01, 30.01, 40.01));
-        let second = normalized_rect(Rect::new(10.02, 20.02, 30.02, 40.02));
-        assert_eq!(first, second);
     }
 
     #[test]

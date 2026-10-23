@@ -74,6 +74,35 @@ pub(crate) fn matched_previous_indices(
     matched
 }
 
+/// Place each matched native slot at its current label's index. Unmatched
+/// positions may reuse any remaining slot; callers must rebuild their content.
+/// Matches must be unique, in bounds, and no longer than `slots`.
+pub(crate) fn reorder_matched_slots<T>(slots: &mut [T], matches: &[Option<usize>]) {
+    let Some(first_moved) = matches
+        .iter()
+        .enumerate()
+        .position(|(index, previous)| previous.is_some_and(|previous| previous != index))
+    else {
+        return;
+    };
+
+    let mut old_at_position: SmallVec<[usize; 128]> = (0..slots.len()).collect();
+    let mut position_of_old = old_at_position.clone();
+    for (target, previous) in matches.iter().enumerate().skip(first_moved) {
+        let Some(previous) = *previous else {
+            continue;
+        };
+        let source = position_of_old[previous];
+        if source != target {
+            let displaced = old_at_position[target];
+            slots.swap(target, source);
+            old_at_position.swap(target, source);
+            position_of_old[previous] = target;
+            position_of_old[displaced] = source;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +171,33 @@ mod tests {
             matched_previous_indices(&previous, &filtered, previous.len()).as_slice(),
             [Some(2), Some(0)]
         );
+    }
+
+    #[test]
+    fn reordering_preserves_matched_slots_and_reuses_only_unmatched_slots() {
+        for (old_count, matches) in [
+            (0, vec![]),
+            (0, vec![None, None, None]),
+            (3, vec![]),
+            (3, vec![Some(0), Some(1), Some(2)]),
+            (3, vec![Some(0), Some(1), Some(2), None]),
+            (3, vec![Some(2), Some(0)]),
+            (3, vec![Some(1), Some(2), Some(0)]),
+            (4, vec![None, Some(3)]),
+            (3, vec![None, Some(0), Some(2), None, Some(1)]),
+        ] {
+            let count = old_count.max(matches.len());
+            let mut slots: Vec<_> = (0..count).collect();
+            reorder_matched_slots(&mut slots, &matches);
+            for (index, previous) in matches.iter().enumerate() {
+                if let Some(previous) = previous {
+                    assert_eq!(slots[index], *previous, "{matches:?}");
+                }
+            }
+            // Every native owner survives exactly once, including unused slots
+            // that the renderer will detach after the permutation.
+            slots.sort_unstable();
+            assert!(slots.into_iter().eq(0..count), "{matches:?}");
+        }
     }
 }

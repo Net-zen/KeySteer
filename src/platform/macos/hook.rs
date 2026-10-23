@@ -984,7 +984,7 @@ fn handle_event(
         | CGEventType::OtherMouseDragged => {
             let point = event.location();
             let point = Point::new(point.x, point.y);
-            let should_signal = store_latest_pointer(latest_pointer, point);
+            let should_signal = latest_pointer.publish(point);
             if should_signal {
                 let sent = sender
                     .try_send(Envelope {
@@ -998,7 +998,7 @@ fn handle_event(
                     // A full engine queue must never block a CGEventTap
                     // callback. Clear the coalescing marker so the next
                     // native movement can retry publishing a wake signal.
-                    cancel_latest_pointer_signal(latest_pointer, point);
+                    latest_pointer.cancel_signal();
                 }
             }
             CallbackResult::Keep
@@ -1026,14 +1026,6 @@ fn mouse_button_input(event_type: CGEventType, button: i64) -> Option<(u8, KeySt
         _ => return None,
     };
     Some((number, state, Key::mouse_button(number)?))
-}
-
-fn store_latest_pointer(latest_pointer: &SharedPointer, point: Point) -> bool {
-    latest_pointer.publish(point)
-}
-
-fn cancel_latest_pointer_signal(latest_pointer: &SharedPointer, _point: Point) {
-    latest_pointer.cancel_signal();
 }
 
 fn modifier_transition(state: &SharedState, code: i64, flags: u64) -> Option<(Key, KeyState)> {
@@ -1353,29 +1345,6 @@ mod tests {
     }
 
     #[test]
-    fn pointer_burst_uses_one_latest_value_slot() {
-        let latest = Arc::new(crate::platform::latest_point_mailbox::LatestPointMailbox::default());
-        let mut signals = 0;
-        for index in 0..10_000 {
-            signals += usize::from(store_latest_pointer(
-                &latest,
-                Point::new(index as f64, index as f64),
-            ));
-        }
-        assert_eq!(signals, 1);
-        assert_eq!(latest.take(), Some(Point::new(9_999.0, 9_999.0)));
-    }
-
-    #[test]
-    fn a_failed_pointer_signal_can_be_retried() {
-        let latest = Arc::new(crate::platform::latest_point_mailbox::LatestPointMailbox::default());
-        let first = Point::new(10.0, 20.0);
-        assert!(store_latest_pointer(&latest, first));
-        cancel_latest_pointer_signal(&latest, first);
-        assert!(store_latest_pointer(&latest, Point::new(11.0, 21.0)));
-    }
-
-    #[test]
     fn repeated_native_edge_position_is_still_delivered() {
         let (event_tx, event_rx) = mpsc::sync_channel(64);
         let latest_pointer =
@@ -1398,7 +1367,7 @@ mod tests {
         };
         let edge = Point::new(999.0, 400.0);
         for _ in 0..2 {
-            assert!(store_latest_pointer(&latest_pointer, edge));
+            assert!(latest_pointer.publish(edge));
             event_tx
                 .send(Envelope {
                     event: BackendEvent::PointerMoved(edge),

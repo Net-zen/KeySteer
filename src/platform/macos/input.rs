@@ -395,13 +395,13 @@ pub fn mouse_button(
 }
 
 pub fn scroll(dx: f64, dy: f64) -> Result<(), String> {
-    let at = cursor_position()?;
     // NULL event source, both axes declared, and session-level posting.
     let vertical = (-dy).round() as i32;
     let horizontal = (-dx).round() as i32;
     if vertical == 0 && horizontal == 0 {
         return Ok(());
     }
+    let at = cursor_position()?;
 
     let Some(event) = NativeEvent::new_scroll_wheel_event2(
         None,
@@ -685,14 +685,7 @@ pub fn key_for_keycode(code: i64) -> Option<Key> {
 static KEY_BY_CODE: OnceLock<[Option<Key>; 128]> = OnceLock::new();
 
 fn key_map() -> &'static [Option<Key>; 128] {
-    KEY_BY_CODE.get_or_init(|| {
-        std::array::from_fn(|index| {
-            KEYCODES
-                .iter()
-                .find(|(code, _)| usize::from(*code) == index)
-                .and_then(|(_, name)| Key::new(name).ok())
-        })
-    })
+    KEY_BY_CODE.get_or_init(|| crate::platform::common::build_key_map(KEYCODES))
 }
 
 pub(super) fn prewarm_key_map() {

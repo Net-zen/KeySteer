@@ -280,7 +280,6 @@ struct QueueState {
     active: Option<Weak<Inbox>>,
 }
 struct Shared {
-    maximum: usize,
     state: Mutex<QueueState>,
     wake: mpsc::SyncSender<()>,
 }
@@ -340,7 +339,6 @@ impl Worker {
         let (wake, receiver) = mpsc::sync_channel(1);
         Self {
             shared: Arc::new(Shared {
-                maximum: MAX_FUSION_BATCH,
                 state: Mutex::new(QueueState::default()),
                 wake,
             }),
@@ -437,13 +435,11 @@ impl Drop for Worker {
 }
 struct Budget {
     next: usize,
-    maximum: usize,
 }
 impl Budget {
-    fn new(maximum: usize) -> Self {
+    fn new() -> Self {
         Self {
-            maximum,
-            next: FIRST_FUSION_BATCH.min(maximum),
+            next: FIRST_FUSION_BATCH,
         }
     }
     fn observe(&mut self, count: usize, elapsed: Duration) {
@@ -452,7 +448,7 @@ impl Budget {
         }
         // This is a soft CPU budget, not a timer: never wait to fill a quantum.
         let target = count as u128 * FUSION_CPU_TARGET.as_nanos() / elapsed.as_nanos().max(1);
-        self.next = (target as usize).clamp(8, self.maximum);
+        self.next = (target as usize).clamp(8, MAX_FUSION_BATCH);
     }
 }
 fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
@@ -469,7 +465,7 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
             let accumulator = ScanAccumulator::new()
                 .defer_visual(job.options.defer_visual)
                 .progress_sources(&job.options.progress_sources);
-            current = Some((job, accumulator, Budget::new(shared.maximum)));
+            current = Some((job, accumulator, Budget::new()));
         }
         if stopping {
             if let Some((job, _, _)) = current.take() {
@@ -505,14 +501,12 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                         current = None;
                         continue;
                     }
-                    if !targets.is_empty()
-                        && job.options.output.publish(
-                            job.options.generation,
-                            job.options.id,
-                            targets,
-                            UiScanStatus::Partial,
-                        )
-                    {
+                    if job.options.output.publish(
+                        job.options.generation,
+                        job.options.id,
+                        targets,
+                        UiScanStatus::Partial,
+                    ) {
                         (job.options.wake)();
                     }
                     continue;
@@ -532,6 +526,11 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                     if job.inbox.cancelled.load(Ordering::Acquire) {
                         continue;
                     }
+                    // Empty deltas have no publication to validate. Actual deltas
+                    // and every terminal result still check the native context.
+                    if update.targets.is_empty() && update.retired.is_empty() {
+                        continue;
+                    }
                     if !(job.options.current)() {
                         if job.options.output.publish(
                             job.options.generation,
@@ -545,15 +544,13 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                         current = None;
                         continue;
                     }
-                    if (!update.targets.is_empty() || !update.retired.is_empty())
-                        && job.options.output.publish_update(
-                            job.options.generation,
-                            job.options.id,
-                            update.targets,
-                            update.retired,
-                            UiScanStatus::Partial,
-                        )
-                    {
+                    if job.options.output.publish_update(
+                        job.options.generation,
+                        job.options.id,
+                        update.targets,
+                        update.retired,
+                        UiScanStatus::Partial,
+                    ) {
                         (job.options.wake)();
                     }
                     continue;
@@ -1104,8 +1101,50 @@ mod tests {
         assert!(result.targets.is_empty());
     }
     #[test]
+    fn silent_updates_skip_context_queries_but_terminal_still_validates() {
+        for (source, deferred, filtered) in [
+            (TargetSource::Accessibility, false, false),
+            (TargetSource::Accessibility, false, true),
+            (TargetSource::Contour, true, false),
+        ] {
+            let output = Arc::new(ScanMailbox::default());
+            let generation = output.begin(1);
+            let mut worker = Worker::default();
+            let queries = Arc::new(AtomicUsize::new(0));
+            let seen = Arc::clone(&queries);
+            let valid = Arc::new(AtomicBool::new(true));
+            let current = Arc::clone(&valid);
+            let mut config = options(&output, 1, generation);
+            config.defer_visual = deferred;
+            config.accepts = Arc::new(move |_| !filtered);
+            config.current = Arc::new(move || {
+                seen.fetch_add(1, Ordering::Relaxed);
+                current.load(Ordering::Acquire)
+            });
+            let sink = worker.prepare(generation).unwrap().begin(config);
+            sink.submit(source, targets(0, 1));
+            sink.flush();
+            let visible = !deferred && !filtered;
+            assert_eq!(output.take().is_some(), visible);
+            assert_eq!(queries.load(Ordering::Relaxed), usize::from(visible));
+            sink.submit(source, targets(0, 1));
+            sink.flush();
+            assert!(output.take().is_none());
+            assert_eq!(queries.load(Ordering::Relaxed), usize::from(visible));
+
+            valid.store(false, Ordering::Release);
+            sink.finish(UiScanStatus::Success);
+            sink.flush();
+            let terminal = output.take().unwrap();
+            assert_eq!(terminal.status, UiScanStatus::ContextChanged);
+            assert!(terminal.targets.is_empty());
+            assert_eq!(queries.load(Ordering::Relaxed), usize::from(visible) + 1);
+        }
+    }
+
+    #[test]
     fn quantum_adapts_to_cpu_cost_and_never_to_inline_label_capacity() {
-        let mut budget = Budget::new(MAX_FUSION_BATCH);
+        let mut budget = Budget::new();
         assert_eq!(budget.next, 16);
         budget.observe(16, Duration::from_micros(10));
         assert_eq!(budget.next, MAX_FUSION_BATCH);

@@ -5,8 +5,105 @@
 use rustc_hash::FxHashMap;
 
 use smallvec::SmallVec;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use crate::api::geometry::{Rect, SemanticRole, UiTarget};
+
+const NATIVE_DEDUP_CELL_SIZE: f64 = 8.0;
+
+/// Native-only prefilter. Names and roles must agree, and geometry must also
+/// satisfy the same IoU rule as accessibility evidence in shared fusion.
+/// Grid cells only narrow candidates; proximity never proves duplication.
+/// Larger offsets remain the fusion index's responsibility.
+pub(crate) struct NativeTargetDeduper {
+    threshold: f64,
+    // The first rectangle lives with its name/role. Only additional rectangles
+    // need grid storage, so unique captions never allocate a spatial bucket.
+    rects: Vec<Rect>,
+    cells: HashMap<(usize, i32, i32), SmallVec<[usize; 2]>>,
+    semantics: Vec<(smol_str::SmolStr, SemanticRole, Rect)>,
+    semantic_buckets: HashMap<u64, SmallVec<[usize; 2]>>,
+}
+
+impl NativeTargetDeduper {
+    pub(crate) fn new(threshold: f64) -> Self {
+        Self {
+            threshold,
+            rects: Vec::new(),
+            cells: HashMap::new(),
+            semantics: Vec::new(),
+            semantic_buckets: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn insert(&mut self, target: &UiTarget) -> bool {
+        let known_semantics = self.semantics.len();
+        let semantic_index = self.semantic_index(target);
+        if semantic_index == known_semantics {
+            return true;
+        }
+        let cell = Self::cell(target.rect);
+        let first = self.semantics[semantic_index].2;
+        let first_cell = Self::cell(first);
+        if (cell.0.saturating_sub(1)..=cell.0.saturating_add(1)).contains(&first_cell.0)
+            && (cell.1.saturating_sub(1)..=cell.1.saturating_add(1)).contains(&first_cell.1)
+            && native_rectangles_match(first, target.rect, self.threshold)
+        {
+            return false;
+        }
+        for y in cell.1.saturating_sub(1)..=cell.1.saturating_add(1) {
+            for x in cell.0.saturating_sub(1)..=cell.0.saturating_add(1) {
+                if self
+                    .cells
+                    .get(&(semantic_index, x, y))
+                    .is_some_and(|entries| {
+                        entries.iter().any(|&index| {
+                            native_rectangles_match(self.rects[index], target.rect, self.threshold)
+                        })
+                    })
+                {
+                    return false;
+                }
+            }
+        }
+        let index = self.rects.len();
+        self.rects.push(target.rect);
+        self.cells
+            .entry((semantic_index, cell.0, cell.1))
+            .or_default()
+            .push(index);
+        true
+    }
+
+    fn cell(rect: Rect) -> (i32, i32) {
+        let center = rect.center();
+        (
+            (center.x / NATIVE_DEDUP_CELL_SIZE).floor() as i32,
+            (center.y / NATIVE_DEDUP_CELL_SIZE).floor() as i32,
+        )
+    }
+
+    fn semantic_index(&mut self, target: &UiTarget) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        target.name.hash(&mut hasher);
+        target.role.hash(&mut hasher);
+        let hash = hasher.finish();
+        if let Some(index) = self.semantic_buckets.get(&hash).and_then(|indices| {
+            indices.iter().copied().find(|&index| {
+                let (name, role, _) = &self.semantics[index];
+                name.as_str() == target.name.as_str() && role == &target.role
+            })
+        }) {
+            return index;
+        }
+        let index = self.semantics.len();
+        self.semantics
+            .push((target.name.as_str().into(), target.role, target.rect));
+        self.semantic_buckets.entry(hash).or_default().push(index);
+        index
+    }
+}
 
 const MAX_CELLS_PER_RECT: i64 = 32;
 
@@ -598,6 +695,22 @@ fn distinct_field(a: Rect, b: Rect, left: &str, text: &str, threshold: f64) -> b
     !text.is_empty() && normalize(left).as_str() != text.as_str()
 }
 
+fn native_rectangles_match(a: Rect, b: Rect, threshold: f64) -> bool {
+    let width = (a.right().min(b.right()) - a.x.max(b.x)).max(0.0);
+    let height = (a.bottom().min(b.bottom()) - a.y.max(b.y)).max(0.0);
+    native_overlap_matches(
+        width * height,
+        a.width * a.height,
+        b.width * b.height,
+        threshold,
+    )
+}
+
+fn native_overlap_matches(intersection: f64, a_area: f64, b_area: f64, threshold: f64) -> bool {
+    intersection > 0.0
+        && intersection >= threshold.clamp(0.0, 1.0) * (a_area + b_area - intersection)
+}
+
 fn evidence_matches(a: Rect, ae: Evidence, b: Rect, be: Evidence, threshold: f64) -> bool {
     let iw = (a.right().min(b.right()) - a.x.max(b.x)).max(0.0);
     let ih = (a.bottom().min(b.bottom()) - a.y.max(b.y)).max(0.0);
@@ -635,9 +748,7 @@ fn evidence_matches(a: Rect, ae: Evidence, b: Rect, be: Evidence, threshold: f64
                 return true;
             }
             // A row and its independent checkbox/button must both survive.
-            return ae.role == be.role
-                && intersection > 0.0
-                && intersection >= threshold.clamp(0.0, 1.0) * (aa + ba - intersection);
+            return ae.role == be.role && native_overlap_matches(intersection, aa, ba, threshold);
         }
         return rectangles_match(a, b, threshold, 8.0);
     }
@@ -751,6 +862,8 @@ pub(crate) fn rectangles_match(a: Rect, b: Rect, iou_threshold: f64, minimum_spa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stats_alloc::{INSTRUMENTED_SYSTEM, Region};
+    use std::time::Instant;
 
     fn target(rect: Rect, role: SemanticRole) -> UiTarget {
         UiTarget {
@@ -759,6 +872,201 @@ mod tests {
             role,
             name: String::new(),
         }
+    }
+
+    #[test]
+    fn native_prefilter_checks_semantics_overlap_and_threshold() {
+        let target = |rect, name: &str, role| UiTarget {
+            rect,
+            name: name.into(),
+            role,
+            details: None,
+        };
+        let mut deduper = NativeTargetDeduper::new(0.5);
+        let bounds = Rect::new(10.0, 10.0, 30.0, 20.0);
+        assert!(deduper.insert(&target(bounds, "Save", SemanticRole::Button)));
+        assert!(!deduper.insert(&target(
+            Rect::new(10.02, 10.02, 30.01, 20.01),
+            "Save",
+            SemanticRole::Button
+        )));
+        assert!(!deduper.insert(&target(
+            Rect::new(11.0, 11.0, 30.0, 20.0),
+            "Save",
+            SemanticRole::Button
+        )));
+        assert!(deduper.insert(&target(bounds, "Cancel", SemanticRole::Button)));
+        assert!(deduper.insert(&target(bounds, "Save", SemanticRole::Link)));
+        for name in [
+            "复制",
+            "abcdefghijklmnopqrstuvw",
+            "abcdefghijklmnopqrstuvwx",
+        ] {
+            let control = target(bounds, name, SemanticRole::Button);
+            assert!(deduper.insert(&control));
+            assert!(!deduper.insert(&control));
+        }
+        // Nearby small buttons and a differently sized enclosing control are
+        // separate candidates, even with the same caption and role.
+        let mut deduper = NativeTargetDeduper::new(0.5);
+        assert!(deduper.insert(&target(
+            Rect::new(0.0, 0.0, 2.0, 2.0),
+            "A",
+            SemanticRole::Button
+        )));
+        assert!(deduper.insert(&target(
+            Rect::new(4.0, 0.0, 2.0, 2.0),
+            "A",
+            SemanticRole::Button
+        )));
+        assert!(deduper.insert(&target(
+            Rect::new(-49.0, -49.0, 100.0, 100.0),
+            "A",
+            SemanticRole::Button
+        )));
+        // Both the first rectangle and later same-cell entries remain visible.
+        for rect in [
+            Rect::new(0.0, 0.0, 2.0, 2.0),
+            Rect::new(4.0, 0.0, 2.0, 2.0),
+            Rect::new(-49.0, -49.0, 100.0, 100.0),
+        ] {
+            assert!(!deduper.insert(&target(rect, "A", SemanticRole::Button)));
+        }
+        // Larger offsets are still left to fusion, even when the first
+        // rectangle has sufficient IoU. Storing it with the name must not
+        // broaden the native prefilter's neighborhood.
+        let mut deduper = NativeTargetDeduper::new(0.5);
+        for x in [0.0, 24.0] {
+            assert!(deduper.insert(&target(
+                Rect::new(x, 0.0, 100.0, 100.0),
+                "Save",
+                SemanticRole::Button
+            )));
+        }
+        assert!(!deduper.insert(&target(
+            Rect::new(24.0, 0.0, 100.0, 100.0),
+            "Save",
+            SemanticRole::Button
+        )));
+        // The source uses the configured fusion threshold, including its bounds.
+        for threshold in [0.0, 0.5, 1.0] {
+            let mut deduper = NativeTargetDeduper::new(threshold);
+            let first = target(bounds, "Save", SemanticRole::Button);
+            let second = target(
+                Rect::new(11.0, 11.0, 30.0, 20.0),
+                "Save",
+                SemanticRole::Button,
+            );
+            assert!(deduper.insert(&first));
+            let mut index = TargetIndex::new();
+            assert!(index.insert(&first, TargetSource::Accessibility, threshold));
+            assert_eq!(
+                deduper.insert(&second),
+                index.insert(&second, TargetSource::Accessibility, threshold)
+            );
+        }
+    }
+
+    #[test]
+    fn native_prefilter_handles_extreme_native_coordinates() {
+        let mut deduper = NativeTargetDeduper::new(0.5);
+        for coordinate in [f64::from(i32::MAX) * 8.0, f64::from(i32::MIN) * 8.0] {
+            let target = target(
+                Rect::new(coordinate, coordinate, 30.0, 20.0),
+                SemanticRole::Button,
+            );
+            assert!(deduper.insert(&target));
+            assert!(!deduper.insert(&target));
+        }
+    }
+
+    #[test]
+    fn native_prefilter_keeps_dense_captions_and_screen_cells_separate() {
+        let mut deduper = NativeTargetDeduper::new(0.5);
+        let targets: Vec<_> = [-3840.0, 0.0, 3840.0]
+            .into_iter()
+            .flat_map(|x| {
+                (0..64).map(move |index| UiTarget {
+                    rect: Rect::new(x, -2160.0, 30.0, 20.0),
+                    name: format!("Control {index}"),
+                    role: SemanticRole::Button,
+                    details: None,
+                })
+            })
+            .collect();
+        for target in &targets {
+            assert!(deduper.insert(target));
+        }
+        for target in targets.iter().rev() {
+            assert!(!deduper.insert(target));
+        }
+    }
+
+    #[test]
+    #[ignore = "microbenchmark probe; run in release with --test-threads=1"]
+    fn deduper_inline_buckets_performance_probe() {
+        const WARMUP: usize = 2_000;
+        const SAMPLES: usize = 20_000;
+        const BUCKETS: usize = 100;
+
+        fn fill_inline() {
+            let mut cells: HashMap<usize, SmallVec<[usize; 2]>> = HashMap::new();
+            for index in 0..BUCKETS {
+                cells.entry(index).or_default().push(index);
+            }
+            std::hint::black_box(cells);
+        }
+
+        fn fill_heap() {
+            let mut cells: HashMap<usize, Vec<usize>> = HashMap::new();
+            for index in 0..BUCKETS {
+                cells.entry(index).or_default().push(index);
+            }
+            std::hint::black_box(cells);
+        }
+
+        fn percentiles(samples: &mut [u128]) -> (u128, u128, u128) {
+            samples.sort_unstable();
+            let last = samples.len() - 1;
+            (
+                samples[last * 50 / 100],
+                samples[last * 95 / 100],
+                samples[last * 99 / 100],
+            )
+        }
+
+        for _ in 0..WARMUP {
+            fill_inline();
+            fill_heap();
+        }
+        let mut inline_samples = Vec::with_capacity(SAMPLES);
+        let mut heap_samples = Vec::with_capacity(SAMPLES);
+        for sample in 0..SAMPLES {
+            let measure = |operation: fn(), samples: &mut Vec<u128>| {
+                let started = Instant::now();
+                operation();
+                samples.push(started.elapsed().as_nanos());
+            };
+            if sample % 2 == 0 {
+                measure(fill_inline, &mut inline_samples);
+                measure(fill_heap, &mut heap_samples);
+            } else {
+                measure(fill_heap, &mut heap_samples);
+                measure(fill_inline, &mut inline_samples);
+            }
+        }
+
+        let inline_region = Region::new(&INSTRUMENTED_SYSTEM);
+        fill_inline();
+        let inline_allocations = inline_region.change().allocations;
+        let heap_region = Region::new(&INSTRUMENTED_SYSTEM);
+        fill_heap();
+        let heap_allocations = heap_region.change().allocations;
+        println!(
+            "uia_deduper_bucket_probe samples={SAMPLES} buckets={BUCKETS} inline={:?} heap={:?} inline_allocations={inline_allocations} heap_allocations={heap_allocations}",
+            percentiles(&mut inline_samples),
+            percentiles(&mut heap_samples),
+        );
     }
 
     #[test]
@@ -1058,7 +1366,10 @@ mod tests {
 
     #[test]
     fn grid_deduplication_matches_exhaustive_scan_across_distributions() {
-        for spacing in [4.0, 30.0, 70.0, 256.0] {
+        for (spacing, width, height) in [4.0, 30.0, 70.0, 256.0]
+            .into_iter()
+            .flat_map(|spacing| [(spacing, 2.0, 2.0), (spacing, 64.0, 24.0)])
+        {
             let mut index = SpatialIndex::new(64.0, 8.0, 2.0);
             let mut accepted = Vec::<Rect>::new();
             for i in 0..1_000 {
@@ -1067,8 +1378,8 @@ mod tests {
                 let rect = Rect::new(
                     (cell % 29) as f64 * spacing - 800.0,
                     (cell / 29) as f64 * spacing - 300.0,
-                    if oversized { 600.0 } else { 64.0 },
-                    if oversized { 400.0 } else { 24.0 },
+                    if oversized { 600.0 } else { width },
+                    if oversized { 400.0 } else { height },
                 );
                 let unique = !accepted
                     .iter()
@@ -1082,6 +1393,31 @@ mod tests {
                 }
                 assert_eq!(index.len(), accepted.len());
             }
+        }
+    }
+
+    #[test]
+    fn query_padding_keeps_nearby_rectangles_across_cell_edges() {
+        for edge in [-64.0, 0.0, 64.0] {
+            let mut index = SpatialIndex::new(64.0, 8.0, 2.0);
+            let first = Rect::new(edge - 5.0, edge - 5.0, 2.0, 2.0);
+            let nearby = Rect::new(edge + 1.0, edge - 5.0, 2.0, 2.0);
+            let matcher = |a, b| rectangles_match(a, b, 0.5, 8.0);
+            assert!(first.intersect(&nearby).is_none());
+            assert!(matcher(first, nearby));
+            assert!(index.insert_if_unique(first, matcher));
+            assert!(!index.insert_if_unique(nearby, matcher));
+            let mut fusion = TargetIndex::new();
+            assert!(fusion.insert(
+                &target(first, SemanticRole::Control),
+                TargetSource::Contour,
+                0.5
+            ));
+            assert!(!fusion.insert(
+                &target(nearby, SemanticRole::Control),
+                TargetSource::Contour,
+                0.5
+            ));
         }
     }
 

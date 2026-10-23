@@ -76,9 +76,13 @@ mod tests {
     #[test]
     fn burst_coalesces_and_keeps_the_latest_consistent_point() {
         let mailbox = LatestPointMailbox::default();
-        assert!(mailbox.publish(Point::new(1.0, 2.0)));
-        assert!(!mailbox.publish(Point::new(3.0, 4.0)));
-        assert_eq!(mailbox.take(), Some(Point::new(3.0, 4.0)));
+        for index in 0..10_000 {
+            assert_eq!(
+                mailbox.publish(Point::new(index as f64, -(index as f64))),
+                index == 0,
+            );
+        }
+        assert_eq!(mailbox.take(), Some(Point::new(9_999.0, -9_999.0)));
         assert_eq!(mailbox.take(), None);
         assert!(mailbox.publish(Point::new(5.0, 6.0)));
     }

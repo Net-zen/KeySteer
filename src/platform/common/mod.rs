@@ -39,3 +39,34 @@ mod window_tab_model;
 mod window_tabs;
 #[cfg(all(test, any(target_os = "windows", target_os = "macos")))]
 pub(crate) use window_tabs::Grouped as WindowGroupsProbe;
+
+/// Build a native reverse-key table once, preserving the first alias.
+pub(crate) fn build_key_map<const N: usize>(
+    bindings: &[(u16, &str)],
+) -> [Option<crate::api::Key>; N] {
+    use crate::api::Key;
+
+    let mut keys = std::array::from_fn(|_| None);
+    // The first binding wins for aliases, including an invalid first name.
+    // Walk the table once instead of searching it for every possible code.
+    for &(code, name) in bindings.iter().rev() {
+        if let Some(slot) = keys.get_mut(usize::from(code)) {
+            *slot = Key::new(name).ok();
+        }
+    }
+    keys
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reverse_mapping_preserves_first_alias_invalid_names_and_empty_codes() {
+        let bindings = [(1, ""), (1, "a"), (2, "q"), (2, "w"), (9, "z")];
+        let keys = super::build_key_map::<4>(&bindings);
+        assert_eq!(keys[0], None);
+        assert_eq!(keys[1], None);
+        assert_eq!(keys[2].as_ref().map(crate::api::Key::as_str), Some("q"));
+        assert_eq!(keys[3], None);
+        assert!(super::build_key_map::<0>(&bindings).is_empty());
+    }
+}

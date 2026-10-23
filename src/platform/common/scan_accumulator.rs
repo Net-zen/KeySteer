@@ -1094,7 +1094,7 @@ mod tests {
     fn first_native_cache_keeps_shared_geometry_and_oversized_owners() {
         let mut scan = ScanAccumulator::new();
         let rect = Rect::new(0.0, 0.0, 100.0, 40.0);
-        let native: Vec<_> = [
+        let mut native: Vec<_> = [
             (rect, SemanticRole::Button, "button"),
             (rect, SemanticRole::Checkbox, "checkbox"),
             (
@@ -1114,6 +1114,15 @@ mod tests {
         let initial = scan.push(TargetSource::Accessibility, native.clone(), 0.5);
         assert_eq!(initial.targets, native);
         assert!(initial.retired.is_empty());
+        let later = UiTarget {
+            rect,
+            role: SemanticRole::Link,
+            name: "later link".into(),
+            details: None,
+        };
+        let next = scan.push(TargetSource::Accessibility, vec![later.clone()], 0.5);
+        assert_eq!(next.targets.as_slice(), std::slice::from_ref(&later));
+        native.push(later);
         let update = scan.push(
             TargetSource::SystemOcr,
             vec![UiTarget::recognized_text(
@@ -1153,7 +1162,41 @@ mod tests {
             assert_eq!(scan.search_targets.len(), 1);
             assert_eq!(scan.search_spatial.len(), 1);
             assert_eq!(scan.search_targets[0].as_ref().unwrap().name, "second");
+            let next = scan.push(
+                TargetSource::Accessibility,
+                vec![UiTarget {
+                    rect,
+                    role: SemanticRole::Button,
+                    name: "third".into(),
+                    details: None,
+                }],
+                threshold,
+            );
+            assert_eq!(next.targets.len(), 1);
+            assert_eq!(scan.search_targets.len(), 1);
+            assert_eq!(scan.search_targets[0].as_ref().unwrap().name, "third");
         }
+    }
+
+    #[test]
+    fn native_and_contour_images_reuse_the_same_search_identity() {
+        let mut scan = ScanAccumulator::new();
+        let image = UiTarget {
+            rect: Rect::new(0.0, 0.0, 100.0, 80.0),
+            role: SemanticRole::Image,
+            name: "visual image".into(),
+            details: None,
+        };
+        scan.push(TargetSource::Contour, vec![image.clone()], 0.5);
+        let native = UiTarget {
+            name: "native image".into(),
+            ..image
+        };
+        let update = scan.push(TargetSource::Accessibility, vec![native.clone()], 0.5);
+        assert_eq!(update.targets.as_slice(), std::slice::from_ref(&native));
+        assert!(update.retired.is_empty());
+        assert_eq!(scan.search_targets, [Some(native)]);
+        assert_eq!(scan.search_spatial.len(), 1);
     }
 
     #[test]

@@ -116,7 +116,11 @@ impl ScanMailbox {
         let was_ready =
             !state.targets.is_empty() || !state.retired.is_empty() || state.terminal.is_some();
         crate::api::command::remove_retired_targets(&mut state.targets, &retired);
-        state.retired.extend(retired);
+        if state.retired.is_empty() {
+            state.retired = retired;
+        } else {
+            state.retired.extend(retired);
+        }
         if state.targets.is_empty() {
             // Preserve the producer's allocation for the common first batch;
             // extending an empty Vec would allocate and move every target.
@@ -225,13 +229,19 @@ mod tests {
         middle.rect.x += 2.0;
         let last = target("accessible button");
         assert!(mailbox.publish(generation, 8, vec![first.clone()], UiScanStatus::Partial));
+        let retired = vec![first.rect];
+        let retired_buffer = retired.as_ptr();
         assert!(!mailbox.publish_update(
             generation,
             8,
             vec![middle.clone()],
-            vec![first.rect],
+            retired,
             UiScanStatus::Partial
         ));
+        assert_eq!(
+            mailbox.state.lock().unwrap().retired.as_ptr(),
+            retired_buffer
+        );
         assert!(!mailbox.publish_update(
             generation,
             8,

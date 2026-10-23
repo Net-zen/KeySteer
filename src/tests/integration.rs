@@ -206,7 +206,7 @@ fn macos_tcc_fail_open_adds_no_per_event_stop_poll() {
     let callback = hook
         .split_once("fn handle_event(")
         .map(|(_, tail)| tail)
-        .and_then(|tail| tail.split_once("fn store_latest_pointer"))
+        .and_then(|tail| tail.split_once("fn mouse_button_input"))
         .map(|(body, _)| body)
         .expect("the macOS event-tap callback must remain inspectable");
     assert!(!callback.contains("stop.load"));
