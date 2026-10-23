@@ -24,8 +24,10 @@ pub mod hint;
 pub mod idle;
 pub mod normal;
 pub(crate) mod normal_targeting;
+pub mod quick_switch;
 pub(crate) mod targeting;
 pub mod text_input;
+pub mod text_select;
 pub mod window;
 
 pub use grid::GridMode;

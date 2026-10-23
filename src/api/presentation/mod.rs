@@ -53,8 +53,23 @@ pub enum View<'a> {
     Window(WindowView<'a>),
     ScreenSelector(ScreenSelectorView<'a>),
     Hints(HintView<'a>),
+    TextSelect(TextSelectView<'a>),
+    QuickSwitch(QuickSwitchView<'a>),
     HintSelection(HintSelectionView<'a>),
     Status(StatusView<'a>),
+}
+
+pub struct QuickSwitchRow {
+    pub label: super::overlay::OverlayText,
+    pub caption: super::overlay::OverlayText,
+}
+
+pub struct QuickSwitchView<'a> {
+    pub rows: &'a [QuickSwitchRow],
+    pub prefix: &'a str,
+    pub styles: &'a super::style::QuickSwitchStyles,
+    pub position: super::style::QuickSwitchPosition,
+    pub window: Option<Rect>,
 }
 
 #[derive(Clone, Copy)]
@@ -173,6 +188,22 @@ pub struct HintView<'a> {
     pub content: HintContent<'a>,
     pub layers: &'a VisualLayerPlan,
     pub active_layer: Option<usize>,
+}
+
+pub struct TextChip<'a> {
+    pub code: &'a str,
+    pub text: &'a str,
+    pub selected: bool,
+}
+pub struct TextSelectView<'a> {
+    pub hints: HintView<'a>,
+    pub ui: &'a CompiledSearchPanel,
+    pub chips: &'a [TextChip<'a>],
+    pub text: &'a str,
+    pub status: &'a str,
+    pub summary: &'a str,
+    pub page: (usize, usize),
+    pub selected_bounds: Vec<Rect>,
 }
 
 /// Session-owned portable presentation data, never native drawing resources.
@@ -552,6 +583,7 @@ mod info_preview_tests {
             name: "按钮".into(),
             role: crate::api::SemanticRole::Button,
             details: Some(Box::new(crate::api::geometry::UiTargetDetails {
+                ocr_spans: Vec::new(),
                 ocr: "中文🦀".repeat(20_000),
                 accessibility: "按钮".into(),
                 color: None,
@@ -614,6 +646,7 @@ mod info_preview_tests {
             name: String::new(),
             role: crate::api::SemanticRole::Button,
             details: Some(Box::new(crate::api::geometry::UiTargetDetails {
+                ocr_spans: Vec::new(),
                 ocr: "长文字🦀".repeat(200),
                 accessibility: String::new(),
                 color: Some(crate::api::Color::rgb(1, 2, 3)),

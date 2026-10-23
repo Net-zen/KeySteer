@@ -49,7 +49,7 @@ use aliases::{
 pub use settings::GridLayer;
 pub use settings::{
     Grid, Normal, Pointer, RecursiveGrid, Scroll, TargetingMethod, TargetingReset, TextInput,
-    UiHint,
+    TextSelect, UiHint,
 };
 pub use store::{ConfigStore, ReplaceFile};
 
@@ -85,6 +85,8 @@ pub struct ConfigFile {
     pub normal: Normal,
     #[serde(default)]
     pub text_input: TextInput,
+    #[serde(default)]
+    pub text_select: TextSelect,
     #[serde(default)]
     pub window: Window,
     #[serde(default)]
@@ -148,6 +150,7 @@ impl Default for ConfigFile {
             hotkeys: default_idle_bindings(),
             normal: Normal::default(),
             text_input: TextInput::default(),
+            text_select: TextSelect::default(),
             window: Window::default(),
             window_quick: WindowQuick::default(),
             window_editor: WindowEditor::default(),
@@ -193,6 +196,8 @@ pub struct ModeUsage {
 pub struct QuickSwitch {
     pub enabled: bool,
     pub key: String,
+    pub hint_characters: String,
+    pub bindings: Bindings,
     pub hold_ms: u64,
     pub blacklist: Vec<String>,
     pub position: crate::api::style::QuickSwitchPosition,
@@ -203,6 +208,12 @@ impl Default for QuickSwitch {
         Self {
             enabled: true,
             key: "q".into(),
+            hint_characters: "wertyuiop".into(),
+            bindings: builtin_bindings(&[
+                ("esc", "cancel_selection"),
+                ("q", "cancel_selection"),
+                ("backspace", "previous_level"),
+            ]),
             hold_ms: 350,
             blacklist: vec!["idle".into()],
             position: Default::default(),
@@ -227,9 +238,78 @@ fn default_plugin_modes() -> BTreeMap<String, PluginModeConfig> {
         "plugin:screen-selector".into(),
         PluginModeConfig {
             settings: BTreeMap::from([("preserve".into(), toml::Value::Boolean(true))]),
+            bindings: builtin_bindings(&[
+                ("esc", "cancel_selection"),
+                ("enter", "confirm_selection"),
+                ("backspace", "previous_level"),
+            ]),
             ..Default::default()
         },
     )])
+}
+
+/// Defaults for controls that were formerly owned by mode key handlers. Keep
+/// their original behavior for sparse/older binding tables; `none` opts out.
+pub(crate) fn with_control_defaults(
+    mode: &str,
+    configured: &Bindings,
+    aliases: &BTreeMap<String, String>,
+) -> Result<Bindings, ConfigError> {
+    let mut controls = match mode {
+        "grid" => Grid::default().bindings,
+        "recursive_grid" => RecursiveGrid::default().bindings,
+        "ui_hint" => UiHint::default().bindings,
+        "window_editor" => WindowEditor::default().bindings.clone(),
+        "window_restore" => WindowRestore::default().bindings.clone(),
+        "window.multi_select" => window::MultiSelect::default().bindings,
+        "plugin:screen-selector" => {
+            default_plugin_modes()
+                .remove(mode)
+                .ok_or_else(|| ConfigError::Parse("missing screen-selector defaults".into()))?
+                .bindings
+        }
+        _ => return Ok(configured.clone()),
+    };
+    controls.retain(|key, binding| {
+        matches!(
+            binding,
+            Binding::SelectionReset
+                | Binding::SelectionParent
+                | Binding::SelectionAccept
+                | Binding::SelectionCancel
+                | Binding::SelectionSearch
+                | Binding::SelectionReopen
+                | Binding::Window(
+                    crate::api::window::WindowAction::AreaNumber
+                        | crate::api::window::WindowAction::NextPage
+                        | crate::api::window::WindowAction::PreviousPage
+                        | crate::api::window::WindowAction::MultiCancel
+                )
+        ) || mode == "window.multi_select"
+            && !key.contains('+')
+            && matches!(binding, Binding::Send(_))
+    });
+    normalize_binding_keys(&mut controls, mode, aliases)?;
+    let mut result = configured.clone();
+    normalize_binding_keys(&mut result, mode, aliases)?;
+    let occupied: BTreeSet<_> = result
+        .keys()
+        .filter_map(|key| {
+            KeyChord::parse_with_aliases(key, aliases)
+                .ok()
+                .map(|key| key.canonical())
+        })
+        .collect();
+    for (key, binding) in controls {
+        if !occupied.contains(
+            &KeyChord::parse_with_aliases(&key, aliases)
+                .map_err(ConfigError::Parse)?
+                .canonical(),
+        ) {
+            result.insert(key, binding);
+        }
+    }
+    Ok(result)
 }
 
 /// Defaults for `idle`: only what is needed to wake the program up.
@@ -490,6 +570,8 @@ impl ConfigFile {
         let mut value: toml::Value =
             toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
         let warnings = compatibility::normalize(&mut value)?;
+        let missing_text_select = value.get("text_select").is_none();
+        let missing_text_input = value.get("text_input").is_none();
         let key_aliases = value
             .get("key_aliases")
             .cloned()
@@ -502,6 +584,67 @@ impl ConfigFile {
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
         config.resolved_key_aliases = aliases;
         config.apply_configured_key_aliases()?;
+        fn enters(binding: &Binding, mode: &ModeId) -> bool {
+            binding.mode() == Some(mode)
+                || matches!(binding, Binding::Sequence(items) if items.iter().any(|b| enters(b, mode)))
+        }
+        // A pre-feature Normal table replaces its defaults wholesale. Restore
+        // only missing feature entrances, without overriding a custom/disabled
+        // key or adding a second shortcut to an already remapped mode.
+        for (missing, key, mode) in [
+            (missing_text_select, "c", ModeId::text_select()),
+            (missing_text_input, "\\", ModeId::text_input()),
+        ] {
+            let reserved = |table: &Bindings| {
+                table.iter().any(|(configured, binding)| {
+                    enters(binding, &mode)
+                        || KeyChord::parse_with_aliases(configured, &config.resolved_key_aliases)
+                            .ok()
+                            .is_some_and(|chord| {
+                                chord.keys().iter().any(|part| part.as_str() == key)
+                            })
+                })
+            };
+            if missing
+                && !reserved(&config.normal.bindings)
+                && !(config
+                    .normal
+                    .inherits
+                    .iter()
+                    .any(|name| name == "hotkeys" || name == "idle")
+                    && reserved(&config.hotkeys))
+                && !config.normal.targeting.as_ref().is_some_and(|targeting| {
+                    let geometry = targeting.resolve(&config);
+                    geometry.keys.contains(key)
+                        || geometry.layers.iter().any(|layer| {
+                            layer.keys.as_deref().is_some_and(|keys| keys.contains(key))
+                        })
+                })
+            {
+                config
+                    .normal
+                    .bindings
+                    .insert(key.into(), Binding::Mode(mode));
+            }
+        }
+        for (name, table) in [
+            ("grid", &mut config.grid.bindings),
+            ("recursive_grid", &mut config.recursive_grid.bindings),
+            ("ui_hint", &mut config.ui_hint.bindings),
+            ("window_editor", &mut config.window_editor.common.bindings),
+            ("window_restore", &mut config.window_restore.common.bindings),
+            (
+                "window.multi_select",
+                &mut config.window.multi_select.bindings,
+            ),
+        ] {
+            *table = with_control_defaults(name, table, &config.resolved_key_aliases)?;
+        }
+        for (name, plugin) in &mut config.plugin_modes {
+            plugin.bindings =
+                with_control_defaults(name, &plugin.bindings, &config.resolved_key_aliases)?;
+        }
+
         Ok((config, warnings))
     }
 
@@ -519,6 +662,16 @@ impl ConfigFile {
             &aliases,
         )?;
         normalize_binding_keys(&mut self.normal.bindings, "[normal.bindings]", &aliases)?;
+        normalize_binding_keys(
+            &mut self.quick_switch.bindings,
+            "[quick_switch.bindings]",
+            &aliases,
+        )?;
+        normalize_binding_keys(
+            &mut self.text_select.bindings,
+            "[text_select.bindings]",
+            &aliases,
+        )?;
         normalize_binding_keys(
             &mut self.text_input.bindings,
             "[text_input.bindings]",

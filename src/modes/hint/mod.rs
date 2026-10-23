@@ -26,24 +26,16 @@ use crate::api::overlay::{Color, OverlayText};
 use crate::api::style::compiled::{BoundaryHighlight, LabelUi};
 use crate::api::style::{CompiledSearchPanel, HintPlacement};
 use crate::api::theme::Palette;
-pub(crate) mod labeling;
 mod point;
-mod search;
+pub(crate) mod search;
 pub use point::PointSettings;
-mod session;
+pub(crate) mod session;
 
+use crate::api::hint::{self as hints, CompactHint, LabelMatch as Match, match_label_input};
 use crate::api::presentation::{
     HintContent, HintSelectionView, HintStyle, HintView, StatusView, View, VisualLayerPlan,
 };
-use labeling::{self as hints, CompactHint};
 use session::ScanSession;
-
-#[derive(Debug, Clone, PartialEq)]
-enum Match<T> {
-    Complete(T),
-    Partial,
-    None,
-}
 
 const SCAN_RETRY_TIMER_ID: &str = "ui_hint.scan_retry";
 const SEARCH_PREWARM_TIMER_ID: &str = "ui_hint.search_prewarm";
@@ -513,7 +505,7 @@ impl HintMode {
     }
 
     fn uniform_label_chars(&self) -> Option<usize> {
-        labeling::LabelPlan::for_stream(
+        hints::LabelPlan::for_stream(
             self.session.label_plan_count,
             self.alphabet.len(),
             self.config.label_direction,
@@ -926,22 +918,30 @@ impl HintMode {
         )
     }
 
-    fn key_down(&mut self, key: &Key, ctx: &HostContext<'_>) -> CommandBatch {
+    fn selection_action(&mut self, action: &Binding, ctx: &HostContext<'_>) -> CommandBatch {
+        let action = if *action == Binding::SelectionReopen {
+            if !self.session.finished {
+                return CommandBatch::new();
+            }
+            &Binding::SelectionParent
+        } else {
+            action
+        };
         if matches!(self.input, Input::Search(_)) {
-            if key.as_str() == "enter" {
+            if matches!(action, Binding::SelectionAccept) {
                 return self.finish_search(true, ctx);
             }
-            if key.as_str() == "esc" {
+            if matches!(action, Binding::SelectionCancel) {
                 return self.finish_search(false, ctx);
             }
-            if key.as_char().is_some() || key.as_str() == "backspace" {
+            if matches!(action, Binding::SelectionParent) {
                 self.session.search_focus = None;
             }
         }
         if self.session.finished {
-            return match key.as_str() {
-                "esc" => self.cancel(),
-                "backspace" | "tab" => {
+            return match action {
+                Binding::SelectionCancel => self.cancel(),
+                Binding::SelectionParent => {
                     self.session.finished = false;
                     self.session.selected = None;
                     if let Input::Labels(typed) = &mut self.input {
@@ -957,17 +957,17 @@ impl HintMode {
         if self.session.scanning
             && self.session.hints.is_empty()
             && matches!(self.input, Input::Labels(_))
-            && key.as_str() != "/"
+            && !matches!(action, Binding::SelectionSearch)
         {
-            return if key.as_str() == "esc" {
+            return if matches!(action, Binding::SelectionCancel) {
                 self.cancel()
             } else {
                 CommandBatch::new()
             };
         }
 
-        match key.as_str() {
-            "esc" => {
+        match action {
+            Binding::SelectionCancel => {
                 // Escape leaves search first, then the mode.
                 return match &self.input {
                     Input::Search(_) => {
@@ -978,7 +978,7 @@ impl HintMode {
                     Input::Labels(_) => self.cancel(),
                 };
             }
-            "/" if matches!(self.input, Input::Labels(_)) => {
+            Binding::SelectionSearch if matches!(self.input, Input::Labels(_)) => {
                 if self.session.pending_relabel {
                     self.input = Input::Labels(OverlayText::default());
                     self.relabel(ctx);
@@ -1008,7 +1008,7 @@ impl HintMode {
                 commands.push(self.open_search(ctx));
                 return commands;
             }
-            "backspace" => {
+            Binding::SelectionParent => {
                 let text = self.input.text();
                 if text.is_empty() {
                     // Nothing left to undo: leave search, or leave the mode.
@@ -1038,7 +1038,7 @@ impl HintMode {
                 }
                 return self.redraw();
             }
-            "enter" => {
+            Binding::SelectionAccept => {
                 // Accept the first visible candidate, never one filtered out by
                 // the label prefix.
                 return match self
@@ -1054,6 +1054,13 @@ impl HintMode {
             _ => {}
         }
 
+        CommandBatch::new()
+    }
+
+    fn key_down(&mut self, key: &Key, ctx: &HostContext<'_>) -> CommandBatch {
+        if self.session.finished {
+            return CommandBatch::new();
+        }
         let Some(ch) = key.as_char() else {
             return CommandBatch::new();
         };
@@ -1072,7 +1079,13 @@ impl HintMode {
                     return CommandBatch::new();
                 }
                 typed.push(ch);
-                match match_compact_input(&self.session.hints, typed) {
+                match match_label_input(
+                    self.session
+                        .hints
+                        .iter()
+                        .map(|hint| (hint.label.as_str(), hint.value)),
+                    typed,
+                ) {
                     Match::Complete(index) => self.select(index),
                     Match::Partial => {
                         self.refresh_overlap_plan(ctx);
@@ -1093,26 +1106,6 @@ impl HintMode {
                 }
             }
         }
-    }
-}
-
-fn match_compact_input(hints: &[CompactHint<usize>], input: &str) -> Match<usize> {
-    if input.is_empty() {
-        return Match::Partial;
-    }
-    // The retained label plan is prefix-free, including streamed replacements.
-    // A longer match therefore rules out an exact match elsewhere. The caller
-    // only needs to know whether input can continue, not the remaining count.
-    let Some(hint) = hints
-        .iter()
-        .find(|hint| hint.label.as_str().starts_with(input))
-    else {
-        return Match::None;
-    };
-    if hint.label.as_str() == input {
-        Match::Complete(hint.value)
-    } else {
-        Match::Partial
     }
 }
 
@@ -1170,28 +1163,21 @@ impl Mode for HintMode {
         self.overlap_cycle_chord
             .as_ref()
             .is_some_and(|chord| chord.activation_matches(key))
-            || key.as_char().is_some_and(|character| {
-                character == '/'
-                    || character.is_ascii_alphanumeric()
-                    || self.alphabet.contains(&character)
-            })
+            || key
+                .as_char()
+                .is_some_and(|character| self.alphabet.contains(&character))
     }
 
     fn available_keys(&self) -> Vec<(String, String)> {
-        let mut keys = vec![("esc".into(), "cancel".into())];
+        let mut keys = Vec::new();
         if self.session.finished {
-            keys.push(("backspace".into(), "back".into()));
-            keys.push(("tab".into(), "back".into()));
             return keys;
         }
         if self.session.scanning && self.session.hints.is_empty() {
             return keys;
         }
-        keys.push(("backspace".into(), "back".into()));
-        keys.push(("enter".into(), "select first match".into()));
         match &self.input {
             Input::Labels(prefix) => {
-                keys.push(("/".into(), "search names".into()));
                 let next: std::collections::BTreeSet<_> = self
                     .session
                     .hints
@@ -1517,6 +1503,35 @@ impl HintMode {
                     && self.session.hints.is_empty() =>
             {
                 self.retry_scan(ctx)
+            }
+            ModeEvent::Binding {
+                binding,
+                state: KeyState::Down,
+                ..
+            } if matches!(
+                binding.as_ref(),
+                Binding::SelectionParent
+                    | Binding::SelectionReopen
+                    | Binding::SelectionAccept
+                    | Binding::SelectionCancel
+                    | Binding::SelectionSearch
+            ) =>
+            {
+                self.selection_action(binding, ctx)
+            }
+            ModeEvent::Binding {
+                binding,
+                state: KeyState::Down,
+                ..
+            } if matches!(binding.as_ref(), Binding::SelectionReset) => {
+                if matches!(self.input, Input::Search(_)) {
+                    return self.finish_search(false, ctx);
+                }
+                self.session.finished = false;
+                self.session.selected = None;
+                self.input = Input::Labels(OverlayText::default());
+                self.relabel(ctx);
+                self.redraw()
             }
             ModeEvent::Binding {
                 binding,
@@ -1869,6 +1884,7 @@ mod tests {
             .map(|(i, name)| {
                 let mut item = target(name, i as f64 * 200.0);
                 item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                    ocr_spans: Vec::new(),
                     ocr: name.into(),
                     accessibility: name.into(),
                     color: None,
@@ -2287,6 +2303,7 @@ mod tests {
                 role: SemanticRole::Button,
                 details: Some(Box::new(crate::api::geometry::UiTargetDetails {
                     ocr: format!("text{i}"),
+                    ocr_spans: Vec::new(),
                     accessibility: format!("item{i}"),
                     color: None,
                 })),
@@ -2387,6 +2404,7 @@ mod tests {
                 .map(|(i, name)| {
                     let mut item = target(name, i as f64 * 200.0);
                     item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                        ocr_spans: Vec::new(),
                         ocr: name.into(),
                         accessibility: name.into(),
                         color: None,
@@ -3694,6 +3712,7 @@ mod tests {
             .map(|i| target(&format!("项目 {i}"), i as f64 * 25.0))
             .collect();
         targets[7].details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+            ocr_spans: Vec::new(),
             ocr: "复制文本".into(),
             accessibility: "Copy".into(),
             color: None,
@@ -3746,6 +3765,7 @@ mod tests {
             let original = "这是一段很长的 OCR 内容\n不能换行也不能越过面板边界 ".repeat(60);
             let mut item = target("复制", 200.0);
             item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                ocr_spans: Vec::new(),
                 ocr: original.clone(),
                 accessibility: "复制".into(),
                 color: None,
@@ -3925,6 +3945,7 @@ mod tests {
             .map(|(index, name)| {
                 let mut target = target(name, index as f64 * 200.0);
                 target.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                    ocr_spans: Vec::new(),
                     ocr: name.into(),
                     accessibility: name.into(),
                     color: Some(Color::rgb(1, 2, 3)),
@@ -4350,6 +4371,21 @@ mod tests {
     }
 
     fn press(mode: &mut HintMode, env: &Env, name: &str) -> Vec<Command> {
+        let key = Key::new(name).unwrap();
+        let binding = env.config.ui_hint.bindings.get(name);
+        if let Some(binding) = binding {
+            return mode
+                .handle(
+                    &ModeEvent::Binding {
+                        binding: binding.clone().into(),
+                        state: KeyState::Down,
+                        key,
+                    },
+                    &env.ctx(),
+                )
+                .into_iter()
+                .collect();
+        }
         mode.handle(
             &ModeEvent::Key {
                 key: Key::new(name).unwrap(),
@@ -6129,15 +6165,36 @@ mod tests {
                     for hint in &hints {
                         let code = hint.label.as_str();
                         assert_eq!(
-                            match_compact_input(&hints, code),
+                            match_label_input(
+                                hints.iter().map(|hint| (hint.label.as_str(), hint.value)),
+                                code
+                            ),
                             Match::Complete(hint.value)
                         );
                         for (end, _) in code.char_indices().skip(1) {
-                            assert_eq!(match_compact_input(&hints, &code[..end]), Match::Partial);
+                            assert_eq!(
+                                match_label_input(
+                                    hints.iter().map(|hint| (hint.label.as_str(), hint.value)),
+                                    &code[..end]
+                                ),
+                                Match::Partial
+                            );
                         }
                     }
-                    assert_eq!(match_compact_input(&hints, "?"), Match::None);
-                    assert_eq!(match_compact_input(&hints, ""), Match::Partial);
+                    assert_eq!(
+                        match_label_input(
+                            hints.iter().map(|hint| (hint.label.as_str(), hint.value)),
+                            "?"
+                        ),
+                        Match::None
+                    );
+                    assert_eq!(
+                        match_label_input(
+                            hints.iter().map(|hint| (hint.label.as_str(), hint.value)),
+                            ""
+                        ),
+                        Match::Partial
+                    );
                 }
             }
         }

@@ -672,6 +672,8 @@ enum ModeName {
     Idle,
     Normal,
     TextInput,
+    TextSelect,
+    QuickSwitch,
     Grid,
     RecursiveGrid,
     UiHint,
@@ -699,6 +701,8 @@ impl ModeId {
                 "idle" => ModeName::Idle,
                 "normal" => ModeName::Normal,
                 "text_input" => ModeName::TextInput,
+                "text_select" => ModeName::TextSelect,
+                "quick_switch" => ModeName::QuickSwitch,
                 "grid" => ModeName::Grid,
                 "recursive_grid" => ModeName::RecursiveGrid,
                 "ui_hint" => ModeName::UiHint,
@@ -716,10 +720,12 @@ impl ModeId {
     }
 
     /// The ids of the built-in modes.
-    pub const BUILT_IN: [&'static str; 11] = [
+    pub const BUILT_IN: [&'static str; 13] = [
         "idle",
         "normal",
         "text_input",
+        "text_select",
+        "quick_switch",
         "grid",
         "recursive_grid",
         "ui_hint",
@@ -747,6 +753,12 @@ impl ModeId {
     }
     pub fn text_input() -> Self {
         Self(ModeName::TextInput)
+    }
+    pub fn quick_switch() -> Self {
+        Self(ModeName::QuickSwitch)
+    }
+    pub fn text_select() -> Self {
+        Self(ModeName::TextSelect)
     }
     pub fn grid() -> Self {
         Self(ModeName::Grid)
@@ -788,6 +800,8 @@ impl ModeId {
             ModeName::Idle => "idle",
             ModeName::Normal => "normal",
             ModeName::TextInput => "text_input",
+            ModeName::TextSelect => "text_select",
+            ModeName::QuickSwitch => "quick_switch",
             ModeName::Grid => "grid",
             ModeName::RecursiveGrid => "recursive_grid",
             ModeName::UiHint => "ui_hint",

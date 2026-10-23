@@ -24,6 +24,7 @@
 | `normal` | 直接移动、滚动、点击，并进入定位模式。 |
 | `grid` | 全屏坐标网格。 |
 | `recursive_grid` | 在当前区域中逐层细分。 |
+| `text_select` | OCR 文字选择：区域 → 词语 → 字符。 |
 | `ui_hint` | 给可交互元素显示标签。 |
 | `window` | 锁定鼠标下的窗口，移动、中心缩放、布局和平铺。 |
 | `window_quick` | Quick 比例布局。 |
@@ -593,3 +594,50 @@ font_size = 14
 ```
 
 位置用参照对象和四边百分比，详见 [搜索面板定位](/reference/configuration#搜索面板定位)。网页可同时预览两个面板，默认样式无需重复写入配置。
+
+## 文字选择：Text Select
+
+Normal 中按 `c` 进入 `text_select`，默认打开输入框和文字面板。只使用屏幕 OCR，沿用 UIHint 的识别范围、OCR 设置和面板外观，无需应用提供可选文字或辅助功能控件。
+
+输入区域标签选中整段文字，鼠标移至该区域末端但不点击。按 `Primary+C` 依次细分到系统分词结果、单个字符。中文使用系统分词；系统没有对应语言规则时回退到字符。字符层保留组合字符和 emoji 的完整性。
+
+输入与 UIHint 搜索共用同一套规则：直接输入文字、简拼，或用空格组合标签，如 `a d f`；也可用 `@a @d` 明确按标签选择。空格后重新显示全部候选，便于继续选取。完整标签确定选择，尚未明确的文字查询预览优先匹配项；大小写不表示范围选择，`adf` 是一个搜索项。
+
+| 默认操作 | 效果 |
+| --- | --- |
+| `a d f` / `@a @d @f` | 组合任意连续或不连续项，重复项只选一次 |
+| `Primary+C` | 细分当前选中文字；普通 `c` 用于输入 |
+| `Space` | 分隔搜索项或标签，不重置 |
+| `Tab` | 返回上一层，恢复上一层选择 |
+| `Backspace` | 有输入时删除并更新选择；空输入时返回上层 |
+| `Ctrl+Backspace` | 清空选择并返回区域层 |
+| `Enter` | 复制预览文字，成功后返回来源模式 |
+| `PageUp` / `PageDown` | 翻页查看字符 |
+| `Esc` | 退出模式 |
+| `?` | 显示当前有效按键 |
+
+复制按原文顺序；连续词保留原有空格和换行，跳选英文字词以空格连接，跳选字母直接连接。区域和词语 Hint 显示在原文位置；仅字符层在面板放大选字。信息面板显示将要复制的文字及选中数量，保留段落换行，最多预览四行；实际复制包含全部选中文字。层级由标准 `Text Select` 模式提示符显示。识别和首次提示先显示，搜索索引随后分段预热；细分不重新截图。
+
+## 可配置的选择操作
+
+`first_level` 回到第一层、清空本轮选择，`previous_level` 返回上一层，`confirm_selection` 确认选择，`cancel_selection` 取消选择并返回来源模式，`search_selection` 打开 UIHint 搜索；UIHint 的 `reopen_selection` 只在选择完成后返回。它们是模式动作，`escape` 仍保持全局进入 Idle 的原义。网格默认配置如下；`"tab backspace"` 表示两键任选其一，并非同时按下。
+
+```toml
+[grid.bindings]
+enter = "confirm_selection" # 确认当前选择
+esc = "cancel_selection" # 取消选择
+"tab backspace" = "previous_level" # 返回上一层
+space = "first_level" # 回到第一层，重新选择
+```
+
+原有模式的默认操作不变。旧配置没有写导航绑定时会补齐原来的键；设为 `none` 才禁用。例如只将 Grid 的重置键移到 Ctrl+Backspace：
+
+```toml
+[grid.bindings]
+space = "none"
+"ctrl+backspace" = "first_level"
+```
+
+Recursive Grid 使用同名动作和自己的 `[recursive_grid.bindings]`；启用盲操后也能在 `[normal.bindings]` 绑定重置／返回。UIHint、`plugin_modes."plugin:screen-selector".bindings` 同样支持选择操作。
+
+Window Editor 的反引号现为 `window_area_number`；Restore 翻页现为 `window_previous_page` / `window_next_page`；Window 多选的取消现为 `window_multi_cancel`，编辑键可在 `[window.multi_select.bindings]` 修改。默认仍是原来的反引号、PageUp/PageDown、Esc 和编辑键。`key_help` 从实际有效绑定生成，不显示已禁用的旧键。

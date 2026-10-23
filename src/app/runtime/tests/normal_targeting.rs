@@ -161,6 +161,31 @@ fn normal_targeting_compilation_is_optional_defaults_to_grid_and_roundtrips() {
 }
 
 #[test]
+fn normal_targeting_controls_follow_source_bindings_without_leaking_to_inheritors() {
+    let mut config = blind_config("grid", "[]");
+    config.grid.bindings.insert("space".into(), Binding::Disabled);
+    config.grid.bindings.insert("f8".into(), Binding::SelectionReset);
+    config.text_input.inherits = vec!["normal".into()];
+    config.normal.app_configs.push(crate::config::AppOverride {
+        bundle_id: "test.*".into(),
+        bindings: std::collections::BTreeMap::from([("f8".into(), Binding::Disabled)]),
+    });
+    let plan = crate::app::configuration::compile(&config).unwrap();
+    let normal = plan.modes.iter().find(|mode| mode.id() == ModeId::normal()).unwrap();
+    assert_eq!(normal.route.bindings["f8"], Binding::SelectionReset);
+    assert!(!normal.route.bindings.contains_key("space"));
+    assert_eq!(normal.route.app_overrides[0].bindings["f8"], Binding::Disabled);
+    let inheritor = plan.modes.iter().find(|mode| mode.id() == ModeId::text_input()).unwrap();
+    assert_eq!(inheritor.route.bindings["f8"], Binding::Disabled);
+    let (mut engine, mut backend, _) = blind_engine(&config);
+    blind_tap(&mut engine, &mut backend, "a");
+    blind_tap(&mut engine, &mut backend, "a");
+    blind_tap(&mut engine, &mut backend, "f8");
+    blind_tap(&mut engine, &mut backend, "a");
+    assert_eq!(engine.cursor, Point::new(256.0, 256.0));
+}
+
+#[test]
 fn normal_targeting_reports_binding_alias_and_app_conflicts_before_installation() {
     let mut config = blind_config("grid", "[]");
     config
@@ -467,7 +492,7 @@ fn single_level_targeting_leaves_normal_navigation_bindings_available() {
         }
         assert_eq!(log.lock().unwrap().sent.iter().filter(|(key, state)| key == "enter" && *state == KeyState::Down).count(), 5);
         config.normal.targeting.as_mut().unwrap().max_depth = Some(3);
-        assert!(crate::app::configuration::compile(&config).is_err());
+        assert!(crate::app::configuration::compile(&config).is_ok(), "navigation controls are configurable at every depth");
         config.normal.targeting.as_mut().unwrap().max_depth = Some(1);
         config.normal.bindings.insert("a".into(), Binding::parse("send enter").unwrap());
         assert!(crate::app::configuration::compile(&config).is_err());
@@ -484,6 +509,9 @@ fn normal_targeting_single_level_repeatedly_selects_root_cells() {
             targeting.grid_rows = Some(2);
             targeting.keys = Some("asdzxc".into());
             targeting.max_depth = Some(1);
+            // The test changes geometry after parsing; relinquish the new
+            // default text-mode entrance before claiming c as a grid cell.
+            config.normal.bindings.remove("c");
             let (mut engine, mut backend, _) = blind_engine(&config);
             for key in ["a", "c", "s", "s", "z", "x", "d", "tab", "space", "a"] {
                 let previous = engine.cursor;

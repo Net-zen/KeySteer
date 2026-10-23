@@ -436,6 +436,7 @@ impl Mode for ProbeMode {
     }
     fn handle(&mut self, event: &ModeEvent, _ctx: &HostContext<'_>) -> CommandBatch {
         let label = match event {
+            ModeEvent::ModeList(_) => "mode-list",
             ModeEvent::TogglePointAdjustment
             | ModeEvent::CyclePointTarget
             | ModeEvent::CyclePointColor
@@ -448,6 +449,7 @@ impl Mode for ProbeMode {
             }
             ModeEvent::CopyTextField(_) => "copy_field",
             ModeEvent::TextCopied => "text_copied",
+            ModeEvent::TextSegmented(_) => "text_segmented",
             ModeEvent::Activated { .. } => "activated",
             ModeEvent::Pushed { .. } => "pushed",
             ModeEvent::Deactivated => "deactivated",
@@ -684,6 +686,7 @@ include!("performance.rs");
 include!("native_event_loop.rs");
 include!("input.rs");
 include!("text_input.rs");
+include!("text_select.rs");
 include!("normal_targeting.rs");
 include!("drag.rs");
 include!("modes.rs");

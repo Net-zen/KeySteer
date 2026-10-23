@@ -250,6 +250,8 @@ pub(super) fn sections(
         "window_confirm",
         "Previous page",
         "Next page",
+        "window_previous_page",
+        "window_next_page",
     ] {
         if name == "size_cycle" {
             pair(

@@ -555,7 +555,7 @@ Preview normal and selected cards under **Window management → Shared appearanc
 
 ## Mode usage and quick switching
 
-Hold `Q` alone to show common modes after 350 ms by default. `Q+1…9` selects one immediately, without waiting for the panel.
+Hold `Q` alone to enter the `quick_switch` mode after 350 ms by default. It stays open after release. Then type labels to filter and select, using `wertyuiop` by default. It uses the ordinary mode lifecycle and bindings, and can also be entered through a regular mode binding.
 
 ```toml
 [mode_usage]
@@ -564,9 +564,15 @@ save_after_entries = 100
 [quick_switch]
 enabled = true
 key = "q"
+hint_characters = "wertyuiop"
 hold_ms = 350
 blacklist = ["idle"]
 position = "mouse" # screen / window / mouse
+
+[quick_switch.bindings]
+esc = "cancel_selection"
+q = "cancel_selection"
+backspace = "previous_level"
 
 [quick_switch.ui]
 font_size = 28
@@ -583,14 +589,18 @@ padding_y = 8
 | --- | --- |
 | `save_after_entries` | Save after this many new mode entries; must be greater than 0 |
 | `enabled` / `key` / `hold_ms` | Enable, activation key, and hold delay |
+| `hint_characters` | Ordered label alphabet: at least two distinct characters, excluding the trigger key; `123456789` is also supported |
 | `blacklist` | Hide modes from this panel; original shortcuts still work |
 | `position` | `screen` display center, `window` foreground-window center, `mouse` below the pointer badge |
+| `quick_switch.bindings` | Ordinary bindings: `cancel_selection` returns and `previous_level` deletes one prefix character |
 | `quick_switch.ui` | Fonts, size, colors, border, corners, and padding |
 
-Modes rank by entry count, up to nine, with ties sorted by mode id. Numbers stay fixed while the panel is open. Selecting the current mode keeps its state. If no foreground window is available, `window` falls back to display center. The panel stays within the current display.
+Modes rank by entry count, with ties sorted by mode id and no nine-item limit. Labels reuse UI Hint’s normal prefix-free algorithm: up to nine modes use single characters, then additional modes use longer labels. For example, ten modes get `w e r t y u i o pw pe`. Typing a prefix filters the list; a complete label selects immediately. By default, Backspace removes a character; Escape or a fresh Q press returns to the preceding mode. Releasing the trigger keeps the panel open. Labels stay fixed throughout filtering. The picker excludes itself and the preceding mode. Long lists wrap into columns based on screen height. If no foreground window is available, `window` falls back to display center. The panel stays within the current display.
+
+An explicit `[quick_switch.bindings]` table replaces the defaults: include only the `esc` line for Escape, only the `q` line for Q, or both for either key. Keep the `backspace` line if needed. Binding keys must not conflict with label characters.
 
 ::: info Q still performs its original action first
-Pressing Q immediately runs its binding. After holding or selecting a mode, that action stops repeating; release closes the panel and ends the original gesture normally. A hold can still open the panel after its action enters Idle. Q is not captured when starting in Idle, paused, in excluded apps, or during text/note entry.
+Pressing Q immediately runs its binding. After entering Quick Switch, that action stops repeating; release ends the original gesture normally and keeps the panel open. A hold can still open the panel after its action enters Idle. Q is not captured when starting in Idle, paused, in excluded apps, or during text/note entry.
 :::
 
 Only actual mode changes add counts; keeping or restarting the same mode does not. Counts are stored in `workspace.ksw` and also saved with preset changes and normal shutdown. Forced termination or power loss can lose recent unsaved counts.
@@ -668,3 +678,29 @@ Normal can also accept grid keys directly, but this is off by default. See [Norm
 | `min_size_width` / `min_size_height` / `layers` | `recursive_grid` only; explicit layers replace the whole list, `[]` clears it |
 
 Omitted fields inherit from the chosen grid. UI styling is not accepted here. Key conflicts are reported on loading. Remove the section to disable the feature. See `keysteer.default.toml` for the fully commented example.
+
+## Text selection configuration
+
+`text_select` shares UIHint OCR scope, recognition options and panel appearance. Configure its label alphabet and controls separately:
+
+```toml
+[text_select]
+enabled = true
+hint_characters = "asdfghjklqwertyuiopzvbnm"
+
+[text_select.bindings]
+"primary+c" = "text_refine"
+"ctrl+backspace" = "first_level"
+"tab backspace" = "previous_level"
+enter = "text_copy"
+page_up = "text_previous_page"
+page_down = "text_next_page"
+esc = "cancel_selection"
+"?" = "key_help"
+```
+
+Older configurations without `[text_select]` or `[text_input]` inherit the mode and its default controls. Missing Normal entry keys (`c` / `\`) are supplied only when unoccupied and the mode has not already been remapped. Explicit `none`, occupied keys (including custom chords and Normal targeting), and `text_select.enabled = false` are respected.
+
+Normal binds `c = "text_select"` by default. Inside Text Select, ordinary `c` is input, `Primary+C` refines and Enter copies. Entry and refinement bindings are independent. An explicit Text Select binding table replaces its defaults. Space remains input; Backspace edits nonempty input and returns only when empty. UIHint's `search_edit_keys` supplies cursor and clipboard editing, with Text Select controls taking priority. Bare letters assigned to controls are excluded from its labels.
+
+Formerly fixed grid, UIHint, screen-selection and window navigation keys are now configurable. Their defaults are unchanged; sparse older configurations retain those controls, and explicit `none` disables them. See [Configurable selection controls](/en/reference/modes-and-actions#configurable-selection-controls).

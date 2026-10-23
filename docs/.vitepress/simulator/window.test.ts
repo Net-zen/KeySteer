@@ -233,7 +233,7 @@ test('tree splits, moves into empty slots, swaps, and exits without reverting', 
   chooseWindowNumber(state, state.window.numbers[source])
   assert.equal(state.window.swapSource, source)
   if (state.mode !== 'window_editor') applyWindowAction(state, 'window_editor')
-  windowSelectionKey(state, '`', {})
+  applyWindowAction(state, 'window_area_number')
   windowSelectionKey(state, String(empty.id), {})
   assert.equal(treeSlots(state.window.tree!).find(s => s.id === empty.id)!.window, source)
   assert.equal(state.window.swapSource, null)
@@ -301,7 +301,7 @@ test('backtick in Editor selects a region and region selection activates its win
   enterWindow(state)
   const before = structuredClone(state.window.windows)
   if (state.mode !== 'window_editor') applyWindowAction(state, 'window_editor')
-  windowSelectionKey(state, '`', {})
+  applyWindowAction(state, 'window_area_number')
   assert.equal(state.window.panel, 'tree')
   assert.notDeepEqual(state.window.windows, before)
   const slot = treeSlots(state.window.tree!).find(s => s.window !== state.window.target)!
@@ -316,7 +316,7 @@ test('continuous divider motion is one undo and X removes a region with stable I
   state.window.windows = [{ id: 1, title: 'One', app: 'Demo', screen: 0, x: 100, y: 100, width: 600, height: 400 }]
   enterWindow(state)
   if (state.mode !== 'window_editor') applyWindowAction(state, 'window_editor')
-  windowSelectionKey(state, '`', {})
+  applyWindowAction(state, 'window_area_number')
   applyWindowAction(state, 'window_split_right')
   const before = structuredClone(state.window.tree)
   applyWindowAction(state, 'window_ratio_right')

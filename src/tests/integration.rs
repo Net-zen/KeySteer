@@ -455,8 +455,12 @@ fn every_targeting_mode_returns_to_idle_on_escape() {
     let palette = config.palette(Appearance::Dark);
 
     for mut mode in keysteer::app::mode_catalog::built_in(&config) {
-        // Idle has nowhere to go; Normal/Text Input exits use engine bindings.
-        if matches!(mode.id().as_str(), "idle" | "normal" | "text_input") || mode.id().is_window() {
+        // Quick Switch returns to its previous mode; it does not finish targeting.
+        if matches!(
+            mode.id().as_str(),
+            "idle" | "normal" | "text_input" | "quick_switch"
+        ) || mode.id().is_window()
+        {
             continue;
         }
         let ctx = HostContext {
@@ -469,10 +473,10 @@ fn every_targeting_mode_returns_to_idle_on_escape() {
 
         mode.handle(&ModeEvent::Activated { previous: None }, &ctx);
         let out = mode.handle(
-            &ModeEvent::Key {
+            &ModeEvent::Binding {
                 key: "esc".parse().unwrap(),
                 state: keysteer::api::KeyState::Down,
-                repeat: false,
+                binding: Binding::SelectionCancel.into(),
             },
             &ctx,
         );

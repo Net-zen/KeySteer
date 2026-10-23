@@ -256,6 +256,10 @@ impl Engine {
                                     && resolved.binding == entry.binding
                                     && self.registry.get(id).is_none_or(|mode| {
                                         match resolved.binding.window_action() {
+                                            Some(
+                                                crate::api::window::WindowAction::NextPage
+                                                | crate::api::window::WindowAction::PreviousPage,
+                                            ) => false,
                                             Some(action) => mode.window_action_supported(&action),
                                             _ => true,
                                         }
@@ -619,6 +623,15 @@ impl Engine {
             && !keys.contains(&self.settings.quick_switch.key)
         {
             keys.push(self.settings.quick_switch.key.clone());
+        }
+        if self.settings.quick_switch.enabled {
+            for character in &self.settings.quick_switch.alphabet {
+                if let Ok(key) = Key::new(character.to_string())
+                    && !keys.contains(&key)
+                {
+                    keys.push(key);
+                }
+            }
         }
         backend.set_character_bindings(&keys);
     }

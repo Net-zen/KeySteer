@@ -6,6 +6,7 @@ pub(super) fn stream_system_targets_from_result(
     result: &OcrResult,
     geometry: CaptureGeometry,
     core_bounds: Rect,
+    text_positions: bool,
     maximum: usize,
     mailbox: &ProviderMailbox,
     started: Instant,
@@ -31,13 +32,14 @@ pub(super) fn stream_system_targets_from_result(
             VisionError::Operational(format!("cannot read OCR word count: {error}"))
         })?;
         let mut union: Option<Rect> = None;
+        let mut spans = Vec::new();
         for word_index in 0..word_count {
-            let native = words
-                .GetAt(word_index)
-                .and_then(|word| word.BoundingRect())
-                .map_err(|error| {
-                    VisionError::Operational(format!("cannot read OCR word bounds: {error}"))
-                })?;
+            let word = words.GetAt(word_index).map_err(|error| {
+                VisionError::Operational(format!("cannot read OCR word: {error}"))
+            })?;
+            let native = word.BoundingRect().map_err(|error| {
+                VisionError::Operational(format!("cannot read OCR word bounds: {error}"))
+            })?;
             let rect = image_to_desktop(
                 geometry,
                 Rect::new(
@@ -48,6 +50,15 @@ pub(super) fn stream_system_targets_from_result(
                 ),
             );
             union = Some(union.map_or(rect, |current| current.union(&rect)));
+            if text_positions {
+                let text = word
+                    .Text()
+                    .map_err(|error| {
+                        VisionError::Operational(format!("cannot read OCR word text: {error}"))
+                    })?
+                    .to_string();
+                spans.push(crate::api::OcrTextSpan { text, rect });
+            }
         }
         let Some(rect) = union.filter(|rect| {
             valid_target_rect(*rect, geometry.desktop_bounds)
@@ -72,7 +83,7 @@ pub(super) fn stream_system_targets_from_result(
         mailbox.publish(ProviderEvent::OcrBatch {
             provider: "system",
             elapsed: started.elapsed(),
-            targets: vec![UiTarget::recognized_text(rect, text)],
+            targets: vec![UiTarget::recognized_text(rect, text).with_ocr_spans(spans)],
         })?;
         accepted += 1;
     }

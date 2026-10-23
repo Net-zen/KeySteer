@@ -36,6 +36,7 @@ toml_edit = "0.25.17"
 # update.rs selects NativeTls; its HTTPS connector requires `native-tls`.
 ureq = { version = "3.5.0", default-features = false, features = ["json", "native-tls"] }
 smol_str = "0.3.7"
+unicode-segmentation = "1.12"
 rustc-hash = "2.1.3"
 pinyin = { version = "0.11.0", default-features = false, features = ["plain"] }
 arboard = { version = "3.7.0", default-features = false }
@@ -49,8 +50,9 @@ perf-probe = []
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.25.0"
 core-foundation = "0.10.1"
+block2 = "0.6.2"
 objc2 = { version = "0.6.5", default-features = false, features = ["std"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSDate", "NSEnumerator", "NSKeyValueObserving", "NSNotification", "NSRange", "NSRunLoop", "NSString", "NSValue", "NSURL", "NSUserDefaults", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSAttributedString", "NSDate", "NSEnumerator", "NSKeyValueObserving", "NSNotification", "NSRange", "NSRunLoop", "NSString", "NSValue", "NSURL", "NSUserDefaults", "objc2-core-foundation"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
     "std",
     "CADisplayLink",
@@ -121,6 +123,7 @@ libc = "0.2.191"
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = [
     "Foundation",
+    "Data_Text",
     "Globalization",
     "Graphics_Imaging",
     "Media_Ocr",

@@ -128,6 +128,7 @@ pub(super) fn system_ocr_tile_from_bgra(
     )?;
     let desktop_bounds = capture_pixel_rect(geometry, bitmap_x, bitmap_y, tile_width, tile_height);
     Ok(SystemOcrTile {
+        text_positions: false,
         geometry: CaptureGeometry {
             width: tile_width,
             height: tile_height,
@@ -154,6 +155,7 @@ pub(super) fn stream_system_ocr_tiles(
     frames: &[CapturedFrame],
     factory: &crate::platform::windows::native::SoftwareBitmapFactory,
     submission: &SystemOcrSubmission,
+    text_positions: bool,
     mut progress: impl FnMut(Option<usize>) -> Result<(), String>,
 ) -> Result<(), String> {
     for frame in frames {
@@ -199,8 +201,9 @@ pub(super) fn stream_system_ocr_tiles(
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             }
         }
-        let tile =
+        let mut tile =
             system_ocr_tile_from_bgra(frame.capture.pixels(), frame.geometry, factory, tile)?;
+        tile.text_positions = text_positions;
         if submission.sender.send(SystemOcrInput::Tile(tile)).is_err() {
             return Ok(());
         }

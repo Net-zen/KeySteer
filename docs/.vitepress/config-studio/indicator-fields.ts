@@ -1,6 +1,6 @@
 import type { StyleField } from './fields.ts'
 
-export const indicatorModes = ['normal', 'text_input', 'grid', 'recursive_grid', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab']
+export const indicatorModes = ['normal', 'text_input', 'quick_switch', 'text_select', 'grid', 'recursive_grid', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab']
 export function indicatorFields(mode?: string): StyleField[] {
   const root = mode ? `mode_indicator.modes.${mode}` : 'mode_indicator'
   return [

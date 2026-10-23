@@ -1,7 +1,7 @@
 import { createWindowState, leaveWindow, isWindowMode, type WindowState, type WindowMode } from './window.ts'
 import { createBlindTargetingState, type BlindTargetingState } from './normal-targeting.ts'
 
-export type SimulatorMode = 'idle' | 'normal' | 'text_input' | 'grid' | 'recursive_grid' | 'ui_hint' | WindowMode
+export type SimulatorMode = 'idle' | 'normal' | 'text_input' | 'quick_switch' | 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | WindowMode
 
 export interface Point {
   x: number
@@ -92,7 +92,7 @@ export function resetTargetingPath(state: SimulatorState, mode: 'grid' | 'recurs
 }
 
 function isSimulatorMode(value: string): value is SimulatorMode {
-  return ['idle', 'normal', 'text_input', 'grid', 'recursive_grid', 'ui_hint'].includes(value)
+  return ['idle', 'normal', 'text_input', 'quick_switch', 'text_select', 'grid', 'recursive_grid', 'ui_hint'].includes(value)
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

@@ -1,49 +1,92 @@
 #[test]
 fn quick_switch_geometry_is_requested_after_display_and_rejects_late_results() {
     let mut engine = Engine::from_plan(
-        crate::app::configuration::compile(&Config::default()).unwrap(), Appearance::Dark,
-    ).unwrap();
+        crate::app::configuration::compile(&Config::default()).unwrap(),
+        Appearance::Dark,
+    )
+    .unwrap();
     let (mut backend, log) = FakeBackend::new(vec![]);
     engine.start_runtime(&mut backend).unwrap();
     engine.activate(ModeId::grid(), None, &mut backend).unwrap();
-    engine.focused_app = Some(FocusedApp { process_id: 42, ..Default::default() });
-    engine.settings.quick_switch.position = crate::api::style::QuickSwitchPosition::Window;
-    engine.handle_backend_event(key_down("q"), &mut backend).unwrap();
+    engine.focused_app = Some(FocusedApp {
+        process_id: 42,
+        ..Default::default()
+    });
+    let mut config = Config::default();
+    config.quick_switch.position = crate::api::style::QuickSwitchPosition::Window;
+    engine.register(Box::new(crate::app::mode_catalog::quick_switch(&config)));
+    engine
+        .handle_backend_event(key_down("q"), &mut backend)
+        .unwrap();
     engine.quick_switch.pending.as_mut().unwrap().deadline = Instant::now();
     log.lock().unwrap().timeline.clear();
     engine.fire_quick_switch(&mut backend).unwrap();
     let id = {
         let log = log.lock().unwrap();
-        let show = log.timeline.iter().position(|step| *step == "present").unwrap();
-        let query = log.timeline.iter().position(|step| *step == "geometry-query").unwrap();
+        let show = log
+            .timeline
+            .iter()
+            .position(|step| *step == "present")
+            .unwrap();
+        let query = log
+            .timeline
+            .iter()
+            .position(|step| *step == "geometry-query")
+            .unwrap();
         assert!(show < query);
         assert_eq!(log.geometry_requests[0].1, 42);
         log.geometry_requests[0].0
     };
-    engine.handle_backend_event(key_up("q"), &mut backend).unwrap();
+    engine
+        .handle_backend_event(key_up("q"), &mut backend)
+        .unwrap();
+    assert_eq!(engine.active_mode(), &ModeId::quick_switch());
+    for event in [key_down("esc"), key_up("esc")] {
+        engine.handle_backend_event(event, &mut backend).unwrap();
+    }
     let count = log.lock().unwrap().presents;
-    engine.handle_backend_event(BackendEvent::FocusedWindowBounds {
-        id, bounds: Ok(Some(Rect::new(100.0, 100.0, 400.0, 400.0))),
-    }, &mut backend).unwrap();
+    engine
+        .handle_backend_event(
+            BackendEvent::FocusedWindowBounds {
+                id,
+                bounds: Ok(Some(Rect::new(100.0, 100.0, 400.0, 400.0))),
+            },
+            &mut backend,
+        )
+        .unwrap();
     assert_eq!(log.lock().unwrap().presents, count);
-    engine.handle_backend_event(key_down("q"), &mut backend).unwrap();
+    engine
+        .handle_backend_event(key_down("q"), &mut backend)
+        .unwrap();
     engine.quick_switch.pending.as_mut().unwrap().deadline = Instant::now();
     engine.fire_quick_switch(&mut backend).unwrap();
     let next = log.lock().unwrap().geometry_requests[1].0;
     assert_ne!(id, next);
     let count = log.lock().unwrap().presents;
-    engine.handle_backend_event(BackendEvent::FocusedWindowBounds {
-        id, bounds: Ok(Some(Rect::new(100.0, 100.0, 400.0, 400.0))),
-    }, &mut backend).unwrap();
+    engine
+        .handle_backend_event(
+            BackendEvent::FocusedWindowBounds {
+                id,
+                bounds: Ok(Some(Rect::new(100.0, 100.0, 400.0, 400.0))),
+            },
+            &mut backend,
+        )
+        .unwrap();
     assert_eq!(log.lock().unwrap().presents, count);
-    engine.handle_backend_event(BackendEvent::FocusedWindowBounds {
-        id: next, bounds: Ok(Some(Rect::new(100.0, 100.0, 400.0, 400.0))),
-    }, &mut backend).unwrap();
+    engine
+        .handle_backend_event(
+            BackendEvent::FocusedWindowBounds {
+                id: next,
+                bounds: Ok(Some(Rect::new(100.0, 100.0, 400.0, 400.0))),
+            },
+            &mut backend,
+        )
+        .unwrap();
     assert!(log.lock().unwrap().presents > count);
 }
 
 #[test]
-fn quick_switch_release_acknowledges_before_redrawing_grid() {
+fn quick_switch_release_acknowledges_and_keeps_mode_open() {
     for mode in [ModeId::grid(), ModeId::recursive_grid()] {
         let mut engine = Engine::from_plan(
             crate::app::configuration::compile(&Config::default()).unwrap(),
@@ -58,14 +101,14 @@ fn quick_switch_release_acknowledges_before_redrawing_grid() {
             .unwrap();
         engine.quick_switch.pending.as_mut().unwrap().deadline = Instant::now();
         engine.fire_quick_switch(&mut backend).unwrap();
-        assert!(engine.quick_switch.pending.as_ref().unwrap().visible);
+        assert_eq!(engine.active_mode(), &ModeId::quick_switch());
         log.lock().unwrap().timeline.clear();
         engine
             .handle_backend_event(key_up("q"), &mut backend)
             .unwrap();
         let log = log.lock().unwrap();
         assert_eq!(log.timeline.first(), Some(&"dispose"));
-        assert!(log.timeline.contains(&"present"));
+        assert_eq!(engine.active_mode(), &ModeId::quick_switch());
         assert!(engine.quick_switch.pending.is_none());
         assert!(engine.input.pressed.is_empty());
     }
@@ -74,12 +117,23 @@ fn quick_switch_release_acknowledges_before_redrawing_grid() {
 #[test]
 fn quick_switch_freezes_ranking_and_consumes_both_chord_edges() {
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let mut engine = engine_with_probes(&seen, &["grid", "scroll", "plugin:screen-selector", "plugin:window-mover"]);
+    let mut engine = engine_with_probes(
+        &seen,
+        &[
+            "grid",
+            "scroll",
+            "plugin:screen-selector",
+            "plugin:window-mover",
+        ],
+    );
     let mut store = crate::app::preset_store::PresetStore::default();
     for _ in 0..10 {
         store.record_mode_entry("grid", 100);
     }
     engine.attach_preset_store(Box::new(store));
+    engine.register(Box::new(crate::app::mode_catalog::quick_switch(
+        &Config::default(),
+    )));
     let (mut backend, log) = FakeBackend::new(vec![]);
     engine.start_runtime(&mut backend).unwrap();
     for event in enter_normal() {
@@ -91,9 +145,27 @@ fn quick_switch_freezes_ranking_and_consumes_both_chord_edges() {
     assert_eq!(engine.active_mode(), &ModeId::idle());
     engine.quick_switch.pending.as_mut().unwrap().deadline = Instant::now();
     engine.fire_quick_switch(&mut backend).unwrap();
-    assert!(engine.quick_switch.pending.as_ref().unwrap().visible);
-    assert!(!log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|label| label.text.as_str().starts_with("plugin:")));
-    assert!(!log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|label| label.text.as_str() == "normal"));
+    assert_eq!(engine.active_mode(), &ModeId::quick_switch());
+    assert!(
+        !log.lock()
+            .unwrap()
+            .scenes
+            .last()
+            .unwrap()
+            .labels
+            .iter()
+            .any(|label| label.text.as_str().starts_with("plugin:"))
+    );
+    assert!(
+        !log.lock()
+            .unwrap()
+            .scenes
+            .last()
+            .unwrap()
+            .labels
+            .iter()
+            .any(|label| label.text.as_str() == "quick_switch")
+    );
     assert!(
         log.lock()
             .unwrap()
@@ -107,7 +179,7 @@ fn quick_switch_freezes_ranking_and_consumes_both_chord_edges() {
     for _ in 0..20 {
         engine.window_presets.store.record_mode_entry("scroll", 100);
     }
-    for event in [key_down("1"), key_up("q"), key_up("1")] {
+    for event in [key_down("w"), key_up("q"), key_up("w")] {
         engine.handle_backend_event(event, &mut backend).unwrap();
     }
     assert_eq!(engine.active_mode().as_str(), "grid");
@@ -141,14 +213,16 @@ fn quick_switch_idle_blacklist_and_same_mode_count_semantics() {
             .iter()
             .all(|d| *d == KeyDisposition::Forward)
     );
-    engine.settings.quick_switch.blacklist = vec!["grid".into(), "idle".into()];
+    let mut config = Config::default();
+    config.quick_switch.blacklist = vec!["grid".into(), "idle".into()];
+    engine.register(Box::new(crate::app::mode_catalog::quick_switch(&config)));
     engine.activate(ModeId::grid(), None, &mut backend).unwrap(); // Blacklist doesn't ban ordinary entry.
     engine.set_active(ModeId::grid());
     assert_eq!(engine.window_presets.store.mode_usage()["grid"], 1);
     engine
         .activate(ModeId::normal(), None, &mut backend)
         .unwrap();
-    for event in [key_down("q"), key_down("1"), key_up("1"), key_up("q")] {
+    for event in [key_down("q"), key_down("w"), key_up("w"), key_up("q")] {
         engine.handle_backend_event(event, &mut backend).unwrap();
     }
     assert_eq!(engine.active_mode(), &ModeId::idle());
@@ -158,7 +232,7 @@ fn quick_switch_idle_blacklist_and_same_mode_count_semantics() {
             .scenes
             .iter()
             .any(|scene| scene.labels.iter().any(|label| label.z_index == 10000)),
-        "immediate Q+digit must not flash the switcher"
+        "a chord before the hold deadline must not enter quick_switch"
     );
 }
 
@@ -166,6 +240,9 @@ fn quick_switch_idle_blacklist_and_same_mode_count_semantics() {
 fn quick_switch_cancelled_by_capture_loss_can_be_used_again() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let mut engine = engine_with_probes(&seen, &[]);
+    engine.register(Box::new(crate::app::mode_catalog::quick_switch(
+        &Config::default(),
+    )));
     let (mut backend, _) = FakeBackend::new(vec![]);
     engine.start_runtime(&mut backend).unwrap();
     engine
@@ -178,7 +255,9 @@ fn quick_switch_cancelled_by_capture_loss_can_be_used_again() {
     engine.fire_quick_switch(&mut backend).unwrap();
     engine.cancel_quick_switch(true);
     engine.input.forget_physical_capture();
-    engine.activate(ModeId::normal(), None, &mut backend).unwrap();
+    engine
+        .activate(ModeId::normal(), None, &mut backend)
+        .unwrap();
     engine
         .handle_backend_event(key_down("q"), &mut backend)
         .unwrap();
@@ -242,7 +321,9 @@ fn quick_switch_trigger_delivers_down_repeat_and_up_without_waiting_or_replay() 
         ("arrow_left".to_string(), KeyState::Up),
     ];
     assert_eq!(log.lock().unwrap().sent, expected);
-    let BackendEvent::Input(mut repeated) = key_down("q") else { unreachable!() };
+    let BackendEvent::Input(mut repeated) = key_down("q") else {
+        unreachable!()
+    };
     repeated.repeat = true;
     engine
         .handle_backend_event(BackendEvent::Input(repeated), &mut backend)
@@ -329,16 +410,18 @@ fn quick_switch_blocks_trigger_repeats_after_hold_and_cancel_until_release() {
             engine.handle_backend_event(repeat(), &mut backend).unwrap();
             assert_eq!(log.lock().unwrap().warps.len(), selected);
             engine.fire_quick_switch(&mut backend).unwrap();
-            assert!(engine.quick_switch.pending.as_ref().unwrap().visible);
+            assert_eq!(engine.active_mode(), &ModeId::quick_switch());
             for _ in 0..20 {
                 engine.handle_backend_event(repeat(), &mut backend).unwrap();
             }
-            assert_eq!(engine.active_mode(), &mode);
+            assert_eq!(engine.active_mode(), &ModeId::quick_switch());
             assert_eq!(log.lock().unwrap().warps.len(), selected);
             for event in [key_down("esc"), key_up("esc")] {
                 engine.handle_backend_event(event, &mut backend).unwrap();
             }
             assert!(engine.quick_switch.pending.is_none());
+            assert_eq!(engine.active_mode(), &mode);
+            let selected = log.lock().unwrap().warps.len();
             for _ in 0..20 {
                 engine.handle_backend_event(repeat(), &mut backend).unwrap();
             }
@@ -375,7 +458,12 @@ fn quick_switch_selection_blocks_held_trigger_in_destination_mode() {
     engine
         .activate(ModeId::normal(), None, &mut backend)
         .unwrap();
-    for event in [key_down("q"), key_down("1"), key_up("1")] {
+    engine
+        .handle_backend_event(key_down("q"), &mut backend)
+        .unwrap();
+    engine.quick_switch.pending.as_mut().unwrap().deadline = Instant::now();
+    engine.fire_quick_switch(&mut backend).unwrap();
+    for event in [key_down("w"), key_up("w")] {
         engine.handle_backend_event(event, &mut backend).unwrap();
     }
     assert_eq!(engine.active_mode(), &ModeId::grid());
@@ -399,4 +487,173 @@ fn quick_switch_selection_blocks_held_trigger_in_destination_mode() {
         .handle_backend_event(key_down("q"), &mut backend)
         .unwrap();
     assert!(log.lock().unwrap().warps.len() > before);
+}
+
+#[test]
+fn quick_switch_labels_cover_all_modes_and_filter_without_reassigning() {
+    for characters in ["wertyuiop", "ab", "甲乙", "123456789"] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = engine_with_probes(
+            &seen,
+            &[
+                "mode_a", "mode_b", "mode_c", "mode_d", "mode_e", "mode_f", "mode_g", "mode_h",
+                "mode_i", "mode_j", "mode_k", "mode_l",
+            ],
+        );
+        let mut config = Config::default();
+        config.quick_switch.hint_characters = characters.into();
+        engine.register(Box::new(crate::app::mode_catalog::quick_switch(&config)));
+        let (mut backend, log) = FakeBackend::new(vec![]);
+        engine.start_runtime(&mut backend).unwrap();
+        engine
+            .activate(ModeId::normal(), None, &mut backend)
+            .unwrap();
+        engine
+            .handle_backend_event(key_down("q"), &mut backend)
+            .unwrap();
+        engine.quick_switch.pending.as_mut().unwrap().deadline = Instant::now();
+        engine.fire_quick_switch(&mut backend).unwrap();
+        engine
+            .handle_backend_event(key_up("q"), &mut backend)
+            .unwrap();
+        assert_eq!(engine.active_mode(), &ModeId::quick_switch());
+        let panel_rows = || {
+            let log = log.lock().unwrap();
+            let scene = log.scenes.last().unwrap();
+            scene
+                .labels
+                .iter()
+                .filter(|label| label.z_index == 10001)
+                .zip(scene.labels.iter().filter(|label| label.z_index == 10002))
+                .map(|(label, caption)| (label.text.to_string(), caption.text.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let all = panel_rows();
+        assert!(all.len() > 9);
+        let (label, mode) = all.last().unwrap();
+        assert!(label.chars().count() > 1);
+        let first = label.chars().next().unwrap().to_string();
+        engine
+            .handle_backend_event(key_down(&first), &mut backend)
+            .unwrap();
+        let filtered = panel_rows();
+        assert!(!filtered.is_empty() && filtered.len() < all.len());
+        assert_eq!(
+            filtered,
+            all.iter()
+                .filter(|(label, _)| label.starts_with(&first))
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+        let BackendEvent::Input(mut repeat) = key_down(&first) else {
+            unreachable!()
+        };
+        repeat.repeat = true;
+        engine
+            .handle_backend_event(BackendEvent::Input(repeat), &mut backend)
+            .unwrap();
+        assert_eq!(panel_rows(), filtered);
+        engine
+            .handle_backend_event(key_up(&first), &mut backend)
+            .unwrap();
+        if let Some(character) = characters.chars().find(|character| {
+            let prefix = format!("{first}{character}");
+            !all.iter().any(|(label, _)| label.starts_with(&prefix))
+        }) {
+            let key = character.to_string();
+            for event in [key_down(&key), key_up(&key)] {
+                engine.handle_backend_event(event, &mut backend).unwrap();
+            }
+            assert_eq!(
+                panel_rows(),
+                filtered,
+                "dead prefix must discard only its last character"
+            );
+        }
+        for event in [key_down("backspace"), key_up("backspace")] {
+            engine.handle_backend_event(event, &mut backend).unwrap();
+        }
+        assert_eq!(panel_rows(), all);
+        // Invalid input keeps the panel and current prefix intact.
+        for event in [key_down("?"), key_up("?")] {
+            engine.handle_backend_event(event, &mut backend).unwrap();
+        }
+        assert_eq!(panel_rows(), all);
+        for character in label.chars() {
+            let key = character.to_string();
+            for event in [key_down(&key), key_up(&key)] {
+                engine.handle_backend_event(event, &mut backend).unwrap();
+            }
+        }
+        assert_eq!(engine.active_mode().as_str(), mode);
+        assert!(engine.quick_switch.pending.is_none());
+        assert!(engine.input.pressed.is_empty());
+    }
+}
+
+#[test]
+fn quick_switch_uses_normal_configurable_exit_bindings() {
+    for (bindings, exits) in [
+        ("esc = 'cancel_selection'", &["esc"][..]),
+        ("q = 'cancel_selection'", &["q"][..]),
+        ("'esc q' = 'cancel_selection'", &["esc", "q"][..]),
+    ] {
+        for exit in exits {
+            let config = Config::parse(&format!("[quick_switch.bindings]\n{bindings}")).unwrap();
+            let mut engine = Engine::from_plan(
+                crate::app::configuration::compile(&config).unwrap(),
+                Appearance::Dark,
+            )
+            .unwrap();
+            let (mut backend, _) = FakeBackend::new(vec![]);
+            engine.start_runtime(&mut backend).unwrap();
+            engine.activate(ModeId::grid(), None, &mut backend).unwrap();
+            engine
+                .handle_backend_event(key_down("q"), &mut backend)
+                .unwrap();
+            engine.quick_switch.pending.as_mut().unwrap().deadline = Instant::now();
+            engine.fire_quick_switch(&mut backend).unwrap();
+            engine
+                .handle_backend_event(key_up("q"), &mut backend)
+                .unwrap();
+            assert_eq!(engine.active_mode(), &ModeId::quick_switch());
+            for key in ["esc", "q"].into_iter().filter(|key| !exits.contains(key)) {
+                for event in [key_down(key), key_up(key)] {
+                    engine.handle_backend_event(event, &mut backend).unwrap();
+                }
+                assert_eq!(engine.active_mode(), &ModeId::quick_switch());
+            }
+            for event in [key_down(exit), key_up(exit)] {
+                engine.handle_backend_event(event, &mut backend).unwrap();
+            }
+            assert_eq!(engine.active_mode(), &ModeId::grid());
+            assert!(engine.input.pressed.is_empty());
+        }
+    }
+}
+
+#[test]
+fn quick_switch_can_be_entered_and_left_with_ordinary_mode_bindings() {
+    let config = Config::parse(
+        "[normal.bindings]\nv = 'quick_switch'\n[quick_switch.bindings]\nx = 'text_input'",
+    )
+    .unwrap();
+    let mut engine = Engine::from_plan(
+        crate::app::configuration::compile(&config).unwrap(),
+        Appearance::Dark,
+    )
+    .unwrap();
+    let (mut backend, _) = FakeBackend::new(vec![]);
+    engine.start_runtime(&mut backend).unwrap();
+    engine
+        .activate(ModeId::normal(), None, &mut backend)
+        .unwrap();
+    for event in [key_down("v"), key_up("v")] {
+        engine.handle_backend_event(event, &mut backend).unwrap();
+    }
+    assert_eq!(engine.active_mode(), &ModeId::quick_switch());
+    for event in [key_down("x"), key_up("x")] {
+        engine.handle_backend_event(event, &mut backend).unwrap();
+    }
+    assert_eq!(engine.active_mode(), &ModeId::text_input());
 }

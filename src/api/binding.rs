@@ -187,6 +187,16 @@ pub enum Binding {
     },
     /// Request a fresh UI hint scan.
     RescanUi,
+    /// Navigate the current selection without replacing its mode instance.
+    SelectionReset,
+    SelectionParent,
+    /// Reopen a completed hint selection; otherwise leave its prefix alone.
+    SelectionReopen,
+    SelectionAccept,
+    SelectionCancel,
+    SelectionSearch,
+    /// An operation in the OCR text selection panel.
+    TextSelect(super::text_select::Action),
     /// Complete the current targeting session without re-entering its mode.
     FinishMode,
     /// Explicitly reset the active mode's current session.
@@ -497,6 +507,17 @@ impl Binding {
             "key_help" => B::KeyHelp,
             "finish" | "finish_mode" => B::FinishMode,
             "restart_mode" => B::RestartMode,
+            "text_refine" => B::TextSelect(super::text_select::Action::Refine),
+            "previous_level" => B::SelectionParent,
+            "reopen_selection" => B::SelectionReopen,
+            "first_level" => B::SelectionReset,
+            "confirm_selection" => B::SelectionAccept,
+            "cancel_selection" => B::SelectionCancel,
+            "search_selection" => B::SelectionSearch,
+            "text_copy" => B::TextSelect(super::text_select::Action::Copy),
+            "text_search" => B::TextSelect(super::text_select::Action::Search),
+            "text_next_page" => B::TextSelect(super::text_select::Action::NextPage),
+            "text_previous_page" => B::TextSelect(super::text_select::Action::PreviousPage),
 
             "escape" | "exit_mode" => B::Escape,
             "rescan" | "rescan_ui" => B::RescanUi,
@@ -622,6 +643,13 @@ impl Binding {
             B::Exec { program, args } if args.is_empty() => format!("exec {program}"),
             B::Exec { program, args } => format!("exec {program} {}", args.join(" ")),
             B::RescanUi => "rescan".into(),
+            B::SelectionReset => "first_level".into(),
+            B::SelectionParent => "previous_level".into(),
+            B::SelectionReopen => "reopen_selection".into(),
+            B::SelectionAccept => "confirm_selection".into(),
+            B::SelectionCancel => "cancel_selection".into(),
+            B::SelectionSearch => "search_selection".into(),
+            B::TextSelect(action) => action.as_str().into(),
             B::KeyHelp => "key_help".into(),
             B::FinishMode => "finish".into(),
             B::RestartMode => "restart_mode".into(),
@@ -787,6 +815,31 @@ mod tests {
         );
         assert!(Binding::parse("wait 100 50").is_err());
         assert!(Binding::parse("wait nope").is_err());
+    }
+
+    #[test]
+    fn selection_navigation_uses_readable_action_names_without_unreleased_aliases() {
+        for (name, binding) in [
+            ("confirm_selection", Binding::SelectionAccept),
+            ("cancel_selection", Binding::SelectionCancel),
+            ("previous_level", Binding::SelectionParent),
+            ("first_level", Binding::SelectionReset),
+            ("reopen_selection", Binding::SelectionReopen),
+            ("search_selection", Binding::SelectionSearch),
+        ] {
+            assert_eq!(Binding::parse(name).unwrap(), binding);
+            assert_eq!(binding.canonical(), name);
+        }
+        for old in [
+            "selection_accept",
+            "selection_cancel",
+            "selection_parent",
+            "selection_reset",
+            "selection_reopen",
+            "selection_search",
+        ] {
+            assert!(Binding::parse(old).is_err(), "{old}");
+        }
     }
 
     #[test]

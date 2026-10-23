@@ -16,6 +16,7 @@ use std::time::Duration;
 /// Something that happened natively and must reach the engine.
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
+    TextSegmented(super::text_select::Segmented),
     PointSampled(super::point_sample::Sample),
     TextPromptChanged {
         id: u64,
@@ -130,6 +131,10 @@ pub enum KeyDisposition {
 /// A native backend. Implementations live in `src/platform/<os>.rs` and are
 /// selected by `cfg(target_os)` in `src/platform/mod.rs`.
 pub trait Backend {
+    fn request_text_segmentation(&mut self, _request: super::text_select::Request) -> bool {
+        false
+    }
+    fn cancel_text_segmentation(&mut self) {}
     /// Queue a replaceable one-pixel sample; never capture on the input thread.
     fn request_point_sample(&mut self, _request: super::point_sample::Request) -> bool {
         false

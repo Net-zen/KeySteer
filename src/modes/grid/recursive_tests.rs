@@ -80,6 +80,21 @@ fn activate(mode: &mut GridMode, env: &Env) -> Vec<Command> {
 }
 
 fn press(mode: &mut GridMode, env: &Env, name: &str) -> Vec<Command> {
+    let key = Key::new(name).unwrap();
+    let binding = env.config.recursive_grid.bindings.get(name);
+    if let Some(binding) = binding {
+        return mode
+            .handle(
+                &ModeEvent::Binding {
+                    binding: binding.clone().into(),
+                    state: KeyState::Down,
+                    key,
+                },
+                &env.ctx(),
+            )
+            .into_iter()
+            .collect();
+    }
     mode.handle(
         &ModeEvent::Key {
             key: Key::new(name).unwrap(),

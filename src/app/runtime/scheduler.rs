@@ -29,6 +29,8 @@ pub(super) struct PendingSequence {
 
 #[derive(Debug, Default)]
 pub(super) struct Scheduler {
+    pub(super) text_segmentation: Option<(ModeId, u64, u64)>,
+    pub(super) text_segmentation_serial: u64,
     pub(super) point_input: PointInput,
     pub(super) point_sample: Option<(ModeId, u64, crate::api::point_sample::Request)>,
     /// Never reset on plan replacement: old native results cannot alias a new mode.
@@ -37,7 +39,8 @@ pub(super) struct Scheduler {
     pub(super) text_prompt_serial: u64,
     pub(super) scan_activation: Option<u32>,
     pub(super) text_prompt_returning_focus: bool,
-    pub(super) panel_geometry: BTreeMap<u64, ModeId>,
+    pub(super) panel_geometry: BTreeMap<u64, (ModeId, u64, u32)>,
+    pub(super) panel_geometry_serial: u64,
     pub(super) audio_sessions: BTreeMap<u64, ModeId>,
     pub(super) window_sessions: BTreeMap<u64, ModeId>,
     pub(super) sequences: Vec<PendingSequence>,
@@ -47,6 +50,7 @@ pub(super) struct Scheduler {
 
 impl Scheduler {
     pub(super) fn reset(&mut self) {
+        self.text_segmentation = None;
         self.point_input = PointInput::default();
         self.point_sample = None;
         self.panel_geometry.clear();
@@ -62,7 +66,7 @@ impl Scheduler {
 
     pub(super) fn cancel_owner(&mut self, owner: &ModeId) {
         self.panel_geometry
-            .retain(|_, candidate| candidate != owner);
+            .retain(|_, (candidate, _, _)| candidate != owner);
         self.sequences.retain(|sequence| &sequence.owner != owner);
         self.timers.retain(|_, timer| &timer.owner != owner);
     }
@@ -81,7 +85,7 @@ impl Engine {
             && self.scheduler.sequences.is_empty()
             && self.input.pending_long_press_toggles.is_empty()
             && self.input.drag_auto_release.fires_at.is_none()
-            && self.quick_switch.pending.as_ref().is_none_or(|p| p.visible)
+            && self.quick_switch.pending.is_none()
         {
             return MAX;
         }
@@ -103,13 +107,7 @@ impl Engine {
                     .map(|pending| pending.fires_at),
             )
             .chain(self.input.drag_auto_release.fires_at)
-            .chain(
-                self.quick_switch
-                    .pending
-                    .as_ref()
-                    .filter(|p| !p.visible)
-                    .map(|p| p.deadline),
-            )
+            .chain(self.quick_switch.pending.as_ref().map(|p| p.deadline))
             .map(|fires_at| fires_at.saturating_duration_since(now))
             .min()
             .unwrap_or(MAX)

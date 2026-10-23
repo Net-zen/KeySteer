@@ -190,7 +190,28 @@ static int32_t recognizeOcrFrame(void) {
                     }
 #endif
                     NmkVisionConfig config = {.detect_text = true, .minimum_confidence = confidence.doubleValue};
-                    NmkVisionResult *result = NmkRecognizeVisionImage(crop, CGRectZero, config, 1);
+                    // Extract positions from this request's existing candidate;
+                    // ordinary UIHint scans do not pay for word-range queries.
+                    NSMutableArray *positions = [NSMutableArray array];
+                    void (^onText)(VNRecognizedText *) = nil;
+                    if ([options[@"text_positions"] boolValue]) {
+                        onText = ^(VNRecognizedText *candidate) {
+                            NSMutableArray *words = [NSMutableArray array];
+                            NSString *text = candidate.string ?: @"";
+                            [text enumerateSubstringsInRange:NSMakeRange(0, text.length)
+                                options:NSStringEnumerationByWords | NSStringEnumerationLocalized
+                                usingBlock:^(NSString *word, NSRange range, NSRange enclosing, BOOL *stop) {
+                                    (void)enclosing; (void)stop;
+                                    VNRectangleObservation *observation = [candidate boundingBoxForRange:range error:nil];
+                                    if (observation == nil) return;
+                                    CGRect box = observation.boundingBox;
+                                    [words addObject:@{@"label": word ?: @"", @"x": @(box.origin.x),
+                                        @"y": @(box.origin.y), @"width": @(box.size.width), @"height": @(box.size.height)}];
+                                }];
+                            [positions addObject:words];
+                        };
+                    }
+                    NmkVisionResult *result = recognizeVisionImage(crop, CGRectZero, config, 1, onText);
                     NmkReleaseVisionImage(crop);
                     if (result == NULL) _exit(1);
                     NSMutableArray *regions = [NSMutableArray array];
@@ -200,7 +221,8 @@ static int32_t recognizeOcrFrame(void) {
                             length:(NSUInteger)value->label_len encoding:NSUTF8StringEncoding] ?: @"";
                         [regions addObject:@{@"x": @(value->x), @"y": @(value->y),
                             @"width": @(value->width), @"height": @(value->height),
-                            @"confidence": @(value->confidence), @"label": label}];
+                            @"confidence": @(value->confidence), @"label": label,
+                            @"spans": region < positions.count ? positions[region] : @[]}];
                     }
                     NSString *message = result->message != NULL
                         ? [[NSString alloc] initWithBytes:result->message length:(NSUInteger)result->message_len

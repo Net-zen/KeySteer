@@ -142,6 +142,24 @@ impl Engine {
         if self.display_mode() == self.registry.active
             && let Some(mode) = self.registry.get(&self.registry.active)
         {
+            if self.window_library_help()
+                && let Some(table) = self.registry.table(&self.registry.active)
+            {
+                for entry in table.iter_entries() {
+                    if let Some(
+                        action @ (crate::api::window::WindowAction::NextPage
+                        | crate::api::window::WindowAction::PreviousPage),
+                    ) = entry.binding.window_action()
+                        && mode.window_action_available(&action)
+                    {
+                        entries.insert(format!(
+                            "{}  ·  {}",
+                            entry.chord.canonical(),
+                            entry.binding.canonical()
+                        ));
+                    }
+                }
+            }
             for (key, action) in mode.available_keys() {
                 if stable && action == "Window number" {
                     continue;
@@ -177,6 +195,36 @@ impl Engine {
     }
 
     pub(super) fn key_help_entries(&self) -> Vec<String> {
+        if let Some((owner, prompt)) = &self.scheduler.text_prompt
+            && owner == &ModeId::text_select()
+            && prompt.live_style.is_some()
+            && let Some(mode) = self.registry.keyboard_prompt_mode(owner)
+        {
+            let mut entries = std::collections::BTreeSet::new();
+            if let Some(table) = self.registry.table(owner) {
+                for entry in table.iter_entries() {
+                    if let Some(binding) = mode
+                        .keyboard_prompt_binding(entry.chord.activation_key(), entry.chord.keys())
+                        && !matches!(binding.as_ref(), Binding::Disabled)
+                    {
+                        entries.insert(format!(
+                            "{}  ·  {}",
+                            entry.chord.canonical(),
+                            binding.canonical()
+                        ));
+                    }
+                }
+            }
+            for (chord, action) in prompt.edit_keys.iter() {
+                if mode
+                    .keyboard_prompt_binding(chord.activation_key(), chord.keys())
+                    .is_none()
+                {
+                    entries.insert(format!("{}  ·  {action:?}", chord.canonical()));
+                }
+            }
+            return entries.into_iter().collect();
+        }
         let mut entries = if self.registry.active.is_window() {
             self.registry
                 .window_help_plans
@@ -196,7 +244,14 @@ impl Engine {
     pub(super) fn decorate_key_help(&mut self, scene: &mut OverlayScene) {
         if !self.help_visible()
             || self.registry.active == ModeId::idle()
-            || (self.window_presets.pending.is_some() || self.scheduler.text_prompt.is_some())
+            || self.window_presets.pending.is_some()
+            || self
+                .scheduler
+                .text_prompt
+                .as_ref()
+                .is_some_and(|(owner, prompt)| {
+                    owner != &ModeId::text_select() || prompt.live_style.is_none()
+                })
         {
             self.overlay.key_help_cache = None;
             return;

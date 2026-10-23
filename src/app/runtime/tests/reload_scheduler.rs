@@ -609,7 +609,9 @@ fn explicit_config_reload_remains_pinned_to_its_path() {
         engine.handle_backend_event(BackendEvent::ReloadConfig, &mut backend).unwrap();
         assert_eq!(engine.active_mode(), &ModeId::idle());
         assert_eq!(engine.overlay.speed_toggle, None);
-        assert_eq!(engine.bindings_in(&ModeId::normal()).len(), 2);
+        assert_eq!(engine.bindings_in(&ModeId::normal()).len(), 4, "reload also supplies the two missing text-mode entrances");
+        assert!(engine.registry.routes.contains_key(&ModeId::text_select()));
+        assert!(engine.registry.routes.contains_key(&ModeId::text_input()));
         for event in [key_down("f8"), key_up("f8"), key_down("left_shift"), key_up("left_shift")] {
             engine.handle_backend_event(event, &mut backend).unwrap();
         }

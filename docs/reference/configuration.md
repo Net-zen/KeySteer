@@ -560,7 +560,7 @@ guide_line_width = 3.0 # 0–32；0 也隐藏线条
 
 ## 模式统计与快速切换
 
-单独按住 `Q`，默认 350 毫秒后显示常用模式面板；`Q+1…9` 可直接选择，不必等面板展开。
+单独长按 `Q`，默认 350 毫秒后进入 `quick_switch` 模式，松开后保持显示。进入后输入标签筛选并选择，默认字符为 `wertyuiop`。它使用普通模式的生命周期与绑定，也可以通过普通绑定进入。
 
 ```toml
 [mode_usage]
@@ -569,9 +569,15 @@ save_after_entries = 100
 [quick_switch]
 enabled = true
 key = "q"
+hint_characters = "wertyuiop"
 hold_ms = 350
 blacklist = ["idle"]
 position = "mouse" # screen / window / mouse
+
+[quick_switch.bindings]
+esc = "cancel_selection"
+q = "cancel_selection"
+backspace = "previous_level"
 
 [quick_switch.ui]
 font_size = 28
@@ -588,14 +594,18 @@ padding_y = 8
 | --- | --- |
 | `save_after_entries` | 每新增多少次模式进入记录后保存，必须大于 0 |
 | `enabled` / `key` / `hold_ms` | 开关、长按键、展开等待时间 |
+| `hint_characters` | 按此顺序生成标签，至少两个不重复的字符，不可包含触发键；也可设为 `123456789` |
 | `blacklist` | 从面板隐藏指定模式；原快捷键仍可使用 |
 | `position` | `screen` 屏幕中心、`window` 前台窗口中心、`mouse` 鼠标提示下方 |
+| `quick_switch.bindings` | 普通按键绑定；`cancel_selection` 返回，`previous_level` 删除一位前缀 |
 | `quick_switch.ui` | 字体、字号、颜色、边框、圆角和内边距 |
 
-面板按使用次数排序，最多 9 项，同分按模式 id 排序；打开后编号固定，选择当前模式会保留状态。前台窗口不可用时，`window` 回退到屏幕中心，面板始终限制在当前屏幕内。
+面板按使用次数排序，同分按模式 id 排序，不再限制为 9 项。复用 UI Hint 的普通标签算法：9 项以内使用单字符，更多项逐步使用无歧义的多字符标签，例如 10 项为 `w e r t y u i o pw pe`。输入前缀会筛选，完整标签立即切换；默认 Backspace 删除一位，Esc 或再次按 Q 退出并返回进入前的模式；松开触发键不退出。打开后标签固定，筛选不重新编号；候选不包含快速切换自身和进入前的模式。过长列表会按屏幕高度分列。前台窗口不可用时，`window` 回退到屏幕中心，面板始终限制在当前屏幕内。
+
+配置 `[quick_switch.bindings]` 时整张表替换默认值：只写 `esc = "cancel_selection"` 即只允许 Esc；只写 `q = "cancel_selection"` 即只允许 Q；两行都写则都能退出。需要退格时保留 `backspace` 行。绑定键不能与标签字符冲突。
 
 ::: info Q 仍先执行原来的动作
-按下 Q 会立即执行原绑定；长按或选择模式后，不再重复该动作，松开时收起面板并正常结束原手势。即使原动作已进入 Idle，本次长按仍有效；从 Idle 开始、暂停、排除应用或文本／备注输入时不接管 Q。
+按下 Q 会立即执行原绑定；进入快速切换后，不再重复原动作，松开时只正常结束原手势，面板保持。即使原动作已进入 Idle，本次长按仍有效；从 Idle 开始、暂停、排除应用或文本／备注输入时不接管 Q。
 :::
 
 统计只记录实际模式切换，同模式保持或重启不增加次数。记录保存在 `workspace.ksw`；保存／删除预设和正常退出时也会保存。强制结束或断电可能丢失最近未保存的次数。
@@ -673,3 +683,29 @@ Normal 也能直接输入网格键定位，但默认关闭。启用步骤和安�
 | `min_size_width` / `min_size_height` / `layers` | 仅 `recursive_grid` 可用；显式 layers 整组替换，`[]` 清空 |
 
 未写的字段沿用对应网格。此配置不接受 UI 样式；键位冲突会在加载时报告。删除整个段即可关闭，完整注释见 `keysteer.default.toml`。
+
+## 文字选择配置
+
+`text_select` 复用 UIHint 的识别与外观，单独配置入口、标签和操作键。Normal 默认用 `c` 进入。以下是默认绑定；显式填写该绑定表会替换文字选择的默认表。
+
+```toml
+[text_select]
+enabled = true
+hint_characters = "asdfghjklqwertyuiopzvbnm"
+
+[text_select.bindings]
+"primary+c" = "text_refine"
+"ctrl+backspace" = "first_level"
+"tab backspace" = "previous_level"
+enter = "text_copy"
+page_up = "text_previous_page"
+page_down = "text_next_page"
+esc = "cancel_selection"
+"?" = "key_help"
+```
+
+升级时若没有 `[text_select]` 或 `[text_input]`，模式及内部按键采用默认值；旧 Normal 绑定表缺少对应入口时补齐 `c`／`\`，但不覆盖已占用、参与自定义组合键／Normal 盲操网格或设为 `none` 的按键，也不追加已改键模式的第二个入口。显式 `text_select.enabled = false` 仍关闭文字选择。
+
+进入模式的键在 Normal 配置，细分键在 Text Select 配置，互不影响。进入后直接输入文字、简拼或空格分隔的标签；普通 `c` 始终参与输入，`Primary+C` 细分，`Enter` 复制。输入框中 Space 用于输入；Backspace 在输入非空时编辑，清空后才返回上层。UIHint 的 `search_edit_keys` 同时提供光标、粘贴等编辑键；文字选择操作绑定优先。绑定为操作的单字母不会生成文字选择标签。
+
+原来不能修改的网格、UIHint、屏幕选择和窗口导航键也已开放配置，旧默认键保持不变；稀疏旧配置自动补齐这些原有操作，显式 `none` 可禁用。详见[可配置的选择操作](/reference/modes-and-actions#可配置的选择操作)。

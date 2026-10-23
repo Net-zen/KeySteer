@@ -64,6 +64,7 @@ right_shift = "middle_click"
 n = "toggle"
 g = "grid"
 f = "recursive_grid"
+c = "text_select"
 "primary+f" = "ui_hint"
 "primary+s" = "screen next"
 "primary+d" = "move_window next"
@@ -80,6 +81,21 @@ y = "end"
 # Optional: send Enter before returning; replace the grouped binding above:
 # '\ esc' = "normal"
 # enter = ["send enter", "normal"]
+
+# OCR text selection shares UI Hint's scan scope, OCR and panel appearance.
+[text_select]
+enabled = true
+hint_characters = "asdfghjklqwertyuiopzvbnm" # Bare command keys are excluded.
+
+[text_select.bindings]
+"primary+c" = "text_refine" # Select text, then refine; plain c remains input.
+"ctrl+backspace" = "first_level" # 回到区域层，清空选择；Space 用于输入空格。
+"tab backspace" = "previous_level" # 返回上一层；输入非空时 Backspace 删除文字。
+enter = "text_copy"
+page_down = "text_next_page"
+page_up = "text_previous_page"
+esc = "cancel_selection"
+"?" = "key_help"
 
 # Window modes have independent bindings; Q follows each mode's binding.
 # The target/screens/temporary-mode options also apply to Quick, Editor, Restore and Tabs.
@@ -140,6 +156,13 @@ q = "idle"
 
 # Active only while typing selection numbers. Ctrl/Enter confirms; Backspace edits.
 [window.multi_select.bindings]
+esc = "window_multi_cancel"
+"backspace" = "send backspace"
+"delete" = "send delete"
+"arrow_left" = "send arrow_left"
+"arrow_right" = "send arrow_right"
+"home" = "send home"
+"end" = "send end"
 "ctrl enter" = "window_multi_confirm"
 "primary+h" = "arrow_left"
 "primary+l" = "arrow_right"
@@ -224,6 +247,7 @@ gap = 0.0
 border_width = 3.0
 
 [window_editor.bindings]
+"`" = "window_area_number"
 "?" = "key_help"
 h = "window_layout_left"
 j = "window_layout_down"
@@ -283,6 +307,8 @@ after_finish = "window_editor"
 after_click = "keep"
 
 [window_restore.bindings]
+page_up = "window_previous_page"
+page_down = "window_next_page"
 "?" = "key_help"
 x = "window_delete"
 enter = "window_confirm"
@@ -360,6 +386,11 @@ after_finish = "normal"
 after_click = "normal"
 
 [ui_hint.bindings]
+enter = "confirm_selection"
+esc = "cancel_selection"
+backspace = "previous_level"
+tab = "reopen_selection"
+"/" = "search_selection"
 "primary+r" = "rescan"
 "primary+q" = "normal"
 
@@ -435,6 +466,10 @@ after_finish = "normal"
 after_click = "finish"
 
 [grid.bindings]
+enter = "confirm_selection" # 确认当前选择
+esc = "cancel_selection" # 取消选择，返回来源模式
+"tab backspace" = "previous_level" # Tab 或 Backspace：返回上一层
+space = "first_level" # 回到第一层，重新选择
 "`" = "follow"
 "primary+q" = "normal"
 
@@ -461,6 +496,10 @@ after_finish = "keep"
 after_click = "keep"
 
 [recursive_grid.bindings]
+enter = "confirm_selection" # 确认当前选择
+esc = "cancel_selection" # 取消选择，返回来源模式
+"tab backspace" = "previous_level" # Tab 或 Backspace：返回上一层
+space = "first_level" # 回到第一层，重新选择
 "`" = "follow"
 "primary+q" = "normal"
 
@@ -527,6 +566,11 @@ text = "Normal"
 enabled = false
 
 # Preserve targeting selections when switching displays.
+[plugin_modes."plugin:screen-selector".bindings]
+esc = "cancel_selection"
+enter = "confirm_selection"
+backspace = "previous_level"
+
 [plugin_modes."plugin:screen-selector".settings]
 preserve = true
 
@@ -538,9 +582,16 @@ save_after_entries = 100
 [quick_switch]
 enabled = true
 key = "q"
+hint_characters = "wertyuiop" # UI Hint labels; more modes use multi-character labels.
 hold_ms = 350
 blacklist = ["idle"]
 position = "mouse" # "mouse", "screen" or "window".
+
+# The mode remains open after releasing the trigger. Omit an exit key to disable it.
+[quick_switch.bindings]
+esc = "cancel_selection"
+q = "cancel_selection"
+backspace = "previous_level"
 
 [quick_switch.ui]
 font_size = 28

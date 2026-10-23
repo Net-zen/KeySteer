@@ -851,6 +851,17 @@ struct OcrRegion {
     height: f64,
     confidence: f64,
     label: String,
+    #[serde(default)]
+    spans: Vec<OcrSpan>,
+}
+
+#[derive(serde::Deserialize)]
+struct OcrSpan {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    label: String,
 }
 
 fn recognize_ocr_image(
@@ -898,6 +909,7 @@ fn recognize_ocr_image(
                 "tiles": crops,
                 "parallelism": parallelism,
                 "minimum_confidence": options.minimum_confidence,
+                "text_positions": options.text_positions,
             }),
         )
         .map_err(|error| format!("cannot send OCR layout: {error}"))?;
@@ -999,7 +1011,27 @@ fn recognize_ocr_image(
                             continue;
                         }
                         candidates.push(Candidate {
-                            target: UiTarget::recognized_text(rect, region.label),
+                            target: UiTarget::recognized_text(rect, region.label).with_ocr_spans(
+                                region
+                                    .spans
+                                    .into_iter()
+                                    .filter_map(|span| {
+                                        let rect = normalized_to_global(
+                                            tile_bounds,
+                                            Rect::new(span.x, span.y, span.width, span.height),
+                                        );
+                                        (!rect.is_empty()
+                                            && rect.x.is_finite()
+                                            && rect.y.is_finite()
+                                            && rect.width.is_finite()
+                                            && rect.height.is_finite())
+                                        .then_some(crate::api::OcrTextSpan {
+                                            text: span.label,
+                                            rect,
+                                        })
+                                    })
+                                    .collect(),
+                            ),
                             confidence: region.confidence,
                             is_text: true,
                         });

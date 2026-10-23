@@ -197,7 +197,7 @@ pub(crate) fn compile_normal_targeting(
         .find(|layer| layer.depth == 0)
         .and_then(|layer| layer.keys.as_deref())
         .unwrap_or(geometry.keys);
-    let mut alphabet = std::iter::once(if geometry.max_depth == 1 {
+    let alphabet = std::iter::once(if geometry.max_depth == 1 {
         root_keys
     } else {
         geometry.keys
@@ -212,9 +212,6 @@ pub(crate) fn compile_normal_targeting(
     .flat_map(str::chars)
     .map(|ch| ch.to_string())
     .collect::<BTreeSet<_>>();
-    if geometry.max_depth != 1 {
-        alphabet.extend(["tab", "backspace", "space"].map(str::to_owned));
-    }
     let mut generated = BTreeMap::new();
     for name in alphabet {
         let chord = KeyChord::parse_with_aliases(&name, config.resolved_key_aliases())?;
@@ -282,6 +279,24 @@ pub(crate) fn compile_normal_targeting(
             conflicts.into_iter().collect::<Vec<_>>().join(", ")
         ));
     }
+    if geometry.max_depth != 1 {
+        let (name, controls) = match targeting.method {
+            crate::config::TargetingMethod::Grid => ("grid", &config.grid.bindings),
+            crate::config::TargetingMethod::RecursiveGrid => {
+                ("recursive_grid", &config.recursive_grid.bindings)
+            }
+        };
+        for (key, binding) in
+            crate::config::with_control_defaults(name, controls, config.resolved_key_aliases())
+                .map_err(|e| e.to_string())?
+        {
+            if matches!(binding, Binding::SelectionReset | Binding::SelectionParent)
+                && !specs[normal].route.bindings.contains_key(&key)
+            {
+                generated.entry(key).or_insert(binding);
+            }
+        }
+    }
     // Keep generated inputs local to Normal: inheritors retain their own raw
     // key behavior. Temporary Normal still accesses Normal's compiled table.
     let mut inheritors = BTreeSet::from([ModeId::normal()]);
@@ -309,7 +324,9 @@ pub(crate) fn compile_normal_targeting(
     }
     for entry in &mut specs[normal].route.app_overrides {
         for (key, binding) in &generated {
-            if entry.bindings.get(key) == Some(&Binding::Disabled) {
+            if matches!(binding, Binding::TargetingKey(_))
+                && entry.bindings.get(key) == Some(&Binding::Disabled)
+            {
                 entry.bindings.insert(key.clone(), binding.clone());
             }
         }
@@ -429,6 +446,58 @@ pub fn hint(config: &Config) -> HintMode {
     HintMode::new(hint_settings(config))
 }
 
+pub(crate) fn quick_switch(config: &Config) -> modes::quick_switch::QuickSwitchMode {
+    let style = |appearance| {
+        let palette = config.theme.palette(appearance);
+        crate::api::style::QuickSwitchStyles::new(config.quick_switch.ui.resolve(
+            &palette,
+            palette.surface_label(),
+            palette.text,
+            palette.accent_border(),
+        ))
+    };
+    modes::quick_switch::QuickSwitchMode::new(modes::quick_switch::Settings {
+        alphabet: config
+            .quick_switch
+            .hint_characters
+            .chars()
+            .map(|ch| {
+                crate::api::Key::new(ch.to_string())
+                    .and_then(|key| {
+                        key.as_char()
+                            .ok_or_else(|| "expected a character key".into())
+                    })
+                    .unwrap_or_else(|error| {
+                        panic!("quick_switch requires validated hint characters: {error}")
+                    })
+            })
+            .collect(),
+        blacklist: config.quick_switch.blacklist.clone(),
+        position: config.quick_switch.position,
+        light: style(crate::api::Appearance::Light),
+        dark: style(crate::api::Appearance::Dark),
+    })
+}
+
+pub(crate) fn text_select(config: &Config) -> modes::text_select::TextSelectMode {
+    modes::text_select::TextSelectMode::new(modes::text_select::Settings {
+        hint: hint_settings(config),
+        alphabet: config.text_select.hint_characters.clone(),
+        bindings: config
+            .text_select
+            .bindings
+            .iter()
+            .flat_map(|(keys, binding)| {
+                keys.split_whitespace().filter_map(|key| {
+                    crate::api::KeyChord::parse_with_aliases(key, config.resolved_key_aliases())
+                        .ok()
+                        .map(|chord| (chord, std::sync::Arc::new(binding.clone())))
+                })
+            })
+            .collect(),
+    })
+}
+
 #[doc(hidden)]
 #[allow(dead_code)]
 pub fn built_in(config: &Config) -> Vec<Box<dyn Mode>> {
@@ -437,6 +506,9 @@ pub fn built_in(config: &Config) -> Vec<Box<dyn Mode>> {
         normal_instance(config),
         Box::new(modes::text_input::TextInputMode::new()),
     ];
+    if config.quick_switch.enabled {
+        catalog.push(Box::new(quick_switch(config)));
+    }
     if config.grid.enabled {
         catalog.push(Box::new(grid(config)));
     }
@@ -445,6 +517,9 @@ pub fn built_in(config: &Config) -> Vec<Box<dyn Mode>> {
     }
     if config.ui_hint.enabled {
         catalog.push(Box::new(hint(config)));
+    }
+    if config.text_select.enabled {
+        catalog.push(Box::new(text_select(config)));
     }
     catalog.extend(
         window_family(config)
@@ -469,26 +544,25 @@ fn window_settings(config: &Config, kind: modes::window::WindowKind) -> modes::w
         config.window.card.clone()
     };
     modes::window::Settings {
-        multi_bindings: config
-            .window
-            .multi_select
-            .bindings
-            .iter()
-            .flat_map(|(keys, binding)| {
-                keys.split_whitespace().map(|key| {
-                    (
-                        crate::api::KeyChord::parse_with_aliases(
-                            key,
-                            config.resolved_key_aliases(),
-                        )
+        multi_bindings: crate::config::with_control_defaults(
+            "window.multi_select",
+            &config.window.multi_select.bindings,
+            config.resolved_key_aliases(),
+        )
+        .unwrap_or_else(|error| panic!("window settings require validated configuration: {error}"))
+        .iter()
+        .flat_map(|(keys, binding)| {
+            keys.split_whitespace().map(|key| {
+                (
+                    crate::api::KeyChord::parse_with_aliases(key, config.resolved_key_aliases())
                         .unwrap_or_else(|error| {
                             panic!("window settings require validated configuration: {error}")
                         }),
-                        std::sync::Arc::new(binding.clone()),
-                    )
-                })
+                    std::sync::Arc::new(binding.clone()),
+                )
             })
-            .collect(),
+        })
+        .collect(),
         target: common.target,
         all_screens: common.screens == crate::config::WindowScreens::All,
         include_minimized: common.include_minimized,
@@ -566,6 +640,32 @@ pub fn bundled_plugins(config: &Config) -> Result<Vec<Box<dyn Plugin>>, String> 
 /// point and cannot produce a route/instance mismatch.
 pub(crate) fn built_in_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
     let mut specs = Vec::with_capacity(5);
+    if config.quick_switch.enabled {
+        specs.push(ModeSpec::built_in(
+            Box::new(quick_switch(config)),
+            compile_route(
+                &config.quick_switch.bindings,
+                &[],
+                None,
+                &[],
+                &[],
+                Vec::new(),
+            )?,
+        ));
+    }
+    if config.text_select.enabled {
+        specs.push(ModeSpec::built_in(
+            Box::new(text_select(config)),
+            compile_route(
+                &config.text_select.bindings,
+                &[],
+                None,
+                &[],
+                &[],
+                Vec::new(),
+            )?,
+        ));
+    }
     specs.push(ModeSpec::built_in(
         Box::new(modes::text_input::TextInputMode::new()),
         compile_route(
@@ -656,6 +756,14 @@ pub(crate) fn built_in_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
             )?,
         ));
     }
+    for spec in &mut specs {
+        spec.route.bindings = crate::config::with_control_defaults(
+            spec.id().as_str(),
+            &spec.route.bindings,
+            config.resolved_key_aliases(),
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(specs)
 }
 
@@ -664,7 +772,7 @@ pub(crate) fn bundled_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
         .into_iter()
         .map(|plugin| {
             let id = plugin.id();
-            let route = match config.plugin_modes.get(id.as_str()) {
+            let mut route = match config.plugin_modes.get(id.as_str()) {
                 Some(section) => compile_route(
                     &section.bindings,
                     &section.inherits,
@@ -675,6 +783,12 @@ pub(crate) fn bundled_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
                 )?,
                 None => empty_route(),
             };
+            route.bindings = crate::config::with_control_defaults(
+                id.as_str(),
+                &route.bindings,
+                config.resolved_key_aliases(),
+            )
+            .map_err(|e| e.to_string())?;
             Ok(ModeSpec::plugin(plugin, route))
         })
         .collect()
@@ -776,6 +890,8 @@ mod tests {
     #[test]
     fn enable_flags_only_remove_optional_modes() {
         let mut config = Config::default();
+        config.text_select.enabled = false;
+        config.quick_switch.enabled = false;
         config.grid.enabled = false;
         config.recursive_grid.enabled = false;
         config.ui_hint.enabled = false;

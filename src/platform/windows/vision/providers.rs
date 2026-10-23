@@ -84,6 +84,7 @@ impl Drop for WechatFullFrame {
 }
 
 pub(super) struct SystemOcrTile {
+    pub(super) text_positions: bool,
     pub(super) geometry: CaptureGeometry,
     pub(super) core_bounds: Rect,
     pub(super) bitmap: SharedSoftwareBitmap,
@@ -585,32 +586,38 @@ fn run_scan_inner(
         };
         if let Some(input) = system_input.take() {
             if let Some(factory) = bitmap_factory.as_ref() {
-                if let Err(error) = stream_system_ocr_tiles(&frames, factory, &input, |index| {
-                    if index.is_some_and(|index| index + 1 == contour_start_after) {
-                        launch_contour()?;
-                    }
-                    if index == Some(0) && wechat_input.is_some() {
-                        submit_wechat_full_frame(
-                            &mut wechat_input,
-                            frames[0].capture.pixels(),
-                            frames[0].geometry,
-                            bitmap_factory.as_ref(),
-                            bitmap_factory_error.as_deref(),
-                            &cancellation,
-                        )?;
-                        wechat_sent = 1;
-                    }
-                    if !drain_early_ocr_events(
-                        &provider_mailbox,
-                        &job.source,
-                        &mut early_events,
-                        || context_is_current(shared, job.generation, &job.request),
-                    ) {
-                        context_changed_during_capture = true;
-                        return Err("visual capture context changed".into());
-                    }
-                    Ok(())
-                }) {
+                if let Err(error) = stream_system_ocr_tiles(
+                    &frames,
+                    factory,
+                    &input,
+                    job.request.vision.text_positions,
+                    |index| {
+                        if index.is_some_and(|index| index + 1 == contour_start_after) {
+                            launch_contour()?;
+                        }
+                        if index == Some(0) && wechat_input.is_some() {
+                            submit_wechat_full_frame(
+                                &mut wechat_input,
+                                frames[0].capture.pixels(),
+                                frames[0].geometry,
+                                bitmap_factory.as_ref(),
+                                bitmap_factory_error.as_deref(),
+                                &cancellation,
+                            )?;
+                            wechat_sent = 1;
+                        }
+                        if !drain_early_ocr_events(
+                            &provider_mailbox,
+                            &job.source,
+                            &mut early_events,
+                            || context_is_current(shared, job.generation, &job.request),
+                        ) {
+                            context_changed_during_capture = true;
+                            return Err("visual capture context changed".into());
+                        }
+                        Ok(())
+                    },
+                ) {
                     if context_changed_during_capture
                         || cancellation.is_cancelled()
                         || Instant::now() >= deadline
@@ -1107,6 +1114,7 @@ fn complete_system_tile(
             &result,
             completed.tile.geometry,
             completed.tile.core_bounds,
+            completed.tile.text_positions,
             usize::MAX.saturating_sub(*accepted),
             result_mailbox,
             started,

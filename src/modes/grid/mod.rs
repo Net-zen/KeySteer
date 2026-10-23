@@ -96,7 +96,12 @@ impl GridMode {
     }
 
     fn key_down(&mut self, key: &Key, ctx: &HostContext<'_>) -> CommandBatch {
-        match self.controller.input(key, ctx.active_bounds()) {
+        let selection = self.controller.input(key, ctx.active_bounds());
+        self.apply_selection(selection, ctx)
+    }
+
+    fn apply_selection(&mut self, selection: Selection, ctx: &HostContext<'_>) -> CommandBatch {
+        match selection {
             Selection::Ignored => CommandBatch::new(),
             Selection::Cancel => self.cancel(),
             Selection::Changed => self.redraw(ctx),
@@ -135,20 +140,6 @@ impl Mode for GridMode {
 
     fn claims_key(&self, key: &Key) -> bool {
         self.controller.claims_key(key)
-    }
-
-    fn available_keys(&self) -> Vec<(String, String)> {
-        // Selection characters are already drawn in the grid itself.
-        [
-            ("esc", "cancel"),
-            ("enter", "select"),
-            ("backspace", "back"),
-            ("tab", "back"),
-            ("space", "restart"),
-        ]
-        .into_iter()
-        .map(|(key, action)| (key.into(), action.into()))
-        .collect()
     }
 
     fn indicator_color(&self, palette: &Palette) -> Option<Color> {
@@ -218,11 +209,29 @@ impl Mode for GridMode {
             } if matches!(binding.as_ref(), Binding::ToggleCursorFollowSelection) => {
                 self.toggle_cursor_follow(ctx)
             }
+            ModeEvent::Binding {
+                binding,
+                state: KeyState::Down,
+                ..
+            } => {
+                let selection = match binding.as_ref() {
+                    Binding::SelectionReset => self.controller.reset_selection(ctx.active_bounds()),
+                    Binding::SelectionParent => self.controller.parent(),
+                    Binding::SelectionAccept => self
+                        .controller
+                        .session
+                        .current()
+                        .map_or(Selection::Cancel, |area| Selection::Commit(area.center())),
+                    Binding::SelectionCancel => Selection::Cancel,
+                    _ => return CommandBatch::new(),
+                };
+                self.apply_selection(selection, ctx)
+            }
             ModeEvent::Key {
                 key,
                 state: KeyState::Down,
                 ..
-            } => self.key_down(key, ctx),
+            } if self.claims_key(key) => self.key_down(key, ctx),
             _ => CommandBatch::new(),
         }
     }
@@ -300,6 +309,21 @@ mod tests {
     }
 
     fn press(mode: &mut GridMode, env: &Env, name: &str) -> Vec<Command> {
+        let key = Key::new(name).unwrap();
+        let binding = env.config.grid.bindings.get(name);
+        if let Some(binding) = binding {
+            return mode
+                .handle(
+                    &ModeEvent::Binding {
+                        binding: binding.clone().into(),
+                        state: KeyState::Down,
+                        key,
+                    },
+                    &env.ctx(),
+                )
+                .into_iter()
+                .collect();
+        }
         mode.handle(
             &ModeEvent::Key {
                 key: Key::new(name).unwrap(),

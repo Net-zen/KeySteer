@@ -137,7 +137,7 @@ test('delete is internal to Restore and toggling preserves its page while cancel
   assert.equal(state.mode, 'window')
   assert.equal(state.window.deletingPresets, false)
   applyWindowAction(state, 'window_restore')
-  windowSelectionKey(state, 'page_down', {})
+  applyWindowAction(state, 'window_next_page')
   for (const action of ['window_delete', 'window_delete', 'window_delete']) {
     applyWindowAction(state, action)
     assert.equal(state.mode, 'window_restore')

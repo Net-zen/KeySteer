@@ -24,6 +24,7 @@ Array entries run in written order. Empty arrays are invalid. Arrays do not bloc
 | `normal` | Move, scroll, click, and enter targeting modes. |
 | `grid` | Full-screen coordinate grid. |
 | `recursive_grid` | Repeatedly subdivides the current region. |
+| `text_select` | OCR text selection: regions → words → characters. |
 | `ui_hint` | Shows labels for interactive elements. |
 | `window` | Locks the window under the pointer for movement, centred resizing, layouts, and tiling. |
 | `window_quick` | Quick ratio layout. |
@@ -590,3 +591,29 @@ font_size = 14
 ```
 
 Position uses a reference and four percentage insets; see [Search panel positioning](/en/reference/configuration#search-panel-positioning). Preview both panels together in the web editor. Default styles do not need to be repeated in your file.
+
+## Text Select
+
+Press `c` in Normal to enter `text_select`. The input and text panels open immediately, reusing UIHint's scan scope, OCR options and appearance. This mode requests OCR text only.
+
+Type a region label to select its text and move the pointer to its end without clicking. Press `Primary+C` to refine into system-tokenized words, then Unicode grapheme characters. Ordinary `c` remains input. Missing language rules fall back to characters without a bundled dictionary.
+
+Input uses the same search and multi-selection rules as UIHint: type text, pinyin initials, or space-separated labels such as `a d f`. Use `@a @d` for explicit labels. A trailing space reveals all hints again. Completed labels resolve selections; unresolved text previews the highest-ranked match. Duplicate terms select once. Uppercase is case-insensitive; `adf` is one search term.
+
+Backspace edits nonempty input and updates the selection; with empty input it returns to the parent. Tab always returns to the parent, restoring its selection. Ctrl+Backspace resets to regions; Space separates input terms. Enter copies the preview and returns after clipboard success. PageUp/PageDown page the enlarged characters; Esc exits; `?` shows effective keys. All controls are configurable.
+
+Text is copied in source order. Adjacent selections retain source spacing; disjoint English words get a separator and disjoint letters concatenate. Regions and words keep hints at their original screen positions; only characters are enlarged in the panel. The text-only panel previews up to four lines with paragraph breaks and a selection count, while copying includes all selected text. The standard Text Select indicator shows the level. Initial hints and input paint before cooperative search indexing; refinement does not capture the screen again.
+
+## Configurable selection controls
+
+`first_level` clears the selection and returns to the first level; `previous_level` goes back one level. `confirm_selection` confirms and `cancel_selection` cancels the selection and returns to the source mode. `search_selection` opens UIHint search. UIHint's `reopen_selection` only reopens a completed selection, retaining its original Tab behavior. Global `escape` still enters Idle. A group such as `"tab backspace"` means either key, not a chord.
+
+Existing defaults are unchanged. Sparse/older configurations inherit the formerly fixed controls; explicit `none` disables a key. For example:
+
+```toml
+[grid.bindings]
+space = "none"
+"ctrl+backspace" = "first_level"
+```
+
+Recursive Grid has its own binding table. Normal blind targeting also accepts reset/parent actions. UIHint and the screen selector plugin expose their controls in their binding tables. Window Editor's backtick uses `window_area_number`; Restore uses `window_previous_page` / `window_next_page`; Window selection input uses `window_multi_cancel` and configurable editing mappings. Defaults remain backtick, PageUp/PageDown, Esc and the existing editing keys. Help follows effective bindings, including disabled keys.

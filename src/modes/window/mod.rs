@@ -469,6 +469,7 @@ impl WindowKind {
             WindowKind::Move => matches!(
                 action,
                 W::MultiConfirm
+                    | W::MultiCancel
                     | W::MultiSelect
                     | W::ClearMulti
                     | W::Tile
@@ -500,7 +501,7 @@ impl WindowKind {
                     | W::ResetInitial
             ),
             WindowKind::Editor => {
-                matches!(action, W::SaveLayout)
+                matches!(action, W::SaveLayout | W::AreaNumber)
                     || matches!(
                         action,
                         W::Navigate(_)
@@ -514,7 +515,10 @@ impl WindowKind {
                             | W::RemoveRegion
                     )
             }
-            WindowKind::Restore => matches!(action, W::Confirm | W::DeletePreset),
+            WindowKind::Restore => matches!(
+                action,
+                W::Confirm | W::DeletePreset | W::NextPage | W::PreviousPage
+            ),
         }
     }
 }
@@ -525,7 +529,11 @@ impl WindowSession {
             return false;
         }
         match (self.kind, action) {
-            (_, W::MultiConfirm) => self.multi_input.is_some(),
+            (WindowKind::Restore, W::NextPage) => {
+                (self.library_page + 1) * presets::PAGE_SIZE < self.saved_presets.len()
+            }
+            (WindowKind::Restore, W::PreviousPage) => self.library_page > 0,
+            (_, W::MultiConfirm | W::MultiCancel) => self.multi_input.is_some(),
             (_, W::MultiSelect) => self.multi_input.is_none(),
             (WindowKind::Editor, W::SaveLayout) => self
                 .edit
@@ -561,46 +569,20 @@ impl WindowSession {
     }
     fn claims_key(&self, key: &Key) -> bool {
         if self.multi_input.is_some() && self.kind == WindowKind::Move {
-            return key.as_char().is_some_and(|c| c.is_ascii_digit())
-                || matches!(
-                    key.as_str(),
-                    "space"
-                        | "backspace"
-                        | "delete"
-                        | "esc"
-                        | "arrow_left"
-                        | "arrow_right"
-                        | "home"
-                        | "end"
-                );
+            return key.as_char().is_some_and(|c| c.is_ascii_digit()) || key.as_str() == "space";
         }
         if self.library_open {
-            return !self.temporary
-                && (key.as_char().is_some_and(|c| c.is_ascii_digit())
-                    || matches!(key.as_str(), "page_up" | "page_down"));
+            return !self.temporary && key.as_char().is_some_and(|c| c.is_ascii_digit());
         }
-        !self.temporary
-            && key.as_char().is_some_and(|c| {
-                c.is_ascii_digit() || (c == '`' && self.kind == WindowKind::Editor)
-            })
+        !self.temporary && key.as_char().is_some_and(|c| c.is_ascii_digit())
     }
     fn available_keys(&self) -> Vec<(String, String)> {
         if self.library_open {
-            let mut keys = Vec::new();
-            if self.library_page > 0 {
-                keys.push(("PageUp".into(), "Previous page".into()));
-            }
-            if (self.library_page + 1) * presets::PAGE_SIZE < self.saved_presets.len() {
-                keys.push(("PageDown".into(), "Next page".into()));
-            }
-            return keys;
+            return Vec::new();
         }
-        let mut keys: Vec<_> = ('1'..='9')
+        let keys: Vec<_> = ('1'..='9')
             .map(|c| (c.to_string(), "Window number".into()))
             .collect();
-        if self.kind == WindowKind::Editor {
-            keys.push(("`".into(), "Area number".into()));
-        }
         keys
     }
     pub(crate) fn handle_owned(&mut self, event: ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
@@ -940,12 +922,7 @@ impl WindowSession {
                 repeat: false,
             } if !self.temporary => {
                 if let Some(c) = key.as_char() {
-                    if c == '`' && self.kind == WindowKind::Editor {
-                        self.cancel_number(&mut out);
-                        if self.edit.is_some() {
-                            self.number.begin_slot();
-                        }
-                    } else if c.is_ascii_digit() {
+                    if c.is_ascii_digit() {
                         self.multi_input = None;
                         if self.kind == WindowKind::Tab {
                             self.tab_input(tabs::Input::Digit(c), ctx, &mut out);

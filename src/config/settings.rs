@@ -188,6 +188,7 @@ fn default_normal_bindings() -> Bindings {
         // Targeting modes available directly from normal.
         ("g", "grid"),
         ("f", "recursive_grid"),
+        ("c", "text_select"),
         ("primary+f", "ui_hint"),
         ("primary+s", "screen next"),
         ("primary+d", "move_window next"),
@@ -231,6 +232,35 @@ impl Default for TextInput {
 
 fn default_text_input_bindings() -> Bindings {
     builtin_bindings(&[("enter", "normal"), ("\\", "normal"), ("esc", "normal")])
+}
+
+/// OCR-only text selection shares UIHint's scan scope, OCR options and styles.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TextSelect {
+    pub enabled: bool,
+    pub hint_characters: String,
+    pub bindings: Bindings,
+}
+
+impl Default for TextSelect {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hint_characters: "asdfghjklqwertyuiopzvbnm".into(),
+            bindings: builtin_bindings(&[
+                ("primary+c", "text_refine"),
+                ("ctrl+backspace", "first_level"),
+                ("tab", "previous_level"),
+                ("backspace", "previous_level"),
+                ("enter", "text_copy"),
+                ("esc", "cancel_selection"),
+                ("?", "key_help"),
+                ("page_down", "text_next_page"),
+                ("page_up", "text_previous_page"),
+            ]),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +460,11 @@ impl Default for UiHint {
             },
             overlap_cycle_key: "shift".into(),
             bindings: Bindings::from([
+                ("esc".into(), Binding::SelectionCancel),
+                ("enter".into(), Binding::SelectionAccept),
+                ("backspace".into(), Binding::SelectionParent),
+                ("tab".into(), Binding::SelectionReopen),
+                ("/".into(), Binding::SelectionSearch),
                 ("primary+r".into(), Binding::RescanUi),
                 ("primary+q".into(), Binding::Mode(ModeId::normal())),
             ]),
@@ -518,6 +553,11 @@ impl Default for Grid {
             ui,
             bindings: Bindings::from([
                 ("`".into(), Binding::ToggleCursorFollowSelection),
+                ("enter".into(), Binding::SelectionAccept),
+                ("esc".into(), Binding::SelectionCancel),
+                ("space".into(), Binding::SelectionReset),
+                ("tab".into(), Binding::SelectionParent),
+                ("backspace".into(), Binding::SelectionParent),
                 ("primary+q".into(), Binding::Mode(ModeId::normal())),
             ]),
             app_configs: Vec::new(),
@@ -585,6 +625,11 @@ impl Default for RecursiveGrid {
             ui,
             bindings: Bindings::from([
                 ("`".into(), Binding::ToggleCursorFollowSelection),
+                ("enter".into(), Binding::SelectionAccept),
+                ("esc".into(), Binding::SelectionCancel),
+                ("space".into(), Binding::SelectionReset),
+                ("tab".into(), Binding::SelectionParent),
+                ("backspace".into(), Binding::SelectionParent),
                 ("primary+q".into(), Binding::Mode(ModeId::normal())),
             ]),
             app_configs: Vec::new(),

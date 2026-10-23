@@ -5,6 +5,8 @@ import { parse, stringify } from 'smol-toml'
 import { parseSplitRatios } from '../simulator/window-ratios.ts'
 import { normalizeConfigCompatibility } from './compatibility.ts'
 import { readSearchEditBindings } from './search-edit-keys.ts'
+import { resolvedChordKeys } from '../simulator/bindings.ts'
+import { validQuickSwitchCharacters } from '../simulator/hint-labels.ts'
 
 export type ConfigDocument = Record<string, any>
 
@@ -38,6 +40,8 @@ const replacementTables = new Set([
   'mode_indicator.modes',
   'normal.bindings',
   'text_input.bindings',
+  'quick_switch.bindings',
+  'text_select.bindings',
   'window.bindings',
   'window.multi_select.bindings',
   'window_quick.bindings', 'window_editor.bindings', 'window_restore.bindings', 'window_tab.bindings',
@@ -70,6 +74,21 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
   const parsed = parse(source)
   if (!isRecord(parsed)) throw new Error('TOML 顶层必须是配置表')
   const warnings = normalizeConfigCompatibility(parsed)
+  const quickSwitch = parsed.quick_switch as ConfigDocument | undefined
+  if (quickSwitch && !validQuickSwitchCharacters(quickSwitch.hint_characters ?? 'wertyuiop', String(quickSwitch.key ?? 'q'))) {
+    throw new Error('quick_switch.hint_characters requires at least two unique character keys, excluding the trigger key')
+  }
+  if (quickSwitch) {
+    const alphabet = new Set([...String(quickSwitch.hint_characters ?? 'wertyuiop').toLowerCase()])
+    for (const configured of Object.keys(quickSwitch.bindings ?? {})) {
+      for (const chord of configured.split(/\s+/).filter(Boolean)) {
+        for (const isMac of [false, true]) {
+          const keys = resolvedChordKeys(parsed, chord, isMac)
+          if (keys.length === 1 && alphabet.has(keys[0])) throw new Error(`quick_switch.bindings key ${chord} conflicts with hint_characters`)
+        }
+      }
+    }
+  }
   const scrollSettings: unknown = parsed.scroll
   const scrollSpeed = isRecord(scrollSettings) ? scrollSettings.speed : undefined
   if (scrollSpeed !== undefined && (typeof scrollSpeed !== 'number' || !Number.isFinite(scrollSpeed) || scrollSpeed < 0)) {
@@ -179,7 +198,30 @@ export function resolveConfigDocument(
   defaults: ConfigDocument,
   document: ConfigDocument,
 ): ConfigDocument {
-  return mergeValue(defaults, document, '') as ConfigDocument
+  const effective = mergeValue(defaults, document, '') as ConfigDocument
+  // Match the native upgrade fallback: an older Normal map must not hide a
+  // newly added text mode, but occupied keys and remapped entries take priority.
+  const enters = (action: unknown, mode: string): boolean => action === mode
+    || Array.isArray(action) && action.some(item => enters(item, mode))
+  const tables = [effective.normal?.bindings ?? {}]
+  if ((effective.normal?.inherits ?? ['hotkeys']).some((name: string) => name === 'hotkeys' || name === 'idle')) tables.push(effective.hotkeys ?? {})
+  for (const [mode, key] of [['text_select', 'c'], ['text_input', '\\']]) {
+    if (document[mode] !== undefined || tables.some(table => Object.values(table).some(action => enters(action, mode)))) continue
+    const targeting = effective.normal?.targeting
+    if (targeting) {
+      const grid = effective[targeting.method === 'recursive_grid' ? 'recursive_grid' : 'grid']
+      if (String(targeting.keys ?? grid?.keys ?? '').includes(key)
+        || (targeting.layers ?? grid?.layers ?? []).some((layer: ConfigDocument) => String(layer.keys ?? '').includes(key))) continue
+    }
+    const occupied = tables.some(table => Object.keys(table).some(keys => keys.split(/\s+/).some(chord =>
+      [false, true].some(isMac => {
+        const resolved = resolvedChordKeys(effective, chord, isMac)
+        const expected = resolvedChordKeys(effective, key, isMac)
+        return expected.some(value => resolved.includes(value))
+      }))))
+    if (!occupied && effective.normal?.bindings) effective.normal.bindings[key] = mode
+  }
+  return effective
 }
 
 export function getConfigPath(document: ConfigDocument, path: string): unknown {
@@ -209,6 +251,13 @@ export function deleteConfigPath(document: ConfigDocument, path: string): void {
 function mergeValue(defaultValue: unknown, configuredValue: unknown, path: string): unknown {
   if (configuredValue === undefined) return cloneConfigValue(defaultValue)
   if (path === 'ui_hint.search_edit_keys') return mergeSearchEditBindings(defaultValue, configuredValue)
+  const controls = new Set(['first_level', 'previous_level', 'reopen_selection', 'confirm_selection', 'cancel_selection', 'search_selection', 'window_area_number', 'window_next_page', 'window_previous_page', 'window_multi_cancel'])
+  if (['grid.bindings', 'recursive_grid.bindings', 'ui_hint.bindings', 'window_editor.bindings', 'window_restore.bindings', 'window.multi_select.bindings'].includes(path) && isRecord(defaultValue) && isRecord(configuredValue)) {
+    const expand = (table: ConfigDocument) => Object.fromEntries(Object.entries(table).flatMap(([keys, value]) => keys.split(/\s+/).map(key => [key, value])))
+    const configured = expand(configuredValue)
+    const fallback = Object.fromEntries(Object.entries(expand(defaultValue)).filter(([key, action]) => controls.has(String(action)) || path === 'window.multi_select.bindings' && !key.includes('+') && String(action).startsWith('send ')))
+    return { ...fallback, ...configured }
+  }
   if (replacementTables.has(path) || Array.isArray(configuredValue) || !isRecord(configuredValue)) {
     return cloneConfigValue(configuredValue)
   }

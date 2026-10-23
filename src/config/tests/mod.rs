@@ -54,6 +54,7 @@ fn usage_threshold_and_quick_switch_export_and_validate() {
 save_after_entries = 37
 [quick_switch]
 position = "mouse"
+hint_characters = "ASDF"
 blacklist = ["idle", "window_tab"]
 [quick_switch.ui]
 text_color = { light = "#123456FF", dark = "#FFEEDDFF" }
@@ -63,10 +64,19 @@ text_color = { light = "#123456FF", dark = "#FFEEDDFF" }
     let restored = Config::parse(&config.to_toml().unwrap()).unwrap();
     assert_eq!(restored.mode_usage.save_after_entries, 37);
     assert_eq!(restored.quick_switch, config.quick_switch);
+    assert_eq!(Config::default().quick_switch.hint_characters, "wertyuiop");
+    let plan = crate::app::configuration::compile(&config).unwrap();
+    assert_eq!(plan.settings.quick_switch.alphabet, ['a', 's', 'd', 'f']);
     for invalid in [
         "[mode_usage]\nsave_after_entries = 0",
+        "[quick_switch.bindings]\nw = 'cancel_selection'",
         "[quick_switch]\nhold_ms = 0",
         "[quick_switch]\nkey = 'shift'",
+        "[quick_switch]\nhint_characters = ''",
+        "[quick_switch]\nhint_characters = 'w'",
+        "[quick_switch]\nhint_characters = 'wW'",
+        "[quick_switch]\nhint_characters = 'qwe'",
+        "[quick_switch]\nhint_characters = 'we '",
         "[quick_switch]\nposition = 'desktop'",
         "[quick_switch.ui]\ntext_color = '#bad'",
     ] {
@@ -896,7 +906,7 @@ fn grid_like_modes_do_not_steal_label_keys_with_exit_bindings() {
         &config.ui_hint.bindings,
     ] {
         assert!(!table.contains_key("q"));
-        assert!(!table.contains_key("esc"));
+        assert_eq!(table.get("esc"), Some(&Binding::SelectionCancel));
         let exit = table
             .iter()
             .find(|(_, binding)| binding == &&Binding::Mode(ModeId::normal()))
@@ -2157,6 +2167,98 @@ fn search_match_priority_defaults_compiles_and_round_trips_with_strict_validatio
                 .and_then(|config| config.validate())
                 .is_err(),
             "{values}"
+        );
+    }
+}
+
+#[test]
+fn formerly_fixed_controls_keep_defaults_in_sparse_configs_and_allow_none() {
+    let config = Config::parse(
+        r#"
+[grid.bindings]
+f8 = "first_level"
+space = "none"
+[ui_hint.bindings]
+[window.multi_select.bindings]
+f2 = "window_multi_confirm"
+[window_editor.bindings]
+[window_restore.bindings]
+[plugin_modes."plugin:screen-selector".settings]
+preserve = false
+"#,
+    )
+    .unwrap();
+    assert_eq!(config.grid.bindings["space"], Binding::Disabled);
+    assert_eq!(config.grid.bindings["backspace"], Binding::SelectionParent);
+    assert!(!config.grid.bindings.contains_key("ctrl+backspace"));
+    assert_eq!(config.ui_hint.bindings["tab"], Binding::SelectionReopen);
+    assert_eq!(
+        config.window_editor.bindings["`"],
+        Binding::parse("window_area_number").unwrap()
+    );
+    assert_eq!(
+        config.window_restore.bindings["page_up"],
+        Binding::parse("window_previous_page").unwrap()
+    );
+    assert_eq!(
+        config.window.multi_select.bindings["backspace"],
+        Binding::parse("send backspace").unwrap()
+    );
+    assert_eq!(
+        config.plugin_modes["plugin:screen-selector"].bindings["esc"],
+        Binding::SelectionCancel
+    );
+}
+
+#[test]
+fn older_configs_enable_text_modes_and_supply_unoccupied_default_entrances() {
+    let config = Config::parse("[normal.bindings]\nh = 'move_left'").unwrap();
+    assert!(config.text_select.enabled);
+    assert_eq!(
+        config.text_select.bindings,
+        crate::config::settings::TextSelect::default().bindings
+    );
+    assert_eq!(
+        config.text_input.bindings,
+        crate::config::settings::TextInput::default().bindings
+    );
+    assert_eq!(
+        config.normal.bindings.get("c"),
+        Some(&Binding::Mode(ModeId::text_select()))
+    );
+    assert_eq!(
+        config.normal.bindings.get("\\"),
+        Some(&Binding::Mode(ModeId::text_input()))
+    );
+    assert!(
+        config
+            .text_select
+            .bindings
+            .values()
+            .any(|b| *b == Binding::TextSelect(crate::api::text_select::Action::Refine))
+    );
+}
+
+#[test]
+fn upgrade_keeps_explicit_text_mode_disabling_and_remapped_or_occupied_entries() {
+    for source in [
+        "[normal.bindings]\nc = 'none'\n'\\' = 'none'",
+        "[normal.bindings]\nc = 'grid'\n'\\' = 'grid'",
+        "[normal.bindings]\nf8 = 'text_select'\nf9 = 'text_input'",
+        "[normal.bindings]\n[hotkeys]\nc = 'none'\n'\\' = 'none'",
+        "[normal.bindings]\n'c+h' = 'arrow_left'\n'\\+h' = 'arrow_right'",
+        "[normal.bindings]\n[ text_select ]\nenabled = false\n[text_input]",
+    ] {
+        let config = Config::parse(source).unwrap();
+        assert_ne!(
+            config.normal.bindings.get("c"),
+            Some(&Binding::Mode(ModeId::text_select())),
+            "{source}"
+        );
+        assert_ne!(
+            config.normal.bindings.get("\\"),
+            Some(&Binding::Mode(ModeId::text_input())),
+            "{source}"
         );
     }
 }

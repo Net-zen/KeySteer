@@ -40,11 +40,8 @@ pub struct EngineSettings {
 pub struct QuickSwitchSettings {
     pub enabled: bool,
     pub key: crate::api::Key,
+    pub alphabet: Vec<char>,
     pub hold_ms: u64,
-    pub blacklist: Vec<String>,
-    pub position: crate::api::style::QuickSwitchPosition,
-    pub light: crate::api::style::QuickSwitchStyles,
-    pub dark: crate::api::style::QuickSwitchStyles,
 }
 
 #[derive(Debug, Clone, PartialEq)]

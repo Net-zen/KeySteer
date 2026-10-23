@@ -13,6 +13,7 @@ mod native;
 mod permissions;
 mod scan_workers;
 mod status_item;
+mod text_segmentation;
 mod ui_scan;
 mod update_installer;
 mod vision;
@@ -102,6 +103,7 @@ pub struct MacOsBackend {
     scan_fusion: crate::platform::common::scan_fusion::Worker,
     scan_worker: ui_scan::UiScanWorker,
     pending: VecDeque<BackendEvent>,
+    text_segmenter: Option<crate::platform::common::text_segmentation::Worker>,
     overlay: Overlay,
     screens: Vec<Screen>,
     window_move: RefCell<Option<window_move::WindowMove<accessibility::MovableWindow>>>,
@@ -194,6 +196,7 @@ impl MacOsBackend {
             scan_fusion: crate::platform::common::scan_fusion::Worker::default(),
             scan_worker: ui_scan::UiScanWorker::new(),
             pending: VecDeque::new(),
+            text_segmenter: None,
             overlay: Overlay::new(),
             screens: initial_screens,
             window_move: RefCell::new(None),
@@ -392,6 +395,9 @@ impl MacOsBackend {
         self.frame_clock.stop();
         self.scan_worker.request_stop();
         self.scan_fusion.request_stop();
+        if let Some(worker) = &self.text_segmenter {
+            worker.request_stop();
+        }
         if let Some(worker) = &self.point_sampler {
             worker.request_stop();
         }
@@ -432,6 +438,9 @@ impl MacOsBackend {
         }
         errors.record("UI scan worker", self.scan_worker.shutdown_until(deadline));
         errors.record("UI scan fusion", self.scan_fusion.stop_until(deadline));
+        if let Some(mut worker) = self.text_segmenter.take() {
+            errors.record("text segmenter", worker.stop_until(deadline));
+        }
         errors.record(
             "continuous scrolling",
             self.scroll_worker.stop_until(deadline),
@@ -469,6 +478,29 @@ impl Drop for MacOsBackend {
 }
 
 impl Backend for MacOsBackend {
+    fn request_text_segmentation(&mut self, request: crate::api::text_select::Request) -> bool {
+        if self.text_segmenter.is_none() {
+            let tx = self.event_tx.clone();
+            self.text_segmenter = crate::platform::common::text_segmentation::Worker::new(
+                text_segmentation::words,
+                move |result| {
+                    let _ = tx.send(BackendEvent::TextSegmented(result));
+                },
+            )
+            .ok();
+        }
+        if let Some(worker) = &self.text_segmenter {
+            worker.submit(Some(request));
+            true
+        } else {
+            false
+        }
+    }
+    fn cancel_text_segmentation(&mut self) {
+        if let Some(worker) = &self.text_segmenter {
+            worker.submit(None);
+        }
+    }
     fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
         if self.point_sampler.is_none() {
             let tx = self.event_tx.clone();

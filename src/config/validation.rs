@@ -54,11 +54,13 @@ impl ConfigFile {
                 binding,
                 Binding::Window(
                     crate::api::window::WindowAction::MultiConfirm
+                        | crate::api::window::WindowAction::MultiCancel
                         | crate::api::window::WindowAction::ClearMulti
                 )
-            ) && !matches!(binding, Binding::Send(chord) if crate::api::text_edit::navigation_action(chord).is_some())
+            ) && !matches!(binding, Binding::Disabled)
+                && !matches!(binding, Binding::Send(chord) if crate::api::text_edit::navigation_action(chord).is_some())
             {
-                return Err(bad("window.multi_select.bindings accepts window_multi_confirm, window_multi_clear or arrow/home/end/backspace/delete editing keys".into()));
+                return Err(bad("window.multi_select.bindings accepts window_multi_confirm, window_multi_cancel, window_multi_clear or arrow/home/end/backspace/delete editing keys".into()));
             }
         }
         if self.mode_usage.save_after_entries == 0 {
@@ -69,13 +71,48 @@ impl ConfigFile {
         let switch = &self.quick_switch;
         if !(1..=10000).contains(&switch.hold_ms)
             || Key::new(&switch.key).is_err()
-            || Key::new(&switch.key).is_ok_and(|key| {
-                key.is_modifier() || key.as_char().is_some_and(|ch| ch.is_ascii_digit())
-            })
+            || Key::new(&switch.key).is_ok_and(|key| key.is_modifier())
         {
             return Err(bad(
-                "quick_switch requires a non-modifier, non-digit key and hold_ms 1..=10000".into(),
+                "quick_switch requires a non-modifier key and hold_ms 1..=10000".into(),
             ));
+        }
+        if switch.hint_characters.chars().count() < 2 {
+            return Err(bad(
+                "quick_switch.hint_characters needs at least 2 characters".into(),
+            ));
+        }
+        let trigger = Key::new(&switch.key).map_err(bad)?;
+        let mut canonical = BTreeSet::new();
+        for character in switch.hint_characters.chars() {
+            let key = Key::new(character.to_string()).map_err(|error| {
+                bad(format!(
+                    "quick_switch.hint_characters contains an invalid key: {error}"
+                ))
+            })?;
+            let Some(character) = key.as_char() else {
+                return Err(bad(
+                    "quick_switch.hint_characters requires character keys".into()
+                ));
+            };
+            if key == trigger || !canonical.insert(character) {
+                return Err(bad(
+                    "quick_switch.hint_characters must be unique and exclude the trigger".into(),
+                ));
+            }
+        }
+        for key in switch.bindings.keys() {
+            let chord = KeyChord::parse(key).map_err(bad)?;
+            if chord.keys().len() == 1
+                && chord
+                    .activation_key()
+                    .as_char()
+                    .is_some_and(|ch| canonical.contains(&ch))
+            {
+                return Err(bad(format!(
+                    "quick_switch.bindings key {key:?} conflicts with hint_characters"
+                )));
+            }
         }
         if switch
             .blacklist
@@ -468,6 +505,37 @@ impl ConfigFile {
             }
         }
 
+        if self.text_select.enabled {
+            let mut characters = BTreeSet::new();
+            for character in self.text_select.hint_characters.chars() {
+                if !character.is_ascii_lowercase() || !characters.insert(character) {
+                    return Err(bad(
+                        "text_select.hint_characters must contain distinct lowercase ASCII letters"
+                            .into(),
+                    ));
+                }
+            }
+            for (keys, binding) in &self.text_select.bindings {
+                if matches!(binding, Binding::Disabled) {
+                    continue;
+                }
+                for key in keys.split_whitespace() {
+                    if let Ok(chord) =
+                        KeyChord::parse_with_aliases(key, self.resolved_key_aliases())
+                        && chord.keys().len() == 1
+                        && let Some(c) = chord.keys()[0].as_char()
+                    {
+                        characters.remove(&c);
+                    }
+                }
+            }
+            if characters.len() < 2 {
+                return Err(bad(
+                    "text_select needs at least two label letters after excluding bound keys"
+                        .into(),
+                ));
+            }
+        }
         if self.ui_hint.enabled {
             if self.ui_hint.hint_characters.chars().count() < 2 {
                 return Err(bad(
@@ -828,11 +896,16 @@ impl ConfigFile {
         let mut tables: Vec<(String, &Bindings)> = vec![
             ("[hotkeys]".into(), &self.hotkeys),
             (
+                "[quick_switch.bindings]".into(),
+                &self.quick_switch.bindings,
+            ),
+            (
                 "[window.multi_select.bindings]".into(),
                 &self.window.multi_select.bindings,
             ),
             ("[normal.bindings]".into(), &self.normal.bindings),
             ("[text_input.bindings]".into(), &self.text_input.bindings),
+            ("[text_select.bindings]".into(), &self.text_select.bindings),
             ("[grid.bindings]".into(), &self.grid.bindings),
             (
                 "[recursive_grid.bindings]".into(),
@@ -898,6 +971,7 @@ fn validate_inheritance(config: &Config) -> Result<(), String> {
     let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::from([
         ("normal".into(), config.normal.inherits.clone()),
         ("text_input".into(), config.text_input.inherits.clone()),
+        ("text_select".into(), Vec::new()),
         ("grid".into(), config.grid.inherits.clone()),
         (
             "recursive_grid".into(),

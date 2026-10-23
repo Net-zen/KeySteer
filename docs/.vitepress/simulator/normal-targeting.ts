@@ -50,6 +50,22 @@ export function targetingLayout(document: ConfigDocument, depth: number): Target
   }
 }
 
+export function targetingControlBindings(document: ConfigDocument): Record<string, unknown> {
+  if (!targetingConfig(document) || targetingSingleLevel(document)) return document.normal?.bindings ?? {}
+  const method = targetingMethod(targetingConfig(document) ?? {})
+  const defaults = { space: 'first_level', tab: 'previous_level', backspace: 'previous_level' }
+  const expand = (table: Record<string, unknown>) => Object.fromEntries(Object.entries(table).flatMap(([keys, action]) => keys.split(/\s+/).filter(Boolean).map(key => [key, action])))
+  const source = { ...defaults, ...expand(document[method]?.bindings ?? {}) }
+  const controls = Object.fromEntries(Object.entries(source).filter(([, action]) => action === 'first_level' || action === 'previous_level'))
+  return { ...controls, ...expand(document.normal?.bindings ?? {}) }
+}
+
+export function blindTargetingAction(state: BlindTargetingState, action: unknown): boolean {
+  if (action === 'first_level') { resetBlindTargeting(state); return true }
+  if (action === 'previous_level') { state.path.pop(); state.terminal = false; return true }
+  return false
+}
+
 export function targetingKeys(document: ConfigDocument): Set<string> {
   const settings = targetingConfig(document)
   if (!settings) return new Set()
@@ -60,7 +76,8 @@ export function targetingKeys(document: ConfigDocument): Set<string> {
   const alphabet = new Set([...String(settings.keys ?? document[method]?.keys ?? '')])
   const layers = method === 'recursive_grid' ? settings.layers ?? document.recursive_grid?.layers : undefined
   if (Array.isArray(layers)) for (const layer of layers) for (const key of String(layer?.keys ?? '')) alphabet.add(key)
-  return new Set([...alphabet, 'tab', 'backspace', 'space'])
+  const controls = Object.entries(targetingControlBindings(document)).filter(([, action]) => action === 'first_level' || action === 'previous_level').map(([key]) => key)
+  return new Set([...alphabet, ...controls])
 }
 
 export function resetBlindTargeting(state: BlindTargetingState): void {
@@ -90,11 +107,7 @@ export function blindTargetingInput(
     } }
   }
   if (state.pendingReset) resetBlindTargeting(state)
-  if (key === 'space') { resetBlindTargeting(state); return { handled: true } }
-  if (key === 'tab' || key === 'backspace') {
-    state.path.pop(); state.terminal = false
-    return { handled: true }
-  }
+  if (blindTargetingAction(state, targetingControlBindings(document)[key])) return { handled: true }
   if (state.terminal) return { handled: true }
   const layout = targetingLayout(document, state.path.length)
   if (!layout || layout.grid_cols < 1 || layout.grid_rows < 1) return { handled: false }

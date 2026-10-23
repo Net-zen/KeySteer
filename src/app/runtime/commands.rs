@@ -75,6 +75,29 @@ impl Engine {
                         };
                     }
                 }
+                Command::SegmentText(mut request) => {
+                    self.scheduler.text_segmentation_serial =
+                        self.scheduler.text_segmentation_serial.wrapping_add(1);
+                    let id = self.scheduler.text_segmentation_serial;
+                    let original = request.id;
+                    self.scheduler.text_segmentation = Some((owner.clone(), id, original));
+                    request.id = id;
+                    if !backend.request_text_segmentation(request) {
+                        self.scheduler.text_segmentation = None;
+                        self.dispatch_to(
+                            owner,
+                            ModeEvent::TextSegmented(crate::api::text_select::Segmented {
+                                id: original,
+                                words: Vec::new(),
+                            }),
+                            backend,
+                        )?;
+                    }
+                }
+                Command::CancelTextSegmentation => {
+                    self.scheduler.text_segmentation = None;
+                    backend.cancel_text_segmentation();
+                }
                 Command::SamplePoint(request) => {
                     self.flush_pending_overlay(backend)?;
                     self.scheduler.point_sample_serial =
@@ -98,11 +121,33 @@ impl Engine {
                     self.scheduler.point_sample = None;
                     backend.cancel_point_sample();
                 }
-                Command::RequestPanelWindowBounds(id) => {
+                Command::RequestModeList => {
+                    let usage = self.window_presets.store.mode_usage();
+                    let mut modes: Vec<_> = self.registry.keys().cloned().collect();
+                    modes.sort_by(|a, b| {
+                        usage
+                            .get(b.as_str())
+                            .unwrap_or(&0)
+                            .cmp(usage.get(a.as_str()).unwrap_or(&0))
+                            .then_with(|| a.cmp(b))
+                    });
+                    self.dispatch_owned_to(owner, ModeEvent::ModeList(modes), backend)?;
+                }
+                Command::RequestPanelWindowBounds(request) => {
+                    self.flush_pending_overlay(backend)?;
                     if let Some(process) = self.focused_app.as_ref().map(|app| app.process_id) {
-                        self.scheduler.panel_geometry.insert(id, owner.clone());
-                        if backend.request_focused_window_bounds(id, process).is_err() {
+                        self.scheduler.panel_geometry_serial =
+                            self.scheduler.panel_geometry_serial.wrapping_add(1);
+                        let id = self.scheduler.panel_geometry_serial;
+                        self.scheduler
+                            .panel_geometry
+                            .retain(|_, (candidate, _, _)| candidate != owner);
+                        self.scheduler
+                            .panel_geometry
+                            .insert(id, (owner.clone(), request, process));
+                        if let Err(error) = backend.request_focused_window_bounds(id, process) {
                             self.scheduler.panel_geometry.remove(&id);
+                            crate::report_error!("panel", "geometry submission: {error}");
                         }
                     }
                 }

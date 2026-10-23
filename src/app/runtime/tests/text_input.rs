@@ -91,7 +91,7 @@ fn hint_overlay_search_routes_editing_copy_and_stale_results_by_owner() {
         id: scan_id, status: UiScanStatus::Success, retired: Vec::new(),
         targets: vec![crate::api::UiTarget {
             rect: Rect::new(10.0, 10.0, 50.0, 30.0), name: "复制".into(), role: crate::api::SemanticRole::Button,
-            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr: "复制文本".into(), accessibility: "Copy".into(), color: None })),
+            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr_spans: Vec::new(), ocr: "复制文本".into(), accessibility: "Copy".into(), color: None })),
         }],
     }), &mut backend).unwrap();
     for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
@@ -776,7 +776,7 @@ fn point_search_fixture(mut config: Config) -> (Engine, FakeBackend, Arc<Mutex<R
         id, status: UiScanStatus::Success, retired: Vec::new(),
         targets: ["alpha$", "bravo"].into_iter().enumerate().map(|(i, name)| crate::api::UiTarget {
             rect: Rect::new(10.0 + i as f64 * 20.0, 10.0, 20.0, 20.0), name: name.into(), role: crate::api::SemanticRole::Button,
-            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr: name.into(), accessibility: name.into(), color: None })),
+            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr_spans: Vec::new(), ocr: name.into(), accessibility: name.into(), color: None })),
         }).collect(),
     }), &mut backend).unwrap();
     assert!(log.lock().unwrap().point_requests.is_empty(), "label scanning must not sample pixels");

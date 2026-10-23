@@ -534,28 +534,17 @@ impl Engine {
         if self.window_presets.pending.is_some() {
             return self.handle_key_inner(input, backend);
         }
-        let switch_was_visible = self
-            .quick_switch
-            .pending
-            .as_ref()
-            .is_some_and(|p| p.visible);
         // Window's help is always visible, independently of the optional `?`
         // panel. Its effective bindings must also refresh on key releases.
         if !self.overlay.key_help_visible && !self.registry.active.is_window() {
-            self.handle_key_inner(input, backend)?;
-            if switch_was_visible && self.quick_switch.pending.is_none() {
-                self.refresh_overlay(backend)?;
-            }
-            return Ok(());
+            return self.handle_key_inner(input, backend);
         }
         let refresh = !input.injected && !input.repeat;
         if refresh {
             self.overlay.key_help_cache = None;
         }
         self.handle_key_inner(input, backend)?;
-        if (refresh && (self.overlay.key_help_visible || self.registry.active.is_window()))
-            || (switch_was_visible && self.quick_switch.pending.is_none())
-        {
+        if refresh && (self.overlay.key_help_visible || self.registry.active.is_window()) {
             self.refresh_overlay(backend)?;
         }
         Ok(())
@@ -821,7 +810,17 @@ impl Engine {
                     let matches = |chord: &crate::api::KeyChord| {
                         Self::prompt_chord_matches(chord, &input.key, &pressed)
                     };
-                    if let Some(index) = prompt.copy_keys.iter().position(matches) {
+                    if let Some(binding) = self
+                        .registry
+                        .keyboard_prompt_mode(&owner)
+                        .and_then(|mode| mode.keyboard_prompt_binding(&input.key, &pressed))
+                    {
+                        (!input.repeat).then_some(ModeEvent::Binding {
+                            binding,
+                            state: input.state,
+                            key: input.key.clone(),
+                        })
+                    } else if let Some(index) = prompt.copy_keys.iter().position(matches) {
                         (!input.repeat).then_some(ModeEvent::CopyTextField(index))
                     } else if let Some((_, action)) =
                         prompt.edit_keys.iter().find(|(key, _)| matches(key))

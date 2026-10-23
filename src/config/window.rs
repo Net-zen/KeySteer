@@ -120,18 +120,17 @@ pub struct MultiSelect {
 impl Default for MultiSelect {
     fn default() -> Self {
         Self {
-            bindings: Bindings::from([
-                ("ctrl enter".into(), Binding::Window(W::MultiConfirm)),
-                (
-                    "primary+h".into(),
-                    Binding::parse("arrow_left")
-                        .unwrap_or_else(|error| panic!("invalid built-in edit key: {error}")),
-                ),
-                (
-                    "primary+l".into(),
-                    Binding::parse("arrow_right")
-                        .unwrap_or_else(|error| panic!("invalid built-in edit key: {error}")),
-                ),
+            bindings: super::builtin_bindings(&[
+                ("ctrl enter", "window_multi_confirm"),
+                ("esc", "window_multi_cancel"),
+                ("backspace", "send backspace"),
+                ("delete", "send delete"),
+                ("arrow_left", "send arrow_left"),
+                ("arrow_right", "send arrow_right"),
+                ("home", "send home"),
+                ("end", "send end"),
+                ("primary+h", "arrow_left"),
+                ("primary+l", "arrow_right"),
             ]),
         }
     }
@@ -336,6 +335,7 @@ impl Default for WindowEditor {
                     ("shift+c", W::ResetInitial),
                     ("x", W::RemoveRegion),
                     ("ctrl+s", W::SaveLayout),
+                    ("`", W::AreaNumber),
                 ],
                 &[("r", ModeId::window_restore())],
             ),
@@ -349,7 +349,12 @@ impl Default for WindowRestore {
     fn default() -> Self {
         let mut common = common(
             ModeId::window(),
-            &[("enter", W::Confirm), ("x", W::DeletePreset)],
+            &[
+                ("enter", W::Confirm),
+                ("x", W::DeletePreset),
+                ("page_up", W::PreviousPage),
+                ("page_down", W::NextPage),
+            ],
             &[],
         );
         common.lifecycle.after_finish = LifecycleAction::Mode(ModeId::window_editor());

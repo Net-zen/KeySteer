@@ -44,7 +44,7 @@ UIHint 搜索样式缺省时使用 `UiHint::default()` 的对应面板默认值�
 
 `ui_hint.search_highlight` 只覆盖当前预览／已选单点的标签底色、文字、边框和线宽；缺省复用 Window 的选中绿色。可选主题颜色在 catalog 预编译，默认值不导出；网页外观页有相同校验、重置和 Tab 切换预览。绘制层从当前信息面板及 Point position 取标签身份，只改该标签样式并提升到标签顶层；普通 Hint 标签循环保持不变，集合中心不标记单个成员。
 
-`ui_hint.search_edit_keys` 对外使用“按键 = 动作”表，加载时按动作归并并覆盖该动作的默认键；省略动作保留默认值。内部沿用动作到快捷键的模型和编译后的 Settings；与信息复制键一起校验冲突，并在启动阶段解析为 KeyChord。编辑键、复制键与 `ui_hint.search_bindings` 一起在启动时展开组合键内部的配置别名；`primary` 遵循平台别名覆盖（发布 Windows 为 left_alt），也允许显式 cmd、ctrl。
+`ui_hint.search_edit_keys` 对外使用“按键 = 动作”表，加载时按动作归并并覆盖该动作的默认键；省略动作保留默认值。内部沿用动作到快捷键的模型和编译后的 Settings；与信息复制键一起校验冲突，并在启动阶段解析为 KeyChord。编辑键、复制键与 `ui_hint.search_bindings` 一起在启动时展开组合键内部的配置别名；`primary` 遵循平台别名覆盖（默认 macOS 为 Cmd，其余平台为 Ctrl），也允许显式 cmd、ctrl。
 
 搜索编辑键在左侧以空格分隔多个快捷键，也可多行绑定同一动作，启动时展开与校验，不在输入热路径解析。默认 `"enter / primary+q" = "accept"`。旧“动作 = 按键”表兼容读取，原生导出统一使用新格式并保留禁用动作；网页导入也转换为新格式，按动作合并稀疏覆盖并复用现有绑定控件。
 
@@ -59,3 +59,11 @@ Window 多选入口与清空沿用 `window.bindings` 的 `window_multi_select`�
 Point 输入框的 `search_point.input_background_color`／`input_border_color` 为可选主题颜色；缺省背景采用窗口多选卡片同款浅／深绿色，边框继承普通搜索框。两项在装配时预编译，默认值不写入配置；网页外观页同时编辑普通搜索框和 Point 覆盖并预览对照。
 
 `ui_hint.search_match_priority` 是固定三项枚举数组，label／text／pinyin 各一次，默认 pinyin／text／label（简拼、文字、标签）；只控制同等匹配程度下的结果预览类别顺序，不改变普通完整标签解析和显式 @label 语义。完整词／标签、前缀、包含匹配依次排列，同分保持扫描顺序、空格词项保持输入顺序。配置校验拒绝缺项、重复及未知值，catalog 将已解析枚举编译为 64 项匹配度／优先级查表，运行时不遍历配置；网页编辑器提供相同校验和重置。
+
+快速切换通过 `quick_switch.hint_characters` 配置有序标签字符，默认 `wertyuiop`；名称与 UIHint 一致。启动时校验至少两个规范化后不同的字符且不含触发键，编译为字符数组；网页导入、控件与预览使用同一语义。可显式设为 `123456789` 保留数字选择偏好。
+
+`quick_switch.bindings` 与其他模式一样整表替换默认绑定，默认 Esc／Q 为 `cancel_selection`，Backspace 为 `previous_level`；可仅保留其中一个退出键。校验阻止绑定占用标签字符。模式样式与候选设置在 catalog 装配，Engine 只保留入口手势与原生字符注册所需配置。
+
+`text_select` 配置启用状态、标签字符和绑定，识别范围／OCR 参数与面板外观复用 `ui_hint`；Normal 默认 `c` 进入。旧配置缺少 `[text_select]`／`[text_input]` 时沿用模式默认设置，并为旧 Normal 绑定表补上未被占用的 `c`／`\` 入口；同模式已有改键、明确 `none`、显式模式表及禁用设置优先。原生与网页解析保持一致。文字选择默认 `Primary+C` 细分（普通 `c` 是搜索文字）、Ctrl+Backspace 重置、Tab 返回、Backspace 有输入时删除／空输入时返回、Enter 复制，Space 保留输入。默认展开输入框与文字面板；`?` 显示实际绑定帮助。
+
+原来写在模式内部的控制键进入各模式 `bindings`。`config::with_control_defaults` 从内置默认表提取这些旧控制，补齐旧版／稀疏配置，显式 `none` 或同键绑定优先，按标准键别名判断占用。配置解析和 catalog 都使用该入口；不会把原来可配置的其他默认动作重新补入显式表。默认键及旧行为保持：网格 Space／Tab／Backspace／Enter／Esc，UIHint `/`／Enter／Esc／Backspace，以及仅在完成后生效的 Tab；窗口与屏幕选择也保留原键。网页按键面板暴露新动作，默认值仍来自发布配置。

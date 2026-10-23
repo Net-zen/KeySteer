@@ -159,13 +159,7 @@ impl Mode for ScreenSelector {
     }
 
     fn available_keys(&self) -> Vec<(String, String)> {
-        let mut keys = vec![("esc".into(), "cancel".into())];
-        if !self.input.is_empty() {
-            keys.push(("backspace".into(), "back".into()));
-        }
-        if self.cells.iter().any(|(label, _, _)| label == &self.input) {
-            keys.push(("enter".into(), "select screen".into()));
-        }
+        let mut keys = Vec::new();
         let next: std::collections::BTreeSet<_> = self
             .cells
             .iter()
@@ -211,29 +205,38 @@ impl Mode for ScreenSelector {
                 self.input.clear();
                 CommandBatch::new()
             }
-            ModeEvent::Key {
-                key,
+            ModeEvent::Binding {
+                binding,
                 state: KeyState::Down,
-                repeat: false,
-            } => match key.as_str() {
-                "esc" => self.cancel(),
-                "backspace" => {
+                ..
+            } => match binding.as_ref() {
+                Binding::SelectionCancel => self.cancel(),
+                Binding::SelectionParent => {
                     self.input.pop();
                     CommandBatch::one(ctx.present(self.view()))
                 }
-                "enter" => self
+                Binding::SelectionReset => {
+                    self.input.clear();
+                    CommandBatch::one(ctx.present(self.view()))
+                }
+                Binding::SelectionAccept => self
                     .cells
                     .iter()
                     .find(|(label, _, _)| label == &self.input)
                     .map(|(_, index, _)| self.close_and_retarget(*index))
                     .unwrap_or_default(),
-                _ => match key.as_char().filter(char::is_ascii_digit) {
-                    Some(character) => {
-                        self.input.push(character);
-                        self.choose_input(ctx)
-                    }
-                    None => CommandBatch::new(),
-                },
+                _ => CommandBatch::new(),
+            },
+            ModeEvent::Key {
+                key,
+                state: KeyState::Down,
+                repeat: false,
+            } => match key.as_char().filter(char::is_ascii_digit) {
+                Some(character) => {
+                    self.input.push(character);
+                    self.choose_input(ctx)
+                }
+                None => CommandBatch::new(),
             },
             _ => CommandBatch::new(),
         }

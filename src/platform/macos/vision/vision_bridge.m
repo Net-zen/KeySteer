@@ -709,8 +709,9 @@ static VNRecognizeTextRequest *makeUiTextRequest(void) {
     return textRequest;
 }
 
-NmkVisionResult *NmkRecognizeVisionImage(
-    uintptr_t imageHandle, CGRect capturedBounds, NmkVisionConfig config, uint64_t scanID) {
+static NmkVisionResult *recognizeVisionImage(
+    uintptr_t imageHandle, CGRect capturedBounds, NmkVisionConfig config, uint64_t scanID,
+    void (^onText)(VNRecognizedText *)) {
     @autoreleasepool {
         CGImageRef image = (CGImageRef)imageHandle;
         if (image == NULL || !scanIsCurrent(scanID)) {
@@ -772,6 +773,7 @@ NmkVisionResult *NmkRecognizeVisionImage(
             if (result->count >= capacity) break;
             if (observation.confidence < config.minimum_confidence) continue;
             VNRecognizedText *candidate = [observation topCandidates:1].firstObject;
+            if (onText != nil) onText(candidate);
             CGRect box = observation.boundingBox;
             NmkVisionRegion *out = &result->regions[result->count++];
             out->x = box.origin.x;
@@ -811,6 +813,11 @@ NmkVisionResult *NmkRecognizeVisionImage(
         }
         return result;
     }
+}
+
+NmkVisionResult *NmkRecognizeVisionImage(
+    uintptr_t imageHandle, CGRect capturedBounds, NmkVisionConfig config, uint64_t scanID) {
+    return recognizeVisionImage(imageHandle, capturedBounds, config, scanID, nil);
 }
 
 void NmkFreeVisionResult(NmkVisionResult *result) {

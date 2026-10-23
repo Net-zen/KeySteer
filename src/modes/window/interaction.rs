@@ -11,10 +11,14 @@ impl WindowSession {
         ctx: &HostContext<'_>,
         out: &mut CommandBatch,
     ) {
-        if matches!(action, W::MultiSelect | W::MultiConfirm | W::ClearMulti) {
+        if matches!(
+            action,
+            W::MultiSelect | W::MultiConfirm | W::MultiCancel | W::ClearMulti
+        ) {
             if self.kind == WindowKind::Move && state == KeyState::Down {
                 match action {
                     W::MultiConfirm => self.finish_multi(),
+                    W::MultiCancel => self.cancel_multi_input(out),
                     W::MultiSelect => self.begin_multi(out),
                     W::ClearMulti => self.clear_multi(out),
                     _ => unreachable!(),
@@ -127,6 +131,11 @@ impl WindowSession {
             self.swap_source = None;
         }
         match action {
+            W::AreaNumber if self.kind == WindowKind::Editor => {
+                if self.edit.is_some() {
+                    self.number.begin_slot();
+                }
+            }
             W::SaveLayout => self.save_layout(out),
             W::RemoveRegion => self.remove_region(ctx, out),
             W::Navigate(direction) => self.edit_direction(direction, false, false, ctx, out),

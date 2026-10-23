@@ -1,5 +1,5 @@
 import { fieldLocation } from './navigation.ts'
-export type TargetingMode = 'grid' | 'recursive_grid' | 'ui_hint' | 'key_help' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
+export type TargetingMode = 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | 'key_help' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
 export type Appearance = 'dark' | 'light'
 export type ControlKind = 'color' | 'number' | 'text' | 'boolean' | 'select' | 'ratios' | 'percentages' | 'offset' | 'choices' | 'binding' | 'chords' | 'field-modes'
 
@@ -24,6 +24,14 @@ export interface ModeFields {
 }
 
 export const fields = {
+  window_quick: { colors: [], layout: [], advanced: [] },
+  window_editor: { colors: [], layout: [], advanced: [] },
+  window_restore: { colors: [], layout: [], advanced: [] },
+  window_tab: { colors: [], layout: [], advanced: [] },
+  text_select: { colors: [], layout: [
+    { path: 'text_select.enabled', label: '启用文字选择', kind: 'boolean' },
+    { path: 'text_select.hint_characters', label: '文字选择标签字符', kind: 'text' },
+  ], advanced: [] },
   window: {
     colors: [
       { path: 'key_help.background_color', label: '面板背景（共用 key_help）', kind: 'color' },
@@ -241,7 +249,7 @@ export const lifecycleModes = ['grid', 'recursive_grid', 'ui_hint', 'window', 'w
 export const lifecycleClickActions = ['left_click', 'right_click', 'middle_click', 'double_click']
 export function lifecycleOptions(event: 'after_finish' | 'after_click', plugins: string[] = []): string[] {
   return ['keep', 'restart', 'return', ...(event === 'after_finish' ? lifecycleClickActions : ['finish']),
-    'idle', 'normal', 'text_input', ...lifecycleModes, ...plugins]
+    'idle', 'normal', 'text_input', 'text_select', ...lifecycleModes, ...plugins]
 }
 for (const mode of lifecycleModes) {
   fields[mode].advanced.push(

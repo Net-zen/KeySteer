@@ -16,6 +16,7 @@ mod native;
 mod status_item;
 mod system_events;
 mod text_prompt;
+mod text_segmentation;
 mod ui_scan;
 mod update_installer;
 mod vision;
@@ -120,6 +121,7 @@ pub struct WindowsBackend {
     scan_mailbox: Arc<ScanMailbox>,
     scan_fusion: crate::platform::common::scan_fusion::Worker,
     pending: VecDeque<BackendEvent>,
+    text_segmenter: Option<crate::platform::common::text_segmentation::Worker>,
     screens: Vec<Screen>,
     /// Foreground window at the last check, to detect focus changes.
     last_foreground: HWND,
@@ -275,6 +277,7 @@ impl WindowsBackend {
             async_rx,
             event_tx,
             scan_mailbox,
+            text_segmenter: None,
             scan_fusion: crate::platform::common::scan_fusion::Worker::with_setup(|| {
                 if let Err(error) = native::prefer_background_work() {
                     crate::report_warning!(
@@ -478,6 +481,9 @@ impl WindowsBackend {
         self.stop_input_capture();
         self.scroll_worker.request_stop();
         self.scan_fusion.request_stop();
+        if let Some(worker) = &self.text_segmenter {
+            worker.request_stop();
+        }
         if let Some(worker) = self.window_worker.as_mut() {
             match worker.stop_until(deadline) {
                 Ok(()) => {
@@ -509,6 +515,9 @@ impl WindowsBackend {
             }
         }
         errors.record("UI scan fusion", self.scan_fusion.stop_until(deadline));
+        if let Some(mut worker) = self.text_segmenter.take() {
+            errors.record("text segmenter", worker.stop_until(deadline));
+        }
         if let Err(error) = self.release_held_buttons() {
             errors.push("held mouse buttons", error);
         }
@@ -625,6 +634,29 @@ impl Drop for WindowsBackend {
 }
 
 impl Backend for WindowsBackend {
+    fn request_text_segmentation(&mut self, request: crate::api::text_select::Request) -> bool {
+        if self.text_segmenter.is_none() {
+            let tx = self.event_tx.clone();
+            self.text_segmenter = crate::platform::common::text_segmentation::Worker::new(
+                text_segmentation::words,
+                move |result| {
+                    let _ = tx.send(BackendEvent::TextSegmented(result));
+                },
+            )
+            .ok();
+        }
+        if let Some(worker) = &self.text_segmenter {
+            worker.submit(Some(request));
+            true
+        } else {
+            false
+        }
+    }
+    fn cancel_text_segmentation(&mut self) {
+        if let Some(worker) = &self.text_segmenter {
+            worker.submit(None);
+        }
+    }
     fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
         self.overlay.sample(Some(request)).is_ok()
     }

@@ -1,4 +1,5 @@
 import { quickSwitchColors } from '../simulator/quick-switch-style'
+import { hintLabels, validQuickSwitchCharacters } from '../simulator/hint-labels'
 import { selectedCardStyle } from '../simulator/window-card-style'
 import { observeSize } from '../config-studio/observe-size'
 import { useStudioI18n } from '../config-studio/i18n'
@@ -29,7 +30,7 @@ import {
   toggleButton,
 } from '../simulator/state'
 import { displayedBindings, effectiveBindings, resolveBinding, resolvedChordKeys, resolveLayeredPhysicalBinding, resolvePhysicalBinding, shortcutCaption, temporaryPhysicalKeys } from '../simulator/bindings'
-import { blindTargetingInput, targetingConfig, targetingKeys } from '../simulator/normal-targeting'
+import { blindTargetingAction, blindTargetingInput, targetingConfig, targetingControlBindings, targetingKeys } from '../simulator/normal-targeting'
 import { applyWindowAction, chooseWindowNumber, switchWindowMode, isWindowMode, finishWindowNumber, hasWindowPresetChanges, replaceWindowPresets, restoreWindowPreset, saveWindowPreset, setDemoWindowCount, temporaryWindow, windowActionAvailable, windowDetail, windowInputStatus, windowSelectionKey, windowTarget, WINDOW_AREA, WINDOW_MOTION } from '../simulator/window'
 import { decodeWorkspaceDocument, encodeWorkspaceFile, WORKSPACE_FILE_NAME, WORKSPACE_STORAGE_KEY, readSavedPresets, presetName, type ModeUsage } from '../simulator/window-presets'
 import type { WindowState } from '../simulator/window'
@@ -51,7 +52,7 @@ import {
   type ConfigDocument,
 } from '../config-studio/document'
 
-type EditorMode = 'hotkeys' | 'normal' | 'text_input' | 'grid' | 'recursive_grid' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
+type EditorMode = 'hotkeys' | 'normal' | 'text_input' | 'quick_switch' | 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
 type Modifier = 'primary' | 'shift' | 'alt'
 type Appearance = 'dark' | 'light'
 
@@ -84,6 +85,8 @@ const modes: Array<{ id: EditorMode; label: string }> = [
   { id: 'hotkeys', label: '全局启动键' },
   { id: 'normal', label: 'Normal' },
   { id: 'text_input', label: 'Text Input' },
+  { id: 'quick_switch', label: 'Quick Switch' },
+  { id: 'text_select', label: 'Text Select' },
   { id: 'grid', label: 'Grid' },
   { id: 'recursive_grid', label: 'Recursive Grid' },
   { id: 'ui_hint', label: 'UI Hint' },
@@ -92,6 +95,13 @@ const modes: Array<{ id: EditorMode; label: string }> = [
 ]
 
 const actionGroups: ActionGroup[] = [
+  { name: '选择与导航', actions: [
+    ['first_level', '回到第一层'], ['previous_level', '返回上一层'], ['reopen_selection', '返回已完成的选择'],
+    ['confirm_selection', '确认选择'], ['cancel_selection', '取消选择'], ['search_selection', '搜索文字'],
+    ['text_refine', '细分文字'], ['text_copy', '复制文字'], ['text_search', '搜索选词'],
+    ['text_next_page', '下一页文字'], ['text_previous_page', '上一页文字'],
+    ['window_area_number', '区域编号'], ['window_next_page', '下一页布局'], ['window_previous_page', '上一页布局'], ['window_multi_cancel', '取消多选输入'],
+  ].map(([value, label]) => ({ value, label })) },
   { name: 'Tabs', actions: [
     ['window_tab', '标签组合模式'], ['window_tab_end', '结束本轮分组'], ['window_tab_group', '输入组编号'],
     ['window_number_end', '编号分隔符'], ['window_tab_remove', '移出活动成员'], ['window_tab_dissolve', '解散组合'],
@@ -155,7 +165,7 @@ const actionGroups: ActionGroup[] = [
   {
     name: '模式',
     actions: [
-      ['normal', 'Normal'], ['text_input', 'Text Input'], ['grid', 'Grid'],
+      ['normal', 'Normal'], ['text_input', 'Text Input'], ['text_select', 'Text Select'], ['grid', 'Grid'],
       ['recursive_grid', 'Recursive Grid'], ['ui_hint', 'UI Hint'],
       ['idle', 'Idle'], ['window', 'Window'], ['window_quick', 'Quick'], ['window_editor', 'Editor'], ['window_restore', 'Restore'], ['window_tab', 'Tabs'],
     ].map(([value, label]) => ({ value, label })),
@@ -242,6 +252,7 @@ export default defineComponent({
     ].map(field => [field.path, field])).values()]
     const searchResults = computed(() => searchSettings(searchEntries, searchQuery.value))
     function releasePreview(): void {
+      if (simulator.mode === 'quick_switch') applyModeAction(simulator, quickPrevious)
       quickStarted = 0; quickVisible.value = false; simulatorArmed.value = false
       heldActions.clear(); heldCharacterActions.clear(); physicalKeys.clear(); temporaryEntryKeys.clear()
       scrollMotion.clear(); scrollPulse.value = ''
@@ -370,21 +381,46 @@ export default defineComponent({
     const layoutFileInput = ref<HTMLInputElement>()
     const modeUsage = ref<ModeUsage>({})
     const quickVisible = ref(false)
-    const quickRows = ref<string[]>([])
+    const quickRows = ref<Array<{ mode: string; label: string }>>([])
+    const quickPrefix = ref('')
+    const filteredQuickRows = computed(() => quickRows.value.filter(row => row.label.startsWith(quickPrefix.value)))
     let quickStarted = 0
     let quickUsed = false
-    const quickCandidates = computed(() => modes.map(mode => mode.id).filter(mode => mode !== 'hotkeys' && mode !== simulator.mode && effectiveDocument.value?.[mode]?.enabled !== false && !(effectiveDocument.value?.quick_switch?.blacklist ?? ['idle']).includes(mode)).sort((a, b) => {
+    let quickPrevious: typeof simulator.mode = 'normal'
+    const quickCandidates = computed(() => modes.map(mode => mode.id).filter(mode => mode !== 'hotkeys' && mode !== 'quick_switch' && mode !== simulator.mode && effectiveDocument.value?.[mode]?.enabled !== false && !(effectiveDocument.value?.quick_switch?.blacklist ?? ['idle']).includes(mode)).sort((a, b) => {
       const x = BigInt(modeUsage.value[a] ?? '0'), y = BigInt(modeUsage.value[b] ?? '0')
       return x === y ? a.localeCompare(b) : x > y ? -1 : 1
-    }).slice(0, 9))
+    }))
+    function prepareQuickRows(): void {
+      const labels = hintLabels(String(effectiveDocument.value?.quick_switch?.hint_characters ?? 'wertyuiop'), quickCandidates.value.length)
+      quickRows.value = quickCandidates.value.map((mode, index) => ({ mode, label: labels[index] ?? '' }))
+      quickPrefix.value = ''
+    }
+    function enterQuickSwitch(): void {
+      if (simulator.mode !== 'quick_switch') {
+        quickPrevious = simulator.mode
+        prepareQuickRows()
+        applyModeAction(simulator, 'quick_switch')
+      }
+      quickVisible.value = true
+    }
     function previewQuickSwitch(): void {
-      quickRows.value = [...quickCandidates.value]; quickVisible.value = true
+      enterQuickSwitch()
       mobileView.value = 'preview'
       nextTick(() => screen.value?.focus())
     }
     function chooseQuickMode(mode: string): void {
       quickUsed = true; quickVisible.value = false
       if (mode !== simulator.mode) setPreviewMode(mode as Exclude<EditorMode, 'hotkeys'>)
+    }
+    function typeQuickLabel(key: string): void {
+      const prefix = quickPrefix.value + key
+      const match = quickRows.value.find(row => row.label.startsWith(prefix))
+      if (!match) return
+      quickUsed = true
+      quickPrefix.value = prefix
+      if (match.label === prefix) chooseQuickMode(match.mode)
+      else quickVisible.value = true
     }
     const usageRanking = computed(() => Object.entries(modeUsage.value).sort(([a, x], [b, y]) => BigInt(x) === BigInt(y) ? a.localeCompare(b) : BigInt(x) > BigInt(y) ? -1 : 1))
     function persistLayoutLibrary(): void {
@@ -731,6 +767,24 @@ export default defineComponent({
     }
 
     function executeAction(action: string, continuous = false): void {
+      if (action === 'quick_switch') { enterQuickSwitch(); return }
+      if (simulator.mode === 'quick_switch') {
+        if (action === 'cancel_selection') { quickVisible.value = false; quickUsed = true; applyModeAction(simulator, quickPrevious); return }
+        if (action === 'previous_level') { quickPrefix.value = [...quickPrefix.value].slice(0, -1).join(''); return }
+        if (action === 'idle' || modes.some(mode => mode.id === action)) { quickVisible.value = false; quickUsed = true }
+      }
+      if (simulator.mode === 'normal' && targetingConfig(effectiveDocument.value ?? {}) && blindTargetingAction(simulator.blindTargeting, action)) {
+        simulator.lastEvent = action
+        return
+      }
+      if ((simulator.mode === 'grid' || simulator.mode === 'recursive_grid') && ['first_level', 'previous_level', 'cancel_selection', 'confirm_selection'].includes(action)) {
+        const path = simulator.mode === 'grid' ? simulator.targeting.grid.path : simulator.targeting.recursiveGrid.path
+        if (action === 'first_level') path.splice(0)
+        else if (action === 'previous_level' && path.length) path.pop()
+        else if (action === 'previous_level' || action === 'cancel_selection' || action === 'confirm_selection') applyModeAction(simulator, 'normal')
+        simulator.lastEvent = action
+        return
+      }
       if (action === 'window_restore' || action === 'window_delete' || action === 'window_confirm' && simulator.window.deletingPresets && simulator.window.deleteSelection) {
         try { simulator.window.presets = readSavedPresets(localStorage.getItem(WORKSPACE_STORAGE_KEY)) }
         catch (error) { layoutStorageError.value = formatError(error); simulator.lastEvent = layoutStorageError.value; return }
@@ -779,23 +833,24 @@ export default defineComponent({
       if (simulator.window.noteOpen) return
       if (!simulatorArmed.value) return
       const quickKey = String(effectiveDocument.value?.quick_switch?.key ?? 'q')
-      if (quickStarted && !event.repeat && /^[1-9]$/.test(event.key)) {
-        event.preventDefault()
-        quickUsed = true
-        const mode = quickRows.value[Number(event.key) - 1]
-        if (mode) chooseQuickMode(mode)
-        return
-      }
-      if (simulator.mode !== 'idle' && simulator.mode !== 'text_input' && effectiveDocument.value?.quick_switch?.enabled !== false && event.key.toLowerCase() === quickKey && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
-        event.preventDefault()
-        if (!event.repeat) { quickStarted = performance.now(); quickUsed = false; quickRows.value = [...quickCandidates.value] }
-        return
-      }
+      const quickCharacter = event.key.toLowerCase()
+      const quickAlphabet = String(effectiveDocument.value?.quick_switch?.hint_characters ?? 'wertyuiop').toLowerCase()
+      if (quickStarted && quickUsed && quickCharacter === quickKey) { event.preventDefault(); return }
       if (quickVisible.value) {
         event.preventDefault()
-        if (event.key === 'Escape') { quickVisible.value = false; quickUsed = true }
-        else if (/^[1-9]$/.test(event.key)) { const mode = quickRows.value[Number(event.key) - 1]; if (mode) chooseQuickMode(mode) }
+        if (event.repeat) return
+        const physical = physicalKey(event)
+        physicalKeys.add(physical)
+        const resolved = resolveLayeredPhysicalBinding(effectiveDocument.value ?? {}, 'quick_switch', currentPhysicalKeys(event), physical, isMac.value, temporaryEntryKeys)
+        if (resolved) {
+          const actions = Array.isArray(resolved.value) ? resolved.value.map(String) : [String(resolved.value)]
+          actions.forEach(action => executeAction(action))
+        } else if ([...quickCharacter].length === 1 && quickAlphabet.includes(quickCharacter)) typeQuickLabel(quickCharacter)
         return
+      }
+      if (quickStarted && !event.repeat && quickCharacter !== quickKey) { quickStarted = 0; quickUsed = true }
+      if (!quickStarted && !event.repeat && simulator.mode !== 'idle' && simulator.mode !== 'text_input' && simulator.mode !== 'quick_switch' && effectiveDocument.value?.quick_switch?.enabled !== false && quickCharacter === quickKey && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && !physicalKeys.size) {
+        quickStarted = performance.now(); quickUsed = false
       }
       if (simulator.mode === 'text_input' && effectiveDocument.value) {
         const physical = physicalKey(event)
@@ -870,9 +925,10 @@ export default defineComponent({
           if (temporary.includes(physical)) { event.preventDefault(); return }
           event.preventDefault(); return
         } else {
-          const resolved = resolvePhysicalBinding(document, simulator.mode === 'idle' ? 'hotkeys' : simulator.mode, pressed, physical, isMac.value)
+          const routing = simulator.mode === 'normal' && targetingConfig(document) ? { ...document, normal: { ...document.normal, bindings: targetingControlBindings(document) } } : document
+          const resolved = resolvePhysicalBinding(routing, simulator.mode === 'idle' ? 'hotkeys' : simulator.mode, pressed, physical, isMac.value)
           const actions = Array.isArray(resolved?.value) ? resolved.value.map(String) : [String(resolved?.value)]
-          if (actions.some(action => ['idle', 'normal', 'text_input', 'grid', 'recursive_grid', 'ui_hint'].includes(action) || isWindowMode(action))) {
+          if (actions.some(action => ['first_level', 'previous_level', 'cancel_selection', 'confirm_selection', 'reopen_selection', 'search_selection', 'idle', 'normal', 'text_input', 'text_select', 'grid', 'recursive_grid', 'ui_hint'].includes(action) || isWindowMode(action))) {
             event.preventDefault(); heldActions.clear(); actions.forEach(action => executeAction(action)); return
           }
         }
@@ -936,10 +992,7 @@ export default defineComponent({
       scrollMotion.release(event.code)
       if (quickStarted && event.key.toLowerCase() === String(effectiveDocument.value?.quick_switch?.key ?? 'q')) {
         event.preventDefault()
-        const shortPress = !quickVisible.value && !quickUsed
-        quickStarted = 0; quickVisible.value = false
-        if (shortPress && !handleTargetingKey(event.key)) resolveAction(event.key).forEach(action => executeAction(action))
-        return
+        quickStarted = 0
       }
       physicalKeys.delete(physicalKey(event))
       if (simulator.mode === 'text_input' && effectiveDocument.value && /^(left_|right_)?(alt|ctrl|shift|cmd|win)$/.test(physicalKey(event))
@@ -960,7 +1013,7 @@ export default defineComponent({
     function animate(timestamp: number): void {
       const delta = previousFrame ? Math.min(32, timestamp - previousFrame) : 16
       previousFrame = timestamp
-      if (quickStarted && !quickUsed && timestamp - quickStarted >= Number(effectiveDocument.value?.quick_switch?.hold_ms ?? 350)) quickVisible.value = true
+      if (quickStarted && !quickUsed && timestamp - quickStarted >= Number(effectiveDocument.value?.quick_switch?.hold_ms ?? 350)) { quickUsed = true; enterQuickSwitch() }
       heldActions.forEach((action) => {
         if (WINDOW_MOTION.has(action)) applyWindowAction(simulator, action, effectiveDocument.value?.[simulator.mode] ?? {}, Date.now(), delta / 1000)
         else movePointer(simulator, action, delta * 0.028)
@@ -977,12 +1030,6 @@ export default defineComponent({
       const path = simulator.mode === 'grid'
         ? simulator.targeting.grid.path
         : simulator.targeting.recursiveGrid.path
-      if (keyName === 'backspace') {
-        if (path.length > 0) path.pop()
-        updateGridPointer(settings, path)
-        simulator.lastEvent = '返回上一层网格'
-        return true
-      }
       const keys = String(settings.keys ?? '')
       const index = Array.from(keys).indexOf(keyName)
       if (index < 0 || index >= numberSetting(settings.grid_cols, simulator.mode === 'grid' ? 5 : 3) * numberSetting(settings.grid_rows, simulator.mode === 'grid' ? 4 : 3)) return false
@@ -999,8 +1046,10 @@ export default defineComponent({
       simulator.pointer.y = region.y + region.height / 2
     }
 
-    function setPreviewMode(mode: 'normal' | 'text_input' | 'grid' | 'recursive_grid' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'): void {
+    function setPreviewMode(mode: 'normal' | 'text_input' | 'quick_switch' | 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'): void {
       heldActions.clear(); physicalKeys.clear()
+      if (mode === 'quick_switch') { enterQuickSwitch(); return }
+      quickVisible.value = false
       if (isWindowMode(mode)) switchWindowMode(simulator, mode, effectiveDocument.value?.[mode] ?? {})
       else applyModeAction(simulator, mode, effectiveDocument.value?.key_help?.mouse_key_help === true)
       simulator.lastEvent = `预览 ${mode}`
@@ -1221,10 +1270,11 @@ export default defineComponent({
                   <div class="ks-layout-note-heading"><strong>{simulator.window.editingPresetId === null ? 'Save preset' : `Update preset ${simulator.window.editingPresetId}`}</strong><span>{t("备注可留空，将自动命名")}</span></div>
                   <div class="ks-layout-note-row"><input aria-label={t("备注（可留空）")} ref={layoutNoteInput} value={layoutNote.value} onInput={e => layoutNote.value = (e.target as HTMLInputElement).value} placeholder={t("例如：写代码 / 阅读")} /><button type="submit">Save</button><button type="button" onClick={() => finishLayoutNote(false)}>Cancel</button></div>
                 </form></div>}
-                {quickVisible.value && <QuickSwitchPreview rows={quickRows.value} settings={effectiveDocument.value?.quick_switch ?? {}} appearance={appearance.value} pointer={simulator.pointer} windowCenter={(() => { const w = simulator.window.windows.find(w => w.id === simulator.window.target); return w ? { x: (w.x + w.width / 2) / WINDOW_AREA.width * 100, y: (w.y + w.height / 2) / WINDOW_AREA.height * 100 } : { x: 50, y: 50 } })()} onSelect={chooseQuickMode} />}
+                {quickVisible.value && <QuickSwitchPreview rows={filteredQuickRows.value} prefix={quickPrefix.value} settings={effectiveDocument.value?.quick_switch ?? {}} appearance={appearance.value} pointer={simulator.pointer} windowCenter={(() => { const w = simulator.window.windows.find(w => w.id === simulator.window.target); return w ? { x: (w.x + w.width / 2) / WINDOW_AREA.width * 100, y: (w.y + w.height / 2) / WINDOW_AREA.height * 100 } : { x: 50, y: 50 } })()} onSelect={chooseQuickMode} />}
                 {(simulator.mode === 'grid' || simulator.mode === 'recursive_grid') && <div class="ks-target-backdrop" />}
                 {simulator.mode === 'grid' && <TargetGrid mode="grid" settings={targetingSettings.value} path={simulator.targeting.grid.path} />}
                 {simulator.mode === 'recursive_grid' && <TargetGrid mode="recursive_grid" settings={targetingSettings.value} path={simulator.targeting.recursiveGrid.path} />}
+                {simulator.mode === 'text_select' && <div class="preview-mode-note">{t('文字选择在桌面应用中使用屏幕 OCR；搜索框和文字面板外观共用 UI Hint 设置。')}</div>}
                 {simulator.mode === 'ui_hint' && <HintOverlay settings={targetingSettings.value} />}
                 {simulator.mode === 'ui_hint' && effectiveDocument.value && <SearchPanelsOverlay document={effectiveDocument.value} appearance={appearance.value} />}
                 {cursorPreview.value.enabled && simulator.mode !== 'idle' && <svg class="ks-cursor-marker" aria-hidden="true"
@@ -1258,7 +1308,7 @@ export default defineComponent({
                 <div class="ks-quick-heading-row">
                   <div class="ks-quick-heading-copy">
                     <h2>{selectedTab.value === 'behavior' ? t("快速模式切换") : t("外观设置")}</h2>
-                    <p>{t("操作模式中长按 ")}{String(effectiveDocument.value?.quick_switch?.key ?? 'q').toUpperCase()}{t(" 展开，配合 1…9 选择；松开收起。Idle 不接管，黑名单仅限制快速切换。")}</p>
+                    <p>{t("操作模式中长按 ")}{String(effectiveDocument.value?.quick_switch?.key ?? 'q').toUpperCase()}{t(" 进入快速切换模式，松开后保持。输入标签筛选并选择；退出与退格在按键页配置。Idle 不接管长按，黑名单仅限制候选。")}</p>
                   </div>
                   <button class="ks-button" disabled={!document.value} onClick={previewQuickSwitch}>{t("在模拟器中预览")}</button>
                 </div>
@@ -1267,8 +1317,15 @@ export default defineComponent({
               <div class="ks-settings-grid">
               <label hidden={selectedTab.value !== 'behavior'} data-config-path="quick_switch.key">{t("触发键")}<input value={effectiveDocument.value?.quick_switch?.key ?? 'q'} onChange={event => {
                 const value = (event.target as HTMLInputElement).value.trim().toLowerCase()
-                if (document.value && /^[a-z]$/.test(value)) { document.value.quick_switch ??= {}; document.value.quick_switch.key = value }
+                if (document.value && /^[a-z]$/.test(value) && validQuickSwitchCharacters(effectiveDocument.value?.quick_switch?.hint_characters ?? 'wertyuiop', value)) { document.value.quick_switch ??= {}; document.value.quick_switch.key = value }
               }} /></label>
+              <label hidden={selectedTab.value !== 'behavior'} data-config-path="quick_switch.hint_characters">{t("提示字符")}<input value={effectiveDocument.value?.quick_switch?.hint_characters ?? 'wertyuiop'} onChange={event => {
+                const input = event.target as HTMLInputElement
+                const value = input.value
+                if (document.value && validQuickSwitchCharacters(value, String(effectiveDocument.value?.quick_switch?.key ?? 'q'))) { document.value.quick_switch ??= {}; document.value.quick_switch.hint_characters = value; input.setCustomValidity('') }
+                else { input.setCustomValidity(t("提示字符至少两个，不可重复或包含触发键")); input.reportValidity() }
+              }} /></label>
+
               <label hidden={selectedTab.value !== 'behavior'} data-config-path="quick_switch.enabled">{t("启用 ")}<input type="checkbox" checked={effectiveDocument.value?.quick_switch?.enabled !== false}
                 onChange={event => { if (document.value) { document.value.quick_switch ??= {}; document.value.quick_switch.enabled = (event.target as HTMLInputElement).checked } }} /></label>
               <label hidden={selectedTab.value !== 'behavior'} data-config-path="quick_switch.hold_ms">{t("长按毫秒 ")}<input type="number" min="1" max="10000" value={effectiveDocument.value?.quick_switch?.hold_ms ?? 350}
@@ -1298,7 +1355,7 @@ export default defineComponent({
                     if (!document.value || !valid) return
                     document.value.quick_switch ??= {}; document.value.quick_switch.ui ??= {}
                     document.value.quick_switch.ui[field] = value
-                    quickRows.value = [...quickCandidates.value]; quickVisible.value = true
+                    enterQuickSwitch()
                   }}
                   onReset={() => {
                     if (document.value?.quick_switch?.ui) delete document.value.quick_switch.ui[field]
@@ -1396,11 +1453,11 @@ export default defineComponent({
                 mode={pageId.value === 'mode_indicator' ? undefined : currentPage.value.mode}
                 document={document.value} effectiveDocument={effectiveDocument.value} appearance={appearance.value}
                 onChange={next => document.value = next} />}
-              {['normal', 'text_input', 'grid', 'recursive_grid', 'ui_hint'].includes(pageId.value) && <CommonConfigControls page={pageId.value} tab={selectedTab.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} />}
+              {['normal', 'text_input', 'text_select', 'grid', 'recursive_grid', 'ui_hint'].includes(pageId.value) && <CommonConfigControls page={pageId.value} tab={selectedTab.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} />}
               {pageId.value === 'normal' && selectedTab.value === 'behavior' && <NormalTargetingControls document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => { document.value = next; simulator.blindTargeting.pendingReset = true }} />}
-              {(pageId.value.startsWith('window') || ['grid', 'recursive_grid', 'ui_hint', 'key_help'].includes(pageId.value)) && <ModeStyleControls page={pageId.value} tab={selectedTab.value} mode={(pageId.value === 'window_card' ? 'window' : pageId.value) as any} appearance={appearance.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} onAppearanceChange={next => appearance.value = next} />}
+              {(pageId.value.startsWith('window') || ['grid', 'recursive_grid', 'ui_hint', 'text_select', 'key_help'].includes(pageId.value)) && <ModeStyleControls page={pageId.value} tab={selectedTab.value} mode={(pageId.value === 'window_card' ? 'window' : pageId.value) as any} appearance={appearance.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} onAppearanceChange={next => appearance.value = next} />}
             </div>}
-            {pageId.value === 'quick_switch' && renderQuickSwitch()}
+            {pageId.value === 'quick_switch' && selectedTab.value !== 'keys' && renderQuickSwitch()}
             {pageId.value === 'mode_usage' && renderUsage()}
             {pageId.value === 'files' && renderFiles()}
             <div hidden={pageId.value !== 'toml'}>
@@ -1518,10 +1575,11 @@ const HintOverlay = defineComponent({
     return () => {
       const characters = String(props.settings.hint_characters ?? 'asdfghjkl')
       const placement = String(props.settings.placement ?? 'bottom')
+      const labels = hintLabels(characters, positions.length, props.settings.label_direction === 'reverse')
       return (
         <div class={{ 'ks-hint-overlay': true, [`placement-${placement}`]: true }}>
           {positions.map(([x, y], index) => {
-            const label = hintLabel(characters, index)
+            const label = labels[index]
             return (
               <div class={{ target: true, boundary: Boolean(props.settings.boundary_highlight?.enabled) }} style={{ left: `${x}%`, top: `${y}%` }}>
                 <span>{label}</span>
@@ -1683,13 +1741,6 @@ function digits(): KeySpec[] {
   return [...'1234567890'].map((digit) => key(digit, digit))
 }
 
-function hintLabel(characters: string, index: number): string {
-  const keys = [...characters]
-  if (keys.length === 0) return String(index + 1)
-  if (index < keys.length) return keys[index]
-  const offset = index - keys.length
-  return `${keys[Math.floor(offset / keys.length) % keys.length]}${keys[offset % keys.length]}`
-}
 
 function bindingTable(
   document: ConfigDocument,

@@ -31,6 +31,7 @@ pub(crate) mod scan_progress;
 mod macos_scan_workers;
 pub(crate) mod scroll_worker;
 pub(crate) mod spatial_index;
+pub(crate) mod text_segmentation;
 pub(crate) mod update;
 pub(crate) mod window_geometry;
 pub(crate) mod window_placement;
