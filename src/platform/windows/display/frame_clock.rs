@@ -15,7 +15,7 @@ use crate::platform::common::display_target::DisplayTargetCache;
 use crate::platform::common::frame_clock::FrameClockState;
 use crate::support::worker::WorkerJoin;
 
-use super::{WAKE_MESSAGE, native};
+use super::super::{WAKE_MESSAGE, native};
 
 pub fn prefer_dynamic_vblank() {
     native::prefer_dynamic_vblank();
@@ -386,7 +386,7 @@ mod tests {
         // Backend startup now begins preparation before its display snapshot.
         let mut clock = DisplayFrameClock::new(native::prepare_thread_message_queue());
         clock.prepare()?;
-        let snapshot = super::super::screens::list_snapshot()?;
+        let snapshot = super::super::list_snapshot()?;
         let first = snapshot.screens.first().ok_or("no interactive display")?;
         clock.retarget(first.bounds.center());
         clock.update_displays(&snapshot.screens, &snapshot.monitors);

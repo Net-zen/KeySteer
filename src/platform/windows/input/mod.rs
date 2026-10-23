@@ -1,5 +1,7 @@
 //! Windows keycode mapping and `SendInput` injection.
 
+pub(super) mod hook;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 

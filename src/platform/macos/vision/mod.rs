@@ -569,7 +569,7 @@ fn detect_inner(
                             )
                         } else {
                             recognize_image(
-                                (frame.image.0, frame.captured_bounds, None),
+                                (frame.image.0, frame.captured_bounds),
                                 provider_config,
                                 scan_id,
                                 &options,
@@ -1030,23 +1030,25 @@ fn recognize_ocr_image(
 }
 
 fn native_status(status: i32, message: String) -> UiScanStatus {
-    let message = if message.is_empty() {
-        "Vision scan failed".into()
-    } else {
-        message
+    let message = || {
+        if message.is_empty() {
+            "Vision scan failed".into()
+        } else {
+            message
+        }
     };
     match status {
         0 => UiScanStatus::Success,
-        1 => UiScanStatus::PermissionDenied(message),
+        1 => UiScanStatus::PermissionDenied(message()),
         2 => UiScanStatus::TimedOut,
         4 => UiScanStatus::ContextChanged,
-        5 => UiScanStatus::Unsupported(message),
-        _ => UiScanStatus::Failed(message),
+        5 => UiScanStatus::Unsupported(message()),
+        _ => UiScanStatus::Failed(message()),
     }
 }
 
 fn recognize_image(
-    (image, bounds, core_bounds): (usize, NativeRect, Option<Rect>),
+    (image, bounds): (usize, NativeRect),
     config: NativeConfig,
     scan_id: u64,
     options: &VisionOptions,
@@ -1064,11 +1066,7 @@ fn recognize_image(
             if let Some(status) = super::scan_workers::interrupt_status(deadline, cancelled()) {
                 return status;
             }
-            let (mut targets, status) =
-                decode_result(&result, native_rect_to_rect(bounds), options);
-            if let Some(core) = core_bounds {
-                targets.retain(|target| core.contains(&target.rect.center()));
-            }
+            let (targets, status) = decode_result(&result, native_rect_to_rect(bounds), options);
             if let Some(status) = super::scan_workers::interrupt_status(deadline, cancelled()) {
                 return status;
             }
@@ -1108,8 +1106,7 @@ fn decode_result(
         );
     }
     let message = match native_string(raw.message, raw.message_len, MAX_VISION_MESSAGE_BYTES) {
-        Ok(message) if !message.is_empty() => message,
-        Ok(_) => "Vision scan failed".into(),
+        Ok(message) => message,
         Err(error) => return (Vec::new(), UiScanStatus::Failed(error)),
     };
     let status = native_status(raw.status, message);
@@ -1234,23 +1231,6 @@ fn normalized_to_global(bounds: Rect, normalized: Rect) -> Rect {
         normalized.width * bounds.width,
         normalized.height * bounds.height,
     )
-}
-
-#[cfg(test)]
-fn merge_targets(
-    mut primary: Vec<UiTarget>,
-    supplementary: Vec<UiTarget>,
-    threshold: f64,
-) -> Vec<UiTarget> {
-    for target in supplementary {
-        if primary
-            .iter()
-            .all(|existing| intersection_over_union(existing.rect, target.rect) < threshold)
-        {
-            primary.push(target);
-        }
-    }
-    primary
 }
 
 fn merge_candidates(mut candidates: Vec<Candidate>, threshold: f64) -> Vec<UiTarget> {
@@ -1444,20 +1424,81 @@ mod tests {
     }
 
     #[test]
-    fn iou_merge_prefers_primary_targets() {
-        let target = |x| UiTarget {
-            details: None,
-            rect: Rect::new(x, 0.0, 100.0, 100.0),
-            name: String::new(),
-            role: SemanticRole::Button,
+    fn iou_merge_preserves_priority_and_stable_ties() {
+        let candidate = |name: &str, x, confidence, is_text| Candidate {
+            target: UiTarget {
+                details: None,
+                rect: Rect::new(x, 0.0, 100.0, 100.0),
+                name: name.into(),
+                role: if is_text {
+                    SemanticRole::StaticText
+                } else {
+                    SemanticRole::Button
+                },
+            },
+            confidence,
+            is_text,
         };
-        assert_eq!(
-            merge_targets(vec![target(0.0)], vec![target(10.0)], 0.5).len(),
-            1
+        for (second_x, expected) in [(10.0, vec!["first"]), (80.0, vec!["first", "second"])] {
+            let targets = merge_candidates(
+                vec![
+                    candidate("first", 0.0, 0.9, false),
+                    candidate("second", second_x, 0.9, false),
+                ],
+                0.5,
+            );
+            assert_eq!(
+                targets
+                    .iter()
+                    .map(|target| target.name.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        for is_text in [false, true] {
+            let targets = merge_candidates(
+                vec![
+                    candidate("lower confidence", 0.0, 0.8, is_text),
+                    candidate("higher confidence", 10.0, 0.9, is_text),
+                ],
+                0.5,
+            );
+            assert_eq!(targets.len(), 1);
+            assert_eq!(targets[0].name, "higher confidence");
+        }
+        let targets = merge_candidates(
+            vec![
+                candidate("rectangle", 0.0, 1.0, false),
+                candidate("text", 10.0, 0.8, true),
+            ],
+            0.5,
         );
-        assert_eq!(
-            merge_targets(vec![target(0.0)], vec![target(80.0)], 0.5).len(),
-            2
-        );
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].name, "text");
+    }
+
+    #[test]
+    fn native_status_preserves_error_context_and_fallback() {
+        for (code, expected) in [
+            (0, UiScanStatus::Success),
+            (2, UiScanStatus::TimedOut),
+            (4, UiScanStatus::ContextChanged),
+        ] {
+            assert_eq!(native_status(code, String::new()), expected);
+        }
+        for message in ["", "native request failed"] {
+            let expected = if message.is_empty() {
+                "Vision scan failed"
+            } else {
+                message
+            };
+            for (code, status) in [
+                (1, UiScanStatus::PermissionDenied(expected.into())),
+                (5, UiScanStatus::Unsupported(expected.into())),
+                (-1, UiScanStatus::Failed(expected.into())),
+            ] {
+                assert_eq!(native_status(code, message.into()), status);
+            }
+        }
     }
 }

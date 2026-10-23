@@ -7,9 +7,11 @@
 //! composes the same primitives the built-in modes use, so it can create its
 //! own grid or full-screen overlay without any special support from the host.
 
-pub mod builtin;
+mod screen_selector;
+mod window_mover;
 
-pub use builtin::{ScreenSelector, WindowMover};
+pub use screen_selector::ScreenSelector;
+pub use window_mover::WindowMover;
 
 use crate::api::Plugin;
 use std::collections::BTreeMap;

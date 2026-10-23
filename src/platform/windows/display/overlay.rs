@@ -28,9 +28,9 @@ use crate::api::overlay::{
     SharedLabelStyle, normalized_label_scale, scaled_label_geometry,
 };
 
-use super::native::{
-    GdiDibSurface, NativeDimensions, OwnedFont, OwnedWindow, OwnedWindowSpec, create_owned_window,
-    reposition_owned_window,
+use super::super::native::{
+    self, GdiDibSurface, NativeDimensions, OwnedFont, OwnedWindow, OwnedWindowSpec,
+    create_owned_window, reposition_owned_window,
 };
 
 static WINDOW_CALLBACK_FAILED: AtomicBool = AtomicBool::new(false);
@@ -89,7 +89,7 @@ impl Overlay {
         }
         // SAFETY: a null module name yields this executable's handle.
         let instance =
-            super::native::current_module().map_err(|e| format!("GetModuleHandleW failed: {e}"))?;
+            native::current_module().map_err(|e| format!("GetModuleHandleW failed: {e}"))?;
 
         let class = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -103,7 +103,7 @@ impl Overlay {
             ..Default::default()
         };
 
-        super::native::register_window_class(&class)?;
+        native::register_window_class(&class)?;
         self.class_registered = true;
         Ok(())
     }
@@ -1260,7 +1260,7 @@ impl DibSurfaceExt for GdiDibSurface {
 }
 
 fn upload(hwnd: HWND, area: Rect, surface: &GdiDibSurface) -> Result<(), String> {
-    let screen = super::native::ScreenDc::acquire()?;
+    let screen = native::ScreenDc::acquire()?;
     let destination = POINT {
         x: area.x.round() as i32,
         y: area.y.round() as i32,
@@ -1317,7 +1317,7 @@ extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if let Some(result) = super::native::click_through_hit_test(message) {
+    if let Some(result) = native::click_through_hit_test(message) {
         return result;
     }
     match message {
@@ -1331,7 +1331,7 @@ extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_DESTROY => LRESULT(0),
-        _ => super::native::default_window_proc(hwnd, message, wparam, lparam),
+        _ => native::default_window_proc(hwnd, message, wparam, lparam),
     }
 }
 

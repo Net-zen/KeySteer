@@ -842,7 +842,7 @@ extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if resumes_input_capture(message, wparam.0 as u32) {
-        if let Err(error) = super::hook::request_renewal(true) {
+        if let Err(error) = super::input::hook::request_renewal(true) {
             crate::report_error!("windows-hook", "{error}");
         }
         return LRESULT(isize::from(message == WM_POWERBROADCAST));

@@ -9,24 +9,16 @@
 //! thread-affine window work stays on the thread that calls [`Backend::poll`].
 
 mod accessibility;
-mod audio_policy;
 mod autostart;
-mod console_control;
-mod frame_clock;
-mod gpu_overlay;
-mod hook;
+mod display;
 mod input;
 mod native;
-mod overlay;
-mod overlay_worker;
-mod screens;
 mod status_item;
 mod system_events;
 mod text_prompt;
 mod ui_scan;
 mod update_installer;
 mod vision;
-mod wechat_ocr;
 mod window_audio;
 mod window_manager;
 mod window_mover;
@@ -46,25 +38,16 @@ use crate::api::backend::{Appearance, Backend, BackendEvent, KeyDisposition};
 use crate::api::command::{ButtonAction, FocusedApp, MouseButton};
 use crate::api::geometry::{Point, Rect, Screen};
 use crate::api::input::{Key, KeyState};
-use crate::api::overlay::{LabelStyle, LabelTextAnalysis, OverlayScene};
+use crate::api::overlay::OverlayScene;
 use crate::platform::common::scan_mailbox::ScanMailbox;
 
-use self::overlay_worker::OverlayWorker;
+use self::display::{frame_clock, overlay_worker::OverlayWorker};
+use self::input::hook;
 
 const WAKE_MESSAGE: u32 = WM_APP + 0x4C;
 const BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const NO_WINDOW_UNDER_POINTER: &str =
     "No window under the pointer — move the pointer over a window";
-
-#[inline]
-fn label_text_offset_y(style: &LabelStyle, analysis: LabelTextAnalysis, fixed_line: bool) -> f64 {
-    let units = if analysis.has_descender && !fixed_line {
-        -2.0
-    } else {
-        -1.0
-    };
-    analysis.scaled_units(style.font_size, units)
-}
 
 pub(crate) use native::{atomic_replace, prepare_console_for_cli};
 
@@ -73,7 +56,7 @@ pub(crate) fn run_internal_wechat_ocr_helper(
     component: std::path::PathBuf,
     runtime: std::path::PathBuf,
 ) -> Result<(), String> {
-    wechat_ocr::run_helper(wechat_ocr::HelperPaths {
+    vision::wechat_ocr::run_helper(vision::wechat_ocr::HelperPaths {
         bridge,
         component,
         runtime,
@@ -145,7 +128,7 @@ pub struct WindowsBackend {
     scroll_worker: crate::platform::common::scroll_worker::ScrollWorker,
     foreground_watcher: Option<system_events::ForegroundWatcher>,
     status_item: Option<status_item::StatusItem>,
-    console_control: Option<console_control::ConsoleControl>,
+    console_control: Option<system_events::ConsoleControl>,
     ui_automation: Vec<accessibility::UiAutomationWorker>,
     vision: vision::VisionWorker,
     prewarm_ocr: bool,
@@ -194,7 +177,7 @@ impl WindowsBackend {
     ) -> Result<Self, String> {
         // Must happen before any window exists, or coordinates will be wrong
         // on scaled displays.
-        screens::enable_dpi_awareness()?;
+        display::enable_dpi_awareness()?;
         // Must precede creation of the DXGI overlay and the first VBlank wait.
         // Probe the optional export instead of assuming support from an OS
         // version label; unsupported systems keep compatible DXGI cadence.
@@ -266,7 +249,7 @@ impl WindowsBackend {
                 None
             }
         };
-        let console_control = match console_control::ConsoleControl::new(owner_thread) {
+        let console_control = match system_events::ConsoleControl::new(owner_thread) {
             Ok(control) => Some(control),
             Err(error) => {
                 pending.push_back(BackendEvent::Warning(error));
@@ -277,12 +260,12 @@ impl WindowsBackend {
         // Keep enumeration after the tray's display-change observer exists,
         // so changes during startup cannot fall between the snapshot and its
         // native notifications.
-        let initial_displays = screens::list_snapshot().unwrap_or_else(|error| {
+        let initial_displays = display::list_snapshot().unwrap_or_else(|error| {
             crate::support::logging::report_error(
                 "windows-screen",
                 format!("initial display enumeration failed: {error}"),
             );
-            screens::DisplaySnapshot::default()
+            display::DisplaySnapshot::default()
         });
         frame_clock.update_displays(&initial_displays.screens, &initial_displays.monitors);
         let vision = vision::VisionWorker::start();
@@ -360,7 +343,7 @@ impl WindowsBackend {
     }
 
     fn detect_screen_change(&mut self) -> Option<BackendEvent> {
-        let snapshot = match screens::list_snapshot() {
+        let snapshot = match display::list_snapshot() {
             Ok(screens) => screens,
             Err(error) => {
                 self.frame_clock.update_displays(&[], &[]);
@@ -828,7 +811,7 @@ impl Backend for WindowsBackend {
 
     fn screens(&self) -> Result<Vec<Screen>, String> {
         if self.screens.is_empty() {
-            screens::list_screens()
+            display::list_screens()
         } else {
             Ok(self.screens.clone())
         }
@@ -1258,28 +1241,6 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         assert_eq!(actual.to_lowercase(), expected.to_lowercase());
-    }
-
-    #[test]
-    fn windows_text_position_keeps_the_existing_upward_optical_offsets() {
-        let style = LabelStyle {
-            font_size: 17.0,
-            ..LabelStyle::default()
-        };
-        assert_eq!(
-            label_text_offset_y(&style, LabelTextAnalysis::analyze("asa", 0), false),
-            -1.0
-        );
-        assert_eq!(
-            label_text_offset_y(&style, LabelTextAnalysis::analyze("aag", 0), false),
-            -2.0
-        );
-        for text in ["", "asa", "asag", "jpyq"] {
-            assert_eq!(
-                label_text_offset_y(&style, LabelTextAnalysis::analyze(text, 0), true),
-                -1.0
-            );
-        }
     }
 
     #[test]

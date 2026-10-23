@@ -16,10 +16,10 @@ use crate::api::backend::{BackendEvent, KeyDisposition};
 use crate::api::command::MouseButton;
 use crate::api::geometry::Point;
 use crate::api::input::{InputEvent, Key, KeyState};
-use crate::platform::multi_click::ClickTracker;
 use crate::support::worker::WorkerJoin;
 
-use super::input;
+use super::super::{event_loop, native, window_tabs};
+use super::{self as input, latest_point_mailbox::LatestPointMailbox, multi_click::ClickTracker};
 
 const DISPOSITION_TIMEOUT: Duration = Duration::from_millis(100);
 const STOP_TIMEOUT: Duration = Duration::from_millis(250);
@@ -43,13 +43,13 @@ struct Envelope {
 /// queue wakes `next_event` immediately, so worker results never wait for
 /// pointer input or a polling interval.
 #[derive(Clone)]
-pub(super) struct EventSender {
+pub(in crate::platform::macos) struct EventSender {
     sender: SyncSender<Envelope>,
 }
 
 impl EventSender {
     #[cfg(test)]
-    pub(super) fn send(&self, event: BackendEvent) -> Result<(), ()> {
+    pub(in crate::platform::macos) fn send(&self, event: BackendEvent) -> Result<(), ()> {
         self.sender
             .send(Envelope {
                 event,
@@ -58,7 +58,10 @@ impl EventSender {
             .map_err(|_| ())
     }
 
-    pub(super) fn try_send(&self, event: BackendEvent) -> Result<(), BackendEvent> {
+    pub(in crate::platform::macos) fn try_send(
+        &self,
+        event: BackendEvent,
+    ) -> Result<(), BackendEvent> {
         self.sender
             .try_send(Envelope {
                 event,
@@ -113,7 +116,7 @@ impl TapDisabled {
 }
 
 type SharedState = Arc<TapState>;
-type SharedPointer = Arc<crate::platform::latest_point_mailbox::LatestPointMailbox>;
+type SharedPointer = Arc<LatestPointMailbox>;
 type SharedClickTracker = Arc<Mutex<ClickTracker>>;
 type SharedRunLoop = Arc<Mutex<Option<CFRunLoop>>>;
 type SharedHookSignals = Arc<HookSignals>;
@@ -256,8 +259,7 @@ impl HookStartup {
         let thread_signals = Arc::clone(&signals);
         let run_loop = Arc::new(Mutex::new(None));
         let thread_run_loop = Arc::clone(&run_loop);
-        let latest_pointer =
-            Arc::new(crate::platform::latest_point_mailbox::LatestPointMailbox::default());
+        let latest_pointer = Arc::new(LatestPointMailbox::default());
         let thread_pointer = Arc::clone(&latest_pointer);
         let worker = WorkerJoin::spawn(
             "macOS event tap",
@@ -356,11 +358,11 @@ impl Drop for HookStartup {
 }
 
 impl HookThread {
-    pub(super) fn set_text_capture(&self, enabled: bool) {
+    pub(in crate::platform::macos) fn set_text_capture(&self, enabled: bool) {
         self.signals.character_demand.set_text_capture(enabled);
     }
 
-    pub(super) fn set_character_bindings(&self, keys: &[Key]) {
+    pub(in crate::platform::macos) fn set_character_bindings(&self, keys: &[Key]) {
         self.signals
             .character_demand
             .configure(keys, |key| input::keycode_for(key).is_some());
@@ -370,14 +372,14 @@ impl HookThread {
         self.active.load(Ordering::Acquire)
     }
 
-    pub(super) fn event_sender(&self) -> EventSender {
+    pub(in crate::platform::macos) fn event_sender(&self) -> EventSender {
         EventSender {
             sender: self.sender.clone(),
         }
     }
 
     #[inline]
-    pub(super) fn drag_modifier_flags(&self) -> u8 {
+    pub(in crate::platform::macos) fn drag_modifier_flags(&self) -> u8 {
         // This is a latest-value snapshot with no ordering relationship to any
         // other state, so Relaxed avoids adding a fence to every drag frame.
         self.signals.drag_modifier_flags.load(Ordering::Relaxed)
@@ -488,7 +490,7 @@ impl HookThread {
     /// Make the synchronous event tap fail open immediately. Joining the
     /// worker stays separate so shutdown can release input before waiting on
     /// unrelated scan or network workers.
-    pub(super) fn request_stop(&mut self) {
+    pub(in crate::platform::macos) fn request_stop(&mut self) {
         self.mailbox.close();
         self.signals.disarm_tap_capture();
         self.stop.store(true, Ordering::Release);
@@ -546,7 +548,7 @@ impl TapCaptureLifecycle {
             )
             .is_ok()
         {
-            super::event_loop::wake_main_run_loop();
+            event_loop::wake_main_run_loop();
         }
         stop_run_loop(&self.run_loop);
     }
@@ -554,7 +556,7 @@ impl TapCaptureLifecycle {
 
 impl RegisteredEventTap {
     fn new(tap: CGEventTap<'static>, lifecycle: Arc<TapCaptureLifecycle>) -> Result<Self, String> {
-        let port_key = super::native::event_tap_identity(tap.mach_port());
+        let port_key = native::event_tap_identity(tap.mach_port());
         {
             let mut registration = invalidation_registry();
             if registration.is_some() {
@@ -569,8 +571,7 @@ impl RegisteredEventTap {
             });
         }
 
-        if let Err(error) = super::native::install_event_tap_invalidation_callback(tap.mach_port())
-        {
+        if let Err(error) = native::install_event_tap_invalidation_callback(tap.mach_port()) {
             unregister_event_tap_invalidation(port_key);
             return Err(error);
         }
@@ -594,7 +595,7 @@ impl RegisteredEventTap {
 impl Drop for RegisteredEventTap {
     fn drop(&mut self) {
         self.lifecycle.signals.disarm_tap_capture();
-        super::native::clear_event_tap_invalidation_callback(self.tap.mach_port());
+        native::clear_event_tap_invalidation_callback(self.tap.mach_port());
         unregister_event_tap_invalidation(self.port_key);
         // `CGEventTap` invalidates its Mach port after this Drop body. The
         // callback is already detached and its Arc registry owner is gone.
@@ -616,7 +617,7 @@ fn unregister_event_tap_invalidation(port_key: usize) {
 /// taken before releasing the lock, so teardown cannot leave a dangling info
 /// pointer. The opaque `info` belongs to the `core-graphics` closure wrapper
 /// and must not be interpreted here.
-pub(super) fn event_tap_invalidated(port_key: usize) {
+pub(in crate::platform::macos) fn event_tap_invalidated(port_key: usize) {
     let lifecycle = {
         let registration = invalidation_registry();
         registration
@@ -699,10 +700,7 @@ fn event_tap_thread(handshake: HookHandshake, context: HookThreadContext) {
     if let Ok(mut shared) = shared_run_loop.lock() {
         *shared = Some(run_loop.clone());
     }
-    run_loop.add_source(
-        &source,
-        super::native::default_run_loop_modes().core_foundation,
-    );
+    run_loop.add_source(&source, native::default_run_loop_modes().core_foundation);
     if stop.load(Ordering::Acquire) {
         let _ = ready.send(Err(
             "the macOS event tap became unavailable during startup".to_string()
@@ -750,7 +748,7 @@ fn event_tap_thread(handshake: HookHandshake, context: HookThreadContext) {
                     ),
                     generation: None,
                 });
-                super::event_loop::wake_main_run_loop();
+                event_loop::wake_main_run_loop();
             }
             Some(TapDisabled::Timeout) => {
                 lifecycle.signal_capture_loss(CAPTURE_LOSS_REPEATED_TIMEOUT);
@@ -773,10 +771,7 @@ fn detach_event_tap_source(
     source: &core_foundation::runloop::CFRunLoopSource,
     shared_run_loop: &SharedRunLoop,
 ) {
-    run_loop.remove_source(
-        source,
-        super::native::default_run_loop_modes().core_foundation,
-    );
+    run_loop.remove_source(source, native::default_run_loop_modes().core_foundation);
     if let Ok(mut shared) = shared_run_loop.lock() {
         *shared = None;
     }
@@ -871,7 +866,7 @@ fn handle_event(
         event.get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER),
     ) {
         if matches!(event_type, CGEventType::LeftMouseUp) {
-            super::window_tabs::mouse_released();
+            window_tabs::mouse_released();
         }
         let previous = state.mouse_button_decisions.load(Ordering::Relaxed);
         let held = 1 << number;
@@ -941,7 +936,7 @@ fn handle_event(
                     && signals.character_demand.is_enabled()
                     && !key.is_modifier()
                 {
-                    super::native::event_character(event, Some(&signals.character_demand))
+                    native::event_character(event, Some(&signals.character_demand))
                 } else {
                     None
                 },
@@ -993,7 +988,7 @@ fn handle_event(
                     })
                     .is_ok();
                 if sent {
-                    super::event_loop::wake_main_run_loop();
+                    event_loop::wake_main_run_loop();
                 } else {
                     // A full engine queue must never block a CGEventTap
                     // callback. Clear the coalescing marker so the next
@@ -1079,7 +1074,7 @@ fn disposition_for(
         crate::support::perf_probe::mark_correlated("disposition_returned", correlation_id);
         return CallbackResult::Keep;
     }
-    super::event_loop::wake_main_run_loop();
+    event_loop::wake_main_run_loop();
 
     let response = if forwards_on_timeout {
         mailbox.wait_with_fallback(generation, DISPOSITION_TIMEOUT, KeyDisposition::Forward)
@@ -1193,9 +1188,7 @@ mod tests {
             receiver: event_rx,
             mailbox: Arc::clone(&mailbox),
             pending: Some(generation),
-            latest_pointer: Arc::new(
-                crate::platform::latest_point_mailbox::LatestPointMailbox::default(),
-            ),
+            latest_pointer: Arc::new(LatestPointMailbox::default()),
             stop: Arc::new(AtomicBool::new(false)),
             active: Arc::new(AtomicBool::new(true)),
             signals: Arc::new(HookSignals::new()),
@@ -1223,9 +1216,7 @@ mod tests {
             receiver: event_rx,
             mailbox,
             pending: Some(generation),
-            latest_pointer: Arc::new(
-                crate::platform::latest_point_mailbox::LatestPointMailbox::default(),
-            ),
+            latest_pointer: Arc::new(LatestPointMailbox::default()),
             stop: Arc::new(AtomicBool::new(false)),
             active: Arc::new(AtomicBool::new(true)),
             signals: Arc::new(HookSignals::new()),
@@ -1305,8 +1296,7 @@ mod tests {
         };
         lifecycle.signal_capture_loss(CAPTURE_LOSS_USER_INPUT);
         assert_eq!(mailbox.wait(generation, Duration::ZERO), None);
-        let latest_pointer =
-            Arc::new(crate::platform::latest_point_mailbox::LatestPointMailbox::default());
+        let latest_pointer = Arc::new(LatestPointMailbox::default());
         latest_pointer.publish(Point::new(1.0, 2.0));
         let mut hook = HookThread {
             sender: event_tx,
@@ -1347,8 +1337,7 @@ mod tests {
     #[test]
     fn repeated_native_edge_position_is_still_delivered() {
         let (event_tx, event_rx) = mpsc::sync_channel(64);
-        let latest_pointer =
-            Arc::new(crate::platform::latest_point_mailbox::LatestPointMailbox::default());
+        let latest_pointer = Arc::new(LatestPointMailbox::default());
         let mut hook = HookThread {
             sender: event_tx.clone(),
             receiver: event_rx,
@@ -1391,9 +1380,7 @@ mod tests {
                 crate::platform::common::disposition_mailbox::DispositionMailbox::default(),
             ),
             pending: None,
-            latest_pointer: Arc::new(
-                crate::platform::latest_point_mailbox::LatestPointMailbox::default(),
-            ),
+            latest_pointer: Arc::new(LatestPointMailbox::default()),
             stop: Arc::new(AtomicBool::new(false)),
             active: Arc::new(AtomicBool::new(true)),
             signals: Arc::new(HookSignals::new()),

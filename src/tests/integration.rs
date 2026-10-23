@@ -79,7 +79,7 @@ fn the_shipped_targeting_lifecycles_are_explicit() {
 
 #[test]
 fn the_macos_bridge_does_not_require_clang_availability_runtime() {
-    let bridge = include_str!("../../src/platform/macos/vision_bridge.m");
+    let bridge = include_str!("../../src/platform/macos/vision/vision_bridge.m");
     assert!(
         !bridge.contains("if (@available"),
         "@available introduces __isPlatformVersionAtLeast, which Rust's -nodefaultlibs link omits"
@@ -202,7 +202,7 @@ fn macos_shutdown_releases_input_before_waiting_for_workers() {
 
 #[test]
 fn macos_tcc_fail_open_adds_no_per_event_stop_poll() {
-    let hook = include_str!("../../src/platform/macos/hook.rs");
+    let hook = include_str!("../../src/platform/macos/input/hook.rs");
     let callback = hook
         .split_once("fn handle_event(")
         .map(|(_, tail)| tail)
@@ -558,8 +558,8 @@ fn every_mode_has_a_binding_table_including_plugins() {
 
 #[test]
 fn windows_visual_capture_keeps_one_barrier_and_an_unscaled_copy_path() {
-    let gpu = include_str!("../../src/platform/windows/gpu_overlay.rs");
-    let worker = include_str!("../../src/platform/windows/overlay_worker.rs");
+    let gpu = include_str!("../../src/platform/windows/display/gpu_overlay.rs");
+    let worker = include_str!("../../src/platform/windows/display/overlay_worker.rs");
     let native = include_str!("../../src/platform/windows/native/gdi.rs");
 
     assert!(

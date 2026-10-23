@@ -64,7 +64,7 @@ Modes update state and return commands. The Engine/Backend handles pointers, win
 Bundled plugins register at startup. Developing one means changing the repository and rebuilding. See [Plugin development](/en/development/plugin-development) for the full interface.
 :::
 
-1. Implement `Mode` under `src/plugins/builtin/`.
+1. Implement `Mode` under `src/plugins/`.
 2. Declare a stable ID, name, description, verbs, and suggested bindings in a `Manifest`.
 3. Return the plugin from `bundled_plugins()` in `src/app/mode_catalog.rs`; the catalog validates its manifest.
 4. Register the complete set through `RuntimePlan` during startup or reload, rather than assembling it piece by piece in bootstrap.

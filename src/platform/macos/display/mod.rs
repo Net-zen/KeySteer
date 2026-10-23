@@ -1,4 +1,7 @@
-//! Display snapshots and event-driven reconfiguration notices.
+//! Display snapshots, reconfiguration notices, overlays and frame timing.
+
+pub(super) mod display_link;
+pub(super) mod overlay;
 
 use std::cell::Cell;
 use std::ffi::c_void;

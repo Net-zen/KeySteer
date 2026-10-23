@@ -69,8 +69,8 @@ Commands flow toward native capabilities. Keyboard, pointer, display, frame-cloc
 | `src/app/runtime/` | Private Engine, RuntimePlan, input routing, scheduling, and overlay coordination | `app/runtime/mod.rs`, `app/runtime/plan.rs` |
 | `src/modes/` | `idle`, `normal`, `grid`, `recursive_grid`, and `ui_hint` state machines | The corresponding `.rs` files |
 | `src/modes/hint/` | UI Hint label assignment, matching, and scan state | `labeling.rs`, `matching.rs`, `session.rs` |
-| `src/presentation/` | Mode, help-panel, and cursor scenes; depends only on the API | `mod.rs`, `hint/`, `key_help.rs`, `dynamic.rs` |
-| `src/plugins/` | Bundled plugins and reference implementations | `builtin/screen_selector.rs` |
+| `src/presentation/` | Mode, help-panel, and cursor scenes; depends only on the API | `mod.rs`, `hint/`, `key_help/`, `dynamic.rs` |
+| `src/plugins/` | Bundled plugins and reference implementations | `screen_selector.rs` |
 | `src/platform/windows/` | Win32 hooks, SendInput, UIA, overlays, frame clock, and tray | `mod.rs` |
 | `src/platform/macos/` | CGEventTap, Core Graphics, AX, Vision, AppKit, and status item | `mod.rs` |
 

@@ -271,7 +271,7 @@ pub(super) fn probe_ocr(cancelled: impl Fn() -> bool + Copy) -> Option<OcrDiscov
     if cancelled() {
         return None;
     }
-    let wechat = match crate::platform::windows::wechat_ocr::discover_descriptor() {
+    let wechat = match super::wechat_ocr::discover_descriptor() {
         Ok(Some(descriptor)) => {
             crate::log_info!(
                 "windows-vision",

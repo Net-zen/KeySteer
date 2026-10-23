@@ -156,7 +156,7 @@ impl DisplayFrameClock {
             return Some(elapsed);
         }
 
-        super::event_loop::wait_for_app_event(timeout);
+        super::super::event_loop::wait_for_app_event(timeout);
         // Any non-frame AppKit wake returns control to Backend::poll so a
         // synchronously waiting hook is checked before another VBlank wait.
         self.target.take_elapsed()

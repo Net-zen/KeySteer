@@ -811,5 +811,4 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "grid/recursive_tests.rs"]
 mod recursive_tests;

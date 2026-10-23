@@ -1,5 +1,7 @@
 //! Application audio sessions owned by the dedicated audio worker.
 
+mod policy;
+
 use crate::api::audio::AudioAction;
 use std::collections::BTreeSet;
 use windows::Win32::Media::Audio::{
@@ -230,7 +232,7 @@ fn switch_application(
     change: AudioAction,
 ) -> Result<String, String> {
     let apply = || -> Result<String, String> {
-        let factory = super::audio_policy::Factory::new().map_err(|e| e.to_string())?;
+        let factory = policy::Factory::new().map_err(|e| e.to_string())?;
         let enumerator = enumerator().map_err(|e| e.to_string())?;
         let outputs = outputs(&enumerator).map_err(|e| e.to_string())?;
         let mut saved = Vec::new();
@@ -260,10 +262,10 @@ fn switch_application(
         let current = if current.is_empty() {
             default_id(&enumerator, eMultimedia).map_err(|e| e.to_string())?
         } else {
-            super::audio_policy::endpoint_id(current)
+            policy::endpoint_id(current)
         };
         let output = next_output(&outputs, &current, change == AudioAction::DevicePrevious)?;
-        let path = super::audio_policy::device_path(&output.id);
+        let path = policy::device_path(&output.id);
         for (index, (pid, role, _)) in saved.iter().enumerate() {
             if let Err(error) = factory.set(*pid, *role, &path) {
                 let mut restored = true;
@@ -300,10 +302,10 @@ pub(super) fn system(change: AudioAction) -> Result<String, String> {
             .map_err(|e| e.to_string())?;
         let output = next_output(&outputs, &saved[1].1, change == AudioAction::DevicePrevious)?;
         for (index, (role, _)) in saved.iter().enumerate() {
-            if let Err(error) = super::audio_policy::set_system(&output.id, *role) {
+            if let Err(error) = policy::set_system(&output.id, *role) {
                 let mut restored = true;
                 for (role, id) in &saved[..=index] {
-                    restored &= super::audio_policy::set_system(id, *role).is_ok();
+                    restored &= policy::set_system(id, *role).is_ok();
                 }
                 return Err(format!(
                     "Cannot switch system output: {error}; previous devices {}",
@@ -403,7 +405,7 @@ mod tests {
     #[ignore = "requires native audio; writes only existing system defaults and this test process's routing, then restores routing"]
     fn native_audio_policy_routing_and_system_interfaces() -> Result<(), Box<dyn std::error::Error>>
     {
-        use super::super::audio_policy;
+        use super::policy;
         use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
         let _apartment = super::super::native::ComApartment::initialise()?;
         let enumerator = enumerator()?;
@@ -422,22 +424,21 @@ mod tests {
             initialized?;
             client
         };
-        let factory = audio_policy::Factory::new().map_err(|e| format!("factory: {e}"))?;
+        let factory = policy::Factory::new().map_err(|e| format!("factory: {e}"))?;
         let pid = std::process::id();
         for role in [eConsole, eMultimedia, eCommunications] {
             let id = default_id(&enumerator, role)?;
-            audio_policy::set_system(&id, role)
-                .map_err(|e| format!("system role {role:?}: {e}"))?;
+            policy::set_system(&id, role).map_err(|e| format!("system role {role:?}: {e}"))?;
             assert_eq!(default_id(&enumerator, role)?, id);
             let old = factory
                 .get(pid, role)
                 .map_err(|e| format!("get role {role:?}: {e}"))?;
-            let set = factory.set(pid, role, &audio_policy::device_path(&id));
+            let set = factory.set(pid, role, &policy::device_path(&id));
             let read = factory.get(pid, role);
             let restore = factory.set(pid, role, &old);
             restore.map_err(|e| format!("restore role {role:?}: {e}"))?;
             set.map_err(|e| format!("set role {role:?}: {e}"))?;
-            assert_eq!(audio_policy::endpoint_id(&read?), id);
+            assert_eq!(policy::endpoint_id(&read?), id);
             assert_eq!(factory.get(pid, role)?, old);
         }
         let saved = [eConsole, eMultimedia, eCommunications]
@@ -456,7 +457,7 @@ mod tests {
         assert!(result?.starts_with("App output: "));
         let current = default_id(&enumerator, eMultimedia)?;
         assert_eq!(
-            audio_policy::endpoint_id(&selected?),
+            policy::endpoint_id(&selected?),
             next_output(&outputs, &current, false)?.id
         );
         // SAFETY: read the default output's volume interface without changing

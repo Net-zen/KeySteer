@@ -360,7 +360,7 @@ impl StatusItem {
             }
             note.panel.close();
         }
-        let screens = super::screens::list_screens()?;
+        let screens = super::display::list_screens()?;
         let primary = crate::api::Screen::primary(&screens).ok_or("No display for layout input")?;
         let live = request.live_style.is_some();
         let bounds = request.live_style.as_ref().map_or(request.bounds, |style| {

@@ -23,7 +23,8 @@ use crate::api::geometry::Point;
 use crate::api::input::{InputEvent, Key, KeyState};
 use crate::support::worker::WorkerJoin;
 
-use super::input;
+use super as input;
+use super::super::native;
 use crate::platform::common::disposition_mailbox::DispositionMailbox;
 
 pub const TIMEOUT_WARNING: &str =
@@ -125,7 +126,7 @@ static TEST_HOOKS_RETIRED: AtomicBool = AtomicBool::new(false);
 /// Native input work executed only from the hook thread's message loop. A
 /// posted request cannot run until the physical-key callback ahead of it has
 /// returned, closing the barrier-to-SendInput race on the engine thread.
-pub(super) enum InjectionRequest {
+pub(in crate::platform::windows) enum InjectionRequest {
     MouseButton {
         button: MouseButton,
         action: ButtonAction,
@@ -435,7 +436,7 @@ impl HookThread {
         WAKE_FAILED.store(false, Ordering::Release);
         // Ensure the engine thread has a message queue before hook callbacks
         // try to wake it with PostThreadMessageW.
-        let owner_thread = super::native::prepare_thread_message_queue();
+        let owner_thread = native::prepare_thread_message_queue();
         // The hook is synchronous, so at most a small bounded burst can be
         // outstanding. Preallocate the queue instead of growing an unbounded
         // linked channel on physical key edges.
@@ -557,7 +558,7 @@ impl HookThread {
         }
         self.injection
             .submit(request, |generation| {
-                super::native::post_thread_message(
+                native::post_thread_message(
                     self.thread_id,
                     INJECTION_MESSAGE,
                     generation as usize,
@@ -591,7 +592,7 @@ impl HookThread {
 
     /// Stop waiting for Engine decisions before joining unrelated workers.
     /// Keep the native hook alive to execute queued input releases.
-    pub(super) fn close_dispositions(&mut self) {
+    pub(in crate::platform::windows) fn close_dispositions(&mut self) {
         self.mailbox.close();
         self.pending = None;
     }
@@ -603,7 +604,7 @@ impl HookThread {
         }
         let mut post_failure = None;
         if self.thread_id != 0
-            && let Err(error) = super::native::post_thread_message(self.thread_id, WM_QUIT, 0)
+            && let Err(error) = native::post_thread_message(self.thread_id, WM_QUIT, 0)
         {
             post_failure = Some(format!("cannot request input hook shutdown: {error}"));
         }
@@ -656,13 +657,13 @@ fn install_hooks() -> Result<(OwnedHook, OwnedHook), String> {
 }
 
 /// Run between callbacks on their installing thread; never inject a probe key.
-pub(super) fn request_renewal(capture_lost: bool) -> Result<(), String> {
+pub(in crate::platform::windows) fn request_renewal(capture_lost: bool) -> Result<(), String> {
     let thread = HOOK_THREAD.load(Ordering::Acquire);
     if thread == 0 {
         // A stopped worker is recovered through its disconnected event queue.
         return Ok(());
     }
-    super::native::post_thread_message(thread, RENEW_HOOK_MESSAGE, usize::from(capture_lost))
+    native::post_thread_message(thread, RENEW_HOOK_MESSAGE, usize::from(capture_lost))
         .map_err(|error| format!("cannot request Windows hook renewal: {error}"))
 }
 
@@ -680,13 +681,13 @@ fn hook_thread(
             return;
         }
     };
-    let thread_id = super::native::prepare_thread_message_queue();
+    let thread_id = native::prepare_thread_message_queue();
     #[cfg(test)]
     {
         TEST_RENEWALS.store(0, Ordering::Release);
         TEST_HOOKS_RETIRED.store(false, Ordering::Release);
     }
-    let renewal_timer = match super::native::ThreadTimer::new(HOOK_RENEW_INTERVAL_MS) {
+    let renewal_timer = match native::ThreadTimer::new(HOOK_RENEW_INTERVAL_MS) {
         Ok(timer) => timer,
         Err(error) => {
             let _ = ready.send(Err(error));
@@ -707,7 +708,7 @@ fn hook_thread(
 
     let mut message = MSG::default();
     loop {
-        let status = super::native::get_window_message(&mut message);
+        let status = native::get_window_message(&mut message);
         if status == 0 {
             break;
         }
@@ -877,7 +878,7 @@ fn wake_owner() {
     if wake_thread == 0 {
         return;
     }
-    if super::native::post_thread_message(wake_thread, WAKE_MESSAGE, 0).is_err() {
+    if native::post_thread_message(wake_thread, WAKE_MESSAGE, 0).is_err() {
         WAKE_FAILED.store(true, Ordering::Release);
     }
 }
@@ -902,7 +903,7 @@ fn store_latest_pointer(point: Point) {
     }
 }
 
-pub(super) fn set_pointer_wake_enabled(enabled: bool) {
+pub(in crate::platform::windows) fn set_pointer_wake_enabled(enabled: bool) {
     POINTER_WAKE_ENABLED.store(enabled, Ordering::Release);
     if !enabled {
         POINTER_PENDING.store(0, Ordering::Release);
@@ -918,7 +919,7 @@ fn take_wake_failure() -> bool {
 }
 
 #[cfg(test)]
-pub(super) fn pointer_wake_enabled() -> bool {
+pub(in crate::platform::windows) fn pointer_wake_enabled() -> bool {
     POINTER_WAKE_ENABLED.load(Ordering::Acquire)
 }
 
@@ -993,7 +994,7 @@ fn update_pressed_state(virtual_key: u32, state: KeyState) -> bool {
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code < 0 {
-        return super::native::call_next_hook(code, wparam, lparam);
+        return native::call_next_hook(code, wparam, lparam);
     }
 
     // SAFETY: for a non-negative low-level keyboard callback Windows supplies
@@ -1003,11 +1004,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     // accessibility tools and software keyboards also set the Windows
     // injected flag; those inputs are user-owned and must remain bindable.
     if is_our_input(info.dwExtraInfo) {
-        return super::native::call_next_hook(code, wparam, lparam);
+        return native::call_next_hook(code, wparam, lparam);
     }
 
     let Some(key) = input::key_for_virtual_key(info.vkCode) else {
-        return super::native::call_next_hook(code, wparam, lparam);
+        return native::call_next_hook(code, wparam, lparam);
     };
     let is_modifier = key.is_modifier();
     let state = if info.flags.0 & LLKHF_UP.0 != 0 {
@@ -1069,7 +1070,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         KeyDisposition::Consume => return LRESULT(1),
         KeyDisposition::Defer | KeyDisposition::Forward => {}
     }
-    super::native::call_next_hook(code, wparam, lparam)
+    native::call_next_hook(code, wparam, lparam)
 }
 
 fn mask_alt_menu(
@@ -1087,7 +1088,7 @@ fn mask_alt_menu(
     });
     if mask_menu
         && let Err(error) =
-            super::native::post_thread_wake(HOOK_THREAD.load(Ordering::Acquire), MENU_MASK_MESSAGE)
+            native::post_thread_wake(HOOK_THREAD.load(Ordering::Acquire), MENU_MASK_MESSAGE)
     {
         let _ = send_envelope(Envelope {
             event: BackendEvent::Warning(format!(
@@ -1184,7 +1185,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
             }
         }
     }
-    super::native::call_next_hook(code, wparam, lparam)
+    native::call_next_hook(code, wparam, lparam)
 }
 
 #[cfg(test)]
@@ -1339,7 +1340,7 @@ mod tests {
     fn native_hook_recovers_removed_handles_and_session_state() {
         let mut hook = HookThread::start().unwrap();
         let thread_id = hook.thread_id;
-        super::super::native::post_thread_message(thread_id, TEST_RETIRE_HOOKS_MESSAGE, 0).unwrap();
+        native::post_thread_message(thread_id, TEST_RETIRE_HOOKS_MESSAGE, 0).unwrap();
         let deadline = Instant::now() + Duration::from_secs(35);
         while !TEST_HOOKS_RETIRED.load(Ordering::Acquire)
             || TEST_RENEWALS.load(Ordering::Acquire) == 0

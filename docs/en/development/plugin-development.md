@@ -3,7 +3,7 @@
 A plugin combines a `Mode` that handles interaction with a `Manifest` describing its name and calls. It shares commands, events, and presentation interfaces with built-in modes.
 
 ::: info Plugins are bundled today
-Plugins compile with KeySteer and register at startup. Start with `src/plugins/builtin/screen_selector.rs`. External DLL, dylib, and script loading is not available, and Rust API/ABI compatibility across versions is not guaranteed.
+Plugins compile with KeySteer and register at startup. Start with `src/plugins/screen_selector.rs`. External DLL, dylib, and script loading is not available, and Rust API/ABI compatibility across versions is not guaranteed.
 :::
 
 ## Core concepts
@@ -164,7 +164,7 @@ The runtime plan uses user configuration without injecting Manifest suggestions.
 
 ## Bundled example: Screen Selector
 
-The complete code is in `src/plugins/builtin/screen_selector.rs`. Its mode name is `plugin:screen-selector` and its verb is `screen`: `next`/`previous` switches displays, a number selects one, and `call screen` opens the numbered selector.
+The complete code is in `src/plugins/screen_selector.rs`. Its mode name is `plugin:screen-selector` and its verb is `screen`: `next`/`previous` switches displays, a number selects one, and `call screen` opens the numbered selector.
 
 First declare the Manifest and suggested binding:
 

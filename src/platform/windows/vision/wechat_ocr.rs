@@ -31,7 +31,8 @@ use crate::api::geometry::SemanticRole;
 use crate::api::geometry::{Rect, UiTarget};
 use crate::support::worker::WorkerJoin;
 
-use super::vision::{CaptureGeometry, image_to_desktop, valid_target_rect};
+use super::super::native;
+use super::{CaptureGeometry, image_to_desktop, valid_target_rect};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
@@ -244,7 +245,7 @@ impl Drop for WechatOcr {
 
 struct Helper {
     child: Child,
-    job: Option<super::native::KillOnCloseJob>,
+    job: Option<native::KillOnCloseJob>,
     input: Option<ChildStdin>,
     responses: mpsc::Receiver<Result<Vec<u8>, String>>,
     reader: Option<WorkerJoin>,
@@ -317,7 +318,7 @@ impl Helper {
         #[cfg(test)]
         let executable =
             std::env::var_os("KEYSTEER_OCR_PROBE_EXECUTABLE").map_or(executable, PathBuf::from);
-        let job = super::native::KillOnCloseJob::create()?;
+        let job = native::KillOnCloseJob::create()?;
         let child = Command::new(executable)
             .arg("--internal-wechat-ocr-helper")
             .arg(&paths.bridge)
@@ -739,11 +740,11 @@ fn encode_png(
     deadline: Instant,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), String> {
-    let stream: IRandomAccessStream = super::native::create_file_random_access_stream(path)
+    let stream: IRandomAccessStream = native::create_file_random_access_stream(path)
         .map_err(|error| format!("cannot create temporary PNG stream: {error}"))?;
     let result = (|| {
         let encoder = wait_async_operation(
-            super::native::create_png_bitmap_encoder_operation(&stream)?,
+            native::create_png_bitmap_encoder_operation(&stream)?,
             deadline,
             cancelled,
             "PNG encoder creation",
@@ -1033,7 +1034,7 @@ where
             let mut items = Vec::with_capacity(64);
             let mut text_bytes = 0usize;
             while let Some(mut item) = sequence.next_element::<WechatItem>()? {
-                super::vision::trim_string_in_place(&mut item.text);
+                super::trim_string_in_place(&mut item.text);
                 let plausible = !item.text.is_empty()
                     && item.left.is_finite()
                     && item.top.is_finite()
@@ -1349,7 +1350,7 @@ fn pe_machine(path: &Path) -> Result<PeMachine, String> {
 }
 
 pub(crate) fn run_helper(paths: HelperPaths) -> Result<(), String> {
-    let bridge = super::native::WechatBridge::load(&paths.bridge)?;
+    let bridge = native::WechatBridge::load(&paths.bridge)?;
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     write_frame(&mut output, b"ready")?;

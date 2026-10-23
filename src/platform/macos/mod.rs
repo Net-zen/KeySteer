@@ -6,17 +6,12 @@
 
 mod accessibility;
 mod autostart;
-mod display_link;
+mod display;
 mod event_loop;
-mod hook;
 mod input;
-pub(crate) mod latest_point_mailbox;
-pub(crate) mod multi_click;
 mod native;
-mod overlay;
 mod permissions;
 mod scan_workers;
-mod screens;
 mod status_item;
 mod ui_scan;
 mod update_installer;
@@ -51,9 +46,9 @@ use crate::api::input::{Key, KeyState};
 use crate::api::overlay::OverlayScene;
 use crate::platform::common::scan_mailbox::ScanMailbox;
 
-use self::hook::{HookStartup, HookThread};
-use self::overlay::Overlay;
-use crate::platform::multi_click::ClickTracker;
+use self::display::{display_link::DisplayFrameClock, overlay::Overlay};
+use self::input::hook::{HookStartup, HookThread};
+use self::input::multi_click::ClickTracker;
 
 const BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -110,8 +105,8 @@ pub struct MacOsBackend {
     overlay: Overlay,
     screens: Vec<Screen>,
     window_move: RefCell<Option<window_move::WindowMove<accessibility::MovableWindow>>>,
-    display_watcher: Option<screens::DisplayWatcher>,
-    frame_clock: display_link::DisplayFrameClock,
+    display_watcher: Option<display::DisplayWatcher>,
+    frame_clock: DisplayFrameClock,
     scroll_worker: crate::platform::common::scroll_worker::ScrollWorker,
     workspace: workspace::Workspace,
     status_item: Option<status_item::StatusItem>,
@@ -149,7 +144,7 @@ impl MacOsBackend {
                 let _ = scroll_events.send(event);
             },
         )?;
-        let frame_clock = display_link::DisplayFrameClock::new(mtm);
+        let frame_clock = DisplayFrameClock::new(mtm);
         let scan_mailbox = Arc::new(ScanMailbox::default());
         let configured_interval = NSEvent::doubleClickInterval();
         let double_click_interval = if configured_interval.is_finite() && configured_interval > 0.0
@@ -168,8 +163,8 @@ impl MacOsBackend {
         let hook_start = HookStartup::spawn(Arc::clone(&click_tracker));
         // Register before the initial snapshot so a display change during
         // enumeration remains pending for the first native refresh.
-        let display_watcher = screens::DisplayWatcher::new()?;
-        let initial_screens = screens::list_screens().unwrap_or_else(|error| {
+        let display_watcher = display::DisplayWatcher::new()?;
+        let initial_screens = display::list_screens().unwrap_or_else(|error| {
             crate::support::logging::report_error(
                 "macos-screen",
                 format!("initial display enumeration failed: {error}"),
@@ -240,7 +235,7 @@ impl MacOsBackend {
         let timeout = timeout.min(
             self.display_watcher
                 .as_ref()
-                .map_or(Duration::MAX, screens::DisplayWatcher::time_until_retry),
+                .map_or(Duration::MAX, display::DisplayWatcher::time_until_retry),
         );
         if self.window_move.get_mut().is_some() {
             timeout.min(window_move::POLL_INTERVAL)
@@ -253,9 +248,9 @@ impl MacOsBackend {
         let changed = self
             .display_watcher
             .as_ref()
-            .is_none_or(screens::DisplayWatcher::take_changed);
+            .is_none_or(display::DisplayWatcher::take_changed);
         if changed || self.screens.is_empty() {
-            let current = screens::list_screens().inspect_err(|_| {
+            let current = display::list_screens().inspect_err(|_| {
                 if let Some(watcher) = &self.display_watcher {
                     watcher.retry_refresh();
                 }
@@ -697,7 +692,7 @@ impl Backend for MacOsBackend {
 
     fn screens(&self) -> Result<Vec<Screen>, String> {
         if self.screens.is_empty() {
-            screens::list_screens()
+            display::list_screens()
         } else {
             Ok(self.screens.clone())
         }

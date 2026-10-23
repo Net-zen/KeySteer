@@ -62,7 +62,7 @@ pub(crate) fn register_display_reconfiguration_callback() -> i32 {
     // SAFETY: this callback has the exact CoreGraphics ABI, uses null userdata,
     // and touches only process-lifetime atomics plus the main run loop.
     unsafe {
-        CGDisplayRegisterReconfigurationCallback(super::screens::display_changed, std::ptr::null())
+        CGDisplayRegisterReconfigurationCallback(super::display::display_changed, std::ptr::null())
     }
 }
 
@@ -70,7 +70,7 @@ pub(crate) fn remove_display_reconfiguration_callback() -> i32 {
     // SAFETY: this is the exact callback/null-userdata pair installed above;
     // the callback owns no dynamically freed state.
     unsafe {
-        CGDisplayRemoveReconfigurationCallback(super::screens::display_changed, std::ptr::null())
+        CGDisplayRemoveReconfigurationCallback(super::display::display_changed, std::ptr::null())
     }
 }
 
@@ -82,7 +82,7 @@ extern "C-unwind" fn event_tap_invalidated(
     port: *mut objc2_core_foundation::CFMachPort,
     _info: *mut c_void,
 ) {
-    super::hook::event_tap_invalidated(port as usize);
+    super::input::hook::event_tap_invalidated(port as usize);
 }
 
 fn update_event_tap_invalidation_callback(tap: &CFMachPort, install: bool) -> Result<(), String> {

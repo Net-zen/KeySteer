@@ -66,7 +66,7 @@ Mode 只更新状态和返回命令；鼠标、窗口、线程和权限由 Engin
 
 基本步骤：
 
-1. 在 `src/plugins/builtin/` 实现 `Mode`。
+1. 在 `src/plugins/` 实现 `Mode`。
 2. 用 `Manifest` 声明稳定 id、名称、描述、动词和建议绑定。
 3. 在 `src/app/mode_catalog.rs` 的 `bundled_plugins()` 返回它；catalog 会校验 Manifest。
 4. 由 `RuntimePlan` 启动或热重载时整体注册，不在 bootstrap 逐项拼装。

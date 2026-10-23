@@ -1,4 +1,9 @@
-//! Display enumeration via `EnumDisplayMonitors`, DPI-aware.
+//! Display snapshots, DPI, overlay rendering and frame timing.
+
+pub(super) mod frame_clock;
+pub(super) mod gpu_overlay;
+pub(super) mod overlay;
+pub(super) mod overlay_worker;
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -18,6 +23,17 @@ use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
 use windows::core::BOOL;
 
 use crate::api::geometry::{Rect, Screen};
+use crate::api::overlay::{LabelStyle, LabelTextAnalysis};
+
+#[inline]
+fn label_text_offset_y(style: &LabelStyle, analysis: LabelTextAnalysis, fixed_line: bool) -> f64 {
+    let units = if analysis.has_descender && !fixed_line {
+        -2.0
+    } else {
+        -1.0
+    };
+    analysis.scaled_units(style.font_size, units)
+}
 
 /// Opt into per-monitor DPI awareness.
 ///
@@ -146,4 +162,31 @@ pub fn primary_scale() -> f64 {
         );
     }
     dpi_x as f64 / 96.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_text_position_keeps_the_existing_upward_optical_offsets() {
+        let style = LabelStyle {
+            font_size: 17.0,
+            ..LabelStyle::default()
+        };
+        assert_eq!(
+            label_text_offset_y(&style, LabelTextAnalysis::analyze("asa", 0), false),
+            -1.0
+        );
+        assert_eq!(
+            label_text_offset_y(&style, LabelTextAnalysis::analyze("aag", 0), false),
+            -2.0
+        );
+        for text in ["", "asa", "asag", "jpyq"] {
+            assert_eq!(
+                label_text_offset_y(&style, LabelTextAnalysis::analyze(text, 0), true),
+                -1.0
+            );
+        }
+    }
 }

@@ -521,16 +521,47 @@ fn labels_autohide_once_fitting_would_make_them_too_small() {
 
 #[test]
 fn scene_draws_interior_rulings() {
-    let env = Env::new();
-    let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
-    let out = activate(&mut mode, &env);
-    let lines = scene_of(&out)
-        .shapes
-        .iter()
-        .filter(|s| matches!(s, OverlayShape::Line { .. }))
-        .count();
-    // A 3x3 grid has two vertical and two horizontal rulings.
-    assert_eq!(lines, 4);
+    for (line_width, transparent) in [(1, false), (0, false), (2, true)] {
+        let mut config = legacy_config();
+        config.recursive_grid.ui.line_width = line_width;
+        if transparent {
+            config.recursive_grid.ui.line_color =
+                Some(crate::api::ThemedColor::Both("#00000000".into()));
+        }
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
+        let out = activate(&mut mode, &env);
+        let lines: Vec<_> = scene_of(&out)
+            .shapes
+            .iter()
+            .filter_map(|shape| match shape {
+                OverlayShape::Line {
+                    from,
+                    to,
+                    width,
+                    color,
+                    z_index,
+                    ..
+                } => {
+                    assert_eq!(*width, f64::from(line_width));
+                    assert_eq!(color.is_transparent(), transparent);
+                    assert_eq!(*z_index, 1);
+                    Some((*from, *to))
+                }
+                _ => None,
+            })
+            .collect();
+        // Recursive scenes retain the same geometry even when lines are invisible.
+        assert_eq!(
+            lines,
+            vec![
+                (Point::new(300.0, 0.0), Point::new(300.0, 900.0)),
+                (Point::new(600.0, 0.0), Point::new(600.0, 900.0)),
+                (Point::new(0.0, 300.0), Point::new(900.0, 300.0)),
+                (Point::new(0.0, 600.0), Point::new(900.0, 600.0)),
+            ]
+        );
+    }
 }
 
 #[test]

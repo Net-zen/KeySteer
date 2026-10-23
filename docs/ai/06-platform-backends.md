@@ -4,11 +4,11 @@
 
 | 能力 | 两端入口（相对于 OS 目录） |
 | --- | --- |
-| 输入捕获与注入 | `hook.rs`、`input.rs` |
-| 覆盖层与显示时钟 | `overlay.rs`；Windows 另有 `overlay_worker.rs`、`frame_clock.rs`，macOS 为 `display_link.rs` |
+| 输入捕获与注入 | `input/mod.rs`、`input/hook.rs`；macOS 输入状态辅助模块也位于 `input/` |
+| 显示、覆盖层与帧时钟 | `display/mod.rs`、`display/overlay.rs`；Windows 另有 `display/gpu_overlay.rs`、`display/overlay_worker.rs`、`display/frame_clock.rs`，macOS 为 `display/display_link.rs` |
 | 状态菜单与登录启动 | `status_item.rs`、`autostart.rs` |
-| 辅助功能与视觉扫描 | `accessibility.rs`、`ui_scan.rs`、`vision` 相关实现 |
-| 窗口与音频 | `window_manager`、`window_tabs`、`window_audio` 相关实现 |
+| 辅助功能与视觉扫描 | Windows `accessibility.rs`、macOS `accessibility/`；两端 `ui_scan.rs`、`vision/`；macOS 扫描来源协调仍在 `scan_workers.rs` |
+| 窗口与音频 | `window_manager`、`window_tabs`、`window_audio` 相关实现；Windows 音频策略仅供 `window_audio/` 内部使用 |
 | 原生资源封装 | `native/` 及各原生 owner |
 
 ## 边界
@@ -21,6 +21,10 @@
 - 权限、签名、焦点、系统全屏等行为需要目标 OS 实机验证，交叉编译不能替代。
 
 原生错误统一进入 `src/support/logging.rs`；不得另建平台日志出口。
+
+Windows `system_events.rs` 集中前台变化及控制台退出通知，两个注册对象仍独立管理回调和关闭状态。`native/gdi.rs` 同时保存桌面 DC、像素表面及复用它们的 `PreparedCapture`；截图类型和方法继续禁止 unsafe，线程归属及释放顺序不变。公共窗口历史的快照、提交和撤销／重做确认集中在 `common/window_session/history.rs`，取消及失败后的逆向记录仍由同一历史事务持有。布局／历史事务的分派枚举随 `window_session/worker.rs` 保存，原有串行屏障和独立确认实现保留。
+
+能力目录只组织现有实现，不增加代理或资源管理层。`input/`、`display/` 的入口直接保留映射／注入和显示枚举实现；后端仍按原顺序创建与关闭资源。Windows 的 WeChat OCR 进程实现位于 `vision/wechat_ocr.rs`；macOS 的 Vision 桥接及两个头文件与 Rust 入口同处 `vision/`，构建脚本和原生回归夹具直接引用这些文件。
 
 Windows overlay worker 以实际资源和待办表达生命周期：截图门由 generation、隐藏确认通道和延后帧共同拥有，关闭由 `Shutdown` 待办和 `alive` 控制，不另维护一套阶段枚举。渲染器仍独立记录像素是否已提交，用于决定截图前是否需要原生刷新屏障；这个状态不能由邮箱是否为空推导。
 
@@ -46,7 +50,7 @@ Windows/macOS 的连续滚动共用 `common/scroll_worker.rs`：待执行邮箱�
 
 ## 状态菜单与 About
 
-macOS 使用 AppKit 的 NSMenu 和非模态标准 About 面板，由系统决定外观，不覆盖系统材质。`event_loop.rs` 在主线程派发 AppKit 事件，注册 common、event-tracking 和 modal-panel 模式的 observer 与可复用 deadline timer；原生菜单的嵌套循环期间仍驱动同一个 Engine。普通输入、异步完成和显示帧唤醒原生循环，期限按引擎定时任务及待确认窗口移动调整，不增加固定高频轮询。`display_link.rs` 在相同模式注册显示帧。
+macOS 使用 AppKit 的 NSMenu 和非模态标准 About 面板，由系统决定外观，不覆盖系统材质。`event_loop.rs` 在主线程派发 AppKit 事件，注册 common、event-tracking 和 modal-panel 模式的 observer 与可复用 deadline timer；原生菜单的嵌套循环期间仍驱动同一个 Engine。普通输入、异步完成和显示帧唤醒原生循环，期限按引擎定时任务及待确认窗口移动调整，不增加固定高频轮询。`display/display_link.rs` 在相同模式注册显示帧。
 
 空闲时不安排周期性的引擎回合。macOS `workspace.rs` 保留 NSWorkspace 应用切换通知及 NSApplication.effectiveAppearance 的 KVO observer，通知只标记缓存失效并唤醒主循环，下一回合读取状态；析构先注销再释放 observer。显示枚举失败和状态图标尚未挂接时按实际重试期限唤醒，恢复后移除期限。Windows 使用消息等待及 `MWMO_INPUTAVAILABLE`，已查看但未移除的消息也必须唤醒；只有前台或托盘通知源无法建立时才降级为 50 ms 轮询。无截止时间使用 INFINITE，有限期限向上取整到毫秒且不能误映射为 INFINITE。
 

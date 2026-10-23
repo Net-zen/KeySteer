@@ -908,12 +908,18 @@ impl WindowContent {
             layer.configured = false;
             return;
         }
-        let configured = match slot {
-            LabelSlot::Static(index) => self.labels[index].configured,
-            LabelSlot::Foreground(index) => self.foreground_labels[index].configured,
-            LabelSlot::Indicator(index) => self.indicator_labels[index].configured,
+        let layer = match slot {
+            LabelSlot::Static(index) => &self.labels[index],
+            LabelSlot::Foreground(index) => &self.foreground_labels[index],
+            LabelSlot::Indicator(index) => &self.indicator_labels[index],
         };
-        let rebuild_text = rebuild_text || !configured;
+        // Entering read-only Point mode can keep an editor's existing offsets.
+        // Rebuild on return only if the current text was laid out without them.
+        let rebuild_text = rebuild_text
+            || !layer.configured
+            || (spec.edit.is_some()
+                && !spec.text.is_empty()
+                && layer.metrics.prefix_offsets.is_empty());
         let background =
             (!spec.style.background.is_transparent()).then(|| self.color(spec.style.background));
         let border = (!spec.style.border_color.is_transparent() && spec.style.border_width > 0.0)
@@ -932,6 +938,7 @@ impl WindowContent {
                 (
                     spec.fixed_bounds.then_some(spec.rect.height),
                     spec.trailing_text_len,
+                    spec.edit.is_some() || !spec.scroll_to_cursor,
                 ),
             )
         });
@@ -1467,7 +1474,7 @@ fn attributed_label_text_pair(
     font: &CTFont,
     foreground: &NSColor,
     matched_foreground: &NSColor,
-    (fixed_height, trailing_text_len): (Option<f64>, u8),
+    (fixed_height, trailing_text_len, measure_prefixes): (Option<f64>, u8, bool),
 ) -> (
     Retained<NSMutableAttributedString>,
     Retained<NSMutableAttributedString>,
@@ -1502,13 +1509,16 @@ fn attributed_label_text_pair(
     let baseline_object: &AnyObject = baseline_number.as_ref();
     let zero_number: &NSNumber = &zero;
     let zero_object: &AnyObject = zero_number.as_ref();
+    let (_, trailing) = crate::api::overlay::split_trailing_text(text, trailing_text_len);
+    let trailing_len = trailing.encode_utf16().count();
+    let query_len = analysis.utf16_len - trailing_len;
     // SAFETY: every AppKit attribute receives its documented object type and
     // all ranges were derived from this exact string's UTF-16 length. The
     // mutable copy is created after the shared layout attributes are applied,
     // then only its foreground color is replaced. CoreText borrows this same
     // toll-free bridged string; indices are UTF-16 boundaries, and optional
     // metric output pointers are null. The owned line is dropped after measuring.
-    let (matched, mut metrics) = unsafe {
+    let (matched, metrics) = unsafe {
         attributed.addAttribute_value_range(NSFontAttributeName, font_object, full_range);
         attributed.addAttribute_value_range(
             NSForegroundColorAttributeName,
@@ -1547,39 +1557,42 @@ fn attributed_label_text_pair(
             )
             .max(0.0) as f32;
         let mut prefix_offsets = SmallVec::new();
-        let mut utf16_len = 0usize;
-        for character in text.chars() {
-            utf16_len += character.len_utf16();
-            let Ok(compact_len) = u32::try_from(utf16_len) else {
-                break;
-            };
-            let x = line
-                .offset_for_string_index(utf16_len as isize, std::ptr::null_mut())
-                .max(0.0) as f32;
-            prefix_offsets.push(PrefixOffset {
-                utf16_len: compact_len,
-                x,
-            });
+        // Read-only scrolling text only needs its end position. Keep all
+        // insertion offsets for editors and prefix-highlighted hint labels.
+        if measure_prefixes {
+            let mut utf16_len = 0usize;
+            for character in text.chars() {
+                utf16_len += character.len_utf16();
+                let Ok(compact_len) = u32::try_from(utf16_len) else {
+                    break;
+                };
+                let x = line
+                    .offset_for_string_index(utf16_len as isize, std::ptr::null_mut())
+                    .max(0.0) as f32;
+                prefix_offsets.push(PrefixOffset {
+                    utf16_len: compact_len,
+                    x,
+                });
+            }
         }
+        let query_end = if trailing_text_len == 0 {
+            width
+        } else if query_len == 0 {
+            0.0
+        } else {
+            line.offset_for_string_index(query_len as isize, std::ptr::null_mut())
+                .max(0.0) as f32
+        };
         (
             matched,
             LabelTextMetrics {
                 width,
-                query_end: width,
+                query_end,
                 prefix_offsets,
             },
         )
     };
     if trailing_text_len > 0 {
-        let (_, trailing) = crate::api::overlay::split_trailing_text(text, trailing_text_len);
-        let trailing_len = trailing.encode_utf16().count();
-        let query_len = analysis.utf16_len - trailing_len;
-        metrics.query_end = metrics
-            .prefix_offsets
-            .iter()
-            .rev()
-            .find(|offset| offset.utf16_len as usize == query_len)
-            .map_or(0.0, |offset| offset.x);
         attributed.deleteCharactersInRange(NSRange::new(query_len, trailing_len));
         matched.deleteCharactersInRange(NSRange::new(0, query_len));
     }
@@ -1638,7 +1651,7 @@ fn indicator_layout(indicator: &Indicator) -> (f64, f64, Rect, Option<Rect>) {
 /// Convert top-left virtual desktop coordinates into AppKit's bottom-left
 /// global window coordinates.
 fn cocoa_frame(area: Rect) -> Result<NSRect, String> {
-    let screens = super::screens::list_screens()?;
+    let screens = super::list_screens()?;
     let primary = Screen::primary(&screens)
         .ok_or_else(|| "macOS reports no primary display for overlay rendering".to_string())?;
     Ok(cocoa_frame_at(area, primary.bounds.bottom()))
@@ -1693,7 +1706,7 @@ mod tests {
                     font,
                     &color,
                     &color,
-                    (None, 0),
+                    (None, 0, true),
                 );
                 assert_eq!(metrics.prefix_offsets.len(), text.chars().count());
                 if let Some(end) = metrics.prefix_offsets.last() {
@@ -1702,6 +1715,50 @@ mod tests {
                     assert!(metrics.width > 0.0);
                 } else {
                     assert_eq!(metrics.width, 0.0);
+                }
+            }
+            for (text, suffix_len) in [
+                ("", 0),
+                ("复制🦀 iii WWW", 0),
+                ("复制🦀 iii WWW 2/3", 4),
+                ("2/3", 3),
+                ("复制🦀 计数", 7),
+                ("复制🦀", 1), // Invalid UTF-8 suffix boundary uses the full query.
+                ("مرحبا 2/3", 4),
+                ("مرحبا", 1),
+            ] {
+                let layout = |measure_prefixes| {
+                    attributed_label_text_pair(
+                        text,
+                        &style,
+                        LabelTextAnalysis::analyze(text, 0),
+                        font,
+                        &color,
+                        &color,
+                        (Some(30.0), suffix_len, measure_prefixes),
+                    )
+                };
+                let (base, matched, full) = layout(true);
+                let (readonly_base, readonly_matched, readonly) = layout(false);
+                assert!(readonly.prefix_offsets.is_empty());
+                assert_eq!(readonly.width, full.width);
+                assert_eq!(readonly.query_end, full.query_end);
+                let (query, trailing) = crate::api::overlay::split_trailing_text(text, suffix_len);
+                let expected_end = if suffix_len == 0 {
+                    full.width
+                } else {
+                    let query_units = query.encode_utf16().count();
+                    full.prefix_offsets
+                        .iter()
+                        .find(|offset| offset.utf16_len as usize == query_units)
+                        .map_or(0.0, |offset| offset.x)
+                };
+                assert_eq!(readonly.query_end, expected_end);
+                assert_eq!(base.string().to_string(), query);
+                assert_eq!(readonly_base.string(), base.string());
+                assert_eq!(readonly_matched.string(), matched.string());
+                if suffix_len > 0 {
+                    assert_eq!(matched.string().to_string(), trailing);
                 }
             }
         });
@@ -2052,5 +2109,29 @@ mod tests {
 
         moved.style.make_mut().matched_text_color = Color::rgb(9, 8, 7);
         assert!(!label_text_content_eq(&first, &moved));
+
+        let mut readonly = first.clone();
+        readonly.scroll_to_cursor = true;
+        let mut editing = readonly.clone();
+        editing.edit = Some(
+            crate::api::overlay::LabelEdit::try_from(crate::api::text_edit::Selection {
+                cursor: 1,
+                anchor: 0,
+            })
+            .unwrap(),
+        );
+        // State transitions alone preserve text; configure_label checks whether
+        // this slot already has insertion offsets before entering an editor.
+        assert!(label_text_content_eq(&readonly, &editing));
+        assert!(label_text_content_eq(&editing, &readonly));
+        let mut moved_cursor = editing.clone();
+        moved_cursor.edit = Some(
+            crate::api::overlay::LabelEdit::try_from(crate::api::text_edit::Selection {
+                cursor: 2,
+                anchor: 2,
+            })
+            .unwrap(),
+        );
+        assert!(label_text_content_eq(&editing, &moved_cursor));
     }
 }

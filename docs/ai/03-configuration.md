@@ -6,7 +6,7 @@
 - `src/config/compatibility.rs`、`compatibility.json`、`build/compatibility.rs`：配置入口统一规范化旧字段、绑定和表格式；原生与网页共用规则，Rust 在编译时生成静态规则。
 - `src/app/configuration.rs`：配置编译边界；`src/app/mode_catalog.rs`：模式 Settings 与路由装配。
 - `src/api/input.rs`、`src/api/binding.rs`：键与动作语法。
-- `src/app/paths.rs`、`src/app/restart.rs`、`src/app/preset_store.rs`：路径、重载进程、工作区存储。
+- `src/app/paths.rs`、`src/app/restart.rs`、`src/app/preset_store/mod.rs`：路径、重载进程、工作区存储。
 
 ## 保留的语义
 

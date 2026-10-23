@@ -529,7 +529,7 @@ fn quarantined_vision_submit_preserves_hybrid_uia_results_and_deferred_frame() {
         }]);
         uia.finish(UiScanStatus::Success);
         let (capture, frame_restored) =
-            super::super::overlay_worker::deferred_capture_fixture(generation);
+            super::super::display::overlay_worker::deferred_capture_fixture(generation);
         worker
             .submit(plan, generation, session.source("visual scan"), capture)
             .expect("quarantine must not cancel the hybrid session");
@@ -561,7 +561,7 @@ fn scan_queued_before_quarantine_finishes_without_starting_native_work() {
         .latest_generation
         .store(generation, Ordering::Release);
     let (capture, frame_restored) =
-        super::super::overlay_worker::deferred_capture_fixture(generation);
+        super::super::display::overlay_worker::deferred_capture_fixture(generation);
     run_scan(
         ScanJob {
             request: plan,
@@ -614,7 +614,7 @@ fn vision_resumes_after_quarantined_provider_exits() {
         Rect::new(0.0, 0.0, 0.0, 0.0),
     );
     let (capture, frame_restored) =
-        super::super::overlay_worker::deferred_capture_fixture(generation);
+        super::super::display::overlay_worker::deferred_capture_fixture(generation);
     worker
         .submit(plan, generation, session.source("visual scan"), capture)
         .unwrap();

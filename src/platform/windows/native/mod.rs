@@ -1,5 +1,4 @@
 //! Native boundary entry point; resource owners live in focused modules.
-mod capture;
 mod com;
 mod compositor;
 mod dimensions;
@@ -10,7 +9,6 @@ mod ocr_bridge;
 mod uia_cache;
 mod window;
 mod winrt;
-pub(crate) use capture::PreparedCapture;
 pub(crate) use com::ComApartment;
 pub(crate) use compositor::{
     CompositorClockSignal, CompositorWait, boost_compositor_clock, display_output_for_monitor,
@@ -18,7 +16,7 @@ pub(crate) use compositor::{
     wait_for_compositor_frame, wait_for_dwm_frame,
 };
 pub(crate) use dimensions::NativeDimensions;
-pub(crate) use gdi::{GdiDibSurface, OwnedFont, ScreenDc};
+pub(crate) use gdi::{GdiDibSurface, OwnedFont, PreparedCapture, ScreenDc};
 pub(crate) use handles::KillOnCloseJob;
 use handles::OwnedHandle;
 pub(crate) use message_loop::{

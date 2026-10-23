@@ -18,15 +18,16 @@ use crate::api::geometry::{Rect, UiTarget};
 use crate::support::worker::WorkerJoin;
 
 use super::accessibility::WindowsScanPlan;
-use super::overlay_worker::CaptureLease;
+use super::display::overlay_worker::CaptureLease;
 use super::ui_scan::ScanSource;
-use super::wechat_ocr::{WechatDescriptor, WechatOcr};
+use wechat_ocr::{WechatDescriptor, WechatOcr};
 
 mod capture;
 mod discovery;
 mod provider_mailbox;
 mod providers;
 mod system_ocr;
+pub(super) mod wechat_ocr;
 
 use capture::*;
 use discovery::*;
@@ -90,7 +91,7 @@ pub(super) fn diagnostic_lines() -> Vec<String> {
         ),
         Err(error) => format!("system OCR: unavailable ({error})"),
     };
-    vec![system, super::wechat_ocr::diagnostic_line()]
+    vec![system, wechat_ocr::diagnostic_line()]
 }
 
 struct ScanJob {

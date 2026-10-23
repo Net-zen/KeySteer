@@ -1,6 +1,10 @@
-//! macOS keycode mapping and CoreGraphics input injection.
+//! macOS input capture, keycode mapping and CoreGraphics input injection.
 
 #![forbid(unsafe_code)]
+
+pub(super) mod hook;
+mod latest_point_mailbox;
+pub(super) mod multi_click;
 
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -19,7 +23,7 @@ use crate::api::command::{ButtonAction, MouseButton};
 use crate::api::geometry::Point;
 use crate::api::input::{Key, KeyState};
 
-use crate::platform::multi_click::ClickTracker;
+use self::multi_click::ClickTracker;
 
 /// Tags our synthetic events so the tap can ignore them. Any value works as
 /// long as it is unlikely to collide with another tool's.

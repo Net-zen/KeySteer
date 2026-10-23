@@ -3,7 +3,7 @@
 插件是一个处理交互的 `Mode`，加上一份描述名称和调用方式的 `Manifest`。它与内置模式共用命令、事件和画面接口。
 
 ::: info 当前是内置插件
-插件随 KeySteer 一起编译，在启动时注册。开发自己的插件可从 `src/plugins/builtin/screen_selector.rs` 开始；目前没有外部 DLL、dylib 或脚本加载接口，也不承诺跨版本 Rust API／ABI 兼容。
+插件随 KeySteer 一起编译，在启动时注册。开发自己的插件可从 `src/plugins/screen_selector.rs` 开始；目前没有外部 DLL、dylib 或脚本加载接口，也不承诺跨版本 Rust API／ABI 兼容。
 :::
 
 ## 核心概念
@@ -164,7 +164,7 @@ pub fn bundled_plugins(config: &Config) -> Result<Vec<Box<dyn Plugin>>, String> 
 
 ## 内置示例：Screen Selector
 
-完整代码在 `src/plugins/builtin/screen_selector.rs`。模式名为 `plugin:screen-selector`，动词为 `screen`：`next`／`previous` 切屏，数字选屏，`call screen` 打开编号选择器。
+完整代码在 `src/plugins/screen_selector.rs`。模式名为 `plugin:screen-selector`，动词为 `screen`：`next`／`previous` 切屏，数字选屏，`call screen` 打开编号选择器。
 
 先声明 Manifest 和建议绑定：
 

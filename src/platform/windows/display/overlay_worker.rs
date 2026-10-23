@@ -14,7 +14,8 @@ use crate::api::geometry::{Point, Rect};
 use crate::api::overlay::OverlayScene;
 use crate::support::worker::WorkerJoin;
 
-use super::{EventSender, gpu_overlay::GpuOverlay, native, overlay};
+use super::super::{EventSender, native};
+use super::{gpu_overlay::GpuOverlay, overlay};
 
 const DEVICE_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const RENDER_WAKE_MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x50;
@@ -100,7 +101,7 @@ fn mark_wake_pending(state: &mut State) -> Result<Option<u32>, String> {
     Ok(state.thread_id)
 }
 
-pub(super) struct OverlayWorker {
+pub(in crate::platform::windows) struct OverlayWorker {
     shared: Arc<Shared>,
     worker: Option<WorkerJoin>,
 }
@@ -109,7 +110,7 @@ pub(super) struct OverlayWorker {
 /// vision worker has copied the desktop pixels. Dropping a stale lease can
 /// never release a newer generation.
 #[must_use = "the capture gate remains hidden until this generation lease is released"]
-pub(super) struct CaptureLease {
+pub(in crate::platform::windows) struct CaptureLease {
     shared: Arc<Shared>,
     generation: u64,
     ready: Option<Receiver<Result<(), String>>>,
@@ -117,7 +118,7 @@ pub(super) struct CaptureLease {
 }
 
 impl CaptureLease {
-    pub(super) fn wait_hidden(
+    pub(in crate::platform::windows) fn wait_hidden(
         &mut self,
         deadline: Instant,
         mut canceled: impl FnMut() -> bool,
@@ -146,7 +147,7 @@ impl CaptureLease {
 
     /// Release the gate and display only the latest frame deferred while the
     /// screenshot was pending.
-    pub(super) fn release(mut self) -> Result<(), String> {
+    pub(in crate::platform::windows) fn release(mut self) -> Result<(), String> {
         self.release_inner(true)
     }
 
@@ -197,7 +198,9 @@ impl Drop for CaptureLease {
 }
 
 #[cfg(test)]
-pub(super) fn deferred_capture_fixture(generation: u64) -> (CaptureLease, impl Fn() -> bool) {
+pub(in crate::platform::windows) fn deferred_capture_fixture(
+    generation: u64,
+) -> (CaptureLease, impl Fn() -> bool) {
     let shared = Arc::new(Shared::default());
     {
         let mut state = shared
@@ -232,7 +235,7 @@ pub(super) fn deferred_capture_fixture(generation: u64) -> (CaptureLease, impl F
 }
 
 impl OverlayWorker {
-    pub(super) fn sample(
+    pub(in crate::platform::windows) fn sample(
         &self,
         request: Option<crate::api::point_sample::Request>,
     ) -> Result<(), String> {
@@ -243,7 +246,7 @@ impl OverlayWorker {
         };
         self.post_wake(wake)
     }
-    pub(super) fn start(events: EventSender) -> Result<Self, String> {
+    pub(in crate::platform::windows) fn start(events: EventSender) -> Result<Self, String> {
         let shared = Arc::new(Shared::default());
         let thread_shared = Arc::clone(&shared);
         let worker = WorkerJoin::spawn(
@@ -259,7 +262,7 @@ impl OverlayWorker {
 
     /// Replace the pending frame and return immediately. Superseded frames are
     /// dropped before any native rendering work begins.
-    pub(super) fn present(
+    pub(in crate::platform::windows) fn present(
         &self,
         scene: Arc<OverlayScene>,
         area: Rect,
@@ -286,7 +289,7 @@ impl OverlayWorker {
     }
 
     /// Coalesce dynamic positions independently from complete frames.
-    pub(super) fn update_positions(
+    pub(in crate::platform::windows) fn update_positions(
         &self,
         cursor: Option<Point>,
         indicator: Option<Point>,
@@ -318,7 +321,7 @@ impl OverlayWorker {
         Ok(true)
     }
 
-    pub(super) fn dismiss(&self) -> Result<(), String> {
+    pub(in crate::platform::windows) fn dismiss(&self) -> Result<(), String> {
         if self.worker.is_none() {
             self.shared
                 .state
@@ -346,7 +349,10 @@ impl OverlayWorker {
 
     /// Begin hiding the overlay for a single scan generation. This method only
     /// enqueues renderer work and never waits for DWM on the engine thread.
-    pub(super) fn begin_capture(&self, generation: u64) -> Result<CaptureLease, String> {
+    pub(in crate::platform::windows) fn begin_capture(
+        &self,
+        generation: u64,
+    ) -> Result<CaptureLease, String> {
         if self.worker.is_none() {
             return Err("Windows overlay renderer is not running".into());
         }
@@ -441,11 +447,14 @@ impl OverlayWorker {
         if result.is_err() { result } else { join_result }
     }
 
-    pub(super) fn shutdown(&mut self) -> Result<(), String> {
+    pub(in crate::platform::windows) fn shutdown(&mut self) -> Result<(), String> {
         self.stop()
     }
 
-    pub(super) fn shutdown_until(&mut self, deadline: Instant) -> Result<(), String> {
+    pub(in crate::platform::windows) fn shutdown_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<(), String> {
         self.stop_until(deadline)
     }
 }
@@ -888,8 +897,8 @@ mod point_sample_tests {
     #[test]
     #[ignore = "native pixel probe; briefly creates two disposable overlay patches"]
     fn sampling_aperture_reads_underlying_pixels_and_restores_the_overlay() {
-        super::super::screens::enable_dpi_awareness().unwrap();
-        let screen = super::super::screens::list_screens().unwrap().remove(0);
+        super::super::enable_dpi_awareness().unwrap();
+        let screen = super::super::list_screens().unwrap().remove(0);
         let area = Rect::new(screen.bounds.x + 20.0, screen.bounds.y + 20.0, 64.0, 64.0);
         let point = area.center();
         let scene = |color| {

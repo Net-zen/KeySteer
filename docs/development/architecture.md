@@ -69,8 +69,8 @@ flowchart TB
 | `src/app/runtime/` | 应用私有 Engine、RuntimePlan 与输入/调度/覆盖层协作者 | `app/runtime/mod.rs`、`app/runtime/plan.rs` |
 | `src/modes/` | `idle`、`normal`、`grid`、`recursive_grid`、`ui_hint` 状态机 | 对应的 `.rs` 文件 |
 | `src/modes/hint/` | UI Hint 标签分配、匹配和扫描状态 | `labeling.rs`、`matching.rs`、`session.rs` |
-| `src/presentation/` | 统一构建模式、帮助面板和光标装饰场景；只依赖 api | `mod.rs`、`hint/`、`key_help.rs`、`dynamic.rs` |
-| `src/plugins/` | 内置插件；也是插件的参考实现 | `builtin/screen_selector.rs` |
+| `src/presentation/` | 统一构建模式、帮助面板和光标装饰场景；只依赖 api | `mod.rs`、`hint/`、`key_help/`、`dynamic.rs` |
+| `src/plugins/` | 内置插件；也是插件的参考实现 | `screen_selector.rs` |
 | `src/platform/windows/` | Win32 Hook、SendInput、UIA、覆盖层、帧时钟和托盘 | `mod.rs` |
 | `src/platform/macos/` | CGEventTap、Core Graphics、AX、Vision、AppKit 和顶部状态项 | `mod.rs` |
 

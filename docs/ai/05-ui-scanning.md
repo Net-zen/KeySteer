@@ -6,7 +6,7 @@
 
 - 协议：`src/api/command.rs`；消费端：`src/modes/hint/`。
 - Windows：`src/platform/windows/accessibility.rs`、`src/platform/windows/ui_scan.rs`、`src/platform/windows/vision/`。
-- macOS：`src/platform/macos/accessibility.rs`、`src/platform/macos/ui_scan.rs`、`src/platform/macos/scan_workers.rs`、`src/platform/macos/vision.rs`、`src/platform/macos/vision_ocr_process.h`。
+- macOS：`src/platform/macos/accessibility/mod.rs`、`src/platform/macos/ui_scan.rs`、`src/platform/macos/scan_workers.rs`、`src/platform/macos/vision/mod.rs`、`src/platform/macos/vision/vision_ocr_process.h`。
 - 共享调度与算法：`src/platform/common/scan_fusion.rs`、`src/platform/common/scan_progress.rs`、`src/platform/common/scan_mailbox.rs`、`src/platform/common/scan_accumulator.rs`、`src/platform/common/image_tiles.rs`、`src/platform/common/spatial_index.rs`、`src/platform/common/contour/`。
 
 ## 必须保持

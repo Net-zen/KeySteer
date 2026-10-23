@@ -49,8 +49,9 @@ use crate::api::overlay::{
     OverlayShape,
 };
 
-use super::native::{
-    NativeDimensions, OwnedWindow, OwnedWindowSpec, create_owned_window, reposition_owned_window,
+use super::super::native::{
+    self, NativeDimensions, OwnedWindow, OwnedWindowSpec, create_owned_window,
+    reposition_owned_window,
 };
 
 const MAX_BRUSHES: usize = 64;
@@ -569,7 +570,7 @@ impl GpuOverlay {
             return Ok(());
         }
         // SAFETY: a null module name asks for the current executable.
-        let instance = super::native::current_module()
+        let instance = native::current_module()
             .map_err(|error| format!("GetModuleHandleW failed: {error}"))?;
         let class = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -582,7 +583,7 @@ impl GpuOverlay {
             hbrBackground: HBRUSH::default(),
             ..Default::default()
         };
-        super::native::register_window_class(&class)?;
+        native::register_window_class(&class)?;
         self.class_registered = true;
         Ok(())
     }
@@ -1535,10 +1536,10 @@ extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if let Some(result) = super::native::click_through_hit_test(message) {
+    if let Some(result) = native::click_through_hit_test(message) {
         return result;
     }
-    super::native::default_window_proc(hwnd, message, wparam, lparam)
+    native::default_window_proc(hwnd, message, wparam, lparam)
 }
 
 #[cfg(test)]
@@ -1551,7 +1552,7 @@ mod tests {
     #[ignore = "requires an interactive Windows compositor; disposable overlay pixel comparison"]
     fn native_retained_damage_matches_full_redraw() -> Result<(), String> {
         use crate::api::overlay::RetainedOverlay;
-        crate::platform::windows::screens::enable_dpi_awareness()?;
+        crate::platform::windows::display::enable_dpi_awareness()?;
         let area = Rect::new(40.0, 40.0, 480.0, 240.0);
         let mut renderer = GpuOverlay::new()?;
         let mut capture = crate::platform::windows::native::PreparedCapture::new(480, 240)?;
@@ -1798,7 +1799,7 @@ mod tests {
     #[test]
     #[ignore = "requires an interactive Windows compositor"]
     fn directcomposition_smoke() -> Result<(), String> {
-        super::super::screens::enable_dpi_awareness()?;
+        super::super::enable_dpi_awareness()?;
         let mut renderer = GpuOverlay::new()?;
         let mut scene = OverlayScene::new();
         let area = Rect::new(0.0, 0.0, 256.0, 128.0);
@@ -1834,13 +1835,13 @@ mod tests {
         });
         let scene = Arc::new(scene);
         renderer.present(Arc::clone(&scene), area)?;
-        assert!(super::super::native::is_window_visible(
+        assert!(native::is_window_visible(
             renderer.content.as_ref().unwrap().window.raw()
         ));
-        let mut capture = super::super::native::PreparedCapture::new(256, 128)?;
+        let mut capture = native::PreparedCapture::new(256, 128)?;
         let mut read = || -> Result<Vec<u8>, String> {
-            assert!(super::super::native::pump_window_messages());
-            super::super::native::wait_for_dwm_frame().map_err(|error| error.to_string())?;
+            assert!(native::pump_window_messages());
+            native::wait_for_dwm_frame().map_err(|error| error.to_string())?;
             capture.capture_with(0, 0, 256, 128, |pixels, _, _| Ok(pixels.to_vec()))
         };
         let original = read()?;
@@ -1895,7 +1896,7 @@ mod tests {
     #[test]
     #[ignore = "requires an interactive Windows compositor"]
     fn native_search_counter_is_drawn_once_on_the_right() -> Result<(), String> {
-        crate::platform::windows::screens::enable_dpi_awareness()?;
+        crate::platform::windows::display::enable_dpi_awareness()?;
         let mut renderer = GpuOverlay::new()?;
         let area = Rect::new(40.0, 40.0, 480.0, 80.0);
         let bounds = Rect::new(52.0, 52.0, 420.0, 56.0);

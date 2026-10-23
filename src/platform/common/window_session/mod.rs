@@ -4,10 +4,8 @@
 mod access;
 mod confirmation;
 mod history;
-mod history_confirmation;
 mod layout_confirmation;
 mod overlap;
-mod transaction;
 mod worker;
 pub(crate) use access::WindowAccess;
 use confirmation::PendingAdjustment;
@@ -134,7 +132,7 @@ impl WindowSessionProbe {
         };
         let screens: Arc<[Screen]> = screens.into();
         let deadline = Instant::now() + Duration::from_secs(3);
-        if let Some(mut pending) = transaction::PendingTransaction::take_begin(
+        if let Some(mut pending) = worker::PendingTransaction::take_begin(
             &mut self.session,
             access,
             &mut request,
@@ -4170,5 +4168,5 @@ mod tests {
             .stop_until(Instant::now() + Duration::from_secs(2))
             .unwrap();
     }
-    include!("window_session/async_tests.rs");
+    include!("async_tests.rs");
 }
