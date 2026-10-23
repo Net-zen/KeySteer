@@ -12,6 +12,7 @@
 //! partial config file is valid.
 
 mod aliases;
+mod compatibility;
 mod settings;
 mod window;
 pub use window::{
@@ -48,7 +49,7 @@ use aliases::{
 pub use settings::GridLayer;
 pub use settings::{
     Grid, Normal, Pointer, RecursiveGrid, Scroll, TargetingMethod, TargetingReset, TextInput,
-    UiHint,
+    TextSelect, UiHint,
 };
 pub use store::{ConfigStore, ReplaceFile};
 
@@ -84,6 +85,8 @@ pub struct ConfigFile {
     pub normal: Normal,
     #[serde(default)]
     pub text_input: TextInput,
+    #[serde(default)]
+    pub text_select: TextSelect,
     #[serde(default)]
     pub window: Window,
     #[serde(default)]
@@ -133,6 +136,7 @@ pub(crate) struct LoadedConfig {
     pub(crate) config: Config,
     pub(crate) raw_text: String,
     pub(crate) path: PathBuf,
+    pub(crate) warnings: Vec<String>,
 }
 
 impl Default for ConfigFile {
@@ -146,6 +150,7 @@ impl Default for ConfigFile {
             hotkeys: default_idle_bindings(),
             normal: Normal::default(),
             text_input: TextInput::default(),
+            text_select: TextSelect::default(),
             window: Window::default(),
             window_quick: WindowQuick::default(),
             window_editor: WindowEditor::default(),
@@ -191,6 +196,8 @@ pub struct ModeUsage {
 pub struct QuickSwitch {
     pub enabled: bool,
     pub key: String,
+    pub hint_characters: String,
+    pub bindings: Bindings,
     pub hold_ms: u64,
     pub blacklist: Vec<String>,
     pub position: crate::api::style::QuickSwitchPosition,
@@ -201,6 +208,12 @@ impl Default for QuickSwitch {
         Self {
             enabled: true,
             key: "q".into(),
+            hint_characters: "wertyuiop".into(),
+            bindings: builtin_bindings(&[
+                ("esc", "cancel_selection"),
+                ("q", "cancel_selection"),
+                ("backspace", "previous_level"),
+            ]),
             hold_ms: 350,
             blacklist: vec!["idle".into()],
             position: Default::default(),
@@ -225,9 +238,78 @@ fn default_plugin_modes() -> BTreeMap<String, PluginModeConfig> {
         "plugin:screen-selector".into(),
         PluginModeConfig {
             settings: BTreeMap::from([("preserve".into(), toml::Value::Boolean(true))]),
+            bindings: builtin_bindings(&[
+                ("esc", "cancel_selection"),
+                ("enter", "confirm_selection"),
+                ("backspace", "previous_level"),
+            ]),
             ..Default::default()
         },
     )])
+}
+
+/// Defaults for controls that were formerly owned by mode key handlers. Keep
+/// their original behavior for sparse/older binding tables; `none` opts out.
+pub(crate) fn with_control_defaults(
+    mode: &str,
+    configured: &Bindings,
+    aliases: &BTreeMap<String, String>,
+) -> Result<Bindings, ConfigError> {
+    let mut controls = match mode {
+        "grid" => Grid::default().bindings,
+        "recursive_grid" => RecursiveGrid::default().bindings,
+        "ui_hint" => UiHint::default().bindings,
+        "window_editor" => WindowEditor::default().bindings.clone(),
+        "window_restore" => WindowRestore::default().bindings.clone(),
+        "window.multi_select" => window::MultiSelect::default().bindings,
+        "plugin:screen-selector" => {
+            default_plugin_modes()
+                .remove(mode)
+                .ok_or_else(|| ConfigError::Parse("missing screen-selector defaults".into()))?
+                .bindings
+        }
+        _ => return Ok(configured.clone()),
+    };
+    controls.retain(|key, binding| {
+        matches!(
+            binding,
+            Binding::SelectionReset
+                | Binding::SelectionParent
+                | Binding::SelectionAccept
+                | Binding::SelectionCancel
+                | Binding::SelectionSearch
+                | Binding::SelectionReopen
+                | Binding::Window(
+                    crate::api::window::WindowAction::AreaNumber
+                        | crate::api::window::WindowAction::NextPage
+                        | crate::api::window::WindowAction::PreviousPage
+                        | crate::api::window::WindowAction::MultiCancel
+                )
+        ) || mode == "window.multi_select"
+            && !key.contains('+')
+            && matches!(binding, Binding::Send(_))
+    });
+    normalize_binding_keys(&mut controls, mode, aliases)?;
+    let mut result = configured.clone();
+    normalize_binding_keys(&mut result, mode, aliases)?;
+    let occupied: BTreeSet<_> = result
+        .keys()
+        .filter_map(|key| {
+            KeyChord::parse_with_aliases(key, aliases)
+                .ok()
+                .map(|key| key.canonical())
+        })
+        .collect();
+    for (key, binding) in controls {
+        if !occupied.contains(
+            &KeyChord::parse_with_aliases(&key, aliases)
+                .map_err(ConfigError::Parse)?
+                .canonical(),
+        ) {
+            result.insert(key, binding);
+        }
+    }
+    Ok(result)
 }
 
 /// Defaults for `idle`: only what is needed to wake the program up.
@@ -317,9 +399,6 @@ pub struct MacOsScrollConfig {
     pub invert_horizontal: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invert_vertical: Option<bool>,
-    /// Deprecated compatibility input for the former all-axis switch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invert: Option<bool>,
 }
 
 impl Default for MacOsScrollConfig {
@@ -327,7 +406,6 @@ impl Default for MacOsScrollConfig {
         Self {
             invert_horizontal: Some(false),
             invert_vertical: Some(true),
-            invert: None,
         }
     }
 }
@@ -474,45 +552,26 @@ impl ConfigFile {
     pub(crate) fn load_with_source(path: &Path) -> Result<LoadedConfig, ConfigError> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| ConfigError::Io(format!("cannot read {}: {e}", path.display())))?;
-        let config = Self::parse(&text)?;
+        let (config, warnings) = Self::parse_with_warnings(&text)?;
         config.validate()?;
         Ok(LoadedConfig {
             config,
             raw_text: text,
             path: path.to_path_buf(),
+            warnings,
         })
     }
 
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
-        let value: toml::Value =
+        Self::parse_with_warnings(text).map(|(config, _)| config)
+    }
+
+    pub(crate) fn parse_with_warnings(text: &str) -> Result<(Self, Vec<String>), ConfigError> {
+        let mut value: toml::Value =
             toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
-        if let Some(window) = value.get("window").and_then(toml::Value::as_table) {
-            for (old, replacement) in [
-                (
-                    "exit_mode",
-                    "[window.bindings] q = \"idle\" (or another mode)",
-                ),
-                ("split_ratios", "window_quick.split_ratios"),
-                (
-                    "gap",
-                    "window_editor.gap / window_quick.gap / window_restore.gap",
-                ),
-                (
-                    "layout_keys",
-                    "numeric selection in the independent window modes",
-                ),
-                (
-                    "double_tap_ms",
-                    "direct window_quick / window_editor bindings",
-                ),
-            ] {
-                if window.contains_key(old) {
-                    return Err(ConfigError::Invalid(format!(
-                        "window.{old} was removed; use {replacement}"
-                    )));
-                }
-            }
-        }
+        let warnings = compatibility::normalize(&mut value)?;
+        let missing_text_select = value.get("text_select").is_none();
+        let missing_text_input = value.get("text_input").is_none();
         let key_aliases = value
             .get("key_aliases")
             .cloned()
@@ -525,7 +584,68 @@ impl ConfigFile {
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
         config.resolved_key_aliases = aliases;
         config.apply_configured_key_aliases()?;
-        Ok(config)
+        fn enters(binding: &Binding, mode: &ModeId) -> bool {
+            binding.mode() == Some(mode)
+                || matches!(binding, Binding::Sequence(items) if items.iter().any(|b| enters(b, mode)))
+        }
+        // A pre-feature Normal table replaces its defaults wholesale. Restore
+        // only missing feature entrances, without overriding a custom/disabled
+        // key or adding a second shortcut to an already remapped mode.
+        for (missing, key, mode) in [
+            (missing_text_select, "c", ModeId::text_select()),
+            (missing_text_input, "\\", ModeId::text_input()),
+        ] {
+            let reserved = |table: &Bindings| {
+                table.iter().any(|(configured, binding)| {
+                    enters(binding, &mode)
+                        || KeyChord::parse_with_aliases(configured, &config.resolved_key_aliases)
+                            .ok()
+                            .is_some_and(|chord| {
+                                chord.keys().iter().any(|part| part.as_str() == key)
+                            })
+                })
+            };
+            if missing
+                && !reserved(&config.normal.bindings)
+                && !(config
+                    .normal
+                    .inherits
+                    .iter()
+                    .any(|name| name == "hotkeys" || name == "idle")
+                    && reserved(&config.hotkeys))
+                && !config.normal.targeting.as_ref().is_some_and(|targeting| {
+                    let geometry = targeting.resolve(&config);
+                    geometry.keys.contains(key)
+                        || geometry.layers.iter().any(|layer| {
+                            layer.keys.as_deref().is_some_and(|keys| keys.contains(key))
+                        })
+                })
+            {
+                config
+                    .normal
+                    .bindings
+                    .insert(key.into(), Binding::Mode(mode));
+            }
+        }
+        for (name, table) in [
+            ("grid", &mut config.grid.bindings),
+            ("recursive_grid", &mut config.recursive_grid.bindings),
+            ("ui_hint", &mut config.ui_hint.bindings),
+            ("window_editor", &mut config.window_editor.common.bindings),
+            ("window_restore", &mut config.window_restore.common.bindings),
+            (
+                "window.multi_select",
+                &mut config.window.multi_select.bindings,
+            ),
+        ] {
+            *table = with_control_defaults(name, table, &config.resolved_key_aliases)?;
+        }
+        for (name, plugin) in &mut config.plugin_modes {
+            plugin.bindings =
+                with_control_defaults(name, &plugin.bindings, &config.resolved_key_aliases)?;
+        }
+
+        Ok((config, warnings))
     }
 
     /// Expand whitespace-separated single-key aliases in a binding key.
@@ -542,6 +662,16 @@ impl ConfigFile {
             &aliases,
         )?;
         normalize_binding_keys(&mut self.normal.bindings, "[normal.bindings]", &aliases)?;
+        normalize_binding_keys(
+            &mut self.quick_switch.bindings,
+            "[quick_switch.bindings]",
+            &aliases,
+        )?;
+        normalize_binding_keys(
+            &mut self.text_select.bindings,
+            "[text_select.bindings]",
+            &aliases,
+        )?;
         normalize_binding_keys(
             &mut self.text_input.bindings,
             "[text_input.bindings]",
@@ -645,50 +775,18 @@ impl ConfigFile {
     }
 
     pub fn to_toml(&self) -> Result<String, ConfigError> {
-        // Export only the new platform hierarchy. A legacy value is projected
-        // into it so dumping and reloading a migrated configuration preserves
-        // behavior without perpetuating the deprecated field.
-        let mut exported = self.clone();
-        let legacy = exported
-            .platform
-            .macos
-            .scroll
-            .invert
-            .or(exported.scroll.invert_scroll);
-        if let Some(legacy) = legacy {
-            if exported.platform.macos.scroll.invert_horizontal.is_none() {
-                exported.platform.macos.scroll.invert_horizontal = Some(legacy);
-            }
-            if exported.platform.macos.scroll.invert_vertical.is_none() {
-                exported.platform.macos.scroll.invert_vertical = Some(legacy);
-            }
-        }
-        exported.platform.macos.scroll.invert = None;
-        exported.scroll.invert_scroll = None;
-        toml::to_string_pretty(&exported).map_err(|error| ConfigError::Serialize(error.to_string()))
+        toml::to_string_pretty(self).map_err(|error| ConfigError::Serialize(error.to_string()))
     }
 
     /// Effective macOS values, with explicit per-axis settings taking priority.
     pub fn macos_scroll_invert(&self) -> (bool, bool) {
-        let legacy = self
-            .platform
-            .macos
-            .scroll
-            .invert
-            .or(self.scroll.invert_scroll);
         (
             self.platform
                 .macos
                 .scroll
                 .invert_horizontal
-                .or(legacy)
                 .unwrap_or(false),
-            self.platform
-                .macos
-                .scroll
-                .invert_vertical
-                .or(legacy)
-                .unwrap_or(true),
+            self.platform.macos.scroll.invert_vertical.unwrap_or(true),
         )
     }
 

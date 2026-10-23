@@ -5,10 +5,10 @@ use pinyin::ToPinyin;
 /// Reused query spans: no per-term String and no repeated scan for identical
 /// terms. Sort only spans, then restore first-occurrence order for copying.
 #[derive(Default)]
-pub(super) struct SearchTerms(smallvec::SmallVec<[std::ops::Range<usize>; 8]>);
+pub(in crate::modes) struct SearchTerms(smallvec::SmallVec<[std::ops::Range<usize>; 8]>);
 
 impl SearchTerms {
-    pub(super) fn prepare(&mut self, query: &str) {
+    pub(in crate::modes) fn prepare(&mut self, query: &str) {
         self.0.clear();
         for term in query.split_whitespace().filter(|term| *term != "@") {
             if let Some(range) = query.substr_range(term) {
@@ -26,42 +26,46 @@ impl SearchTerms {
         }
     }
 
-    pub(super) fn needs_dedup(&self) -> bool {
+    pub(in crate::modes) fn needs_dedup(&self) -> bool {
         self.0.len() > 1
     }
 
-    pub(super) fn iter<'a>(&'a self, query: &'a str) -> impl Iterator<Item = &'a str> {
+    pub(in crate::modes) fn iter<'a>(&'a self, query: &'a str) -> impl Iterator<Item = &'a str> {
         self.0.iter().map(|range| &query[range.clone()])
     }
 }
 
-pub(super) const RANK_COUNT: usize = 9;
+pub(in crate::modes) const RANK_COUNT: usize = 9;
 
 /// One successor per matching target. Nine fixed rank buckets are joined in
 /// priority order while filtering, avoiding sorting and extra target copies.
 #[derive(Default)]
-pub(super) struct SearchCycle {
+pub(in crate::modes) struct SearchCycle {
     next: Vec<usize>,
     first: Option<usize>,
     last: Option<usize>,
 }
 
 impl SearchCycle {
-    pub(super) fn clear(&mut self) {
+    pub(in crate::modes) fn clear(&mut self) {
         self.next.clear();
         self.first = None;
         self.last = None;
     }
 
-    pub(super) fn first(&self) -> Option<usize> {
+    pub(in crate::modes) fn first(&self) -> Option<usize> {
         self.first
     }
 
-    pub(super) fn next(&self, current: Option<usize>) -> Option<usize> {
+    pub(in crate::modes) fn next(&self, current: Option<usize>) -> Option<usize> {
         super::next_target_position(current, self.first, |index| self.next[index])
     }
 
-    pub(super) fn push(&mut self, rank: u8, buckets: &mut [Option<(usize, usize)>; RANK_COUNT]) {
+    pub(in crate::modes) fn push(
+        &mut self,
+        rank: u8,
+        buckets: &mut [Option<(usize, usize)>; RANK_COUNT],
+    ) {
         let index = self.next.len();
         self.next.push(index + 1);
         if let Some((_, last)) = &mut buckets[usize::from(rank)] {
@@ -75,7 +79,7 @@ impl SearchCycle {
         }
     }
 
-    pub(super) fn append(&mut self, buckets: [Option<(usize, usize)>; RANK_COUNT]) {
+    pub(in crate::modes) fn append(&mut self, buckets: [Option<(usize, usize)>; RANK_COUNT]) {
         for (first, last) in buckets.into_iter().flatten() {
             self.first.get_or_insert(first);
             if let Some(previous) = self.last {
@@ -90,27 +94,27 @@ impl SearchCycle {
 }
 
 /// Keep explicit preview identity independent of scan-vector positions.
-pub(super) struct Focus {
+pub(in crate::modes) struct Focus {
     pub index: usize,
     pub label: crate::api::hint::HintCode,
     pub bounds: crate::api::Rect,
 }
 
 #[derive(Default)]
-pub(super) struct SearchText {
+pub(crate) struct SearchText {
     text: String,
     initials_start: usize,
 }
 
 /// Parse the label marker once per query term, outside the candidate loop.
-pub(super) struct Term<'a> {
+pub(crate) struct Term<'a> {
     pub code: &'a str,
     pub labels_only: bool,
     initials_possible: bool,
 }
 
 impl<'a> Term<'a> {
-    pub(super) fn new(word: &'a str) -> Self {
+    pub(crate) fn new(word: &'a str) -> Self {
         let code = word.strip_prefix('@').or_else(|| word.strip_suffix('@'));
         let labels_only = code.is_some();
         let code = code.unwrap_or(word);
@@ -129,13 +133,13 @@ impl<'a> Term<'a> {
         }
     }
 
-    pub(super) fn label_rank(&self, label: &str) -> Option<u8> {
+    pub(in crate::modes) fn label_rank(&self, label: &str) -> Option<u8> {
         (!self.code.is_empty() && label.starts_with(self.code))
             .then_some(u8::from(label.len() != self.code.len()) * 3)
     }
 
     /// Match each representation once and use the compiled quality/priority table.
-    pub(super) fn rank(
+    pub(crate) fn rank(
         &self,
         text: &SearchText,
         label: &str,
@@ -154,8 +158,8 @@ impl<'a> Term<'a> {
         }
         let (plain, initials) = text.text.split_at(text.initials_start);
         let text_quality = match_quality(plain, self.code);
-        // Literal Latin text also appears in initials; it belongs to the text
-        // group and does not need a second substring search.
+        // Literal Latin text retained in initials belongs to the text group
+        // and does not need a second substring search.
         let pinyin_quality = if text_quality == 3 && self.initials_possible {
             match_quality(initials, self.code)
         } else {
@@ -169,7 +173,7 @@ impl<'a> Term<'a> {
     }
 
     #[cfg(test)]
-    pub(super) fn matches(&self, text: &SearchText, label: &str) -> bool {
+    pub(crate) fn matches(&self, text: &SearchText, label: &str) -> bool {
         self.rank(
             text,
             label,
@@ -249,7 +253,13 @@ fn quality_positions(
 }
 
 impl SearchText {
-    pub(super) fn target(target: &crate::api::UiTarget) -> Self {
+    /// Queue at most one rebuild for a changed target. A valid split can never
+    /// reach usize::MAX; keep the dirty marker in the existing index word.
+    pub(in crate::modes) fn invalidate(&mut self) -> bool {
+        std::mem::replace(&mut self.initials_start, usize::MAX) != usize::MAX
+    }
+
+    pub(in crate::modes) fn target(target: &crate::api::UiTarget) -> Self {
         let Some(details) = target.details.as_deref() else {
             return Self::new(&target.name, target.role);
         };
@@ -267,16 +277,68 @@ impl SearchText {
         if ocr.is_empty() && accessibility.is_empty() {
             return Self::new(name, target.role);
         }
-        Self::new(&format!("{name} {ocr} {accessibility}"), target.role)
+        Self::fields([name, ocr, accessibility], target.role)
     }
-    pub(super) fn new(name: &str, role: SemanticRole) -> Self {
+
+    #[inline(never)]
+    fn fields(fields: [&str; 3], role: SemanticRole) -> Self {
+        if !fields.iter().all(|field| field.is_ascii()) {
+            // Preserve whole-string contextual Unicode case conversion.
+            return Self::new(&format!("{} {} {}", fields[0], fields[1], fields[2]), role);
+        }
         let role_name = role.as_str();
-        let (role_translation, role_initials) = role_terms(role);
-        let suffix_len = 2 + role_name.len() + role_translation.len();
-        let mut text = if name
-            .chars()
-            .any(|ch| !ch.is_ascii() && ch.to_lowercase().ne(std::iter::once(ch)))
-        {
+        let (translation, initials) = role_terms(role);
+        // Construct the final index directly, without allocating a temporary
+        // joined name for late OCR metadata and then copying it again.
+        let capacity = fields.iter().map(|field| field.len()).sum::<usize>()
+            + 4
+            + role_name.len()
+            + translation.len()
+            + initials.len();
+        let mut text = String::with_capacity(capacity);
+        text.push_str(fields[0]);
+        text.push(' ');
+        text.push_str(fields[1]);
+        text.push(' ');
+        text.push_str(fields[2]);
+        text.make_ascii_lowercase();
+        text.push(' ');
+        text.push_str(role_name);
+        text.push(' ');
+        text.push_str(translation);
+        let initials_start = text.len();
+        text.push_str(initials);
+        Self {
+            text,
+            initials_start,
+        }
+    }
+
+    pub(crate) fn new(name: &str, role: SemanticRole) -> Self {
+        Self::with_role(name, Some(role))
+    }
+
+    pub(in crate::modes) fn content(name: &str) -> Self {
+        Self::with_role(name, None)
+    }
+
+    fn with_role(name: &str, role: Option<SemanticRole>) -> Self {
+        let role_name = role.map_or("", SemanticRole::as_str);
+        let (role_translation, role_initials) = role.map_or(("", ""), role_terms);
+        let suffix_len = if role.is_some() {
+            2 + role_name.len() + role_translation.len()
+        } else {
+            0
+        };
+        let mut ascii = true;
+        let unicode_lowercase = name.chars().any(|ch| {
+            if ch.is_ascii() {
+                return false;
+            }
+            ascii = false;
+            ch.to_lowercase().ne(std::iter::once(ch))
+        });
+        let mut text = if unicode_lowercase {
             // Whole-string conversion preserves contextual Unicode mappings,
             // including final sigma, and mappings that expand to multiple chars.
             let mut text = name.to_lowercase();
@@ -285,33 +347,63 @@ impl SearchText {
         } else {
             // ASCII and uncased text (including Chinese) fit with the roles in
             // one allocation. Lowercasing ASCII preserves all other UTF-8 bytes.
-            let mut text = String::with_capacity(2 * (name.len() + suffix_len));
+            let capacity = if ascii {
+                name.len() + suffix_len + role_initials.len()
+            } else {
+                2 * (name.len() + suffix_len)
+            };
+            let mut text = String::with_capacity(capacity);
             text.push_str(name);
             text.make_ascii_lowercase();
             text
         };
         let name_end = text.len();
-        text.push(' ');
-        text.push_str(role_name);
-        text.push(' ');
-        text.push_str(role_translation);
+        if role.is_some() {
+            text.push(' ');
+            text.push_str(role_name);
+            text.push(' ');
+            text.push_str(role_translation);
+        }
         // Both representations share one allocation; the split keeps searches
         // from matching across their boundary, including control characters.
         let initials_start = text.len();
-        let mut cursor = 0;
-        while let Some(ch) = text[cursor..name_end].chars().next() {
-            cursor += ch.len_utf8();
-            if let Some(py) = ch.to_pinyin() {
-                text.push_str(py.first_letter());
-            } else {
-                text.push(ch);
+        // ASCII names are already searched in plain text. Their identical
+        // initials copy cannot add a match; retain only the role aliases below.
+        if !ascii {
+            let mut cursor = 0;
+            while cursor < name_end {
+                // ASCII cannot produce pinyin. Copy each unchanged run at once,
+                // including spaces and punctuation between Unicode characters.
+                let ascii_len = text.as_bytes()[cursor..name_end]
+                    .iter()
+                    .position(|byte| !byte.is_ascii())
+                    .unwrap_or(name_end - cursor);
+                if ascii_len != 0 {
+                    text.extend_from_within(cursor..cursor + ascii_len);
+                    cursor += ascii_len;
+                    if cursor == name_end {
+                        break;
+                    }
+                }
+                let Some(ch) = text[cursor..name_end].chars().next() else {
+                    break;
+                };
+                cursor += ch.len_utf8();
+                if let Some(py) = ch.to_pinyin() {
+                    text.push_str(py.first_letter());
+                } else {
+                    text.push(ch);
+                }
+            }
+            if role.is_some() {
+                text.push(' ');
+                text.push_str(role_name);
+                text.push(' ');
             }
         }
         // Role names and aliases are fixed; their initials do not need per-
-        // target pinyin conversion. Keep field spacing identical to plain text.
-        text.push(' ');
-        text.push_str(role_name);
-        text.push(' ');
+        // target pinyin conversion. ASCII only needs the translated aliases;
+        // the English role name already appears in plain text.
         text.push_str(role_initials);
         Self {
             text,
@@ -319,20 +411,20 @@ impl SearchText {
         }
     }
 
-    pub(super) fn matches_text(&self, word: &str) -> bool {
+    pub(in crate::modes) fn matches_text(&self, word: &str) -> bool {
         let (text, initials) = self.text.split_at(self.initials_start);
         text.contains(word) || initials.contains(word)
     }
 
     #[cfg(test)]
-    pub(super) fn matches(&self, query: &str, label: &str) -> bool {
+    pub(in crate::modes) fn matches(&self, query: &str, label: &str) -> bool {
         query
             .split_whitespace()
             .all(|word| Term::new(word).matches(self, label))
     }
 }
 
-pub(super) fn role_chinese(role: SemanticRole) -> &'static str {
+pub(in crate::modes) fn role_chinese(role: SemanticRole) -> &'static str {
     role_terms(role).0
 }
 
@@ -366,16 +458,41 @@ fn role_terms(role: SemanticRole) -> (&'static str, &'static str) {
 
 /// Keep query normalization, ranking and candidate storage off the first-label path.
 #[inline(never)]
-pub(super) fn filter(
+pub(in crate::modes) fn filter(
     session: &mut super::session::ScanSession,
     query: &str,
     priority: &crate::api::hint::CompiledSearchPriority,
 ) -> bool {
-    if query
+    // Small lists complete more cheaply than showing a preparation scene and
+    // returning through the scheduler. Keep the large-list input budget small.
+    let budget = if session.scanned.len() <= 2_048 {
+        2_048
+    } else {
+        super::SEARCH_PREWARM_TARGETS
+    };
+    filter_with_budget(session, query, priority, budget)
+}
+
+/// The same query, ranking and multi-selection semantics with a caller-owned
+/// preparation budget. Zero defers text indexing until after the input paint.
+pub(in crate::modes) fn filter_with_budget(
+    session: &mut super::session::ScanSession,
+    query: &str,
+    priority: &crate::api::hint::CompiledSearchPriority,
+    budget: usize,
+) -> bool {
+    let needs_names = query
         .split_whitespace()
-        .any(|word| !word.starts_with('@') && !word.ends_with('@'))
-    {
-        session.ensure_search_names();
+        .any(|word| !word.starts_with('@') && !word.ends_with('@'));
+    session.search_pending = needs_names && !session.prepare_search_names(budget);
+    if session.search_pending {
+        // Never expose old candidates as matches for new text. Keep the label
+        // storage for reuse; the mode displays preparation status until ready.
+        session.search_matches.clear();
+        session.search_cycle.clear();
+        session.search_focus = None;
+        session.search_selected.clear();
+        return false;
     }
     let mut display_changed = false;
     let query = if !query.chars().any(char::is_uppercase) {
@@ -534,9 +651,16 @@ mod tests {
         }
     }
     #[test]
-    fn fixed_role_initials_preserve_every_normalized_representation() {
+    fn fixed_role_initials_match_transliteration_for_unicode_names() {
         for role in SemanticRole::ALL {
-            for name in ["", "Control 设置", "ΟΔΟΣ İẞ", "复制\0面板"] {
+            for name in [
+                "Control 设置",
+                "设置 Control 123",
+                "a复制\0b设置 c!日本語 XYZ",
+                "🙂ASCII设置𠀀tail",
+                "ΟΔΟΣ İẞ",
+                "复制\0面板",
+            ] {
                 let plain = format!(
                     "{} {} {}",
                     name.to_lowercase(),
@@ -689,8 +813,50 @@ mod tests {
     }
 
     #[test]
+    fn ascii_names_preserve_literal_initials_and_label_match_ranks() {
+        let priority = crate::api::hint::CompiledSearchPriority::new(
+            crate::api::hint::DEFAULT_SEARCH_MATCH_PRIORITY,
+        );
+        for role in SemanticRole::ALL {
+            for name in ["", "SAVE Ctrl+S", "an", "under_score 123", "buttonan"] {
+                let current = SearchText::new(name, role);
+                let lower = name.to_ascii_lowercase();
+                let (translation, initials) = role_terms(role);
+                let plain = format!("{lower} {} {translation}", role.as_str());
+                let previous = SearchText {
+                    initials_start: plain.len(),
+                    text: format!("{plain}{lower} {} {initials}", role.as_str()),
+                };
+                for query in [
+                    "save", "sav", "ave", "ctrl+s", "an", "button", "buttonan", "score", "123",
+                    "按钮", "wbk", "srk", "ssk", "zhk", "xlk", "wz", "missing", "@sa", "sa@",
+                ]
+                .into_iter()
+                .chain(std::iter::once(role.as_str()))
+                .chain(initials.split_whitespace())
+                {
+                    let term = Term::new(query);
+                    assert_eq!(
+                        term.rank(&current, "sa", &priority),
+                        term.rank(&previous, "sa", &priority),
+                        "name={name:?} role={role:?} query={query:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn fused_fields_are_indexed_once_and_keep_unicode_and_search_semantics() {
         for (name, ocr, accessibility, distinct) in [
+            ("Action 1", "Text 1", "", "Action 1 Text 1 "),
+            (
+                "SAVE Ctrl+S",
+                "",
+                "button\0help",
+                "SAVE Ctrl+S  button\0help",
+            ),
+            ("", "TEXT", "TEXT", " TEXT "),
             ("SAVE 复制", "SAVE 复制", "", "SAVE 复制"),
             ("SAVE 复制", "", "SAVE 复制", "SAVE 复制"),
             ("SAVE 复制", "SAVE 复制", "SAVE 复制", "SAVE 复制"),

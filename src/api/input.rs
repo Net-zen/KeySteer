@@ -81,18 +81,38 @@ impl Key {
         &Self::injection_modifiers()[index]
     }
 
-    /// Extra mouse buttons enter the ordinary binding pipeline as physical
+    /// Mouse buttons enter the ordinary binding pipeline as physical
     /// keys. Cache canonical names so native edges only clone the key value.
-    pub(crate) fn mouse_side_button(number: u8) -> Option<Self> {
-        static KEYS: OnceLock<[Key; 2]> = OnceLock::new();
-        let index = usize::from(number.checked_sub(1)?);
-        KEYS.get_or_init(|| [Key("mouse_x1".into()), Key("mouse_x2".into())])
-            .get(index)
-            .cloned()
+    pub(crate) fn mouse_button(number: u8) -> Option<Self> {
+        static KEYS: OnceLock<[Key; 5]> = OnceLock::new();
+        KEYS.get_or_init(|| {
+            [
+                "mouse_left",
+                "mouse_right",
+                "mouse_middle",
+                "mouse_x1",
+                "mouse_x2",
+            ]
+            .map(|name| Key(name.into()))
+        })
+        .get(usize::from(number))
+        .cloned()
     }
 
-    pub(crate) fn is_mouse_side_button(&self) -> bool {
-        matches!(self.as_str(), "mouse_x1" | "mouse_x2")
+    pub(crate) fn as_mouse_button(&self) -> Option<super::binding::Button> {
+        use super::binding::Button;
+        match self.as_str() {
+            "mouse_left" => Some(Button::Left),
+            "mouse_right" => Some(Button::Right),
+            "mouse_middle" => Some(Button::Middle),
+            "mouse_x1" => Some(Button::X1),
+            "mouse_x2" => Some(Button::X2),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_mouse_button(&self) -> bool {
+        self.as_mouse_button().is_some()
     }
 
     pub fn new(value: impl AsRef<str>) -> Result<Self, String> {
@@ -652,6 +672,8 @@ enum ModeName {
     Idle,
     Normal,
     TextInput,
+    TextSelect,
+    QuickSwitch,
     Grid,
     RecursiveGrid,
     UiHint,
@@ -679,6 +701,8 @@ impl ModeId {
                 "idle" => ModeName::Idle,
                 "normal" => ModeName::Normal,
                 "text_input" => ModeName::TextInput,
+                "text_select" => ModeName::TextSelect,
+                "quick_switch" => ModeName::QuickSwitch,
                 "grid" => ModeName::Grid,
                 "recursive_grid" => ModeName::RecursiveGrid,
                 "ui_hint" => ModeName::UiHint,
@@ -696,10 +720,12 @@ impl ModeId {
     }
 
     /// The ids of the built-in modes.
-    pub const BUILT_IN: [&'static str; 11] = [
+    pub const BUILT_IN: [&'static str; 13] = [
         "idle",
         "normal",
         "text_input",
+        "text_select",
+        "quick_switch",
         "grid",
         "recursive_grid",
         "ui_hint",
@@ -727,6 +753,12 @@ impl ModeId {
     }
     pub fn text_input() -> Self {
         Self(ModeName::TextInput)
+    }
+    pub fn quick_switch() -> Self {
+        Self(ModeName::QuickSwitch)
+    }
+    pub fn text_select() -> Self {
+        Self(ModeName::TextSelect)
     }
     pub fn grid() -> Self {
         Self(ModeName::Grid)
@@ -768,6 +800,8 @@ impl ModeId {
             ModeName::Idle => "idle",
             ModeName::Normal => "normal",
             ModeName::TextInput => "text_input",
+            ModeName::TextSelect => "text_select",
+            ModeName::QuickSwitch => "quick_switch",
             ModeName::Grid => "grid",
             ModeName::RecursiveGrid => "recursive_grid",
             ModeName::UiHint => "ui_hint",
@@ -857,13 +891,18 @@ mod tests {
     }
 
     #[test]
-    fn mouse_side_button_names_and_aliases_are_canonical_trigger_keys() {
-        for (number, aliases) in [
-            (1, ["mouse_x1", "xbutton1", "mouse4"]),
-            (2, ["mouse_x2", "xbutton2", "mouse5"]),
+    fn mouse_button_names_and_aliases_are_canonical_trigger_keys() {
+        use super::super::binding::Button;
+        for (number, button, aliases) in [
+            (0, Button::Left, &["mouse_left"][..]),
+            (1, Button::Right, &["mouse_right"][..]),
+            (2, Button::Middle, &["mouse_middle"][..]),
+            (3, Button::X1, &["mouse_x1", "xbutton1", "mouse4"][..]),
+            (4, Button::X2, &["mouse_x2", "xbutton2", "mouse5"][..]),
         ] {
-            let key = super::Key::mouse_side_button(number).unwrap();
-            assert!(key.is_mouse_side_button());
+            let key = super::Key::mouse_button(number).unwrap();
+            assert_eq!(key.as_mouse_button(), Some(button));
+            assert!(key.is_mouse_button());
             assert!(key.as_char().is_none());
             for alias in aliases {
                 assert_eq!(super::Key::new(alias).unwrap(), key);
@@ -871,9 +910,9 @@ mod tests {
                 assert_eq!(chord.activation_key(), &key);
             }
         }
-        assert!(super::Key::mouse_side_button(0).is_none());
-        assert!(super::Key::mouse_side_button(3).is_none());
-        assert!(!super::Key::new("x").unwrap().is_mouse_side_button());
+        assert!(super::Key::mouse_button(5).is_none());
+        assert!(super::Key::mouse_button(u8::MAX).is_none());
+        assert!(!super::Key::new("x").unwrap().is_mouse_button());
     }
     use super::*;
 

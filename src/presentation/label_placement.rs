@@ -1,5 +1,6 @@
 //! Collision placement for explicitly grouped annotations, independent of paint layers.
 use crate::api::overlay::{LabelPlacementRole as Role, OverlayLabel};
+use crate::api::style::{centered_rect, clamp_position, percentage_region};
 use crate::api::{OverlayScene, OverlayShape, Point, Rect, Screen};
 use std::collections::BTreeMap;
 
@@ -12,15 +13,8 @@ pub(super) fn card_position(
     area: Rect,
     occupied: &[Rect],
 ) -> Rect {
-    let candidate = |x: f64, y: f64| {
-        Rect::new(
-            x.clamp(area.x, (area.right() - width).max(area.x)),
-            y.clamp(area.y, (area.bottom() - height).max(area.y)),
-            width,
-            height,
-        )
-    };
-    let initial = candidate(center.x - width / 2.0, center.y - height / 2.0);
+    let candidate = |x: f64, y: f64| clamp_position(Rect::new(x, y, width, height), area);
+    let initial = centered_rect(area, center, width, height);
     let free = |rect: &Rect| !occupied.iter().any(|old| old.intersect(rect).is_some());
     if free(&initial) {
         return initial;
@@ -103,11 +97,6 @@ pub(super) fn logical(rect: Rect, scale: f64) -> Rect {
     )
 }
 
-/// Insets describe a preferred region, including a collapsed line or point.
-pub(super) fn card_region(area: Rect, [top, right, bottom, left]: [f64; 4]) -> Rect {
-    crate::api::style::percentage_region(area, [top, right, bottom, left])
-}
-
 #[cfg(test)]
 #[test]
 fn screen_cards_wrap_and_recompute_for_each_monitor() {
@@ -115,7 +104,7 @@ fn screen_cards_wrap_and_recompute_for_each_monitor() {
         Rect::new(0.0, 0.0, 1000.0, 700.0),
         Rect::new(-1600.0, 40.0, 1500.0, 900.0),
     ] {
-        assert_eq!(card_region(area, [0.5; 4]).center(), area.center());
+        assert_eq!(percentage_region(area, [0.5; 4]).center(), area.center());
         let (_, positions) =
             screen_card_positions(10, 300.0, 80.0, area, [0.0, 0.0, 1.0, 0.0], 6.0);
         let columns = ((area.width + 6.0) / 306.0).floor() as usize;
@@ -151,7 +140,7 @@ pub(super) fn screen_card_positions(
     if count == 0 {
         return (width.min(area.width), Vec::new());
     }
-    let region = card_region(area, insets);
+    let region = percentage_region(area, insets);
     let rows_available = ((area.height + gap) / (height + gap)).floor().max(1.0) as usize;
     let minimum_columns = count.div_ceil(rows_available);
     let width = width
@@ -185,15 +174,14 @@ pub(super) fn screen_card_positions(
     } else {
         region.y - total_height / 2.0
     };
-    let x = x.clamp(area.x, (area.right() - total_width).max(area.x));
-    let y = y.clamp(area.y, (area.bottom() - total_height).max(area.y));
+    let origin = clamp_position(Rect::new(x, y, total_width, total_height), area);
     (
         width,
         (0..count)
             .map(|i| {
                 Rect::new(
-                    x + (i % columns) as f64 * (width + gap),
-                    y + (i / columns) as f64 * (height + gap),
+                    origin.x + (i % columns) as f64 * (width + gap),
+                    origin.y + (i / columns) as f64 * (height + gap),
                     width,
                     height,
                 )

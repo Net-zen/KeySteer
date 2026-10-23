@@ -255,6 +255,15 @@ impl Engine {
         owner: &ModeId,
         backend: &mut dyn Backend,
     ) -> Result<(), String> {
+        if self
+            .scheduler
+            .text_segmentation
+            .as_ref()
+            .is_some_and(|(candidate, _, _)| candidate == owner)
+        {
+            self.scheduler.text_segmentation = None;
+            backend.cancel_text_segmentation();
+        }
         let ids = self
             .scan_owners
             .iter()
@@ -271,6 +280,8 @@ impl Engine {
     }
 
     fn cancel_all_scans(&mut self, backend: &mut dyn Backend) -> Result<(), String> {
+        self.scheduler.text_segmentation = None;
+        backend.cancel_text_segmentation();
         let ids = self
             .scan_owners
             .keys()
@@ -590,6 +601,11 @@ impl Engine {
     // Keep deferred-work recovery out of the common input turn's instruction path.
     #[inline(never)]
     fn run_scheduled_work(&mut self, backend: &mut dyn Backend) -> Result<(), String> {
+        // The event just handled may have requested exit. Leave deferred work
+        // for finish_runtime to discard instead of running it before cleanup.
+        if self.should_quit {
+            return Ok(());
+        }
         let long_press_result = self.fire_due_long_press_toggles(backend);
         self.fire_quick_switch(backend)?;
         if let Err(error) = long_press_result
@@ -624,6 +640,7 @@ impl Engine {
         backend: &mut dyn Backend,
         result: Result<(), String>,
     ) -> Result<(), String> {
+        backend.stop_input_capture();
         let mut errors = crate::support::errors::ErrorBundle::default();
         errors.record("runtime", result);
         self.scheduler.text_prompt = None;
@@ -733,6 +750,18 @@ impl Engine {
                         color: sample.color,
                     };
                     self.dispatch_to(&owner.clone(), ModeEvent::PointSampled(sample), backend)?;
+                }
+            }
+            BackendEvent::TextSegmented(mut result) => {
+                if self
+                    .scheduler
+                    .text_segmentation
+                    .as_ref()
+                    .is_some_and(|(_, id, _)| *id == result.id)
+                    && let Some((owner, _, original)) = self.scheduler.text_segmentation.take()
+                {
+                    result.id = original;
+                    self.dispatch_owned_to(&owner, ModeEvent::TextSegmented(result), backend)?;
                 }
             }
             BackendEvent::TextPromptResult { id, value } => {
@@ -1006,17 +1035,27 @@ impl Engine {
                 crate::report_warning!("backend", "{message}")
             }
             BackendEvent::FocusedWindowBounds { id, bounds } => {
-                if let Some(owner) = self.scheduler.panel_geometry.remove(&id) {
+                if let Some((owner, request, process)) = self.scheduler.panel_geometry.remove(&id)
+                    && self
+                        .focused_app
+                        .as_ref()
+                        .is_some_and(|app| app.process_id == process)
+                {
+                    let bounds = match bounds {
+                        Ok(bounds) => bounds,
+                        Err(error) => {
+                            crate::report_error!("panel", "geometry query: {error}");
+                            None
+                        }
+                    };
                     self.dispatch_to(
                         &owner,
                         ModeEvent::PanelWindowBounds {
-                            id,
-                            bounds: bounds.unwrap_or(None),
+                            id: request,
+                            bounds,
                         },
                         backend,
                     )?;
-                } else {
-                    self.finish_quick_switch_geometry(id, bounds, backend)?;
                 }
             }
         }
@@ -1575,6 +1614,13 @@ impl Engine {
                 | Binding::TargetingKey(_)
                 | Binding::Window(_)
                 | Binding::RescanUi
+                | Binding::TextSelect(_)
+                | Binding::SelectionReset
+                | Binding::SelectionParent
+                | Binding::SelectionReopen
+                | Binding::SelectionAccept
+                | Binding::SelectionCancel
+                | Binding::SelectionSearch
         ) {
             let recipient = self.stateful_binding_owner(&resolved);
             return self
@@ -1945,6 +1991,15 @@ impl Engine {
             | Binding::TargetingKey(_)
             | Binding::Window(_)
             | Binding::RescanUi => {
+                Err("stateful binding reached the stateless runtime dispatch boundary".into())
+            }
+            Binding::TextSelect(_)
+            | Binding::SelectionReset
+            | Binding::SelectionParent
+            | Binding::SelectionAccept
+            | Binding::SelectionCancel
+            | Binding::SelectionSearch
+            | Binding::SelectionReopen => {
                 Err("stateful binding reached the stateless runtime dispatch boundary".into())
             }
 

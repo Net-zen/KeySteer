@@ -1,4 +1,34 @@
 #[test]
+fn exit_stops_input_before_saving_and_still_releases_held_inputs_after_errors() {
+    struct Store(Arc<Mutex<Recorder>>);
+    impl PresetRepository for Store {
+        fn flush_usage(&mut self) -> Result<(), String> {
+            let log = self.0.lock().unwrap();
+            assert!(log.input_capture_stopped, "save must not leave input waiting on a stopped engine");
+            assert_eq!(log.sent.last(), Some(&("left_shift".into(), KeyState::Up)));
+            assert_eq!(log.buttons.last(), Some(&(MouseButton::Left, ButtonAction::Release)));
+            assert_eq!(log.shutdowns, 0, "durable save must precede final shutdown acknowledgement");
+            Err("workspace save failed".into())
+        }
+    }
+    for result in [Ok(()), Err("runtime failed".into())] {
+        let failed = result.is_err();
+        let mut engine = engine_with_normal_binding("n", "toggle left_shift mouse_left");
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.attach_preset_store(Box::new(Store(log.clone())));
+        engine.activate(ModeId::normal(), None, &mut backend).unwrap();
+        for event in [key_down("n"), key_up("n")] {
+            engine.handle_backend_event(event, &mut backend).unwrap();
+        }
+        let error = engine.finish_runtime(&mut backend, result).unwrap_err();
+        assert!(error.contains("workspace save failed"));
+        assert_eq!(error.contains("runtime failed"), failed);
+        assert!(engine.input.latched.is_empty());
+        assert_eq!(log.lock().unwrap().shutdowns, 1);
+    }
+}
+
+#[test]
 fn registry_lookup_preserves_identity_with_a_stale_dispatch_slot() {
     let mut registry = ModeRegistry::default();
     let mut registered = Vec::new();

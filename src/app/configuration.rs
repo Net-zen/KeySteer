@@ -139,7 +139,7 @@ impl ConfigurationRepository for ConfigRepository {
     fn set_candidate(&self, path: &str, value: &str) -> Result<ConfigurationCandidate, String> {
         let store = self
             .store
-            .clone()
+            .as_ref()
             .ok_or_else(|| "no writable configuration source is attached".to_string())?;
         let (store, config) = store
             .prepare_set(path, value)
@@ -291,23 +291,22 @@ pub fn compile(config: &ConfigFile) -> Result<RuntimePlan, String> {
             key_help: config.key_help.compile(),
             usage_save_after_entries: config.mode_usage.save_after_entries,
             quick_switch: {
-                let style = |appearance| {
-                    let palette = config.theme.palette(appearance);
-                    crate::api::style::QuickSwitchStyles::new(config.quick_switch.ui.resolve(
-                        &palette,
-                        palette.surface_label(),
-                        palette.text,
-                        palette.accent_border(),
-                    ))
-                };
                 super::runtime::QuickSwitchSettings {
                     enabled: config.quick_switch.enabled,
                     key: crate::api::Key::new(&config.quick_switch.key)?,
+                    alphabet: config
+                        .quick_switch
+                        .hint_characters
+                        .chars()
+                        .map(|ch| {
+                            crate::api::Key::new(ch.to_string()).and_then(|key| {
+                                key.as_char().ok_or_else(|| {
+                                    "quick_switch.hint_characters requires character keys".into()
+                                })
+                            })
+                        })
+                        .collect::<Result<_, String>>()?,
                     hold_ms: config.quick_switch.hold_ms,
-                    blacklist: config.quick_switch.blacklist.clone(),
-                    position: config.quick_switch.position,
-                    light: style(crate::api::Appearance::Light),
-                    dark: style(crate::api::Appearance::Dark),
                 }
             },
         },

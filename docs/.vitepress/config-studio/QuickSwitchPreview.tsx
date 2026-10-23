@@ -4,7 +4,8 @@ import { defineComponent } from 'vue'
 
 export default defineComponent({
   props: {
-    rows: { type: Array as () => string[], required: true },
+    rows: { type: Array as () => Array<{ mode: string; label: string }>, required: true },
+    prefix: { type: String, default: '' },
     settings: { type: Object, required: true },
     appearance: { type: String, required: true },
     pointer: { type: Object as () => { x: number; y: number }, required: true },
@@ -20,7 +21,8 @@ export default defineComponent({
       const size = auto(ui.font_size, 28)
       const mouse = (props.settings.position ?? 'mouse') === 'mouse'
       const height = props.rows.length * size * 1.8 + auto(ui.padding_y, size * .2) * 2 + 2
-      const width = Math.max(...props.rows.map(row => row.length), 12) * size * .65 + size * 1.3 + auto(ui.padding_x, 10) * 2
+      const labelWidth = Math.max(1, ...props.rows.map(row => [...row.label].length))
+      const width = Math.max(...props.rows.map(row => row.mode.length), 12) * size * .65 + size * (labelWidth + .3) + auto(ui.padding_x, 10) * 2
       const center = props.settings.position === 'window' ? props.windowCenter : { x: 50, y: 50 }
       return <div class="ks-quick-preview" style={{
         left: mouse ? `clamp(8px, calc(${props.pointer.x}% + 12px), calc(100% - ${width}px - 8px))` : `clamp(${width / 2}px, ${center.x}%, calc(100% - ${width / 2}px))`,
@@ -34,9 +36,10 @@ export default defineComponent({
         padding: `${auto(ui.padding_y, size * .2)}px ${auto(ui.padding_x, 10)}px`,
         paddingLeft: `${auto(ui.padding_x, 10) + size * .55}px`,
         paddingRight: `${auto(ui.padding_x, 10) * .5}px`,
+        '--quick-label-width': `${labelWidth}em`,
       }}>
-        {props.rows.length ? props.rows.map((mode, index) => <button type="button" onMousedown={event => event.preventDefault()} onClick={() => props.onSelect(mode)}>
-          <kbd>{index + 1}</kbd><span>{mode}</span>
+        {props.rows.length ? props.rows.map(row => <button type="button" key={row.mode} onMousedown={event => event.preventDefault()} onClick={() => props.onSelect(row.mode)}>
+          <kbd><span><span style={{ opacity: .45 }}>{row.label.slice(0, props.prefix.length)}</span>{row.label.slice(props.prefix.length)}</span></kbd><span>{row.mode}</span>
         </button>) : <span>{t("没有可切换的模式")}</span>}
       </div>
     }

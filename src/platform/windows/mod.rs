@@ -9,31 +9,21 @@
 //! thread-affine window work stays on the thread that calls [`Backend::poll`].
 
 mod accessibility;
-mod audio_policy;
 mod autostart;
-mod console_control;
-mod frame_clock;
-mod gpu_overlay;
-mod hook;
+mod display;
 mod input;
 mod native;
-mod overlay;
-mod overlay_worker;
-mod screens;
 mod status_item;
 mod system_events;
 mod text_prompt;
+mod text_segmentation;
 mod ui_scan;
 mod update_installer;
 mod vision;
-mod wechat_ocr;
 mod window_audio;
 mod window_manager;
 mod window_mover;
 mod window_tabs;
-
-#[cfg(feature = "benchmark-hooks")]
-pub use input::{CharacterCapture, observe_character_unfiltered};
 
 use crate::platform::common::event_queue::{self, Receiver, Sender};
 use std::cell::Cell;
@@ -49,25 +39,16 @@ use crate::api::backend::{Appearance, Backend, BackendEvent, KeyDisposition};
 use crate::api::command::{ButtonAction, FocusedApp, MouseButton};
 use crate::api::geometry::{Point, Rect, Screen};
 use crate::api::input::{Key, KeyState};
-use crate::api::overlay::{LabelStyle, LabelTextAnalysis, OverlayScene};
+use crate::api::overlay::OverlayScene;
 use crate::platform::common::scan_mailbox::ScanMailbox;
 
-use self::overlay_worker::OverlayWorker;
+use self::display::{frame_clock, overlay_worker::OverlayWorker};
+use self::input::hook;
 
 const WAKE_MESSAGE: u32 = WM_APP + 0x4C;
 const BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const NO_WINDOW_UNDER_POINTER: &str =
     "No window under the pointer — move the pointer over a window";
-
-#[inline]
-fn label_text_offset_y(style: &LabelStyle, analysis: LabelTextAnalysis, fixed_line: bool) -> f64 {
-    let units = if analysis.has_descender && !fixed_line {
-        -2.0
-    } else {
-        -1.0
-    };
-    analysis.scaled_units(style.font_size, units)
-}
 
 pub(crate) use native::{atomic_replace, prepare_console_for_cli};
 
@@ -76,7 +57,7 @@ pub(crate) fn run_internal_wechat_ocr_helper(
     component: std::path::PathBuf,
     runtime: std::path::PathBuf,
 ) -> Result<(), String> {
-    wechat_ocr::run_helper(wechat_ocr::HelperPaths {
+    vision::wechat_ocr::run_helper(vision::wechat_ocr::HelperPaths {
         bridge,
         component,
         runtime,
@@ -136,11 +117,11 @@ pub struct WindowsBackend {
     overlay: OverlayWorker,
     /// Events produced off-thread (scan results).
     async_rx: Receiver,
-    background_budget: event_queue::BackgroundBudget,
     event_tx: EventSender,
     scan_mailbox: Arc<ScanMailbox>,
     scan_fusion: crate::platform::common::scan_fusion::Worker,
     pending: VecDeque<BackendEvent>,
+    text_segmenter: Option<crate::platform::common::text_segmentation::Worker>,
     screens: Vec<Screen>,
     /// Foreground window at the last check, to detect focus changes.
     last_foreground: HWND,
@@ -149,8 +130,8 @@ pub struct WindowsBackend {
     scroll_worker: crate::platform::common::scroll_worker::ScrollWorker,
     foreground_watcher: Option<system_events::ForegroundWatcher>,
     status_item: Option<status_item::StatusItem>,
-    console_control: Option<console_control::ConsoleControl>,
-    ui_automation: Option<accessibility::UiAutomationWorker>,
+    console_control: Option<system_events::ConsoleControl>,
+    ui_automation: Vec<accessibility::UiAutomationWorker>,
     vision: vision::VisionWorker,
     prewarm_ocr: bool,
     update_worker: Option<crate::platform::common::update::UpdateWorker>,
@@ -168,6 +149,26 @@ const fn strategy_prewarms_uia(strategy: Option<crate::api::UiScanStrategy>) -> 
     )
 }
 
+fn notification_poll_timeout(timeout: Duration, native_notifications: bool) -> Duration {
+    if native_notifications {
+        timeout
+    } else {
+        // Remote/stripped-down shells may lack either notification source.
+        timeout.min(Duration::from_millis(50))
+    }
+}
+
+fn wait_millis(timeout: Duration) -> u32 {
+    if timeout == Duration::MAX {
+        u32::MAX // Win32 INFINITE, reserved exclusively for no deadline.
+    } else {
+        timeout
+            .as_nanos()
+            .div_ceil(1_000_000)
+            .min((u32::MAX - 1) as u128) as u32
+    }
+}
+
 impl WindowsBackend {
     pub fn new() -> Result<Self, String> {
         Self::new_with_ui_scan_strategy(None)
@@ -178,10 +179,10 @@ impl WindowsBackend {
     ) -> Result<Self, String> {
         // Must happen before any window exists, or coordinates will be wrong
         // on scaled displays.
-        screens::enable_dpi_awareness()?;
+        display::enable_dpi_awareness()?;
         // Must precede creation of the DXGI overlay and the first VBlank wait.
-        // On Windows 11 this exposes real dynamic-refresh cadence; older
-        // systems keep DXGI's compatible virtualized cadence.
+        // Probe the optional export instead of assuming support from an OS
+        // version label; unsupported systems keep compatible DXGI cadence.
         frame_clock::prefer_dynamic_vblank();
         if let Err(error) = native::prefer_input_latency() {
             crate::report_warning!(
@@ -195,29 +196,45 @@ impl WindowsBackend {
         let event_tx = EventSender::new(async_tx, owner_thread);
         let scan_mailbox = Arc::new(ScanMailbox::default());
         let mut pending = VecDeque::new();
-        // Begin GPU prewarming before tray and display discovery. The render
-        // thread reports readiness as soon as its message queue exists, then
-        // builds the D3D/D2D/DComp device tree concurrently with the remaining
-        // native startup work.
+        let mut frame_clock = frame_clock::DisplayFrameClock::new(owner_thread);
+        if let Ok(pointer) = input::cursor_position() {
+            frame_clock.retarget(pointer);
+        }
+        // Start the clock and scroll executor before GPU, UIA and tray setup.
+        // Native output preparation follows the existing display snapshot;
+        // no display query or idle frame timer is introduced here.
+        if let Err(error) = frame_clock.prepare() {
+            pending.push_back(BackendEvent::Warning(format!(
+                "Windows display clock prewarm failed; movement will retry: {error}"
+            )));
+        }
+        let scroll_events = event_tx.clone();
+        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
+            input::scroll,
+            move |event| {
+                let _ = scroll_events.send(event);
+            },
+        )?;
+        // Begin GPU prewarming without waiting for the render thread's message
+        // queue. Its mailbox retains early requests while the D3D/D2D/DComp
+        // device tree, tray and display discovery prepare concurrently.
         let overlay = OverlayWorker::start(event_tx.clone())?;
         // UIA is useful only for axtree/hybrid. Start its MTA alongside GPU
         // prewarming so COM, IUIAutomation2, CacheRequest, and conditions are
         // ready before the first Hint request. The worker does not inspect a
         // HWND until a scan is submitted, and vision-only startup owns no UIA
         // thread or COM resources.
-        let ui_automation = if strategy_prewarms_uia(strategy) {
+        let mut ui_automation = Vec::new();
+        if strategy_prewarms_uia(strategy) {
             match accessibility::UiAutomationWorker::start() {
-                Ok(worker) => Some(worker),
+                Ok(worker) => ui_automation.push(worker),
                 Err(error) => {
                     pending.push_back(BackendEvent::Warning(format!(
                         "Windows UI Automation prewarm failed; the first accessibility scan will retry: {error}"
                     )));
-                    None
                 }
             }
-        } else {
-            None
-        };
+        }
         let status_item = match status_item::StatusItem::new(event_tx.clone()) {
             Ok(item) => Some(item),
             Err(error) => {
@@ -234,7 +251,7 @@ impl WindowsBackend {
                 None
             }
         };
-        let console_control = match console_control::ConsoleControl::new(owner_thread) {
+        let console_control = match system_events::ConsoleControl::new(owner_thread) {
             Ok(control) => Some(control),
             Err(error) => {
                 pending.push_back(BackendEvent::Warning(error));
@@ -242,28 +259,25 @@ impl WindowsBackend {
             }
         };
         let appearance = system_appearance();
-        let initial_screens = screens::list_screens().unwrap_or_else(|error| {
+        // Keep enumeration after the tray's display-change observer exists,
+        // so changes during startup cannot fall between the snapshot and its
+        // native notifications.
+        let initial_displays = display::list_snapshot().unwrap_or_else(|error| {
             crate::support::logging::report_error(
                 "windows-screen",
                 format!("initial display enumeration failed: {error}"),
             );
-            Vec::new()
+            display::DisplaySnapshot::default()
         });
+        frame_clock.update_displays(&initial_displays.screens, &initial_displays.monitors);
         let vision = vision::VisionWorker::start();
-        let scroll_events = event_tx.clone();
-        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
-            input::scroll,
-            move |event| {
-                let _ = scroll_events.send(event);
-            },
-        )?;
         Ok(Self {
             hook: None,
             overlay,
             async_rx,
-            background_budget: event_queue::BackgroundBudget::default(),
             event_tx,
             scan_mailbox,
+            text_segmenter: None,
             scan_fusion: crate::platform::common::scan_fusion::Worker::with_setup(|| {
                 if let Err(error) = native::prefer_background_work() {
                     crate::report_warning!(
@@ -273,10 +287,10 @@ impl WindowsBackend {
                 }
             }),
             pending,
-            screens: initial_screens,
+            screens: initial_displays.screens,
             last_foreground: native::foreground_window(),
             last_appearance: appearance,
-            frame_clock: frame_clock::DisplayFrameClock::new(owner_thread),
+            frame_clock,
             scroll_worker,
             foreground_watcher,
             status_item,
@@ -332,9 +346,10 @@ impl WindowsBackend {
     }
 
     fn detect_screen_change(&mut self) -> Option<BackendEvent> {
-        let current = match screens::list_screens() {
+        let snapshot = match display::list_snapshot() {
             Ok(screens) => screens,
             Err(error) => {
+                self.frame_clock.update_displays(&[], &[]);
                 crate::support::logging::report_error(
                     "windows-screen",
                     format!("display re-enumeration failed: {error}"),
@@ -342,7 +357,15 @@ impl WindowsBackend {
                 return None;
             }
         };
-        if current == self.screens || current.is_empty() {
+        if snapshot.screens.is_empty() {
+            self.frame_clock.update_displays(&[], &[]);
+            return None;
+        }
+        // A native display identity can change without changing geometry.
+        self.frame_clock
+            .update_displays(&snapshot.screens, &snapshot.monitors);
+        let current = snapshot.screens;
+        if current == self.screens {
             return None;
         }
         self.screens = current.clone();
@@ -350,7 +373,11 @@ impl WindowsBackend {
     }
 
     fn next_hook_event(&mut self) -> Result<Option<BackendEvent>, String> {
-        Ok(self.hook.as_mut().and_then(hook::HookThread::next_event))
+        let event = self.hook.as_mut().and_then(hook::HookThread::next_event);
+        if let Some(BackendEvent::PointerMoved(point)) = &event {
+            self.frame_clock.retarget(*point);
+        }
+        Ok(event)
     }
 
     fn try_event(&mut self) -> Result<Option<BackendEvent>, String> {
@@ -359,11 +386,8 @@ impl WindowsBackend {
         if let Some(event) = self.next_hook_event()? {
             return Ok(Some(event));
         }
-        if let Some(frame) = self
-            .background_budget
-            .take_ready_frame(|| self.frame_clock.try_next())
-        {
-            return Ok(Some(frame));
+        if let Some(elapsed) = self.frame_clock.try_next() {
+            return Ok(Some(BackendEvent::Frame(elapsed)));
         }
         if self.prewarm_ocr {
             self.vision.begin_discovery();
@@ -373,18 +397,19 @@ impl WindowsBackend {
             return Ok(Some(event));
         }
         if let Some(event) = self.pending.pop_front() {
-            self.background_budget.record();
             return Ok(Some(event));
         }
         if let Some(result) = self.scan_mailbox.take() {
-            self.background_budget.record();
+            if result.status != crate::api::UiScanStatus::Partial {
+                // The engine retires the owner after this terminal event. Stop
+                // optional previews and any remaining providers before then.
+                self.cancel_ui_scan(result.id)?;
+            }
             return Ok(Some(BackendEvent::UiScanned(result)));
         }
         if let Ok(event) = self.async_rx.try_recv() {
-            self.background_budget.record();
             return Ok(Some(event));
         }
-        self.background_budget.reset();
         if let Some(elapsed) = self.frame_clock.try_next() {
             return Ok(Some(BackendEvent::Frame(elapsed)));
         }
@@ -453,8 +478,12 @@ impl WindowsBackend {
         let now = Instant::now();
         let deadline = now.checked_add(BACKEND_SHUTDOWN_TIMEOUT).unwrap_or(now);
         let mut errors = crate::support::errors::ErrorBundle::default();
+        self.stop_input_capture();
         self.scroll_worker.request_stop();
         self.scan_fusion.request_stop();
+        if let Some(worker) = &self.text_segmenter {
+            worker.request_stop();
+        }
         if let Some(worker) = self.window_worker.as_mut() {
             match worker.stop_until(deadline) {
                 Ok(()) => {
@@ -477,15 +506,18 @@ impl WindowsBackend {
         if let Err(error) = self.vision.stop_until(deadline) {
             errors.push("vision worker", error);
         }
-        if let Some(worker) = self.ui_automation.as_mut() {
-            match worker.stop_until(deadline) {
+        for index in (0..self.ui_automation.len()).rev() {
+            match self.ui_automation[index].stop_until(deadline) {
                 Ok(()) => {
-                    self.ui_automation.take();
+                    self.ui_automation.remove(index);
                 }
                 Err(error) => errors.push("UI Automation worker", error),
             }
         }
         errors.record("UI scan fusion", self.scan_fusion.stop_until(deadline));
+        if let Some(mut worker) = self.text_segmenter.take() {
+            errors.record("text segmenter", worker.stop_until(deadline));
+        }
         if let Err(error) = self.release_held_buttons() {
             errors.push("held mouse buttons", error);
         }
@@ -602,6 +634,29 @@ impl Drop for WindowsBackend {
 }
 
 impl Backend for WindowsBackend {
+    fn request_text_segmentation(&mut self, request: crate::api::text_select::Request) -> bool {
+        if self.text_segmenter.is_none() {
+            let tx = self.event_tx.clone();
+            self.text_segmenter = crate::platform::common::text_segmentation::Worker::new(
+                text_segmentation::words,
+                move |result| {
+                    let _ = tx.send(BackendEvent::TextSegmented(result));
+                },
+            )
+            .ok();
+        }
+        if let Some(worker) = &self.text_segmenter {
+            worker.submit(Some(request));
+            true
+        } else {
+            false
+        }
+    }
+    fn cancel_text_segmentation(&mut self) {
+        if let Some(worker) = &self.text_segmenter {
+            worker.submit(None);
+        }
+    }
     fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
         self.overlay.sample(Some(request)).is_ok()
     }
@@ -739,8 +794,11 @@ impl Backend for WindowsBackend {
 
         // Sleep until input arrives or the timeout expires, so the engine's
         // timers stay punctual without spinning.
-        let millis = timeout.as_millis().min(u32::MAX as u128) as u32;
-        native::wait_for_input(millis);
+        let timeout = notification_poll_timeout(
+            timeout,
+            self.foreground_watcher.is_some() && self.status_item.is_some(),
+        );
+        native::wait_for_input(wait_millis(timeout));
 
         if !self.pump_messages() {
             return Ok(Some(BackendEvent::Quit));
@@ -784,11 +842,17 @@ impl Backend for WindowsBackend {
     }
 
     fn screens(&self) -> Result<Vec<Screen>, String> {
-        screens::list_screens()
+        if self.screens.is_empty() {
+            display::list_screens()
+        } else {
+            Ok(self.screens.clone())
+        }
     }
 
     fn pointer(&self) -> Result<Point, String> {
-        input::cursor_position()
+        let point = input::cursor_position()?;
+        self.frame_clock.retarget(point);
+        Ok(point)
     }
 
     fn move_window_to_screen(
@@ -816,13 +880,14 @@ impl Backend for WindowsBackend {
 
     fn warp_pointer(&self, to: Point) -> Result<(), String> {
         input::warp_cursor(to)?;
-        self.frame_clock.retarget(to.x, to.y);
+        self.frame_clock.retarget(to);
         Ok(())
     }
 
     fn move_pointer(&self, from: Point, dx: f64, dy: f64) -> Result<(), String> {
         input::move_cursor_relative(from, dx, dy)?;
-        self.frame_clock.retarget(from.x + dx, from.y + dy);
+        self.frame_clock
+            .retarget(Point::new(from.x + dx, from.y + dy));
         Ok(())
     }
 
@@ -873,9 +938,6 @@ impl Backend for WindowsBackend {
 
     fn set_frame_clock(&mut self, active: bool) -> Result<(), String> {
         if active {
-            if let Ok(pointer) = input::cursor_position() {
-                self.frame_clock.retarget(pointer.x, pointer.y);
-            }
             self.frame_clock.start()
         } else {
             self.frame_clock.stop()
@@ -931,8 +993,24 @@ impl Backend for WindowsBackend {
             plan.strategy,
             UiScanStrategy::Vision | UiScanStrategy::Contour | UiScanStrategy::Hybrid
         );
-        if wants_uia && self.ui_automation.is_none() {
-            self.ui_automation = Some(accessibility::UiAutomationWorker::start()?);
+        let mut uia_workers = if wants_uia { plan.worker_count() } else { 0 };
+        while self.ui_automation.len() < uia_workers {
+            match accessibility::UiAutomationWorker::start() {
+                Ok(worker) => self.ui_automation.push(worker),
+                Err(error) if !self.ui_automation.is_empty() => {
+                    crate::report_warning!(
+                        "windows-uia",
+                        "cannot start a second UIA worker; continuing with one: {error}"
+                    );
+                    uia_workers = self.ui_automation.len();
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        // A retained second worker must not keep inspecting an older scan when
+        // the new request needs only one worker or only visual recognition.
+        for worker in &self.ui_automation[uia_workers..] {
+            worker.cancel(None);
         }
         let generation = self.scan_mailbox.begin(request_id);
         if let Some(process_id) = plan.activation_process() {
@@ -969,13 +1047,24 @@ impl Backend for WindowsBackend {
         );
         let result = (|| {
             if wants_uia {
-                let worker = self.ui_automation.as_ref().ok_or_else(|| {
-                    "UI Automation worker was not retained after startup".to_string()
-                })?;
-                worker.submit(
+                let source = session.source("UI Automation");
+                source.sink().progress(
+                    crate::platform::common::spatial_index::TargetSource::Accessibility,
+                    crate::platform::common::scan_progress::Progress::Plan(
+                        plan.progress_regions(uia_workers > 1),
+                    ),
+                );
+                if uia_workers > 1 {
+                    self.ui_automation[1].submit(
+                        Arc::clone(&plan),
+                        generation,
+                        accessibility::ScanWork::Preview(source.sink()),
+                    )?;
+                }
+                self.ui_automation[0].submit(
                     Arc::clone(&plan),
                     generation,
-                    session.source("UI Automation"),
+                    accessibility::ScanWork::Complete(source),
                 )?;
             }
             if wants_vision {
@@ -989,24 +1078,21 @@ impl Backend for WindowsBackend {
             Ok(())
         })();
         if result.is_err() {
-            self.scan_fusion.cancel(request_id);
-            self.scan_mailbox.cancel(request_id);
-            if let Some(worker) = self.ui_automation.as_ref() {
-                worker.cancel(request_id);
-            }
-            self.vision.cancel(request_id);
+            self.cancel_ui_scan(request_id)?;
         }
         result
     }
 
     fn cancel_ui_scan(&mut self, id: u64) -> Result<(), String> {
-        if self.scan_mailbox.cancel(id) {
-            self.scan_fusion.cancel(id);
-            if let Some(worker) = self.ui_automation.as_ref() {
-                worker.cancel(id);
-            }
-            self.vision.cancel(id);
+        // A consumed terminal has already cleared the mailbox identity, but
+        // optional native work may still need cancellation. Each worker checks
+        // the request id, so a stale cancellation preserves newer work.
+        self.scan_mailbox.cancel(id);
+        self.scan_fusion.cancel(id);
+        for worker in &self.ui_automation {
+            worker.cancel(Some(id));
         }
+        self.vision.cancel(id);
         Ok(())
     }
 
@@ -1066,6 +1152,12 @@ impl Backend for WindowsBackend {
         "windows"
     }
 
+    fn stop_input_capture(&mut self) {
+        if let Some(hook) = self.hook.as_mut() {
+            hook.close_dispositions();
+        }
+    }
+
     fn shutdown(&mut self) -> Result<(), String> {
         self.shutdown_attempted = true;
         self.shutdown_resources()
@@ -1109,6 +1201,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn notification_wait_retains_fallback_polling_and_short_timer_deadlines() {
+        let idle = Duration::MAX;
+        assert_eq!(notification_poll_timeout(idle, true), idle);
+        assert_eq!(
+            notification_poll_timeout(idle, false),
+            Duration::from_millis(50)
+        );
+        for notifications in [false, true] {
+            assert_eq!(
+                notification_poll_timeout(Duration::ZERO, notifications),
+                Duration::ZERO
+            );
+            assert_eq!(
+                notification_poll_timeout(Duration::from_millis(5), notifications),
+                Duration::from_millis(5)
+            );
+        }
+    }
+
+    #[test]
+    fn native_wait_distinguishes_no_deadline_and_rounds_up_submillisecond_work() {
+        assert_eq!(wait_millis(Duration::MAX), u32::MAX);
+        assert_eq!(wait_millis(Duration::ZERO), 0);
+        assert_eq!(wait_millis(Duration::from_nanos(1)), 1);
+        assert_eq!(wait_millis(Duration::from_micros(1001)), 2);
+        assert_eq!(
+            wait_millis(Duration::from_secs(u32::MAX as u64)),
+            u32::MAX - 1
+        );
+    }
+
+    #[test]
+    fn native_wait_wakes_for_previously_observed_queued_messages() {
+        std::thread::spawn(|| {
+            let owner = native::prepare_thread_message_queue();
+            native::post_thread_message(owner, WAKE_MESSAGE, 0).unwrap();
+            // Peek without removing makes the wake old input to Win32.
+            native::prepare_thread_message_queue();
+            let start = std::time::Instant::now();
+            native::wait_for_input(1_000);
+            assert!(start.elapsed() < Duration::from_millis(500));
+            assert!(native::pump_window_messages());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
     fn only_accessibility_strategies_prewarm_uia() {
         assert!(strategy_prewarms_uia(Some(
             crate::api::UiScanStrategy::AxTree
@@ -1136,31 +1276,12 @@ mod tests {
     }
 
     #[test]
-    fn windows_text_position_keeps_the_existing_upward_optical_offsets() {
-        let style = LabelStyle {
-            font_size: 17.0,
-            ..LabelStyle::default()
-        };
-        assert_eq!(
-            label_text_offset_y(&style, LabelTextAnalysis::analyze("asa", 0), false),
-            -1.0
-        );
-        assert_eq!(
-            label_text_offset_y(&style, LabelTextAnalysis::analyze("aag", 0), false),
-            -2.0
-        );
-        for text in ["", "asa", "asag", "jpyq"] {
-            assert_eq!(
-                label_text_offset_y(&style, LabelTextAnalysis::analyze(text, 0), true),
-                -1.0
-            );
-        }
-    }
-
-    #[test]
     #[ignore = "requires an interactive Windows desktop"]
     fn backend_shutdown_stops_vision_and_is_idempotent() -> Result<(), String> {
         let mut backend = WindowsBackend::new()?;
+        backend.start()?;
+        backend.stop_input_capture();
+        backend.stop_input_capture();
         hook::set_pointer_wake_enabled(true);
         backend.shutdown_resources()?;
         assert!(!hook::pointer_wake_enabled());

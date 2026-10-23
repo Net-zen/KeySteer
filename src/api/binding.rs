@@ -187,6 +187,16 @@ pub enum Binding {
     },
     /// Request a fresh UI hint scan.
     RescanUi,
+    /// Navigate the current selection without replacing its mode instance.
+    SelectionReset,
+    SelectionParent,
+    /// Reopen a completed hint selection; otherwise leave its prefix alone.
+    SelectionReopen,
+    SelectionAccept,
+    SelectionCancel,
+    SelectionSearch,
+    /// An operation in the OCR text selection panel.
+    TextSelect(super::text_select::Action),
     /// Complete the current targeting session without re-entering its mode.
     FinishMode,
     /// Explicitly reset the active mode's current session.
@@ -230,19 +240,6 @@ impl Binding {
     /// surfaces at load time instead of silently doing nothing.
     pub fn parse(value: &str) -> Result<Self, String> {
         let text = value.trim();
-        let replacement = match text {
-            "window_layout" => Some("window_quick"),
-            "window_edit" => Some("window_editor"),
-            "window_saved_presets" => Some("window_restore"),
-            "window_cancel" | "window_exit" => Some("a destination mode such as window or idle"),
-            _ => None,
-        };
-        if let Some(replacement) = replacement {
-            return Err(format!(
-                "{text} was removed; bind directly to {replacement}"
-            ));
-        }
-
         if text.is_empty() {
             return Err("binding must not be empty".into());
         }
@@ -480,9 +477,9 @@ impl Binding {
             "wheel_full_down" | "scroll_full_down" => B::Scroll(Down, Full),
             "wheel_full_up" | "scroll_full_up" => B::Scroll(Up, Full),
 
-            "left_click" => B::Click(Left),
-            "right_click" => B::Click(Right),
-            "middle_click" => B::Click(Middle),
+            "left_click" | "mouse_left" => B::Click(Left),
+            "right_click" | "mouse_right" => B::Click(Right),
+            "middle_click" | "mouse_middle" => B::Click(Middle),
             "mouse_x1" | "xbutton1" | "mouse4" | "x1_click" => B::Click(X1),
             "mouse_x2" | "xbutton2" | "mouse5" | "x2_click" => B::Click(X2),
             "x1_double_click" => B::DoubleClick(X1),
@@ -510,6 +507,17 @@ impl Binding {
             "key_help" => B::KeyHelp,
             "finish" | "finish_mode" => B::FinishMode,
             "restart_mode" => B::RestartMode,
+            "text_refine" => B::TextSelect(super::text_select::Action::Refine),
+            "previous_level" => B::SelectionParent,
+            "reopen_selection" => B::SelectionReopen,
+            "first_level" => B::SelectionReset,
+            "confirm_selection" => B::SelectionAccept,
+            "cancel_selection" => B::SelectionCancel,
+            "search_selection" => B::SelectionSearch,
+            "text_copy" => B::TextSelect(super::text_select::Action::Copy),
+            "text_search" => B::TextSelect(super::text_select::Action::Search),
+            "text_next_page" => B::TextSelect(super::text_select::Action::NextPage),
+            "text_previous_page" => B::TextSelect(super::text_select::Action::PreviousPage),
 
             "escape" | "exit_mode" => B::Escape,
             "rescan" | "rescan_ui" => B::RescanUi,
@@ -635,6 +643,13 @@ impl Binding {
             B::Exec { program, args } if args.is_empty() => format!("exec {program}"),
             B::Exec { program, args } => format!("exec {program} {}", args.join(" ")),
             B::RescanUi => "rescan".into(),
+            B::SelectionReset => "first_level".into(),
+            B::SelectionParent => "previous_level".into(),
+            B::SelectionReopen => "reopen_selection".into(),
+            B::SelectionAccept => "confirm_selection".into(),
+            B::SelectionCancel => "cancel_selection".into(),
+            B::SelectionSearch => "search_selection".into(),
+            B::TextSelect(action) => action.as_str().into(),
             B::KeyHelp => "key_help".into(),
             B::FinishMode => "finish".into(),
             B::RestartMode => "restart_mode".into(),
@@ -800,6 +815,31 @@ mod tests {
         );
         assert!(Binding::parse("wait 100 50").is_err());
         assert!(Binding::parse("wait nope").is_err());
+    }
+
+    #[test]
+    fn selection_navigation_uses_readable_action_names_without_unreleased_aliases() {
+        for (name, binding) in [
+            ("confirm_selection", Binding::SelectionAccept),
+            ("cancel_selection", Binding::SelectionCancel),
+            ("previous_level", Binding::SelectionParent),
+            ("first_level", Binding::SelectionReset),
+            ("reopen_selection", Binding::SelectionReopen),
+            ("search_selection", Binding::SelectionSearch),
+        ] {
+            assert_eq!(Binding::parse(name).unwrap(), binding);
+            assert_eq!(binding.canonical(), name);
+        }
+        for old in [
+            "selection_accept",
+            "selection_cancel",
+            "selection_parent",
+            "selection_reset",
+            "selection_reopen",
+            "selection_search",
+        ] {
+            assert!(Binding::parse(old).is_err(), "{old}");
+        }
     }
 
     #[test]
@@ -999,7 +1039,61 @@ mod tests {
         // A verb that does not take arguments must not silently ignore them.
         assert!(Binding::parse("move_left now").is_err());
     }
-}
 
-#[cfg(test)]
-mod target_tests;
+    #[test]
+    fn window_target_bindings_roundtrip_and_preserve_held_semantics() {
+        for base in [
+            "window",
+            "window_quick",
+            "window_editor",
+            "window_restore",
+            "window_tab",
+            "window_overlap_next",
+            "window_overlap_previous",
+            "window_activate_next",
+            "window_activate_previous",
+            "window_left",
+            "window_size",
+            "window_close",
+            "window_maximize",
+            "window_minimize",
+            "size_cycle",
+            "window_center",
+            "window_screen_next",
+            "window_volume_up",
+            "window_audio_next",
+            "window_select",
+            "window_split_left",
+            "window_ratio_right",
+            "window_tab_remove",
+            "move_window next",
+            "move_window 2",
+        ] {
+            for source in ["active", "mouse"] {
+                let text = format!("{base} {source}");
+                let parsed = Binding::parse(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+                assert_eq!(parsed.canonical(), text);
+                assert_eq!(parsed.is_held(), Binding::parse(base).unwrap().is_held());
+                assert_eq!(parsed.mode(), Binding::parse(base).unwrap().mode());
+            }
+        }
+        for invalid in [
+            "window_close active mouse",
+            "window_left target=active",
+            "window active active",
+            "window_undo mouse",
+            "window_redo active",
+            "window_system_volume_up mouse",
+            "window_save_layout active",
+            "move_window 0 active",
+            "move_window invalid mouse",
+            "window_close keyboard",
+        ] {
+            assert!(Binding::parse(invalid).is_err(), "{invalid}");
+        }
+        assert_eq!(
+            Binding::parse("exec echo active").unwrap().canonical(),
+            "exec echo active"
+        );
+    }
+}

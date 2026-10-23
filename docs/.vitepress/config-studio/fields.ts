@@ -1,5 +1,5 @@
 import { fieldLocation } from './navigation.ts'
-export type TargetingMode = 'grid' | 'recursive_grid' | 'ui_hint' | 'key_help' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
+export type TargetingMode = 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | 'key_help' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
 export type Appearance = 'dark' | 'light'
 export type ControlKind = 'color' | 'number' | 'text' | 'boolean' | 'select' | 'ratios' | 'percentages' | 'offset' | 'choices' | 'binding' | 'chords' | 'field-modes'
 
@@ -11,6 +11,7 @@ export interface StyleField {
   max?: number
   step?: number
   options?: string[]
+  optionLabels?: Record<string, string>
   requireAll?: boolean
   default?: unknown
   action?: string
@@ -23,6 +24,14 @@ export interface ModeFields {
 }
 
 export const fields = {
+  window_quick: { colors: [], layout: [], advanced: [] },
+  window_editor: { colors: [], layout: [], advanced: [] },
+  window_restore: { colors: [], layout: [], advanced: [] },
+  window_tab: { colors: [], layout: [], advanced: [] },
+  text_select: { colors: [], layout: [
+    { path: 'text_select.enabled', label: '启用文字选择', kind: 'boolean' },
+    { path: 'text_select.hint_characters', label: '文字选择标签字符', kind: 'text' },
+  ], advanced: [] },
   window: {
     colors: [
       { path: 'key_help.background_color', label: '面板背景（共用 key_help）', kind: 'color' },
@@ -31,7 +40,7 @@ export const fields = {
     ],
     layout: [
       { path: 'window.target', label: '入口优先目标（active 激活窗口 / mouse 鼠标下窗口；无目标时互相兜底）', kind: 'select', options: ['', 'active', 'mouse'] },
-      { path: 'window.screens', label: '窗口范围（current 当前屏幕 / all 全部屏幕）', kind: 'select', options: ['current', 'all'] },
+      { path: 'window.screens', label: '窗口范围（current 当前屏幕 / all 全部屏幕，默认 all）', kind: 'select', options: ['current', 'all'] },
       { path: 'window.include_minimized', label: '包含最小化窗口', kind: 'boolean' },
       { path: 'window.enabled', label: '启用 Window', kind: 'boolean' },
       { path: 'window.number_timeout_ms', label: '歧义编号等待（毫秒）', kind: 'number', min: 100, max: 2000, step: 10 },
@@ -178,7 +187,8 @@ fields.window.layout.push({ path: 'window.card.position_mode', label: '卡片定
 for (const [block, title] of [['search_input_ui', '搜索框'], ['search_info_ui', '搜索信息']] as const) {
   const prefix = `ui_hint.${block}`
   fields.ui_hint.advanced.push(
-    { path: `${prefix}.position_mode`, label: `${title}定位`, kind: 'select', options: block === 'search_input_ui' ? ['screen', 'window'] : ['search_input', 'screen', 'window'] },
+    { path: `${prefix}.position_mode`, label: `${title}定位`, kind: 'select', options: block === 'search_input_ui' ? ['screen', 'window'] : ['search_input', 'screen', 'window'],
+      optionLabels: { screen: 'screen · 当前屏幕', window: 'window · 识别窗口', search_input: 'search_input · 跟随搜索输入框' } },
     { path: `${prefix}.position`, label: `${title}四边百分比`, kind: 'percentages' },
     { path: `${prefix}.font_family`, label: `${title}字体`, kind: 'text' },
   )
@@ -186,7 +196,6 @@ for (const [block, title] of [['search_input_ui', '搜索框'], ['search_info_ui
     ['width', '宽度', 80, 2000], ['font_size', '字号', 6, 72],
     ['border_radius', '圆角', -1, 80], ['border_width', '边框', 0, 12],
     ['padding_x', '水平内边距', -1, 100], ['padding_y', '垂直内边距', -1, 100],
-    ['x_offset', '水平偏移', -2000, 2000], ['y_offset', '垂直偏移', -2000, 2000],
   ] as const) fields.ui_hint.advanced.push({ path: `${prefix}.${key}`, label: `${title}${label}`, kind: 'number', min, max, step: 1 })
   for (const [key, label] of [['background_color', '底色'], ['text_color', '文字色'], ['border_color', '边框色']] as const) {
     fields.ui_hint.colors.push({ path: `${prefix}.${key}`, label: `${title}${label}`, kind: 'color' })
@@ -224,7 +233,11 @@ fields.window.advanced.push({ path: 'window.ui.padding_x', label: '编号水平�
 fields.window.advanced.push({ path: 'window.ui.padding_y', label: '编号垂直内边距（-1 自动）', kind: 'number', min: -1, max: 256 })
 
 for (const mode of ['window_quick', 'window_editor', 'window_restore', 'window_tab'] as const) {
-  const common = (items: StyleField[]) => items.filter(f => !/window\.(move_|resize_)/.test(f.path) && (mode === 'window_editor' || !f.path.startsWith('window.card.position'))).map(f => ({ ...f, path: f.path.replace(/^window\.(?!card\.(?!position))/, `${mode}.`) }))
+  const common = (items: StyleField[]) => items.filter(f => !/window\.(move_|resize_)/.test(f.path) && (mode === 'window_editor' || !f.path.startsWith('window.card.position'))).map(f => ({
+    ...f,
+    path: f.path.replace(/^window\.(?!card\.(?!position))/, `${mode}.`),
+    label: f.path === 'window.screens' ? '窗口范围（current 当前屏幕 / all 全部屏幕，默认 current）' : f.label,
+  }))
   ;(fields as Record<string, ModeFields>)[mode] = { colors: common(fields.window.colors), layout: common(fields.window.layout), advanced: common(fields.window.advanced) }
   const own = (fields as Record<string, ModeFields>)[mode]
   if (mode === 'window_quick') own.layout.push({ path: `${mode}.split_ratios`, label: '比例（逗号分隔，支持分数）', kind: 'ratios' })
@@ -236,7 +249,7 @@ export const lifecycleModes = ['grid', 'recursive_grid', 'ui_hint', 'window', 'w
 export const lifecycleClickActions = ['left_click', 'right_click', 'middle_click', 'double_click']
 export function lifecycleOptions(event: 'after_finish' | 'after_click', plugins: string[] = []): string[] {
   return ['keep', 'restart', 'return', ...(event === 'after_finish' ? lifecycleClickActions : ['finish']),
-    'idle', 'normal', 'text_input', ...lifecycleModes, ...plugins]
+    'idle', 'normal', 'text_input', 'text_select', ...lifecycleModes, ...plugins]
 }
 for (const mode of lifecycleModes) {
   fields[mode].advanced.push(
@@ -285,6 +298,7 @@ export const frequentFields: ConfigField[] = [
     { value: 'window', label: '鼠标下窗口（默认）' },
     { value: 'active', label: '当前激活窗口优先' },
     { value: 'screen', label: '当前整屏' },
+    { value: 'all', label: '全部显示器' },
   ] },
   { path: 'ui_hint.strategy', label: 'UI 扫描', description: '辅助功能、OCR、轮廓检测，或全部并行合并', kind: 'select', options: [
     { value: 'vision', label: 'Vision' },

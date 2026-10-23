@@ -12,6 +12,7 @@ impl WindowSession {
             }
             let action = match binding.as_ref() {
                 Binding::Window(W::MultiConfirm) => "Confirm",
+                Binding::Window(W::MultiCancel) => "Cancel",
                 Binding::Window(W::ClearMulti) => "Clear",
                 Binding::Send(chord) => match crate::api::text_edit::navigation_action(chord) {
                     Some(crate::api::text_edit::EditAction::Left) => "←",

@@ -90,31 +90,12 @@ impl WindowSession {
         &mut self,
         key: &Key,
         repeat: bool,
-        out: &mut CommandBatch,
+        _out: &mut CommandBatch,
     ) -> bool {
-        if key.as_str() == "esc"
-            && let Some(input) = self.multi_input.take()
-        {
-            self.restore_multi_focus(out);
-            self.multi = input.before;
-            return true;
-        }
         let Some(input) = &mut self.multi_input else {
             return false;
         };
         match key.as_str() {
-            "backspace" | "delete" | "arrow_left" | "arrow_right" | "home" | "end" => {
-                use crate::api::text_edit::EditAction as E;
-                let action = match key.as_str() {
-                    "backspace" => E::Backspace,
-                    "delete" => E::Delete,
-                    "arrow_left" => E::Left,
-                    "arrow_right" => E::Right,
-                    "home" => E::Home,
-                    _ => E::End,
-                };
-                input.selection.edit(&mut input.text, action);
-            }
             "space" => {
                 if !repeat {
                     input.selection.insert(&mut input.text, " ");
@@ -136,6 +117,13 @@ impl WindowSession {
         }
         self.recompute_multi_input(false);
         true
+    }
+
+    pub(super) fn cancel_multi_input(&mut self, out: &mut CommandBatch) {
+        if let Some(input) = self.multi_input.take() {
+            self.restore_multi_focus(out);
+            self.multi = input.before;
+        }
     }
 
     pub(super) fn edit_multi_input(&mut self, action: crate::api::text_edit::EditAction) {

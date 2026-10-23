@@ -4,6 +4,19 @@ use super::*;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 
+const OCR_SAMPLE_COUNT: usize = 10_025;
+
+fn system_ocr_grid_for_parallelism(width: u32, height: u32, parallelism: usize) -> u32 {
+    SystemOcrLayout::new(
+        width,
+        height,
+        parallelism,
+        MIN_SYSTEM_OCR_TILE_SIDE,
+        MAX_SYSTEM_OCR_IN_FLIGHT,
+    )
+    .grid
+}
+
 #[test]
 fn ocr_execution_kind_uses_only_discovered_providers() {
     assert_eq!(
@@ -45,6 +58,42 @@ fn standard_uhd_capture_keeps_native_bitblt_dimensions() {
     assert_eq!(geometry.width, 3_840);
     assert_eq!(geometry.height, 2_160);
     assert_eq!(geometry.scale, 1.0);
+    let screens = vec![
+        Rect::new(-5000.0, -300.0, 3840.0, 2160.0),
+        Rect::new(0.0, 1000.0, 2160.0, 3840.0),
+    ];
+    let bounds = Rect::new(-5000.0, -300.0, 7160.0, 5140.0);
+    let mut request = crate::api::command::UiScanRequest {
+        id: 1,
+        scope: crate::api::UiScanScope::All,
+        screen_bounds: screens.clone(),
+        timeout_ms: 2500,
+        bounds: Some(bounds),
+        roles: Vec::new(),
+        max_depth: 32,
+        visible_only: true,
+        clickable_only: true,
+        strategy: crate::api::UiScanStrategy::Hybrid,
+        vision: crate::api::VisionOptions::default(),
+        app: None,
+    };
+    let frames = capture_geometries(&request, bounds).unwrap();
+    assert_eq!(frames.len(), 2);
+    for (frame, screen) in frames.iter().zip(&screens) {
+        assert_eq!(frame.desktop_bounds, *screen);
+        assert_eq!(
+            (frame.width, frame.height),
+            (screen.width as u32, screen.height as u32)
+        );
+        assert_eq!(frame.scale, 1.0);
+    }
+    request.scope = crate::api::UiScanScope::Window;
+    let window = capture_geometries(&request, bounds).unwrap();
+    assert_eq!(window.len(), 1);
+    assert!(
+        window[0].scale < 1.0,
+        "window captures retain their existing whole-frame budget"
+    );
 }
 
 #[test]
@@ -57,12 +106,16 @@ fn system_ocr_grid_uses_the_next_cpu_square_and_a_64px_size_floor() {
 
 #[test]
 fn system_ocr_credit_limit_covers_production_tile_counts() {
-    for count in [1, 2, 4, 9, 25, 81] {
-        let limit = system_ocr_concurrency_for(count, 64);
-        assert_eq!(limit, count.min(MAX_SYSTEM_OCR_IN_FLIGHT));
+    for cpus in [1, 2, 4, 8, 16, 64] {
+        let layout = SystemOcrLayout::new(3840, 2160, cpus, 64, MAX_SYSTEM_OCR_IN_FLIGHT);
+        assert_eq!(
+            layout.max_in_flight,
+            layout
+                .tile_count
+                .min(cpus)
+                .clamp(1, MAX_SYSTEM_OCR_IN_FLIGHT)
+        );
     }
-    assert_eq!(system_ocr_concurrency_for(25, 2), 2);
-    assert_eq!(system_ocr_concurrency_for(25, 4), 4);
 }
 
 #[test]
@@ -167,24 +220,6 @@ fn overlapping_system_ocr_tiles_map_a_seam_target_to_one_desktop_owner() {
 }
 
 #[test]
-fn division_free_nearest_offsets_match_reference_mapping() {
-    for (source, destination) in [
-        (3usize, 2usize),
-        (17, 7),
-        (100, 100),
-        (3_840, 2_560),
-        (2_160, 1_440),
-    ] {
-        assert_eq!(
-            nearest_offsets(source, destination),
-            (0..destination)
-                .map(|output| output * source / destination)
-                .collect::<Vec<_>>()
-        );
-    }
-}
-
-#[test]
 fn provider_batches_coalesce_in_the_fixed_mailbox_slot() {
     let mailbox = ProviderMailbox::new();
     let targets = (0..49)
@@ -216,7 +251,7 @@ fn provider_batches_coalesce_in_the_fixed_mailbox_slot() {
 fn provider_mailbox_preserves_a_full_generation_without_blocking() {
     let mailbox = ProviderMailbox::new();
     let targets = |offset: usize| {
-        (0..MAX_OCR_TARGETS)
+        (0..OCR_SAMPLE_COUNT)
             .map(|index| UiTarget {
                 details: None,
                 rect: Rect::new((offset + index) as f64, 0.0, 4.0, 4.0),
@@ -227,27 +262,33 @@ fn provider_mailbox_preserves_a_full_generation_without_blocking() {
     };
     assert_eq!(
         send_ocr_batches(&mailbox, "system", Instant::now(), targets(0)).unwrap(),
-        MAX_OCR_TARGETS
+        OCR_SAMPLE_COUNT
     );
     mailbox
         .publish(ProviderEvent::OcrDone {
             provider: "system",
             elapsed: Duration::ZERO,
-            result: Ok(MAX_OCR_TARGETS),
+            result: Ok(OCR_SAMPLE_COUNT),
         })
         .unwrap();
     assert_eq!(
-        send_ocr_batches(&mailbox, "wechat", Instant::now(), targets(MAX_OCR_TARGETS),).unwrap(),
-        MAX_OCR_TARGETS
+        send_ocr_batches(
+            &mailbox,
+            "wechat",
+            Instant::now(),
+            targets(OCR_SAMPLE_COUNT),
+        )
+        .unwrap(),
+        OCR_SAMPLE_COUNT
     );
     mailbox
         .publish(ProviderEvent::OcrDone {
             provider: "wechat",
             elapsed: Duration::ZERO,
-            result: Ok(MAX_OCR_TARGETS),
+            result: Ok(OCR_SAMPLE_COUNT),
         })
         .unwrap();
-    send_contour_batches(&mailbox, targets(MAX_OCR_TARGETS * 2)).unwrap();
+    send_contour_batches(&mailbox, targets(OCR_SAMPLE_COUNT * 2)).unwrap();
 
     let mut events = ProviderEvents::new();
     mailbox.drain_into(&mut events);
@@ -264,7 +305,7 @@ fn provider_mailbox_preserves_a_full_generation_without_blocking() {
             }
         }
     }
-    assert_eq!(target_count, MAX_OCR_TARGETS * 3);
+    assert_eq!(target_count, OCR_SAMPLE_COUNT * 3);
     assert_eq!(terminal_count, 3);
 }
 
@@ -438,6 +479,8 @@ fn quarantine_scan_fixture(
     use crate::platform::common::scan_mailbox::ScanMailbox;
     use crate::platform::windows::{EventSender, accessibility, ui_scan::ScanSession};
     let request = crate::api::UiScanRequest {
+        screen_bounds: Vec::new(),
+
         id: 993,
         scope: crate::api::UiScanScope::Screen,
         timeout_ms: 1000,
@@ -486,7 +529,7 @@ fn quarantined_vision_submit_preserves_hybrid_uia_results_and_deferred_frame() {
         }]);
         uia.finish(UiScanStatus::Success);
         let (capture, frame_restored) =
-            super::super::overlay_worker::deferred_capture_fixture(generation);
+            super::super::display::overlay_worker::deferred_capture_fixture(generation);
         worker
             .submit(plan, generation, session.source("visual scan"), capture)
             .expect("quarantine must not cancel the hybrid session");
@@ -518,7 +561,7 @@ fn scan_queued_before_quarantine_finishes_without_starting_native_work() {
         .latest_generation
         .store(generation, Ordering::Release);
     let (capture, frame_restored) =
-        super::super::overlay_worker::deferred_capture_fixture(generation);
+        super::super::display::overlay_worker::deferred_capture_fixture(generation);
     run_scan(
         ScanJob {
             request: plan,
@@ -571,7 +614,7 @@ fn vision_resumes_after_quarantined_provider_exits() {
         Rect::new(0.0, 0.0, 0.0, 0.0),
     );
     let (capture, frame_restored) =
-        super::super::overlay_worker::deferred_capture_fixture(generation);
+        super::super::display::overlay_worker::deferred_capture_fixture(generation);
     worker
         .submit(plan, generation, session.source("visual scan"), capture)
         .unwrap();
@@ -597,9 +640,13 @@ fn scan_cancellation_wakes_system_ocr_without_polling() {
     let cancellation = ScanCancellation::new(&shared, 29, &mailbox, Weak::new());
     let (system_sender, system_receiver) = mpsc::sync_channel(1);
     let (credit_sender, credit_receiver) = mpsc::channel();
+    let credit_sender = Arc::new(credit_sender);
+    let (wechat_credit, wechat_credits) = mpsc::channel();
+    let wechat_credit = Arc::new(wechat_credit);
     let (wechat_sender, wechat_receiver) = mpsc::sync_channel(1);
     cancellation.register_system_wake(system_sender);
-    cancellation.register_system_credit_wake(credit_sender);
+    cancellation.register_credit_wake(&credit_sender);
+    cancellation.register_credit_wake(&wechat_credit);
     cancellation.register_wechat_wake(wechat_sender);
     cancellation.cancel();
     assert!(matches!(
@@ -611,6 +658,12 @@ fn scan_cancellation_wakes_system_ocr_without_polling() {
         Ok(WechatInput::CancelWake)
     ));
     assert_eq!(credit_receiver.try_recv(), Ok(()));
+    assert_eq!(wechat_credits.try_recv(), Ok(()));
+    drop(wechat_credit);
+    assert_eq!(
+        wechat_credits.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    );
     assert!(matches!(
         mailbox.wait_until_ready(Instant::now()),
         Err(VisionError::Cancelled)
@@ -928,6 +981,8 @@ fn early_ocr_and_contour_are_both_published_without_waiting_for_ocr_terminal() {
     use crate::platform::common::scan_mailbox::ScanMailbox;
     use crate::platform::windows::{EventSender, accessibility, ui_scan::ScanSession};
     let input = crate::api::UiScanRequest {
+        screen_bounds: Vec::new(),
+
         id: 991,
         scope: crate::api::UiScanScope::Screen,
         timeout_ms: 1000,
@@ -1003,6 +1058,8 @@ fn early_and_late_visual_sources_use_identical_ownership() {
                 [2, 1, 0],
             ] {
                 let request = crate::api::UiScanRequest {
+                    screen_bounds: Vec::new(),
+
                     id: 992,
                     scope: crate::api::UiScanScope::Screen,
                     timeout_ms: 1000,
@@ -1153,7 +1210,7 @@ fn contour_4k_and_8k_capture_analysis_stays_bounded_and_maps_back() {
 #[test]
 fn contour_mailbox_transfers_full_candidate_buffer_without_rebuilding_it() {
     let mailbox = ProviderMailbox::new();
-    let targets: Vec<_> = (0..MAX_OCR_TARGETS)
+    let targets: Vec<_> = (0..OCR_SAMPLE_COUNT)
         .map(|i| UiTarget {
             details: None,
             rect: Rect::new(i as f64 * 10.0, 0.0, 8.0, 8.0),
@@ -1169,7 +1226,7 @@ fn contour_mailbox_transfers_full_candidate_buffer_without_rebuilding_it() {
     let ProviderEvent::ContourBatch(targets) = &events[0] else {
         panic!("missing contours")
     };
-    assert_eq!(targets.len(), 10_000);
+    assert_eq!(targets.len(), OCR_SAMPLE_COUNT);
     assert_eq!(targets.as_ptr(), original);
     assert!(matches!(events[1], ProviderEvent::ContourDone));
 }
@@ -1206,13 +1263,12 @@ fn ocr_word_and_phrase_converge_across_engines_and_batch_order() {
             for (source, target) in batches {
                 let update = scan.push(source, vec![target], 0.5);
                 crate::api::command::remove_retired_targets(&mut visible, &update.retired);
-                visible.extend(update.batches.into_iter().flatten());
+                visible.extend(update.targets);
             }
             let mut next_row = phrase.clone();
             next_row.rect.y = 36.;
             let update = scan.push(sources[1], vec![next_row.clone()], 0.5);
-            visible.extend(update.batches.into_iter().flatten());
-            visible.extend(scan.finish().into_iter().flatten());
+            visible.extend(update.targets);
             assert_eq!(visible.len(), 2, "reverse={reverse} swap={swap_engines}");
             assert!(visible.iter().any(|t| t.rect == phrase.rect));
             assert!(visible.iter().any(|t| t.rect == next_row.rect));
@@ -1259,7 +1315,7 @@ fn ready_visual_data_bypasses_busy_native_coordinator_and_count_gates() {
 }
 
 #[test]
-fn provider_data_slots_ignore_empty_and_keep_valid_prefix_of_oversized_buffers() {
+fn provider_data_slots_ignore_empty_and_keep_large_buffers_in_full() {
     let mailbox = ProviderMailbox::new();
     send_ocr_batches(&mailbox, "system", Instant::now(), Vec::new()).unwrap();
     mailbox
@@ -1267,7 +1323,7 @@ fn provider_data_slots_ignore_empty_and_keep_valid_prefix_of_oversized_buffers()
         .unwrap();
     assert_eq!(mailbox.ready_flags.load(Ordering::Acquire), 0);
     let targets = || {
-        (0..MAX_OCR_TARGETS + 2)
+        (0..OCR_SAMPLE_COUNT + 2)
             .map(|i| {
                 UiTarget::recognized_text(Rect::new(i as f64 * 20., 0., 10., 10.), i.to_string())
             })
@@ -1275,7 +1331,7 @@ fn provider_data_slots_ignore_empty_and_keep_valid_prefix_of_oversized_buffers()
     };
     assert_eq!(
         send_ocr_batches(&mailbox, "system", Instant::now(), targets()).unwrap(),
-        MAX_OCR_TARGETS
+        OCR_SAMPLE_COUNT + 2
     );
     send_contour_batches(&mailbox, targets()).unwrap();
     let mut events = ProviderEvents::new();
@@ -1289,6 +1345,6 @@ fn provider_data_slots_ignore_empty_and_keep_valid_prefix_of_oversized_buffers()
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        vec![MAX_OCR_TARGETS, MAX_OCR_TARGETS]
+        vec![OCR_SAMPLE_COUNT + 2, OCR_SAMPLE_COUNT + 2]
     );
 }

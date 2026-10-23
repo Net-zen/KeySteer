@@ -6,26 +6,28 @@
 
 mod accessibility;
 mod autostart;
-mod display_link;
+mod display;
 mod event_loop;
-mod hook;
 mod input;
-pub(crate) mod latest_point_mailbox;
-pub(crate) mod multi_click;
 mod native;
-mod overlay;
 mod permissions;
-mod screens;
+mod scan_workers;
 mod status_item;
+mod text_segmentation;
 mod ui_scan;
+mod update_installer;
 mod vision;
 mod window_audio;
 mod window_move;
 mod window_tabs;
 mod workspace;
 
-#[cfg(feature = "benchmark-hooks")]
-pub use input::{CharacterCaptureProbe, observe_character_unfiltered};
+/// Own private process modes before normal application startup.
+pub(crate) fn run(application: impl FnOnce() -> std::process::ExitCode) -> std::process::ExitCode {
+    update_installer::run_internal_helper()
+        .or_else(vision::run_internal_ocr_helper)
+        .unwrap_or_else(application)
+}
 
 use crate::platform::common::event_queue::{self, Receiver, Sender};
 use std::cell::{Cell, RefCell};
@@ -45,9 +47,9 @@ use crate::api::input::{Key, KeyState};
 use crate::api::overlay::OverlayScene;
 use crate::platform::common::scan_mailbox::ScanMailbox;
 
-use self::hook::{HookStartup, HookThread};
-use self::overlay::Overlay;
-use crate::platform::multi_click::ClickTracker;
+use self::display::{display_link::DisplayFrameClock, overlay::Overlay};
+use self::input::hook::{HookStartup, HookThread};
+use self::input::multi_click::ClickTracker;
 
 const BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -101,15 +103,17 @@ pub struct MacOsBackend {
     scan_fusion: crate::platform::common::scan_fusion::Worker,
     scan_worker: ui_scan::UiScanWorker,
     pending: VecDeque<BackendEvent>,
+    text_segmenter: Option<crate::platform::common::text_segmentation::Worker>,
     overlay: Overlay,
     screens: Vec<Screen>,
     window_move: RefCell<Option<window_move::WindowMove<accessibility::MovableWindow>>>,
-    display_watcher: Option<screens::DisplayWatcher>,
-    frame_clock: display_link::DisplayFrameClock,
+    display_watcher: Option<display::DisplayWatcher>,
+    frame_clock: DisplayFrameClock,
     scroll_worker: crate::platform::common::scroll_worker::ScrollWorker,
     workspace: workspace::Workspace,
     status_item: Option<status_item::StatusItem>,
     update_worker: Option<crate::platform::common::update::UpdateWorker>,
+    update_ready_signaled: bool,
     window_worker: Option<crate::platform::common::window_session::WindowWorker>,
     held_buttons: Cell<u8>,
     click_tracker: Arc<Mutex<ClickTracker>>,
@@ -133,6 +137,16 @@ impl MacOsBackend {
         event_loop::pump_app_events();
         status_item.maintain_icon_attachment();
 
+        // Give the independent scroll executor a head start while permission,
+        // Hook and display setup runs. It stays asleep until a real command.
+        let scroll_events = event_tx.clone();
+        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
+            input::scroll,
+            move |event| {
+                let _ = scroll_events.send(event);
+            },
+        )?;
+        let frame_clock = DisplayFrameClock::new(mtm);
         let scan_mailbox = Arc::new(ScanMailbox::default());
         let configured_interval = NSEvent::doubleClickInterval();
         let double_click_interval = if configured_interval.is_finite() && configured_interval > 0.0
@@ -149,16 +163,17 @@ impl MacOsBackend {
 
         let hook_deadline = Instant::now() + Duration::from_secs(2);
         let hook_start = HookStartup::spawn(Arc::clone(&click_tracker));
-        let frame_clock = display_link::DisplayFrameClock::new(mtm);
-        let initial_screens = screens::list_screens().unwrap_or_else(|error| {
+        // Register before the initial snapshot so a display change during
+        // enumeration remains pending for the first native refresh.
+        let display_watcher = display::DisplayWatcher::new()?;
+        let initial_screens = display::list_screens().unwrap_or_else(|error| {
             crate::support::logging::report_error(
                 "macos-screen",
                 format!("initial display enumeration failed: {error}"),
             );
             Vec::new()
         });
-        let display_watcher = screens::DisplayWatcher::new()?;
-        let workspace = workspace::Workspace::new();
+        let workspace = workspace::Workspace::new(mtm);
         let keyboard = input::KeyboardInjector::new();
         let hook = match hook_start.and_then(|startup| {
             startup.finish(hook_deadline.saturating_duration_since(Instant::now()))
@@ -171,13 +186,6 @@ impl MacOsBackend {
                 None
             }
         };
-        let scroll_events = event_tx.clone();
-        let scroll_worker = crate::platform::common::scroll_worker::ScrollWorker::start(
-            input::scroll,
-            move |event| {
-                let _ = scroll_events.send(event);
-            },
-        )?;
         Ok(Self {
             point_sampler: None,
             hook,
@@ -188,6 +196,7 @@ impl MacOsBackend {
             scan_fusion: crate::platform::common::scan_fusion::Worker::default(),
             scan_worker: ui_scan::UiScanWorker::new(),
             pending: VecDeque::new(),
+            text_segmenter: None,
             overlay: Overlay::new(),
             screens: initial_screens,
             window_move: RefCell::new(None),
@@ -197,6 +206,7 @@ impl MacOsBackend {
             workspace,
             status_item: Some(status_item),
             update_worker: None,
+            update_ready_signaled: false,
             window_worker: None,
             held_buttons: Cell::new(0),
             click_tracker,
@@ -220,13 +230,30 @@ impl MacOsBackend {
         let _ = self.refresh_screens();
     }
 
+    fn native_timeout(&mut self, timeout: Duration) -> Duration {
+        let timeout = timeout.min(self.status_item.as_ref().map_or(
+            Duration::MAX,
+            status_item::StatusItem::time_until_icon_retry,
+        ));
+        let timeout = timeout.min(
+            self.display_watcher
+                .as_ref()
+                .map_or(Duration::MAX, display::DisplayWatcher::time_until_retry),
+        );
+        if self.window_move.get_mut().is_some() {
+            timeout.min(window_move::POLL_INTERVAL)
+        } else {
+            timeout
+        }
+    }
+
     fn refresh_screens(&mut self) -> Result<(), String> {
         let changed = self
             .display_watcher
             .as_ref()
-            .is_none_or(screens::DisplayWatcher::take_changed);
+            .is_none_or(display::DisplayWatcher::take_changed);
         if changed || self.screens.is_empty() {
-            let current = screens::list_screens().inspect_err(|_| {
+            let current = display::list_screens().inspect_err(|_| {
                 if let Some(watcher) = &self.display_watcher {
                     watcher.retry_refresh();
                 }
@@ -235,10 +262,25 @@ impl MacOsBackend {
                 if let Some(watcher) = &self.display_watcher {
                     watcher.retry_refresh();
                 }
-            } else if current != self.screens {
-                self.screens = current.clone();
-                self.pending
-                    .push_back(BackendEvent::ScreensChanged(current));
+            } else {
+                // Equal logical geometry does not guarantee equal backing scale
+                // or AppKit placement. Refresh the live panels before another
+                // position-only frame can bypass complete scene presentation.
+                self.overlay.refresh_screens(&current).inspect_err(|_| {
+                    if let Some(watcher) = &self.display_watcher {
+                        watcher.retry_refresh();
+                    }
+                })?;
+                if current != self.screens {
+                    self.screens = current.clone();
+                    self.pending
+                        .push_back(BackendEvent::ScreensChanged(current));
+                }
+                if let Ok(source) = self.overlay.display_link_source() {
+                    self.frame_clock.prepare(source);
+                } else {
+                    self.frame_clock.stop();
+                }
             }
         }
         Ok(())
@@ -253,11 +295,9 @@ impl MacOsBackend {
         if let Some(event) = self.hook.as_mut().and_then(HookThread::try_next_event) {
             return Some(event);
         }
-        if let Some(frame) = self
-            .background_budget
-            .take_ready_frame(|| self.frame_clock.try_next())
-        {
-            return Some(frame);
+        if let Some(elapsed) = self.frame_clock.try_next() {
+            self.background_budget.reset();
+            return Some(BackendEvent::Frame(elapsed));
         }
         if !self.native_loop_running && self.background_budget.yield_due() {
             // Service ready native sources even while completions keep arriving.
@@ -266,11 +306,9 @@ impl MacOsBackend {
             if let Some(event) = self.hook.as_mut().and_then(HookThread::try_next_event) {
                 return Some(event);
             }
-            if let Some(frame) = self
-                .background_budget
-                .take_ready_frame(|| self.frame_clock.try_next())
-            {
-                return Some(frame);
+            if let Some(elapsed) = self.frame_clock.try_next() {
+                self.background_budget.reset();
+                return Some(BackendEvent::Frame(elapsed));
             }
         }
         if let Some(event) = self.scan_mailbox.take_activation() {
@@ -279,7 +317,14 @@ impl MacOsBackend {
         let event = self
             .scan_mailbox
             .take()
-            .map(BackendEvent::UiScanned)
+            .map(|result| {
+                if result.status != crate::api::command::UiScanStatus::Partial {
+                    // The engine retires its scan owner after this event.
+                    // Cancel remaining native work before losing that route.
+                    self.cancel_scan(result.id);
+                }
+                BackendEvent::UiScanned(result)
+            })
             .or_else(|| self.pending.pop_front())
             .or_else(|| self.async_rx.try_recv().ok());
         if event.is_some() {
@@ -288,6 +333,12 @@ impl MacOsBackend {
             self.background_budget.reset();
         }
         event
+    }
+
+    fn cancel_scan(&self, id: u64) {
+        self.scan_mailbox.cancel(id);
+        self.scan_fusion.cancel(id);
+        self.scan_worker.cancel_scan(id);
     }
 
     fn release_held_buttons(&self) -> Result<(), String> {
@@ -334,9 +385,7 @@ impl MacOsBackend {
         // longer be sent.
         let mut errors = crate::support::errors::ErrorBundle::default();
         self.scroll_worker.request_stop();
-        if let Some(hook) = self.hook.as_mut() {
-            hook.request_stop();
-        }
+        self.stop_input_capture();
         self.status_item.take();
         if let Some(movement) = self.window_move.get_mut().take()
             && let Err(error) = movement.cancel()
@@ -346,6 +395,9 @@ impl MacOsBackend {
         self.frame_clock.stop();
         self.scan_worker.request_stop();
         self.scan_fusion.request_stop();
+        if let Some(worker) = &self.text_segmenter {
+            worker.request_stop();
+        }
         if let Some(worker) = &self.point_sampler {
             worker.request_stop();
         }
@@ -386,6 +438,9 @@ impl MacOsBackend {
         }
         errors.record("UI scan worker", self.scan_worker.shutdown_until(deadline));
         errors.record("UI scan fusion", self.scan_fusion.stop_until(deadline));
+        if let Some(mut worker) = self.text_segmenter.take() {
+            errors.record("text segmenter", worker.stop_until(deadline));
+        }
         errors.record(
             "continuous scrolling",
             self.scroll_worker.stop_until(deadline),
@@ -423,6 +478,29 @@ impl Drop for MacOsBackend {
 }
 
 impl Backend for MacOsBackend {
+    fn request_text_segmentation(&mut self, request: crate::api::text_select::Request) -> bool {
+        if self.text_segmenter.is_none() {
+            let tx = self.event_tx.clone();
+            self.text_segmenter = crate::platform::common::text_segmentation::Worker::new(
+                text_segmentation::words,
+                move |result| {
+                    let _ = tx.send(BackendEvent::TextSegmented(result));
+                },
+            )
+            .ok();
+        }
+        if let Some(worker) = &self.text_segmenter {
+            worker.submit(Some(request));
+            true
+        } else {
+            false
+        }
+    }
+    fn cancel_text_segmentation(&mut self) {
+        if let Some(worker) = &self.text_segmenter {
+            worker.submit(None);
+        }
+    }
     fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
         if self.point_sampler.is_none() {
             let tx = self.event_tx.clone();
@@ -559,21 +637,20 @@ impl Backend for MacOsBackend {
         self.native_loop_running = true;
         let result = event_loop::run(menu.as_deref(), &mut || {
             let next = turn(self)?;
-            Ok(next.map(|timeout| {
-                if self.window_move.get_mut().is_some() {
-                    timeout.min(window_move::POLL_INTERVAL)
-                } else {
-                    timeout
-                }
-            }))
+            Ok(next.map(|timeout| self.native_timeout(timeout)))
         });
         self.native_loop_running = false;
         Some(result)
     }
 
     fn poll(&mut self, timeout: Duration) -> Result<Option<BackendEvent>, String> {
+        // Engine has loaded its environment and activated Idle before first poll.
+        if !self.update_ready_signaled {
+            update_installer::signal_ready()?;
+            self.update_ready_signaled = true;
+        }
         self.reap_update_worker();
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now().checked_add(timeout);
         loop {
             if let Some(event) = self.try_event() {
                 return Ok(Some(event));
@@ -601,13 +678,13 @@ impl Backend for MacOsBackend {
             if let Some(event) = self.try_event() {
                 return Ok(Some(event));
             }
-            let mut remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.map_or(Duration::MAX, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
             if remaining.is_zero() || self.native_loop_running {
                 return Ok(None);
             }
-            if self.window_move.get_mut().is_some() {
-                remaining = remaining.min(window_move::POLL_INTERVAL);
-            }
+            let remaining = self.native_timeout(remaining);
             if self.frame_clock.is_running() {
                 if let Some(elapsed) = self.frame_clock.next(remaining) {
                     return Ok(Some(BackendEvent::Frame(elapsed)));
@@ -647,7 +724,7 @@ impl Backend for MacOsBackend {
 
     fn screens(&self) -> Result<Vec<Screen>, String> {
         if self.screens.is_empty() {
-            screens::list_screens()
+            display::list_screens()
         } else {
             Ok(self.screens.clone())
         }
@@ -765,12 +842,10 @@ impl Backend for MacOsBackend {
         // display changes here too, but never enumerate displays per frame.
         self.refresh_screens()?;
         self.overlay.present(scene, &self.screens)?;
-        if self.frame_clock.is_running() {
-            if let Ok(source) = self.overlay.display_link_source() {
-                self.frame_clock.start(source);
-            } else {
-                self.frame_clock.stop();
-            }
+        if let Ok(source) = self.overlay.display_link_source() {
+            self.frame_clock.prepare(source);
+        } else {
+            self.frame_clock.stop();
         }
         crate::support::perf_probe::mark("native_presented");
         Ok(())
@@ -781,10 +856,12 @@ impl Backend for MacOsBackend {
         cursor: Option<Point>,
         indicator: Option<Point>,
     ) -> Result<bool, String> {
+        self.refresh_screens()?;
         let updated = self.overlay.update_positions(cursor, indicator)?;
         if updated {
             if self.frame_clock.is_running() {
-                self.frame_clock.start(self.overlay.display_link_source()?);
+                self.frame_clock
+                    .prepare(self.overlay.display_link_source()?);
             }
             crate::support::perf_probe::mark("native_presented");
         }
@@ -816,10 +893,7 @@ impl Backend for MacOsBackend {
     }
 
     fn cancel_ui_scan(&mut self, id: u64) -> Result<(), String> {
-        if self.scan_mailbox.cancel(id) {
-            self.scan_fusion.cancel(id);
-            self.scan_worker.cancel_scan(id);
-        }
+        self.cancel_scan(id);
         Ok(())
     }
 
@@ -903,6 +977,12 @@ impl Backend for MacOsBackend {
         } else {
             permissions::instructions()
         })
+    }
+
+    fn stop_input_capture(&mut self) {
+        if let Some(hook) = self.hook.as_mut() {
+            hook.request_stop();
+        }
     }
 
     fn shutdown(&mut self) -> Result<(), String> {

@@ -90,13 +90,17 @@ pub enum WindowAction {
     SelectPrevious,
     MultiSelect,
     MultiConfirm,
+    MultiCancel,
     ClearMulti,
     Undo,
     Redo,
     ResetInitial,
     RemoveRegion,
     SaveLayout,
+    AreaNumber,
     DeletePreset,
+    NextPage,
+    PreviousPage,
     Confirm,
     TabEnd,
     TabPrefix,
@@ -116,12 +120,16 @@ impl WindowAction {
             self,
             Self::MultiSelect
                 | Self::MultiConfirm
+                | Self::MultiCancel
                 | Self::ClearMulti
                 | Self::Undo
                 | Self::Redo
                 | Self::ResetInitial
                 | Self::SaveLayout
+                | Self::AreaNumber
                 | Self::DeletePreset
+                | Self::NextPage
+                | Self::PreviousPage
                 | Self::Confirm
                 | Self::TabEnd
                 | Self::TabPrefix
@@ -187,6 +195,7 @@ impl WindowAction {
             Self::SystemAudioPrevious => "window_system_audio_previous",
             Self::SystemAudioNext => "window_system_audio_next",
             Self::MultiConfirm => "window_multi_confirm",
+            Self::MultiCancel => "window_multi_cancel",
             Self::MultiSelect => "window_multi_select",
             Self::ClearMulti => "window_multi_clear",
             Self::Select => "window_select",
@@ -196,7 +205,10 @@ impl WindowAction {
             Self::ResetInitial => "window_reset_initial",
             Self::RemoveRegion => "window_remove_region",
             Self::SaveLayout => "window_save_layout",
+            Self::AreaNumber => "window_area_number",
             Self::DeletePreset => "window_delete",
+            Self::NextPage => "window_next_page",
+            Self::PreviousPage => "window_previous_page",
             Self::Confirm => "window_confirm",
             Self::TabEnd => "window_tab_end",
             Self::TabPrefix => "window_tab_group",
@@ -213,6 +225,7 @@ impl WindowAction {
     pub fn parse(value: &str) -> Option<Self> {
         [
             Self::MultiConfirm,
+            Self::MultiCancel,
             Self::MultiSelect,
             Self::ClearMulti,
             Self::Left,
@@ -257,7 +270,10 @@ impl WindowAction {
             Self::ResetInitial,
             Self::RemoveRegion,
             Self::SaveLayout,
+            Self::AreaNumber,
             Self::DeletePreset,
+            Self::NextPage,
+            Self::PreviousPage,
             Self::Confirm,
             Self::TabEnd,
             Self::TabPrefix,

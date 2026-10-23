@@ -162,9 +162,9 @@ impl CharacterCandidates {
             {
                 return false;
             }
-            if !known {
-                self.refresh.store(true, Ordering::Relaxed);
-            }
+            // A synthetic/remapped event may omit or change its scan identity.
+            // Keep observing it; rebuilding the same layout cannot repair the
+            // event and would repeatedly block input on native enumeration.
         } else {
             self.refresh.store(true, Ordering::Relaxed);
         }
@@ -227,7 +227,14 @@ mod tests {
         assert!(table.is_candidate(41, 9, 5, 8));
         assert!(table.take_refresh());
         assert!(table.is_candidate(41, 10, 5, 7));
-        assert!(table.take_refresh());
+        assert!(
+            !table.take_refresh(),
+            "a stable layout cannot repair an event's unknown identity"
+        );
+        for _ in 0..16 {
+            assert!(table.is_candidate(41, 0, 5, 7));
+            assert!(!table.take_refresh());
+        }
         assert!(table.is_candidate(256, 9, 0, 7));
         assert!(table.is_candidate(41, 9, 64, 7));
         assert!(table.is_candidate(41, 9, 0, 0));

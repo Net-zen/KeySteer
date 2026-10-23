@@ -80,6 +80,21 @@ fn activate(mode: &mut GridMode, env: &Env) -> Vec<Command> {
 }
 
 fn press(mode: &mut GridMode, env: &Env, name: &str) -> Vec<Command> {
+    let key = Key::new(name).unwrap();
+    let binding = env.config.recursive_grid.bindings.get(name);
+    if let Some(binding) = binding {
+        return mode
+            .handle(
+                &ModeEvent::Binding {
+                    binding: binding.clone().into(),
+                    state: KeyState::Down,
+                    key,
+                },
+                &env.ctx(),
+            )
+            .into_iter()
+            .collect();
+    }
     mode.handle(
         &ModeEvent::Key {
             key: Key::new(name).unwrap(),
@@ -409,29 +424,54 @@ fn unknown_keys_are_ignored() {
 
 #[test]
 fn label_char_replaces_every_cell_key() {
-    let mut config = legacy_config();
-    config.recursive_grid.ui.label_char = "\u{B7}".into();
-    let env = Env::with(config);
-    let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
-    let out = activate(&mut mode, &env);
+    for text in ["\u{B7}", "界🙂", "a label longer than inline storage"] {
+        let mut config = legacy_config();
+        config.recursive_grid.ui.label_char = text.into();
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
+        let out = activate(&mut mode, &env);
 
-    let scene = scene_of(&out);
-    assert!(!scene.labels.is_empty());
-    assert!(scene.labels.iter().all(|l| l.text == "\u{B7}"));
+        let scene = scene_of(&out);
+        assert_eq!(scene.labels.len(), 9);
+        assert!(scene.labels.iter().all(|label| label.text == text));
+        let View::RecursiveGrid(view) = mode.view() else {
+            panic!("expected recursive grid");
+        };
+        let style = view.ui.label.resolve(
+            &env.palette,
+            Color::TRANSPARENT,
+            env.palette.text,
+            Color::TRANSPARENT,
+        );
+        for label in &scene.labels {
+            assert_eq!(
+                label.style.font_size,
+                style.fit_to(text, label.rect).font_size
+            );
+        }
+    }
 }
 
 #[test]
 fn sub_key_preview_adds_a_second_label_per_cell() {
-    let mut config = legacy_config();
-    config.recursive_grid.ui.sub_key_preview = true;
-    let env = Env::with(config);
-    let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
-    let out = activate(&mut mode, &env);
+    for (replacement, expected_preview) in [("", "rtyfghvbn"), ("界🙂", "界界界界界界界界界")]
+    {
+        let mut config = legacy_config();
+        config.recursive_grid.ui.sub_key_preview = true;
+        config.recursive_grid.ui.label_char = replacement.into();
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
+        let out = activate(&mut mode, &env);
 
-    let scene = scene_of(&out);
-    // Nine cell keys plus nine previews.
-    assert_eq!(scene.labels.len(), 18, "{:?}", scene.labels.len());
-    assert!(scene.labels.iter().any(|l| l.text == "rtyfghvbn"));
+        let scene = scene_of(&out);
+        // Nine cell keys plus nine previews, retaining their per-cell paint order.
+        assert_eq!(scene.labels.len(), 18);
+        for pair in scene.labels.as_chunks::<2>().0 {
+            assert_eq!(pair[0].z_index, 3);
+            assert_eq!(pair[1].z_index, 2);
+            assert_eq!(pair[1].text, expected_preview);
+        }
+    }
 }
 
 #[test]
@@ -496,16 +536,47 @@ fn labels_autohide_once_fitting_would_make_them_too_small() {
 
 #[test]
 fn scene_draws_interior_rulings() {
-    let env = Env::new();
-    let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
-    let out = activate(&mut mode, &env);
-    let lines = scene_of(&out)
-        .shapes
-        .iter()
-        .filter(|s| matches!(s, OverlayShape::Line { .. }))
-        .count();
-    // A 3x3 grid has two vertical and two horizontal rulings.
-    assert_eq!(lines, 4);
+    for (line_width, transparent) in [(1, false), (0, false), (2, true)] {
+        let mut config = legacy_config();
+        config.recursive_grid.ui.line_width = line_width;
+        if transparent {
+            config.recursive_grid.ui.line_color =
+                Some(crate::api::ThemedColor::Both("#00000000".into()));
+        }
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::recursive_grid(&env.config);
+        let out = activate(&mut mode, &env);
+        let lines: Vec<_> = scene_of(&out)
+            .shapes
+            .iter()
+            .filter_map(|shape| match shape {
+                OverlayShape::Line {
+                    from,
+                    to,
+                    width,
+                    color,
+                    z_index,
+                    ..
+                } => {
+                    assert_eq!(*width, f64::from(line_width));
+                    assert_eq!(color.is_transparent(), transparent);
+                    assert_eq!(*z_index, 1);
+                    Some((*from, *to))
+                }
+                _ => None,
+            })
+            .collect();
+        // Recursive scenes retain the same geometry even when lines are invisible.
+        assert_eq!(
+            lines,
+            vec![
+                (Point::new(300.0, 0.0), Point::new(300.0, 900.0)),
+                (Point::new(600.0, 0.0), Point::new(600.0, 900.0)),
+                (Point::new(0.0, 300.0), Point::new(900.0, 300.0)),
+                (Point::new(0.0, 600.0), Point::new(900.0, 600.0)),
+            ]
+        );
+    }
 }
 
 #[test]

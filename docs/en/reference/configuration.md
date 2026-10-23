@@ -1,53 +1,21 @@
 # Configuration
 
-KeySteer does not require a configuration file. When none is present it uses built-in defaults, which match the shipped `keysteer.default.toml`.
+KeySteer works without a configuration file. To change keys, speeds, or colors, edit a TOML file. You can [download the complete defaults](/generated/keysteer.default.toml).
 
-Configurations use TOML. You can [download the complete shipped example](/generated/keysteer.default.toml). This guide starts with a working setup, then customisation and troubleshooting.
-
-::: tip
-To change only shortcuts, see [Getting started](/en/guide/getting-started).
-
-For action parameters, arrays, `exec`, and plugin verbs, see the [Modes and actions reference](/en/reference/modes-and-actions).
+::: tip Want a live preview?
+Try [Configuration & Simulator](/en/editor/) first. Use this page to look up fields and syntax, and [Modes and actions](/en/reference/modes-and-actions) for action names and arguments.
 :::
-
-## Mode usage and quick switching
-
-```toml
-[mode_usage]
-save_after_entries = 100
-
-[quick_switch]
-enabled = true
-key = "q"
-hold_ms = 350
-blacklist = ["idle"]
-position = "mouse" # screen / window / mouse
-
-[quick_switch.ui]
-font_size = 28
-border_width = 1
-border_radius = 6
-padding_x = 6
-padding_y = 8
-# background_color = "#EEF2FFFF"
-# text_color = "#193781FF"
-# border_color = "#506DD0FF"
-```
-
-Each actual mode change increments its entry count; repeats and same-mode keep/restart do not. Counts stay in memory until the configured positive number of new entries triggers a background checkpoint to `workspace.ksw` (100 by default). Workspace edits and orderly exit also save pending counts. There is no periodic save timer. Windows/macOS system termination notifications request a checkpoint; power loss, forced termination or an expired system shutdown deadline can still lose unsaved counts.
-
-In an operation mode, press Q alone and hold it for 350 ms to show the panel, or use Q+1…9 immediately. Releasing Q closes the panel; a short tap executes its original binding on release. Idle, paused operation, excluded applications and native note entry do not intercept Q. The panel shows up to nine registered modes, sorted by entry count and then mode id. Numbers stay fixed while it is open. Selecting the current mode preserves its state. The blacklist only filters the panel, leaving normal shortcuts available.
-
-Positions are the current pointer screen's center (`screen`), the foreground window's center with a screen fallback (`window`), or below the pointer's mode indicator (`mouse`), clamped to the current screen. Styles also support `font_family` and per-appearance colors, resolved when configuration loads. The web editor displays imported workspace statistics and edits the threshold and panel options, preserving counts on export. Version 1 files remain readable; files containing statistics use workspace version 2.
 
 ## Configuration file location
 
-KeySteer looks for `keysteer.<name>.toml` in its data directory. If no user configuration exists, it tries `keysteer.default.toml`; if neither exists, it uses built-in defaults.
+| Platform | Data directory |
+| --- | --- |
+| Windows | Beside the executable |
+| macOS `.app` | `~/Library/Application Support/KeySteer/` |
 
-- Windows: the directory that contains the executable.
-- Packaged macOS app: `~/Library/Application Support/KeySteer/`.
+Save a file named `keysteer.<name>.toml` here, such as `keysteer.user.toml`. The app prefers user configuration, then `keysteer.default.toml`. If neither exists, it uses built-in defaults.
 
-The name must be `keysteer.<name>.toml`, such as `keysteer.user.toml`. You can also specify it explicitly:
+You can also specify a file. A bare filename resolves in the data directory; a relative path starting with `./` resolves from the working directory.
 
 ```bash
 keysteer --config keysteer.user.toml
@@ -57,12 +25,18 @@ keysteer --check --config keysteer.user.toml
 
 | Command | Purpose |
 | --- | --- |
-| `keysteer --check -c keysteer.user.toml` | Parse and validate a configuration without starting the runtime. |
-| `keysteer --dump-config` | Print the complete effective configuration. |
-| `keysteer --doctor` | Check the backend, keyboard, displays, permissions, and entry keys. |
-| `keysteer --help` | Show CLI options and default shortcuts. |
+| `keysteer --check -c keysteer.user.toml` | Validate configuration without starting control |
+| `keysteer --dump-config` | Print the complete effective configuration |
+| `keysteer --doctor` | Check keyboard, displays, permissions, and entry keys |
+| `keysteer --help` | Show command-line options and default shortcuts |
 
 ## Minimal configuration
+
+This example shows how to leave Normal with Space.
+
+::: warning A custom binding table replaces the defaults
+Omitted ordinary fields keep their defaults, but tables such as `[normal.bindings]` are replaced as a whole. Start from the complete defaults and keep the other keys you need. User configuration and the default file are also not merged field by field.
+:::
 
 ```toml
 [normal.bindings]
@@ -70,11 +44,9 @@ keysteer --check --config keysteer.user.toml
 space = "idle"
 ```
 
-Omitted fields retain their defaults, but an explicit bindings table such as `[normal.bindings]` replaces the corresponding default table. Removed or remapped plugin shortcuts are not restored from internal defaults. Start by copying the full default configuration. A user profile takes precedence over the default file; the two files are not merged.
+After saving, choose **Reload Configuration** from the status menu. The app returns to Idle; use your entry key to enter Normal again.
 
-After saving, select Reload Configuration in the status menu. The program returns to Idle; use your launcher to enter Normal again. `left_shift = "slow"` slows movement while held. Use `shift = "slow_toggle"` to toggle slow movement with either Shift; a retained `right_shift = "middle_click"` binding still takes precedence for right Shift.
-
-You can also add number keys to your existing `[normal.bindings]` table:
+For tap-to-toggle speeds, add these lines to your existing `[normal.bindings]`:
 
 ```toml
 "1" = "precision_toggle"
@@ -82,27 +54,31 @@ You can also add number keys to your existing `[normal.bindings]` table:
 "3" = "fast_toggle"
 ```
 
-Tap to select precision, slow, or fast speed. Press the same key again to return to normal speed, or another key to switch levels. Configure the ratios with `precision_multiplier`, `slow_multiplier`, and `fast_multiplier` in `[pointer]`. Label modes such as Grid still give label input priority over these number bindings.
+Tap the same key to return to normal speed, or another key to change speed. Set the multipliers in `[pointer]`. Grid and other label modes still prioritize digits as label input.
+
+Use `left_shift = "slow"` for hold-to-slow, or `shift = "slow_toggle"` for tap-to-toggle. A separate `right_shift` binding takes priority for right Shift.
 
 ## Configuration structure
 
-| Section | Purpose |
+| Section | What it changes |
 | --- | --- |
-| `[general]` | Excluded applications. |
-| `[key_aliases]` | Custom key names and cross-platform modifiers. |
-| `[hotkeys]` | Mode entry points from Idle. |
-| `[normal]`, `[grid]`, `[recursive_grid]`, `[ui_hint]` | Inheritance, bindings, and parameters for each mode. |
-| `[pointer]`, `[scroll]` | Pointer speed and scroll distance. |
-| `[theme]`, `[mode_indicator]` | Colours and mode indicators. |
-| `[[app_configs]]` | Per-application binding overrides. |
-| `[plugin_modes]` | Plugin settings and Mode bindings. |
-| `[debug]` | Debug log categories. |
+| `[general]` | Excluded apps |
+| `[key_aliases]` | Custom key names and platform modifiers |
+| `[hotkeys]` | Keys that enter a mode from Idle |
+| `[normal]`, `[grid]`, `[recursive_grid]`, `[ui_hint]` | Pointer and targeting mode keys and behavior |
+| `[window]`, `[window_quick]`, `[window_editor]`, `[window_restore]`, `[window_tab]` | Each window mode's keys and behavior |
+| `[pointer]`, `[scroll]` | Pointer speed, scrolling distance and speed |
+| `[theme]`, `[mode_indicator]` | Colors and mode badges |
+| `[key_help]` | Key help panels |
+| `[[app_configs]]` | App-specific key exceptions |
+| `[plugin_modes]` | Plugin settings and keys |
+| `[debug]` | Diagnostic logs |
 
 ## Keys and aliases
 
 ### Chords with a shared prefix
 
-The engine compiles chord relationships when configuration is loaded. Built-in actions and plugins share this rule. Window movement defaults to `primary+d` (Alt+D on Windows, Command+D on macOS), independently of `primary+s` for switching the pointer display. You can also configure a shared prefix:
+By default, `Primary+S` switches the pointer's display, and `Primary+D` moves a window. To share a prefix instead:
 
 ```toml
 [normal.bindings]
@@ -110,14 +86,16 @@ The engine compiles chord relationships when configuration is loaded. Built-in a
 "primary+s+d" = "move_window next"
 ```
 
-In this custom configuration, hold `Primary+S` and press D to move the window, or release the short chord to switch the pointer display. Use `move_window previous` or `move_window 2` for another destination. The final non-modifier key completes the chord. No timeout or plugin changes are needed. Inheritance, per-app overrides, `none`, and modifier sides are respected.
+- Hold `Primary+S`, then press `D` to move a window.
+- Release the shorter chord without `D` to switch the pointer's display.
 
-Mode changes and successful configuration reloads cancel pending actions. Standalone modifiers remain immediate.
-A continuous action used as an ambiguous prefix receives one Down/Up tap on release; use independent keys for movement, long-press clicks, and toggle gestures.
+`move_window previous` selects the previous display; `move_window 2` selects a numbered one. No wait setting is needed. Changing modes or reloading configuration cancels a pending shorter action.
+
+::: tip Give continuous actions their own keys
+A shared prefix makes the shorter chord wait for release. Separate bindings work better for movement, held clicks, and key locking.
+:::
 
 ### Key syntax
-
-The left side of a binding accepts a single key, a chord, or multiple independent keys sharing one action:
 
 ```toml
 [normal]
@@ -130,14 +108,60 @@ h = "move_left"
 "v b" = "fast"
 ```
 
-- `+` means one chord.
-- A space means several independent keys bound to the same action, not a key sequence.
-- In the shipped configuration, `primary` is `Command` on macOS and left `Alt` on Windows. It is an alias; change `[key_aliases.windows]` to use `Ctrl` on Windows.
-- Generic modifiers such as `ctrl`, `alt`, and `shift` match both sides. `left_` and `right_` match one side only.
+| Syntax | Meaning |
+| --- | --- |
+| `h` | One key |
+| `primary+shift+s` | Keys held together as a chord |
+| `"v b"` | V and B independently perform the same action; spaces do not mean a sequence |
+| `ctrl` / `alt` / `shift` | Either side can trigger the binding |
+| `left_shift` / `right_shift` | Only the specified side |
 
-Common names include `a-z`, `0-9`, `space`, `enter`, `esc`, `tab`, `delete`, `backspace`, `up`, `down`, `left`, `right`, `home`, `end`, `page_up`, `page_down`, `f1-f20`, and `numpad_0-numpad_9`.
+`primary` is an alias: left Alt on Windows and Command on macOS by default. To use Ctrl on Windows, set `Primary = "ctrl"` under `[key_aliases.windows]`.
+
+Common names: `a-z`, `0-9`, `space`, `enter`, `esc`, `tab`, `delete`, `backspace`, `up/down/left/right`, `home/end`, `page_up/page_down`, `f1-f20`, and `numpad_0-numpad_9`.
+
+### Mouse buttons
+
+On Windows and macOS, all five buttons below can appear on either side of a binding: as a trigger on the left or a click action on the right.
+
+| Name | Usual button | Aliases |
+| --- | --- | --- |
+| `mouse_left` | Left | — |
+| `mouse_right` | Right | — |
+| `mouse_middle` | Middle (wheel press) | — |
+| `mouse_x1` | Back | `xbutton1`, `mouse4` |
+| `mouse_x2` | Forward | `xbutton2`, `mouse5` |
+
+Merge the lines you need into existing sections; do not duplicate table names:
+
+```toml
+[hotkeys]
+mouse_x1 = "normal"
+
+[normal.bindings]
+mouse_x1 = "key_help"
+mouse_x2 = "grid"
+"ctrl+mouse_x2" = "ui_hint"
+```
+
+All mouse buttons support chords, inheritance, app exceptions, and held scrolling. Unbound buttons, or those set to `none`, keep their native behavior. A matched binding hands that button press to KeySteer.
+
+Map mouse buttons to keys, keys to mouse buttons, or one mouse button to another:
+
+```toml
+[normal.bindings]
+x = "mouse_left"       # X clicks the left button
+mouse_left = "x"       # Left button sends X
+mouse_middle = "mouse_right" # Middle button clicks the right button
+t = "mouse_x1"
+y = "mouse_x2"
+```
+
+All five buttons support `press`, `release`, `toggle`, and normal click long-press locking; for example, `press mouse_left`, `release mouse_left`, and `toggle mouse_middle`. As actions, `mouse_left`, `mouse_right`, and `mouse_middle` are equivalent to `left_click`, `right_click`, and `middle_click`. The receiving app decides whether side buttons go Back/Forward. If a mouse driver remaps a button to a keyboard key, bind the key the driver actually sends.
 
 ### Custom aliases
+
+Aliases let one configuration work across keyboards and platforms:
 
 ```toml
 [key_aliases]
@@ -150,11 +174,11 @@ Primary = "left_alt"
 Primary = "left_cmd"
 ```
 
-Top-level aliases apply on all platforms. An alias value must be one key, never a chord, and aliases are case-insensitive. `Primary` is a parsable cross-platform alias, not a fixed physical key; `primary` and `Primary` refer to the same alias.
+Top-level aliases apply everywhere; platform sections can specify different keys. Names are case-insensitive. Values must be single keys, not chords. `Primary` and `primary` mean the same alias.
 
 ### Bindings, arrays, and inheritance
 
-The value can be one string or an array of strings:
+An action can be a string or an array:
 
 ```toml
 [normal.bindings]
@@ -163,16 +187,7 @@ x = ["press shift", "left_click", "release shift"]
 "primary+shift+b" = ["exec say start", "wait 300", "exec say done"]
 ```
 
-Array actions run from left to right. `wait` pauses only that sequence, never the whole event loop; an empty array is invalid.
-
-The effective binding table for a Mode is merged in this order:
-
-1. Its own `[<mode>.bindings]`.
-2. Parent Modes listed in `inherits`, in written order.
-3. Matching `app_configs` overrides.
-4. Suggested plugin bindings, which fill only unoccupied keys.
-
-The runtime only replaces bindings while merging.
+Keys are resolved from **the mode's own bindings → parent modes listed in `inherits`, in order**. Matching `app_configs` then override the result.
 
 ```toml
 [grid]
@@ -182,11 +197,29 @@ inherits = ["hotkeys", "normal"]
 q = "none" # Disable q inherited from Normal.
 ```
 
-`none` and `__disabled__` both explicitly disable a binding. Keep at least one `[hotkeys]` entry; otherwise KeySteer runs but cannot enter a Mode from Idle.
+`none` and `__disabled__` explicitly disable a key, including inherited ones. Plugin suggestions do not restore shortcuts that a user deletes or remaps.
+
+::: tip Keep an entry key
+Keep at least one `[hotkeys]` entry. Otherwise the app runs, but you cannot enter an operating mode from Idle.
+:::
+
+### Action sequences
+
+Arrays run left to right. Use them for “hold a modifier → click → release” or for launching scripts:
+
+```toml
+[normal.bindings]
+x = ["press shift", "left_click", "release shift"]
+"primary+shift+b" = ["exec say start", "wait 300", "exec say done"]
+```
+
+`wait` pauses only that sequence; other input still works. Empty arrays are invalid. See [Modes and actions](/en/reference/modes-and-actions) for actions and `exec` arguments.
 
 ## Normal and targeting modes
 
 ### Normal
+
+Normal handles movement, clicks, scrolling, and entering other modes. This is a partial example:
 
 ```toml
 [normal]
@@ -205,11 +238,18 @@ f = "recursive_grid"
 "primary+s" = "screen next"
 ```
 
-`passthrough_unbound_keys = true` is the default: Normal consumes only input matching a complete KeySteer binding. Unbound keys and unconfigured modifier chords preserve their original down/up lifecycle. With `false`, Normal returns to keyboard exclusivity and its old permissive chord matching. Grid, Recursive Grid, and UI Hint are always exclusive; Idle always passes through unmatched input and also uses complete chord matching.
+| Setting | Purpose |
+| --- | --- |
+| `passthrough_unbound_keys = true` | Default: pass unbound keys and chords to the current app |
+| `passthrough_unbound_keys = false` | Capture the keyboard and use relaxed chord matching |
+| `long_press_toggle_ms` | Hold a click key to keep the mouse button down; default 500 ms, 0 disables long-press locking |
+| `auto_release_ms` | Default 0 for manual release; a positive value can release after a qualifying drag stops |
 
-`long_press_toggle_ms` applies to bindings for mouse buttons and to a standalone parameterless `toggle` key. At the threshold, a mouse button remains down; a standalone `toggle` holds its activating key down even after the physical key is released. A parameterless `toggle` may use any activation key and latch any number of companions at once; companions and the activation key work in either order without waiting for the threshold. Each companion follows its Normal binding, so the default `;`, `'`, and `right_shift` bindings hold the left, right, and middle mouse buttons rather than those physical keys. A short standalone `toggle`, returning to Normal, or entering Idle releases all latches. Set `0` to disable this behaviour; the allowed range is `0..=60000` milliseconds.
+Both time values accept `0–60000` ms. Automatic release applies only to a long-held click with a forwarded physical modifier: movement starts the timer, and further movement resets it. It releases the mouse button, not the modifier. Explicit `press` and `toggle` locks are excluded.
 
-`auto_release_ms` defaults to `0`, which keeps manual release. It applies only to a direct click/double-click binding latched by long press. Once one or more physical Shift/Ctrl/Alt/Win or Command keys are held and passed through, the first real pointer movement starts the delay and every later movement restarts it. When the pointer remains still for that long, KeySteer releases that mouse button and immediately clears its held indicator without affecting the physical modifiers. Latches created by explicit `press` or `toggle` actions do not participate. The allowed range is `0..=60000` milliseconds.
+A no-argument `toggle` can lock several partner keys, with either key pressed first. Tap the activation key alone, return to Normal, or enter Idle to release them all. Holding the activation key alone locks that key itself. See [Dragging and holding](/en/modes/normal#dragging-and-holding) for steps.
+
+Grid, Recursive Grid, and UI Hint always capture the keyboard. Idle always forwards unmatched input.
 
 ### Grid
 
@@ -226,11 +266,16 @@ after_finish = "normal"
 after_click = "finish"
 ```
 
-`keys` must contain exactly `grid_cols × grid_rows` characters, assigned left-to-right and top-to-bottom. `max_depth` is the largest number of selection levels before confirmation. The first screen has large first-key labels and small second-key previews; `[grid.ui].matched_text_color`, `text_color`, and `matched_border_color` control these. The preview changes only drawing, not selection depth.
+| Setting | Purpose |
+| --- | --- |
+| `grid_cols` / `grid_rows` | Columns / rows |
+| `keys` | Left to right, top to bottom; character count must equal columns × rows |
+| `max_depth` | Number of selections before targeting finishes |
+| `cursor_follow_selection` | Whether the pointer follows cell selection |
+
+The initial view previews the first two keys: large labels for the first, small labels for the second. Under `[grid.ui]`, `matched_text_color`, `text_color`, and `matched_border_color` control large labels, small-label base color, and inner boundaries. Previewing does not change the selection depth.
 
 ### Recursive Grid
-
-In `[recursive_grid.ui]`, `font_size = 0` (default) sizes letters at 40% of the shorter cell edge, then shrinks them to fit, using regular weight by default. Set a positive value such as `20` to specify a maximum font size.
 
 ```toml
 [recursive_grid]
@@ -246,7 +291,9 @@ after_finish = "keep"
 after_click = "keep"
 ```
 
-`max_depth` must be in `1..=20`. `layers` can override the grid shape at a given depth; omitted fields inherit the base setting:
+`max_depth` accepts `1–20`. `min_size_width` / `min_size_height` set the smallest area. The default `font_size = 0` scales text to the cell; a positive value such as 20 limits the maximum size.
+
+Use `layers` for a different grid at a particular depth. Omitted fields inherit the base settings:
 
 ```toml
 [recursive_grid]
@@ -272,33 +319,48 @@ after_finish = "normal"
 after_click = "normal"
 ```
 
-The `point_next` action in `ui_hint.search_bindings` (default Tab) advances result panels from the best match, shown automatically even with multiple matches. `ui_hint.search_match_priority = ["pinyin", "text", "label"]` breaks equal-quality ties between Chinese initials, text, and labels; include each exactly once. Whole words/codes rank ahead of prefixes, then substrings. See [UI Hint search and result previews](/en/modes/ui-hint#search-and-result-previews) for examples.
+| `strategy` | Recognition sources |
+| --- | --- |
+| `hybrid` (default) | Accessibility, all available OCR, and outlines |
+| `axtree` | Accessibility information |
+| `vision` | OCR and outlines; also Vision rectangle detection on macOS |
+| `contour` | Outlines, without OCR or accessibility scanning |
 
-`[ui_hint.search_highlight]` styles the current result or individually selected point: `background_color`, `text_color`, and `border_color` accept `#RRGGBBAA` or light/dark tables. `border_width` accepts 0–20, defaults to 1.5, and hides the border at 0. Default colors match Window selection; unchanged defaults are omitted from exports. The web editor includes these settings and a cycling preview.
+Labels appear in batches. Outlines have no text names to search; `clickable_roles` only filters accessibility results.
 
-Windows and macOS support `axtree`, `vision`, `contour`, and `hybrid`. Default `hybrid` concurrently merges accessibility, OCR, and contour targets, streaming and deduplicating their union. Successful OCR does not suppress unique contour targets. `vision` combines OCR and contours (plus native Vision rectangles on macOS); `contour` detects pixel outlines without OCR or accessibility-tree scanning. Contour targets have no text names, so name search cannot match them. Windows discovers system and WeChat OCR automatically; WeChat components are not distributed. Visual capture on macOS requires Screen Recording permission.
+| Setting | Purpose |
+| --- | --- |
+| `scan_timeout_ms` | Time limit per scan |
+| `scan_retry_count` / `scan_retry_delay_ms` | Retries / delay when a scan completes or times out with no labels |
+| `vision.request_timeout_ms` | Request timeout for visual and outline recognition |
+| `vision.rectangle_max_candidates` | Outline candidate limit, default 10000 |
+| `vision.detect_text` / `vision.detect_rectangles` | Only control `vision` sources; do not disable sources in `hybrid` or standalone `contour` |
 
-Set `strategy = "contour"` in `[ui_hint]` for contours alone; per-app overrides also work. Contour reuses `[ui_hint.vision]` settings `request_timeout_ms` and `rectangle_max_candidates` (default 10000); other confidence, size, and classification options apply only to existing visual recognition. `detect_text` and `detect_rectangles` select sources only for `vision`; standalone `contour` always enables contours. `hybrid` always combines accessibility, every available OCR provider, and contour. These switches and legacy 100-candidate settings cannot disable or reduce hybrid sources. De-duplicated output remains subject to the shared 10000-target budget, scope, and deadline; the 512-entry inline capacity is not a target limit. One capture is shared; contour analysis is capped at 2,073,600 pixels and a 2560-pixel longest edge. Overlapping convolution tiles are joined globally before desktop-coordinate mapping. Downsampling may lose very small targets. `clickable_roles` filters accessibility targets only.
+Scans remain limited by scope, timeout, and the overall 10000-target cap. Very small targets in high-resolution images may be missed. Windows detects local system/WeChat OCR without downloading WeChat components. Visual recognition on macOS needs screen-recording permission.
+
+For search steps, see [UI Hint](/en/modes/ui-hint#search-and-result-previews). `search_match_priority = ["pinyin", "text", "label"]` orders categories with equal match quality. `point_next` in `search_bindings` defaults to Tab.
+
+Use `[ui_hint.search_highlight]` for current-label highlighting. `background_color`, `text_color`, and `border_color` support light/dark themes. `border_width` accepts 0–20, defaults to 1.5, and 0 hides the border. Omitted settings use built-in green.
 
 ## Window configuration
 
-New to window control? Start with the [Window guide](/en/modes/window) for practical recipes and default keys.
+For a first exercise, see the [Window guide](/en/modes/window).
 
-Use the five top-level sections `[window]`, `[window_quick]`, `[window_editor]`, `[window_restore]` and `[window_tab]`. Each supports its own `bindings`, `inherits`, `app_configs`, `temporary_mode`, `temporary_mode_keys`, `number_timeout_ms`, `border_width`, `ui` and `lifecycle`. Defaults inherit hotkeys and temporarily use Normal while Primary is held.
+The five sections are `[window]`, `[window_quick]`, `[window_editor]`, `[window_restore]`, and `[window_tab]`. Each has its own bindings, inheritance, app exceptions, temporary mode, `ui`, and `lifecycle`. By default they inherit only hotkeys and temporarily use Normal while Primary is held.
 
-| Parameter | Section | Default |
+| Setting | Where | Default / purpose |
 | --- | --- | --- |
-| `move_step` / `move_speed` | Window | 20 / 600 |
-| `resize_step` / `resize_speed` | Window and Editor, independently | 20 / 500 |
+| `move_step` / `move_speed` | Window | Movement step 20 / speed 600 |
+| `resize_step` / `resize_speed` | Window and Editor, independently | Resize step 20 / speed 500 |
 | `split_ratios` | Quick | `["1/4", "1/3", "1/2", "2/3", "3/4"]` |
-| `gap` | Quick, Editor and Restore, independently | 0 |
-| `number_timeout_ms` | All five | 250, range 100–2000 |
-| `border_width` | All five | 3 |
-| `lifecycle.after_finish` | Restore | `"window_editor"` |
+| `gap` | Quick, Editor, Restore, independently | Window spacing, 0 |
+| `number_timeout_ms` | All five | Multi-digit number wait, 250 ms; accepts 100–2000 |
+| `border_width` | All five | Window outline width, 3 |
+| `lifecycle.after_finish` | Restore | Enter `"window_editor"` after successful restoration |
 
-Steps and gaps use logical pixels, speeds use logical pixels/second, and Windows applies the target display's DPI. Numbers and borders use each mode's `ui`; the shared panel uses `[key_help]` fonts and colors.
+Steps and spacing use logical pixels; speeds use logical pixels per second. Windows adapts to the target display's DPI. Number styling uses each mode's `ui`; the controls panel uses `[key_help]`.
 
-Merge these launchers into the existing hotkeys table:
+This example adds direct entry keys and independent settings. Merge it into existing tables:
 
 ```toml
 [hotkeys]
@@ -319,11 +381,20 @@ gap = 12.0
 after_finish = "window_editor"
 ```
 
-`window_delete` is an action that toggles restore/delete inside Restore (X by default), not a mode. Remove the old `[window_delete]` section and configure `[window_restore]` instead.
+App exceptions belong under sections such as `[[window_editor.app_configs]]`. Share keys explicitly with `inherits`. Actions do not depend on the entry path: Editor's `q = "grid"` always enters Grid.
 
-Setting parameters alone preserves default bindings. An explicit `[mode.bindings]` replaces that mode's whole default map. Copy the keys you need before changing one; Editor's `q = "grid"`, for example, always enters Grid regardless of entry path. Use `[[window_editor.app_configs]]` for app overrides and `inherits` to share bindings explicitly.
+::: info Migrating old window configuration
+Old fields report migration errors and do not rewrite your file. Use these replacements:
+:::
 
-To migrate, replace `window_layout`, `window_edit` and `window_saved_layouts` with `window_quick`, `window_editor` and `window_restore`. Replace `window_cancel`/`window_exit` with the destination mode, such as `window` or `idle`. Remove `window.exit_mode`, `layout_keys` and `double_tap_ms`; move `window.split_ratios` to Quick and assign `window.gap` to Quick, Editor or Restore as needed. Removed fields and actions produce migration errors; user files are never rewritten automatically.
+| Old form | Current form |
+| --- | --- |
+| `window_layout` / `window_edit` / `window_saved_layouts` | `window_quick` / `window_editor` / `window_restore` |
+| Mode section `[window_delete]` | Merge into `[window_restore]`; `window_delete` is only an action that toggles deletion |
+| `window_cancel` / `window_exit` | Write the destination mode, such as `window` or `idle` |
+| `window.exit_mode`, `layout_keys`, `double_tap_ms` | Remove |
+| `window.split_ratios` | Move to `window_quick` |
+| `window.gap` | Move to Quick / Editor / Restore as appropriate |
 
 ## Pointer, scrolling, and theme
 
@@ -349,13 +420,19 @@ invert_horizontal = false
 invert_vertical = true
 ```
 
-Speed is pixels/second and acceleration is pixels/second², independent of display refresh rate. `smooth_acceleration = true` uses a gentler S curve; `false` uses linear acceleration.
+| Setting | What it changes |
+| --- | --- |
+| `initial_speed` / `max_speed` / `acceleration` | Starting speed, maximum speed, acceleration; pixels/s and pixels/s² |
+| `smooth_acceleration` | true softens starting/stopping; false uses linear acceleration |
+| `tap_distance` | Distance for a short movement press |
+| `slow_multiplier` / `precision_multiplier` / `fast_multiplier` | Slow, precise, and fast multipliers |
+| `scroll.speed` / `scroll_step` | Hold speed / tap distance; defaults 500 pixels/s and 50 pixels |
+| `scroll_step_half` / `scroll_step_full` | Half-page / full-page distance |
+| `invert_horizontal` / `invert_vertical` | macOS horizontal / vertical scroll inversion |
 
-Ordinary scrolling responds immediately, continues while held, and stops on release. `scroll_step` sets the tap distance; `speed` sets the independent held speed in pixels/second. Defaults are 50 pixels per tap and 500 pixels/second while held; 0 enables tap-only scrolling. The `precision`, `slow`, and `fast` modifiers still apply.
+Normal scrolling continues while held and stops on release. `speed = 0` leaves taps only. Half/full-page actions run once per press. Precision, slow, and fast keys also affect scrolling. Speeds do not depend on display refresh rate.
 
-Half-page and full-page scrolling execute once per press without repeating while held. Continuous scrolling follows display frames without a fixed-interval timer. Under **Normal → Behavior**, the web simulator lets you edit held scroll speed directly in pixels per second.
-
-Theme colours use `#RRGGBBAA` and can differ for light and dark appearance:
+Theme colors use `#RRGGBBAA`; the last two digits are opacity. Light and dark appearances can be configured separately:
 
 ```toml
 [theme.dark]
@@ -371,11 +448,11 @@ middle_pressed_color = "#FF00FFFF"
 right_pressed_color = "#00FFFFFF"
 ```
 
-When a pointer button is held with `press` or `toggle`, its translucent circular indicator uses the matching `*_pressed_color` at 20% opacity.
+`*_pressed_color` controls the held-button circle; its fill uses 20% of the configured opacity. See [Normal](/en/modes/normal#mode-badge-style-and-position) for full mode badge settings.
 
 ## Application overrides: `[[app_configs]]`
 
-Use application overrides to disable or replace bindings in selected programs:
+Disable or replace keys for a particular app:
 
 ```toml
 [[app_configs]]
@@ -387,11 +464,11 @@ bundle_id = "Figma"
 bindings = { v = "none", "primary+f" = "grid" }
 ```
 
-Root `[[app_configs]]` applies to every Mode; `[[normal.app_configs]]` applies only in Normal. A match can be a macOS bundle ID, a Windows executable name, or part of a window title.
+Top-level `[[app_configs]]` affects every mode. `[[normal.app_configs]]` only affects Normal. `bundle_id` accepts a macOS bundle id, Windows executable name, or window-title substring.
 
 ## Plugin settings
 
-Plugin Modes use a namespace:
+Plugin mode names use `plugin:<id>`:
 
 ```toml
 [plugin_modes."plugin:screen-selector".settings]
@@ -401,11 +478,11 @@ preserve = true
 inherits = ["hotkeys", "normal"]
 ```
 
-For the built-in Screen Selector, `preserve = true` keeps the Grid or Recursive Grid selection path when switching displays. Set it to `false` to begin on the target display.
+Screen Selector's `preserve = true` keeps the current Grid/Recursive Grid path across displays. With false, targeting starts again on the new display. See [Plugin development](/en/development/plugin-development) to build your own.
 
 ## Runtime changes and debugging
 
-`set_config` edits a dotted path and atomically writes the configuration only after parsing and validation succeed:
+Use `set_config` with a dot-separated field path. Successful validation saves the change to the active configuration file:
 
 ```toml
 [normal.bindings]
@@ -413,7 +490,9 @@ For the built-in Screen Selector, `preserve = true` keeps the Grid or Recursive 
 "primary+2" = "set_config theme.dark.accent \"#FF8800FF\""
 ```
 
-Invalid changes leave the active configuration untouched. The status menu's Reload Configuration reloads it from disk.
+Invalid changes preserve the last valid configuration. After editing the file manually, reload it from the status menu.
+
+When troubleshooting, enable the log categories you need:
 
 ```toml
 [debug]
@@ -428,17 +507,18 @@ overlay = true
 timers = true
 ```
 
-Enable debug logs only while investigating an issue; they are written to `keysteer.log` in the data directory.
+Logs are saved as `keysteer.log` in the data directory. Turn debugging off afterward to avoid continually producing large logs.
 
 ## Key help
 
-The `key_help` verb toggles the available-key panel. Normal binds `"?" = "key_help"` by default, and targeting modes inherit it. Existing custom binding tables must add this binding explicitly. `?` matches the character produced by the operating system. Idle closes the panel.
+Press `?` to show or hide mode controls without clearing the selection. Keep `"?" = "key_help"` in custom binding tables. The question mark matches the character produced by your keyboard layout.
 
-`mouse_key_help` controls initial visibility in Normal, Grid, Recursive Grid, and UI Hint (default `false`). Set it to `true` to show the panel on entry. `?` always toggles it regardless of the default. Manual visibility persists between these modes; returning from Idle restores the default. The former `[key_help].enabled` setting is now named `mouse_key_help`.
+| Setting | Modes | Default |
+| --- | --- | --- |
+| `mouse_key_help` | Normal, Grid, Recursive Grid, UI Hint | false |
+| `window_key_help` | Window, Quick, Editor, Restore, Tabs | true |
 
-`[key_help]` supports `font_family`, `font_size`, `background_color`, `text_color`, `border_color`, `border_width`, `border_radius`, `padding_x`, and `padding_y`. Empty font and omitted background/text colors follow the mode indicator and theme. Colors accept `#RRGGBBAA` or `{ light = "#RRGGBBAA", dark = "#RRGGBBAA" }`. Title sizing, columns and centering adapt automatically.
-
-Window and its A/E/R/T submodes show the lower help panel by default. To start with it hidden:
+For example, hide the window panel initially too:
 
 ```toml
 [key_help]
@@ -446,51 +526,15 @@ mouse_key_help = false
 window_key_help = false
 ```
 
-These modes bind `"?" = "key_help"` by default, so `?` can still show or hide the panel. The manual choice persists between window submodes; leaving and reentering restores the configured default. Window borders and numbers remain visible. This setting is independent of `mouse_key_help`. Existing custom window binding tables must add `"?" = "key_help"` explicitly.
+Manual visibility persists within the mode group. Leaving for Idle and re-entering restores the default. Hiding help does not hide window numbers or borders. The old `[key_help].enabled` field is now `mouse_key_help`.
 
-Use **Edit key help style** in the [simulator](/en/simulator) to preview changes and export TOML.
+`[key_help]` supports `font_family`, `font_size`, `background_color`, `text_color`, `border_color`, `border_width`, `border_radius`, `padding_x`, and `padding_y`. Omitted fonts and colors follow the mode badge and theme. Colors support light/dark tables. Choose **Edit key help style** in the [simulator](/en/simulator) for a preview.
 
-### Mouse side buttons
-
-Windows and macOS accept `mouse_x1` (usually Back) and `mouse_x2` (usually Forward)
-as binding triggers. Aliases are `xbutton1`/`mouse4` and `xbutton2`/`mouse5`.
-Add the lines to the corresponding existing tables:
-
-```toml
-[hotkeys]
-mouse_x1 = "normal"
-
-[normal.bindings]
-mouse_x1 = "key_help"
-mouse_x2 = "grid"
-"ctrl+mouse_x2" = "ui_hint"
-```
-
-Chords, inheritance, app overrides and held actions work as usual. For example,
-`mouse_x2 = "scroll_down"` scrolls while held and stops on release. Unbound or
-`none` side buttons pass through even in keyboard-capturing modes. A matched
-binding consumes both edges. Physical side buttons do not emit `Clicked`.
-These names also work as actions that inject native mouse side-button clicks:
-
-```toml
-[normal.bindings]
-t = "mouse_x1"
-y = "mouse_x2"
-```
-
-`press mouse_x1`, `release mouse_x1`, and `toggle mouse_x2` are supported too.
-Clicks follow the usual long-press latch behavior. The receiving application decides
-whether they navigate Back or Forward. If mouse software remaps a physical side
-button to a keyboard shortcut, bind the shortcut that the driver actually emits.
-
-
-Window and region labels use `[window.ui].font_size`, defaulting to 28. Region labels appear below the window-centre number. Help stays near the inside bottom edge when space permits and omits the redundant window-number key list.
-
-Quick rulers use the labels from split_ratios: mix "1/2", "1/3", 0.3 and 0.45. Use a quoted decimal such as "0.30" to preserve trailing zeros. A screen-proportioned preview below Actions labels the current width and height; other ratios appear as small ticks. The inner rectangle shows the current placement.
+Window number size uses `[window.ui].font_size`, default 28. Quick's ratio scale accepts fractions and decimals. Use a string such as `"0.30"` to preserve trailing zeros. The display preview shows the current width and height proportions.
 
 ### Window card guide lines
 
-Shared by Window and its related modes, including lines created by label collision avoidance. Hiding lines does not disable collision avoidance.
+When a number card is moved out of the way, a guide line points to its window. Hiding lines does not disable collision avoidance.
 
 ```toml
 [window.card]
@@ -499,15 +543,164 @@ guide_line_width = 3.0 # 0–32; 0 also hides lines
 # Inherits the card border color. The last two digits control alpha.
 # Light/dark themed colors are also supported.
 # guide_line_color = "#6E82D680"
+# Optional overrides for the built-in mint-green selection style:
+# selected_background_color = { light = "#E8F6F0FF", dark = "#284D44FF" }
+# selected_border_color = { light = "#60B49CFF", dark = "#85CDB8FF" }
+# selected_border_width = 1.5 # 0–20; 0 hides the selected-card border
 ```
 
+Line width accepts 0–32, with 0 hiding lines. Selected border width accepts 0–20, with 0 hiding the border. Colors accept `#RRGGBBAA` or light/dark tables.
+
+Preview normal and selected cards under **Window management → Shared appearance**. Exports include changed fields; reset them to restore the built-in green style.
+
+## Mode usage and quick switching
+
+Hold `Q` alone to enter the `quick_switch` mode after 350 ms by default. It stays open after release. Then type labels to filter and select, using `wertyuiop` by default. It uses the ordinary mode lifecycle and bindings, and can also be entered through a regular mode binding.
+
+```toml
+[mode_usage]
+save_after_entries = 100
+
+[quick_switch]
+enabled = true
+key = "q"
+hint_characters = "wertyuiop"
+hold_ms = 350
+blacklist = ["idle"]
+position = "mouse" # screen / window / mouse
+
+[quick_switch.bindings]
+esc = "cancel_selection"
+q = "cancel_selection"
+backspace = "previous_level"
+
+[quick_switch.ui]
+font_size = 28
+border_width = 1
+border_radius = 6
+padding_x = 6
+padding_y = 8
+# background_color = "#EEF2FFFF"
+# text_color = "#193781FF"
+# border_color = "#506DD0FF"
+```
+
+| Setting | Purpose |
+| --- | --- |
+| `save_after_entries` | Save after this many new mode entries; must be greater than 0 |
+| `enabled` / `key` / `hold_ms` | Enable, activation key, and hold delay |
+| `hint_characters` | Ordered label alphabet: at least two distinct characters, excluding the trigger key; `123456789` is also supported |
+| `blacklist` | Hide modes from this panel; original shortcuts still work |
+| `position` | `screen` display center, `window` foreground-window center, `mouse` below the pointer badge |
+| `quick_switch.bindings` | Ordinary bindings: `cancel_selection` returns and `previous_level` deletes one prefix character |
+| `quick_switch.ui` | Fonts, size, colors, border, corners, and padding |
+
+Modes rank by entry count, with ties sorted by mode id and no nine-item limit. Labels reuse UI Hint’s normal prefix-free algorithm: up to nine modes use single characters, then additional modes use longer labels. For example, ten modes get `w e r t y u i o pw pe`. Typing a prefix filters the list; a complete label selects immediately. By default, Backspace removes a character; Escape or a fresh Q press returns to the preceding mode. Releasing the trigger keeps the panel open. Labels stay fixed throughout filtering. The picker excludes itself and the preceding mode. Long lists wrap into columns based on screen height. If no foreground window is available, `window` falls back to display center. The panel stays within the current display.
+
+An explicit `[quick_switch.bindings]` table replaces the defaults: include only the `esc` line for Escape, only the `q` line for Q, or both for either key. Keep the `backspace` line if needed. Binding keys must not conflict with label characters.
+
+::: info Q still performs its original action first
+Pressing Q immediately runs its binding. After entering Quick Switch, that action stops repeating; release ends the original gesture normally and keeps the panel open. A hold can still open the panel after its action enters Idle. Q is not captured when starting in Idle, paused, in excluded apps, or during text/note entry.
+:::
+
+Only actual mode changes add counts; keeping or restarting the same mode does not. Counts are stored in `workspace.ksw` and also saved with preset changes and normal shutdown. Forced termination or power loss can lose recent unsaved counts.
+
+Import a workspace in the web editor to inspect counts and edit the panel. Exports retain statistics. A v2 workspace with statistics requires an app version that supports that format.
+
+## Search panel positioning
+
+Both panels use a reference object and four percentage insets:
+
+```toml
+[ui_hint.search_input_ui]
+position_mode = "screen"
+position = ["95%", "50%", "5%", "50%"]
+
+[ui_hint.search_info_ui]
+position_mode = "search_input"
+position = ["44%", "50%", "56%", "50%"]
+```
+
+| `position_mode` | Reference |
+| --- | --- |
+| `screen` | Display containing the pointer |
+| `window` | Recognized window, or the current display if unavailable |
+| `search_input` | Search box; only for the information panel, so it follows the input |
+
+`position` lists **top, right, bottom, left insets**, each from `0%–100%`. Opposite sides must total at most 100%. Screen/window placement uses the selected area's center. Width, fonts, and padding determine panel size separately.
+
+| Information panel relative to search box | `position` |
+| --- | --- |
+| Above with a small gap (default) | `["44%", "50%", "56%", "50%"]` |
+| Directly above, no gap | `["50%", "50%", "50%", "50%"]` |
+| Below with the same gap | `["56%", "50%", "44%", "50%"]` |
+
+The input center defaults to 95% of display height. Click, drag a range, or adjust sliders on the web appearance page to preview both panels and their spacing. Old `x_offset` / `y_offset` values no longer apply; use `position` instead.
 
 ## Temporary input layers
 
-While a temporary trigger is held, resolve full chords in the temporary mode first, then the current mode. Only if neither matches, remove the trigger keys and try the temporary mode followed by the current mode again. Each layer includes its inherited bindings. Full matching requires all held keys. This also means Normal's explicit Primary+F opens UI Hint before its bare F can open Recursive Grid.
+While `temporary_mode_keys` are held, matching proceeds through:
 
-Set `temporary_mode_passthrough_keys = ["q"]` on Grid, Recursive Grid, UI Hint, a Window mode, or a plugin mode to skip the temporary layer for Q. The list defaults to `[]`, accepts aliases and chords, and matches either the full or trigger-stripped input. It routes to the current mode, without injecting keys into other applications.
+1. Full chords in the temporary mode.
+2. Full chords in the current mode.
+3. Temporary-mode bindings with activation keys removed.
+4. Current-mode bindings or label input with activation keys removed.
 
-The Quick Switch trigger now runs its original action immediately on key-down. Before takeover, repeats continue through normal input routing. Once the hold threshold is reached or a Q+digit choice is made, trigger repeats are consumed until physical release, including after panel selection or cancellation. Key-up still releases the original gesture. Holding the same press to `hold_ms` opens the switcher, even when its immediate action changed mode or entered Idle; release closes it without replaying the action. A press that starts in Idle does not arm the switcher.
+Each layer includes inherited bindings. Full chords precede bare keys: Normal's `Primary+F` enters UI Hint ahead of bare F's Recursive Grid, and Grid's `Primary+Q` still returns to Normal.
 
-Window modes consume temporary activation keys before consulting the temporary mode. Their own full chords still win, followed by stripped temporary bindings and stripped current bindings. Temporary S can execute Normal’s screen next without resizing the window, and temporary F defaults to Recursive Grid. Fixed Window help excludes borrowed Normal bindings, adding only valid Grid/Recursive Grid entrances to Move’s Other Actions.
+To send Q directly to the current mode, declare it as a passthrough key:
+
+```toml
+[grid]
+temporary_mode = "normal"
+temporary_mode_keys = ["primary"]
+temporary_mode_passthrough_keys = ["q"]
+
+[grid.bindings]
+q = "normal"
+```
+
+Passthrough keys skip only the temporary mode; they do not send keys to the OS. The default is `[]`. Chords, aliases, and side-specific modifiers are supported in targeting modes, window modes, and plugins.
+
+::: info Window handles temporary activation differently
+Window preserves its explicit full chords first, then removes the activation key before checking Normal and the current mode. For example, temporary S switches displays, and temporary F enters Recursive Grid by default. The window panel shows window controls rather than every Normal binding.
+:::
+
+## Normal blind positioning
+
+Normal can also accept grid keys directly, but this is off by default. See [Normal blind positioning](../modes/normal.md#blind-grid-positioning) for setup and a safe example.
+
+| `[normal.targeting]` field | Purpose |
+| --- | --- |
+| `method` | `grid` (default) or `recursive_grid`; inherits that grid's layout |
+| `reset_on` | Default `["move", "click"]`; reset after movement or a KeySteer click; accepts a subset or `[]` |
+| `grid_cols` / `grid_rows` / `keys` / `max_depth` | Override the layout only in Normal, without changing standalone grid modes |
+| `min_size_width` / `min_size_height` / `layers` | `recursive_grid` only; explicit layers replace the whole list, `[]` clears it |
+
+Omitted fields inherit from the chosen grid. UI styling is not accepted here. Key conflicts are reported on loading. Remove the section to disable the feature. See `keysteer.default.toml` for the fully commented example.
+
+## Text selection configuration
+
+`text_select` shares UIHint OCR scope, recognition options and panel appearance. Configure its label alphabet and controls separately:
+
+```toml
+[text_select]
+enabled = true
+hint_characters = "asdfghjklqwertyuiopzvbnm"
+
+[text_select.bindings]
+"primary+c" = "text_refine"
+"ctrl+backspace" = "first_level"
+"tab backspace" = "previous_level"
+enter = "text_copy"
+page_up = "text_previous_page"
+page_down = "text_next_page"
+esc = "cancel_selection"
+"?" = "key_help"
+```
+
+Older configurations without `[text_select]` or `[text_input]` inherit the mode and its default controls. Missing Normal entry keys (`c` / `\`) are supplied only when unoccupied and the mode has not already been remapped. Explicit `none`, occupied keys (including custom chords and Normal targeting), and `text_select.enabled = false` are respected.
+
+Normal binds `c = "text_select"` by default. Inside Text Select, ordinary `c` is input, `Primary+C` refines and Enter copies. Entry and refinement bindings are independent. An explicit Text Select binding table replaces its defaults. Space remains input; Backspace edits nonempty input and returns only when empty. UIHint's `search_edit_keys` supplies cursor and clipboard editing, with Text Select controls taking priority. Bare letters assigned to controls are excluded from its labels.
+
+Formerly fixed grid, UIHint, screen-selection and window navigation keys are now configurable. Their defaults are unchanged; sparse older configurations retain those controls, and explicit `none` disables them. See [Configurable selection controls](/en/reference/modes-and-actions#configurable-selection-controls).

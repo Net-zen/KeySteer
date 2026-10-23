@@ -1,4 +1,5 @@
 import { quickSwitchColors } from '../simulator/quick-switch-style'
+import { hintLabels, validQuickSwitchCharacters } from '../simulator/hint-labels'
 import { selectedCardStyle } from '../simulator/window-card-style'
 import { observeSize } from '../config-studio/observe-size'
 import { useStudioI18n } from '../config-studio/i18n'
@@ -6,15 +7,18 @@ import SettingsNavigation from '../config-studio/SettingsNavigation'
 import ConfigDiff from '../config-studio/ConfigDiff'
 import PaneDivider from '../config-studio/PaneDivider'
 import FittedKeyboard from '../config-studio/FittedKeyboard'
+import MouseDiagram from '../config-studio/MouseDiagram'
 import NormalTargetingControls from '../config-studio/NormalTargetingControls'
 import KeyMappingEditor from '../config-studio/KeyMappingEditor'
 import { keyMappingTarget } from '../simulator/key-mapping'
 import { gridRegion } from '../simulator/grid-region'
 import { commonSearchFields, styleSearchFields } from '../config-studio/fields'
 import { pages, tabLabels, searchSettings, utilitySearchFields, type SettingsTab, type SearchEntry } from '../config-studio/navigation'
-import { cardPositionRatios, packedCardCenters } from '../simulator/window-card-position.ts'
+import { cardPositionRatios, packedCardCenters, percentageRegion, rectCenter, relativePoint } from '../simulator/window-card-position.ts'
 import QuickSwitchPreview from '../config-studio/QuickSwitchPreview'
-import { computed, defineComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import SearchPanelsOverlay from '../config-studio/SearchPanelsOverlay'
+import { PREVIEW_WINDOW } from '../config-studio/preview-geometry.ts'
+import { computed, defineComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { withBase } from 'vitepress'
 import { stringify } from 'smol-toml'
 import {
@@ -25,8 +29,8 @@ import {
   movePointer,
   toggleButton,
 } from '../simulator/state'
-import { displayedBindings, effectiveBindings, resolveBinding, resolveLayeredPhysicalBinding, resolvePhysicalBinding, shortcutCaption, temporaryPhysicalKeys } from '../simulator/bindings'
-import { blindTargetingInput, targetingConfig, targetingKeys } from '../simulator/normal-targeting'
+import { displayedBindings, effectiveBindings, resolveBinding, resolvedChordKeys, resolveLayeredPhysicalBinding, resolvePhysicalBinding, shortcutCaption, temporaryPhysicalKeys } from '../simulator/bindings'
+import { blindTargetingAction, blindTargetingInput, targetingConfig, targetingControlBindings, targetingKeys } from '../simulator/normal-targeting'
 import { applyWindowAction, chooseWindowNumber, switchWindowMode, isWindowMode, finishWindowNumber, hasWindowPresetChanges, replaceWindowPresets, restoreWindowPreset, saveWindowPreset, setDemoWindowCount, temporaryWindow, windowActionAvailable, windowDetail, windowInputStatus, windowSelectionKey, windowTarget, WINDOW_AREA, WINDOW_MOTION } from '../simulator/window'
 import { decodeWorkspaceDocument, encodeWorkspaceFile, WORKSPACE_FILE_NAME, WORKSPACE_STORAGE_KEY, readSavedPresets, presetName, type ModeUsage } from '../simulator/window-presets'
 import type { WindowState } from '../simulator/window'
@@ -48,7 +52,7 @@ import {
   type ConfigDocument,
 } from '../config-studio/document'
 
-type EditorMode = 'hotkeys' | 'normal' | 'text_input' | 'grid' | 'recursive_grid' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
+type EditorMode = 'hotkeys' | 'normal' | 'text_input' | 'quick_switch' | 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
 type Modifier = 'primary' | 'shift' | 'alt'
 type Appearance = 'dark' | 'light'
 
@@ -81,6 +85,8 @@ const modes: Array<{ id: EditorMode; label: string }> = [
   { id: 'hotkeys', label: '全局启动键' },
   { id: 'normal', label: 'Normal' },
   { id: 'text_input', label: 'Text Input' },
+  { id: 'quick_switch', label: 'Quick Switch' },
+  { id: 'text_select', label: 'Text Select' },
   { id: 'grid', label: 'Grid' },
   { id: 'recursive_grid', label: 'Recursive Grid' },
   { id: 'ui_hint', label: 'UI Hint' },
@@ -89,6 +95,13 @@ const modes: Array<{ id: EditorMode; label: string }> = [
 ]
 
 const actionGroups: ActionGroup[] = [
+  { name: '选择与导航', actions: [
+    ['first_level', '回到第一层'], ['previous_level', '返回上一层'], ['reopen_selection', '返回已完成的选择'],
+    ['confirm_selection', '确认选择'], ['cancel_selection', '取消选择'], ['search_selection', '搜索文字'],
+    ['text_refine', '细分文字'], ['text_copy', '复制文字'], ['text_search', '搜索选词'],
+    ['text_next_page', '下一页文字'], ['text_previous_page', '上一页文字'],
+    ['window_area_number', '区域编号'], ['window_next_page', '下一页布局'], ['window_previous_page', '上一页布局'], ['window_multi_cancel', '取消多选输入'],
+  ].map(([value, label]) => ({ value, label })) },
   { name: 'Tabs', actions: [
     ['window_tab', '标签组合模式'], ['window_tab_end', '结束本轮分组'], ['window_tab_group', '输入组编号'],
     ['window_number_end', '编号分隔符'], ['window_tab_remove', '移出活动成员'], ['window_tab_dissolve', '解散组合'],
@@ -152,7 +165,7 @@ const actionGroups: ActionGroup[] = [
   {
     name: '模式',
     actions: [
-      ['normal', 'Normal'], ['text_input', 'Text Input'], ['grid', 'Grid'],
+      ['normal', 'Normal'], ['text_input', 'Text Input'], ['text_select', 'Text Select'], ['grid', 'Grid'],
       ['recursive_grid', 'Recursive Grid'], ['ui_hint', 'UI Hint'],
       ['idle', 'Idle'], ['window', 'Window'], ['window_quick', 'Quick'], ['window_editor', 'Editor'], ['window_restore', 'Restore'], ['window_tab', 'Tabs'],
     ].map(([value, label]) => ({ value, label })),
@@ -239,6 +252,7 @@ export default defineComponent({
     ].map(field => [field.path, field])).values()]
     const searchResults = computed(() => searchSettings(searchEntries, searchQuery.value))
     function releasePreview(): void {
+      if (simulator.mode === 'quick_switch') applyModeAction(simulator, quickPrevious)
       quickStarted = 0; quickVisible.value = false; simulatorArmed.value = false
       heldActions.clear(); heldCharacterActions.clear(); physicalKeys.clear(); temporaryEntryKeys.clear()
       scrollMotion.clear(); scrollPulse.value = ''
@@ -293,38 +307,53 @@ export default defineComponent({
     const modifiers = reactive<Record<Modifier, boolean>>({ primary: false, shift: false, alt: false })
     const selectedChord = ref('')
     const pendingAction = ref('')
+    const leftMouseWarning = ref<HTMLDialogElement | null>(null)
+    const leftMouseChange = ref<{ mode: EditorMode; chord: string; before: string; after: string; apply: () => void } | null>(null)
     const draggedAction = ref('')
     const dragTarget = ref('')
     const actionQuery = ref('')
     const actionCategory = ref('')
     const bindingKind = ref<'action' | 'key'>('action')
     const fullKeyboard = ref(true)
+    const mouseExpanded = ref(false)
+    const mousePanelId = useId()
     let actionDragStart: { x: number; y: number; action: string } | undefined
     let suppressActionClick = false
     function actionPointerDown(event: PointerEvent, action: string): void {
       if (event.button !== 0) return
       suppressActionClick = false
       actionDragStart = { x: event.clientX, y: event.clientY, action }
-      ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+      ;(event.currentTarget as Element).setPointerCapture(event.pointerId)
+    }
+    function actionDropTarget(event: PointerEvent): HTMLElement | SVGElement | null {
+      return (event.currentTarget as Element).ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement | SVGElement>('[data-map-key]') ?? null
+    }
+    function cancelActionDrag(): void {
+      actionDragStart = undefined
+      draggedAction.value = ''; dragTarget.value = ''
+    }
+    function consumeDragClick(event: MouseEvent | KeyboardEvent): boolean {
+      if (!suppressActionClick || event.detail === 0) return false
+      suppressActionClick = false
+      return true
     }
     function actionPointerMove(event: PointerEvent): void {
       if (!actionDragStart || Math.hypot(event.clientX - actionDragStart.x, event.clientY - actionDragStart.y) < 6) return
       draggedAction.value = actionDragStart.action
-      const target = (event.currentTarget as HTMLElement).ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-map-key]')
+      const target = actionDropTarget(event)
       dragTarget.value = target?.dataset.mapKey ?? ''
     }
     function actionPointerUp(event: PointerEvent): void {
       if (draggedAction.value) {
         suppressActionClick = true
-        const target = (event.currentTarget as HTMLElement).ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-map-key]')
+        const target = actionDropTarget(event)
         if (target) {
           pendingAction.value = ''
           selectKey({ key: target.dataset.mapKey!, label: target.dataset.mapKey!, literal: target.dataset.literal === 'true' })
           setAction(draggedAction.value)
         }
       }
-      actionDragStart = undefined
-      draggedAction.value = ''; dragTarget.value = ''
+      cancelActionDrag()
     }
     const filteredActionGroups = computed(() => actionGroups
       .filter(group => !actionCategory.value || group.name === actionCategory.value)
@@ -352,21 +381,46 @@ export default defineComponent({
     const layoutFileInput = ref<HTMLInputElement>()
     const modeUsage = ref<ModeUsage>({})
     const quickVisible = ref(false)
-    const quickRows = ref<string[]>([])
+    const quickRows = ref<Array<{ mode: string; label: string }>>([])
+    const quickPrefix = ref('')
+    const filteredQuickRows = computed(() => quickRows.value.filter(row => row.label.startsWith(quickPrefix.value)))
     let quickStarted = 0
     let quickUsed = false
-    const quickCandidates = computed(() => modes.map(mode => mode.id).filter(mode => mode !== 'hotkeys' && mode !== simulator.mode && effectiveDocument.value?.[mode]?.enabled !== false && !(effectiveDocument.value?.quick_switch?.blacklist ?? ['idle']).includes(mode)).sort((a, b) => {
+    let quickPrevious: typeof simulator.mode = 'normal'
+    const quickCandidates = computed(() => modes.map(mode => mode.id).filter(mode => mode !== 'hotkeys' && mode !== 'quick_switch' && mode !== simulator.mode && effectiveDocument.value?.[mode]?.enabled !== false && !(effectiveDocument.value?.quick_switch?.blacklist ?? ['idle']).includes(mode)).sort((a, b) => {
       const x = BigInt(modeUsage.value[a] ?? '0'), y = BigInt(modeUsage.value[b] ?? '0')
       return x === y ? a.localeCompare(b) : x > y ? -1 : 1
-    }).slice(0, 9))
+    }))
+    function prepareQuickRows(): void {
+      const labels = hintLabels(String(effectiveDocument.value?.quick_switch?.hint_characters ?? 'wertyuiop'), quickCandidates.value.length)
+      quickRows.value = quickCandidates.value.map((mode, index) => ({ mode, label: labels[index] ?? '' }))
+      quickPrefix.value = ''
+    }
+    function enterQuickSwitch(): void {
+      if (simulator.mode !== 'quick_switch') {
+        quickPrevious = simulator.mode
+        prepareQuickRows()
+        applyModeAction(simulator, 'quick_switch')
+      }
+      quickVisible.value = true
+    }
     function previewQuickSwitch(): void {
-      quickRows.value = [...quickCandidates.value]; quickVisible.value = true
+      enterQuickSwitch()
       mobileView.value = 'preview'
       nextTick(() => screen.value?.focus())
     }
     function chooseQuickMode(mode: string): void {
       quickUsed = true; quickVisible.value = false
       if (mode !== simulator.mode) setPreviewMode(mode as Exclude<EditorMode, 'hotkeys'>)
+    }
+    function typeQuickLabel(key: string): void {
+      const prefix = quickPrefix.value + key
+      const match = quickRows.value.find(row => row.label.startsWith(prefix))
+      if (!match) return
+      quickUsed = true
+      quickPrefix.value = prefix
+      if (match.label === prefix) chooseQuickMode(match.mode)
+      else quickVisible.value = true
     }
     const usageRanking = computed(() => Object.entries(modeUsage.value).sort(([a, x], [b, y]) => BigInt(x) === BigInt(y) ? a.localeCompare(b) : BigInt(x) > BigInt(y) ? -1 : 1))
     function persistLayoutLibrary(): void {
@@ -589,25 +643,52 @@ export default defineComponent({
 
     function setAction(action: string): void {
       if (!document.value || !effectiveDocument.value || !selectedChord.value) return
-      const table = bindingTable(document.value, activeMode.value, true, effectiveDocument.value)
-      expandConfiguredBinding(table, selectedChord.value)
-      table[selectedChord.value] = action
-      document.value = { ...document.value }
-      customAction.value = action
-      message.value = `${selectedChord.value} → ${action}`
+      if (selectedBinding.value === action && targetsLeftMouse(selectedChord.value)) return
+      const mode = activeMode.value, chord = selectedChord.value
+      confirmLeftMouseChange(action, () => {
+        const table = bindingTable(document.value!, mode, true, effectiveDocument.value!)
+        expandConfiguredBinding(table, chord)
+        table[chord] = action
+        document.value = { ...document.value! }
+        customAction.value = action
+        message.value = `${chord} → ${action}`
+      })
     }
 
     function removeBinding(): void {
-      if (!document.value || !effectiveDocument.value || !selectedChord.value) return
-      const table = bindingTable(document.value, activeMode.value, true, effectiveDocument.value)
-      expandConfiguredBinding(table, selectedChord.value)
-      delete table[selectedChord.value]
-      document.value = { ...document.value }
-      pendingAction.value = ''
-      customAction.value = selectedAction.value
-      message.value = selectedAction.value
-        ? `已移除当前模式绑定，${selectedChord.value} 恢复继承：${selectedAction.value}`
-        : `已移除 ${selectedChord.value}，此键未绑定`
+      if (!document.value || !effectiveDocument.value || !selectedChord.value
+        || resolveBinding(effectiveDocument.value, activeMode.value, selectedChord.value)?.source !== activeMode.value) return
+      const mode = activeMode.value, chord = selectedChord.value
+      confirmLeftMouseChange(t('移除当前模式绑定'), () => {
+        const table = bindingTable(document.value!, mode, true, effectiveDocument.value!)
+        expandConfiguredBinding(table, chord)
+        delete table[chord]
+        document.value = { ...document.value! }
+        pendingAction.value = ''
+        customAction.value = selectedAction.value
+        message.value = selectedAction.value
+          ? `已移除当前模式绑定，${chord} 恢复继承：${selectedAction.value}`
+          : `已移除 ${chord}，此键未绑定`
+      })
+    }
+
+    function targetsLeftMouse(binding: string): boolean {
+      return binding.split(/\s+/).some(chord =>
+        resolvedChordKeys(effectiveDocument.value!, chord, isMac.value).includes('mouse_left'))
+    }
+
+    function confirmLeftMouseChange(after: string, apply: () => void): void {
+      if (!targetsLeftMouse(selectedChord.value)) { apply(); return }
+      releasePreview()
+      leftMouseChange.value = { mode: activeMode.value, chord: selectedChord.value, before: selectedAction.value, after, apply }
+      leftMouseWarning.value?.showModal()
+    }
+
+    function acceptLeftMouseChange(): void {
+      const change = leftMouseChange.value
+      leftMouseChange.value = null
+      leftMouseWarning.value?.close()
+      change?.apply()
     }
 
     function keyBindingInfo(spec: KeySpec): KeyBindingInfo | undefined {
@@ -686,6 +767,24 @@ export default defineComponent({
     }
 
     function executeAction(action: string, continuous = false): void {
+      if (action === 'quick_switch') { enterQuickSwitch(); return }
+      if (simulator.mode === 'quick_switch') {
+        if (action === 'cancel_selection') { quickVisible.value = false; quickUsed = true; applyModeAction(simulator, quickPrevious); return }
+        if (action === 'previous_level') { quickPrefix.value = [...quickPrefix.value].slice(0, -1).join(''); return }
+        if (action === 'idle' || modes.some(mode => mode.id === action)) { quickVisible.value = false; quickUsed = true }
+      }
+      if (simulator.mode === 'normal' && targetingConfig(effectiveDocument.value ?? {}) && blindTargetingAction(simulator.blindTargeting, action)) {
+        simulator.lastEvent = action
+        return
+      }
+      if ((simulator.mode === 'grid' || simulator.mode === 'recursive_grid') && ['first_level', 'previous_level', 'cancel_selection', 'confirm_selection'].includes(action)) {
+        const path = simulator.mode === 'grid' ? simulator.targeting.grid.path : simulator.targeting.recursiveGrid.path
+        if (action === 'first_level') path.splice(0)
+        else if (action === 'previous_level' && path.length) path.pop()
+        else if (action === 'previous_level' || action === 'cancel_selection' || action === 'confirm_selection') applyModeAction(simulator, 'normal')
+        simulator.lastEvent = action
+        return
+      }
       if (action === 'window_restore' || action === 'window_delete' || action === 'window_confirm' && simulator.window.deletingPresets && simulator.window.deleteSelection) {
         try { simulator.window.presets = readSavedPresets(localStorage.getItem(WORKSPACE_STORAGE_KEY)) }
         catch (error) { layoutStorageError.value = formatError(error); simulator.lastEvent = layoutStorageError.value; return }
@@ -698,16 +797,16 @@ export default defineComponent({
         return
       }
       if (applyModeAction(simulator, action, effectiveDocument.value?.key_help?.mouse_key_help === true)) return
-      if (action === 'left_click' || action === 'double_click') {
+      if (action === 'left_click' || action === 'mouse_left' || action === 'double_click') {
         clickPulse.value += 1
         if (simulator.mode === 'normal' && (targetingConfig(effectiveDocument.value ?? {})?.reset_on ?? ['move', 'click']).includes('click')) simulator.blindTargeting.pendingReset = true
         simulator.lastEvent = action === 'double_click' ? '双击' : '左键点击'
         return
       }
-      if (action === 'right_click' || action === 'middle_click') {
+      if (['right_click', 'mouse_right', 'middle_click', 'mouse_middle'].includes(action)) {
         clickPulse.value += 1
         if (simulator.mode === 'normal' && (targetingConfig(effectiveDocument.value ?? {})?.reset_on ?? ['move', 'click']).includes('click')) simulator.blindTargeting.pendingReset = true
-        simulator.lastEvent = action === 'right_click' ? '右键点击' : '中键点击'
+        simulator.lastEvent = action === 'right_click' || action === 'mouse_right' ? '右键点击' : '中键点击'
         return
       }
       if (action === 'toggle') {
@@ -734,23 +833,24 @@ export default defineComponent({
       if (simulator.window.noteOpen) return
       if (!simulatorArmed.value) return
       const quickKey = String(effectiveDocument.value?.quick_switch?.key ?? 'q')
-      if (quickStarted && !event.repeat && /^[1-9]$/.test(event.key)) {
-        event.preventDefault()
-        quickUsed = true
-        const mode = quickRows.value[Number(event.key) - 1]
-        if (mode) chooseQuickMode(mode)
-        return
-      }
-      if (simulator.mode !== 'idle' && simulator.mode !== 'text_input' && effectiveDocument.value?.quick_switch?.enabled !== false && event.key.toLowerCase() === quickKey && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
-        event.preventDefault()
-        if (!event.repeat) { quickStarted = performance.now(); quickUsed = false; quickRows.value = [...quickCandidates.value] }
-        return
-      }
+      const quickCharacter = event.key.toLowerCase()
+      const quickAlphabet = String(effectiveDocument.value?.quick_switch?.hint_characters ?? 'wertyuiop').toLowerCase()
+      if (quickStarted && quickUsed && quickCharacter === quickKey) { event.preventDefault(); return }
       if (quickVisible.value) {
         event.preventDefault()
-        if (event.key === 'Escape') { quickVisible.value = false; quickUsed = true }
-        else if (/^[1-9]$/.test(event.key)) { const mode = quickRows.value[Number(event.key) - 1]; if (mode) chooseQuickMode(mode) }
+        if (event.repeat) return
+        const physical = physicalKey(event)
+        physicalKeys.add(physical)
+        const resolved = resolveLayeredPhysicalBinding(effectiveDocument.value ?? {}, 'quick_switch', currentPhysicalKeys(event), physical, isMac.value, temporaryEntryKeys)
+        if (resolved) {
+          const actions = Array.isArray(resolved.value) ? resolved.value.map(String) : [String(resolved.value)]
+          actions.forEach(action => executeAction(action))
+        } else if ([...quickCharacter].length === 1 && quickAlphabet.includes(quickCharacter)) typeQuickLabel(quickCharacter)
         return
+      }
+      if (quickStarted && !event.repeat && quickCharacter !== quickKey) { quickStarted = 0; quickUsed = true }
+      if (!quickStarted && !event.repeat && simulator.mode !== 'idle' && simulator.mode !== 'text_input' && simulator.mode !== 'quick_switch' && effectiveDocument.value?.quick_switch?.enabled !== false && quickCharacter === quickKey && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && !physicalKeys.size) {
+        quickStarted = performance.now(); quickUsed = false
       }
       if (simulator.mode === 'text_input' && effectiveDocument.value) {
         const physical = physicalKey(event)
@@ -825,9 +925,10 @@ export default defineComponent({
           if (temporary.includes(physical)) { event.preventDefault(); return }
           event.preventDefault(); return
         } else {
-          const resolved = resolvePhysicalBinding(document, simulator.mode === 'idle' ? 'hotkeys' : simulator.mode, pressed, physical, isMac.value)
+          const routing = simulator.mode === 'normal' && targetingConfig(document) ? { ...document, normal: { ...document.normal, bindings: targetingControlBindings(document) } } : document
+          const resolved = resolvePhysicalBinding(routing, simulator.mode === 'idle' ? 'hotkeys' : simulator.mode, pressed, physical, isMac.value)
           const actions = Array.isArray(resolved?.value) ? resolved.value.map(String) : [String(resolved?.value)]
-          if (actions.some(action => ['idle', 'normal', 'text_input', 'grid', 'recursive_grid', 'ui_hint'].includes(action) || isWindowMode(action))) {
+          if (actions.some(action => ['first_level', 'previous_level', 'cancel_selection', 'confirm_selection', 'reopen_selection', 'search_selection', 'idle', 'normal', 'text_input', 'text_select', 'grid', 'recursive_grid', 'ui_hint'].includes(action) || isWindowMode(action))) {
             event.preventDefault(); heldActions.clear(); actions.forEach(action => executeAction(action)); return
           }
         }
@@ -891,10 +992,7 @@ export default defineComponent({
       scrollMotion.release(event.code)
       if (quickStarted && event.key.toLowerCase() === String(effectiveDocument.value?.quick_switch?.key ?? 'q')) {
         event.preventDefault()
-        const shortPress = !quickVisible.value && !quickUsed
-        quickStarted = 0; quickVisible.value = false
-        if (shortPress && !handleTargetingKey(event.key)) resolveAction(event.key).forEach(action => executeAction(action))
-        return
+        quickStarted = 0
       }
       physicalKeys.delete(physicalKey(event))
       if (simulator.mode === 'text_input' && effectiveDocument.value && /^(left_|right_)?(alt|ctrl|shift|cmd|win)$/.test(physicalKey(event))
@@ -915,7 +1013,7 @@ export default defineComponent({
     function animate(timestamp: number): void {
       const delta = previousFrame ? Math.min(32, timestamp - previousFrame) : 16
       previousFrame = timestamp
-      if (quickStarted && !quickUsed && timestamp - quickStarted >= Number(effectiveDocument.value?.quick_switch?.hold_ms ?? 350)) quickVisible.value = true
+      if (quickStarted && !quickUsed && timestamp - quickStarted >= Number(effectiveDocument.value?.quick_switch?.hold_ms ?? 350)) { quickUsed = true; enterQuickSwitch() }
       heldActions.forEach((action) => {
         if (WINDOW_MOTION.has(action)) applyWindowAction(simulator, action, effectiveDocument.value?.[simulator.mode] ?? {}, Date.now(), delta / 1000)
         else movePointer(simulator, action, delta * 0.028)
@@ -932,12 +1030,6 @@ export default defineComponent({
       const path = simulator.mode === 'grid'
         ? simulator.targeting.grid.path
         : simulator.targeting.recursiveGrid.path
-      if (keyName === 'backspace') {
-        if (path.length > 0) path.pop()
-        updateGridPointer(settings, path)
-        simulator.lastEvent = '返回上一层网格'
-        return true
-      }
       const keys = String(settings.keys ?? '')
       const index = Array.from(keys).indexOf(keyName)
       if (index < 0 || index >= numberSetting(settings.grid_cols, simulator.mode === 'grid' ? 5 : 3) * numberSetting(settings.grid_rows, simulator.mode === 'grid' ? 4 : 3)) return false
@@ -954,8 +1046,10 @@ export default defineComponent({
       simulator.pointer.y = region.y + region.height / 2
     }
 
-    function setPreviewMode(mode: 'normal' | 'text_input' | 'grid' | 'recursive_grid' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'): void {
+    function setPreviewMode(mode: 'normal' | 'text_input' | 'quick_switch' | 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'): void {
       heldActions.clear(); physicalKeys.clear()
+      if (mode === 'quick_switch') { enterQuickSwitch(); return }
+      quickVisible.value = false
       if (isWindowMode(mode)) switchWindowMode(simulator, mode, effectiveDocument.value?.[mode] ?? {})
       else applyModeAction(simulator, mode, effectiveDocument.value?.key_help?.mouse_key_help === true)
       simulator.lastEvent = `预览 ${mode}`
@@ -987,11 +1081,11 @@ export default defineComponent({
       <div class={{ 'ks-keyboard-scroll': true, 'ks-main-keyboard': !fullKeyboard.value }} aria-label={fullKeyboard.value ? t("ANSI 104 键盘") : t("键盘主键区")}>
         <FittedKeyboard>
         <div class="ks-keyboard">
-          {fullKeyboard.value && <KeyboardRows rows={[functionRow.map(platformKey)]} selected={selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />}
+          {fullKeyboard.value && <KeyboardRows rows={[functionRow.map(platformKey)]} selected={dragTarget.value || selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />}
           <div class="ks-keyboard-body">
-            <KeyboardRows rows={mainRows.map(row => row.map(platformKey))} selected={selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />
-            {fullKeyboard.value && <KeyboardRows rows={navigationRows} selected={selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} compact />}
-            {fullKeyboard.value && <Numpad keys={numpadKeys} selected={selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />}
+            <KeyboardRows rows={mainRows.map(row => row.map(platformKey))} selected={dragTarget.value || selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />
+            {fullKeyboard.value && <KeyboardRows rows={navigationRows} selected={dragTarget.value || selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} compact />}
+            {fullKeyboard.value && <Numpad keys={numpadKeys} selected={dragTarget.value || selectedChord.value} onKey={selectKey} bindingInfo={keyBindingInfo} />}
           </div>
         </div>
         </FittedKeyboard>
@@ -1003,7 +1097,7 @@ export default defineComponent({
           <div class="ks-toolbar ks-compact-toolbar">
             <div>
               <h2>{t("按键映射")}</h2>
-              <p>{t("选择按键，为它设置动作或映射到另一个按键。")}</p>
+              <p>{t("选择键盘或鼠标按键，为它设置动作或映射到另一个按键。")}</p>
             </div>
             <button class="ks-button" aria-pressed={fullKeyboard.value} onClick={() => fullKeyboard.value = !fullKeyboard.value}>{fullKeyboard.value ? t("切换主键区") : t("显示完整键盘")}</button>
           </div>
@@ -1023,7 +1117,21 @@ export default defineComponent({
               <input aria-label={t("绑定按键或符号")} placeholder={t("点击键盘或输入符号，如 ?")} value={selectedChord.value} onInput={(event) => { selectedChord.value = (event.target as HTMLInputElement).value }} />
             </div>
           </div>
-          {keyboard()}
+          <div class="ks-input-devices">
+            {keyboard()}
+            <div id={mousePanelId} class={{ 'ks-mouse-panel': true, 'is-expanded': mouseExpanded.value }}>
+              <MouseDiagram selected={dragTarget.value || selectedChord.value} draggedAction={draggedAction.value} bindingInfo={keyBindingInfo}
+                onSelect={(key, event) => { if (!consumeDragClick(event)) selectKey(key) }}
+                onActionStart={actionPointerDown} onActionMove={actionPointerMove} onActionEnd={actionPointerUp} onActionCancel={cancelActionDrag} />
+            </div>
+            <div class="ks-mouse-toggle-row">
+              <button type="button" class="ks-mouse-toggle" aria-expanded={mouseExpanded.value} aria-controls={mousePanelId}
+                aria-label={t(mouseExpanded.value ? '收起鼠标按键' : '展开鼠标按键')} title={t(mouseExpanded.value ? '收起鼠标按键' : '展开鼠标按键')}
+                onClick={() => { mouseExpanded.value = !mouseExpanded.value }}>
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="m5 7.5 5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              </button>
+            </div>
+          </div>
           {draggedAction.value && <p class="ks-pending-action">{t("拖动 ")}{draggedAction.value}{dragTarget.value ? t(" → {0}，松开替换绑定", [dragTarget.value]) : t(" 到目标键帽")}</p>}
           <details class="ks-keyboard-guide"><summary>{t("符号绑定与颜色说明")}</summary><p class="ks-keyboard-hint">{t("点击键帽内的上层符号可按字符绑定（如 ?）；下层按键可搭配上方组合键。彩色圆点表示已有绑定，悬停可查看动作。")}</p>
           <div class="ks-key-legend" aria-label={t("按键颜色分类")}>
@@ -1044,7 +1152,7 @@ export default defineComponent({
               </div>
               {selectedChord.value && <div class="ks-binding-actions">
                 <div>
-                  <button disabled={!selectedAction.value || selectedAction.value === 'none'} onClick={() => { pendingAction.value = ''; setAction('none'); message.value = `已取消 ${selectedChord.value} 的绑定，不再执行本模式或继承的绑定动作` }}>{t("取消绑定")}</button>
+                  <button disabled={!selectedAction.value || selectedAction.value === 'none'} onClick={() => { pendingAction.value = ''; setAction('none') }}>{t("取消绑定")}</button>
                   <button disabled={resolveBinding(effectiveDocument.value!, activeMode.value, selectedChord.value)?.source !== activeMode.value} onClick={removeBinding}>{t("移除当前模式绑定")}</button>
                 </div>
                 <small>{t("取消绑定会禁用此键的绑定动作；移除当前模式绑定后，若有继承动作则恢复继承。")}</small>
@@ -1069,9 +1177,8 @@ export default defineComponent({
                       <button class={{ active: selectedAction.value === action.value || pendingAction.value === action.value }}
                         title={t("{0} · 点击设置或拖到键帽", [action.value])}
                         onPointerdown={event => actionPointerDown(event, action.value)} onPointermove={actionPointerMove} onPointerup={actionPointerUp}
-                        onPointercancel={() => { actionDragStart = undefined; draggedAction.value = ''; dragTarget.value = '' }}
-                        onLostpointercapture={() => { actionDragStart = undefined; draggedAction.value = ''; dragTarget.value = '' }}
-                        onClick={event => { if (suppressActionClick && event.detail !== 0) { suppressActionClick = false; return }; if (selectedChord.value) setAction(action.value); else pendingAction.value = action.value }}><span>{t(action.label)}</span><code>{action.value}</code></button>
+                        onPointercancel={cancelActionDrag} onLostpointercapture={cancelActionDrag}
+                        onClick={event => { if (consumeDragClick(event)) return; if (selectedChord.value) setAction(action.value); else pendingAction.value = action.value }}><span>{t(action.label)}</span><code>{action.value}</code></button>
                     ))}</div>
                   </div>
                 ))}
@@ -1163,11 +1270,13 @@ export default defineComponent({
                   <div class="ks-layout-note-heading"><strong>{simulator.window.editingPresetId === null ? 'Save preset' : `Update preset ${simulator.window.editingPresetId}`}</strong><span>{t("备注可留空，将自动命名")}</span></div>
                   <div class="ks-layout-note-row"><input aria-label={t("备注（可留空）")} ref={layoutNoteInput} value={layoutNote.value} onInput={e => layoutNote.value = (e.target as HTMLInputElement).value} placeholder={t("例如：写代码 / 阅读")} /><button type="submit">Save</button><button type="button" onClick={() => finishLayoutNote(false)}>Cancel</button></div>
                 </form></div>}
-                {quickVisible.value && <QuickSwitchPreview rows={quickRows.value} settings={effectiveDocument.value?.quick_switch ?? {}} appearance={appearance.value} pointer={simulator.pointer} windowCenter={(() => { const w = simulator.window.windows.find(w => w.id === simulator.window.target); return w ? { x: (w.x + w.width / 2) / WINDOW_AREA.width * 100, y: (w.y + w.height / 2) / WINDOW_AREA.height * 100 } : { x: 50, y: 50 } })()} onSelect={chooseQuickMode} />}
+                {quickVisible.value && <QuickSwitchPreview rows={filteredQuickRows.value} prefix={quickPrefix.value} settings={effectiveDocument.value?.quick_switch ?? {}} appearance={appearance.value} pointer={simulator.pointer} windowCenter={(() => { const w = simulator.window.windows.find(w => w.id === simulator.window.target); return w ? { x: (w.x + w.width / 2) / WINDOW_AREA.width * 100, y: (w.y + w.height / 2) / WINDOW_AREA.height * 100 } : { x: 50, y: 50 } })()} onSelect={chooseQuickMode} />}
                 {(simulator.mode === 'grid' || simulator.mode === 'recursive_grid') && <div class="ks-target-backdrop" />}
                 {simulator.mode === 'grid' && <TargetGrid mode="grid" settings={targetingSettings.value} path={simulator.targeting.grid.path} />}
                 {simulator.mode === 'recursive_grid' && <TargetGrid mode="recursive_grid" settings={targetingSettings.value} path={simulator.targeting.recursiveGrid.path} />}
+                {simulator.mode === 'text_select' && <div class="preview-mode-note">{t('文字选择在桌面应用中使用屏幕 OCR；搜索框和文字面板外观共用 UI Hint 设置。')}</div>}
                 {simulator.mode === 'ui_hint' && <HintOverlay settings={targetingSettings.value} />}
+                {simulator.mode === 'ui_hint' && effectiveDocument.value && <SearchPanelsOverlay document={effectiveDocument.value} appearance={appearance.value} />}
                 {cursorPreview.value.enabled && simulator.mode !== 'idle' && <svg class="ks-cursor-marker" aria-hidden="true"
                   style={{ left: `${simulator.pointer.x}%`, top: `${simulator.pointer.y}%`, width: `${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width}px`, height: `${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width}px` }}
                   viewBox={`${-cursorPreview.value.radius - cursorPreview.value.stroke_width / 2} ${-cursorPreview.value.radius - cursorPreview.value.stroke_width / 2} ${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width} ${2 * cursorPreview.value.radius + cursorPreview.value.stroke_width}`}>
@@ -1199,7 +1308,7 @@ export default defineComponent({
                 <div class="ks-quick-heading-row">
                   <div class="ks-quick-heading-copy">
                     <h2>{selectedTab.value === 'behavior' ? t("快速模式切换") : t("外观设置")}</h2>
-                    <p>{t("操作模式中长按 ")}{String(effectiveDocument.value?.quick_switch?.key ?? 'q').toUpperCase()}{t(" 展开，配合 1…9 选择；松开收起。Idle 不接管，黑名单仅限制快速切换。")}</p>
+                    <p>{t("操作模式中长按 ")}{String(effectiveDocument.value?.quick_switch?.key ?? 'q').toUpperCase()}{t(" 进入快速切换模式，松开后保持。输入标签筛选并选择；退出与退格在按键页配置。Idle 不接管长按，黑名单仅限制候选。")}</p>
                   </div>
                   <button class="ks-button" disabled={!document.value} onClick={previewQuickSwitch}>{t("在模拟器中预览")}</button>
                 </div>
@@ -1208,8 +1317,15 @@ export default defineComponent({
               <div class="ks-settings-grid">
               <label hidden={selectedTab.value !== 'behavior'} data-config-path="quick_switch.key">{t("触发键")}<input value={effectiveDocument.value?.quick_switch?.key ?? 'q'} onChange={event => {
                 const value = (event.target as HTMLInputElement).value.trim().toLowerCase()
-                if (document.value && /^[a-z]$/.test(value)) { document.value.quick_switch ??= {}; document.value.quick_switch.key = value }
+                if (document.value && /^[a-z]$/.test(value) && validQuickSwitchCharacters(effectiveDocument.value?.quick_switch?.hint_characters ?? 'wertyuiop', value)) { document.value.quick_switch ??= {}; document.value.quick_switch.key = value }
               }} /></label>
+              <label hidden={selectedTab.value !== 'behavior'} data-config-path="quick_switch.hint_characters">{t("提示字符")}<input value={effectiveDocument.value?.quick_switch?.hint_characters ?? 'wertyuiop'} onChange={event => {
+                const input = event.target as HTMLInputElement
+                const value = input.value
+                if (document.value && validQuickSwitchCharacters(value, String(effectiveDocument.value?.quick_switch?.key ?? 'q'))) { document.value.quick_switch ??= {}; document.value.quick_switch.hint_characters = value; input.setCustomValidity('') }
+                else { input.setCustomValidity(t("提示字符至少两个，不可重复或包含触发键")); input.reportValidity() }
+              }} /></label>
+
               <label hidden={selectedTab.value !== 'behavior'} data-config-path="quick_switch.enabled">{t("启用 ")}<input type="checkbox" checked={effectiveDocument.value?.quick_switch?.enabled !== false}
                 onChange={event => { if (document.value) { document.value.quick_switch ??= {}; document.value.quick_switch.enabled = (event.target as HTMLInputElement).checked } }} /></label>
               <label hidden={selectedTab.value !== 'behavior'} data-config-path="quick_switch.hold_ms">{t("长按毫秒 ")}<input type="number" min="1" max="10000" value={effectiveDocument.value?.quick_switch?.hold_ms ?? 350}
@@ -1239,7 +1355,7 @@ export default defineComponent({
                     if (!document.value || !valid) return
                     document.value.quick_switch ??= {}; document.value.quick_switch.ui ??= {}
                     document.value.quick_switch.ui[field] = value
-                    quickRows.value = [...quickCandidates.value]; quickVisible.value = true
+                    enterQuickSwitch()
                   }}
                   onReset={() => {
                     if (document.value?.quick_switch?.ui) delete document.value.quick_switch.ui[field]
@@ -1301,6 +1417,18 @@ export default defineComponent({
             <section class="ks-utility-card ks-workspace-files"><header class="ks-utility-heading"><h2>{t("工作区文件")}</h2><code>workspace.ksw</code></header><div class="ks-settings-body"><p>{t("导入或导出布局、标签分组与使用统计。")}</p><div class="ks-file-actions"><input aria-label={t("导入工作区文件")} type="file" accept=".ksw,application/octet-stream" onChange={importLayoutFile} /><button class="ks-button" onClick={downloadLayouts}>{t("下载工作区文件")}</button></div></div></section></div>)
     return () => (
       <div class="ks-studio ks-classified" style={{ '--ks-navigation-width': `${navigationWidth.value}px`, '--ks-settings-share': `${settingsShare.value}fr`, '--ks-preview-share': `${100 - settingsShare.value}fr` }}>
+        <dialog ref={leftMouseWarning} class="ks-mouse-warning" aria-labelledby="ks-mouse-warning-title" aria-describedby="ks-mouse-warning-description"
+          onCancel={() => { leftMouseChange.value = null }} onClose={() => { leftMouseChange.value = null }}>
+          <h2 id="ks-mouse-warning-title"><span aria-hidden="true">!</span>{t('修改鼠标左键绑定')}</h2>
+          <p id="ks-mouse-warning-description">{t('这会改变鼠标左键的操作行为，可能影响正常点击。请确认后再修改。')}</p>
+          <dl>
+            <dt>{t('当前按键')}</dt><dd>{leftMouseChange.value?.mode} · {leftMouseChange.value?.chord}</dd>
+            <dt>{t('变更前')}</dt><dd>{leftMouseChange.value?.before || t('未绑定')}</dd>
+            <dt>{t('变更后')}</dt><dd>{leftMouseChange.value?.after}</dd>
+          </dl>
+          <footer><button class="ks-button" autofocus onClick={() => leftMouseWarning.value?.close()}>{t('取消')}</button>
+            <button class="ks-button ks-button-primary" disabled={!leftMouseChange.value} onClick={acceptLeftMouseChange}>{t('确认修改左键绑定')}</button></footer>
+        </dialog>
         <header class="ks-studio-topbar" inert={expanded.value}>
           <div><strong>{t("配置工作台")}</strong><small role="status" aria-live="polite" title={t(message.value)}>{t(message.value || sourceName.value)}</small></div>
           <div class="ks-settings-search"><input aria-label={t("搜索设置")} placeholder={t("搜索设置、模式或 TOML 路径…")} value={searchQuery.value} onInput={e => searchQuery.value = (e.target as HTMLInputElement).value} />
@@ -1325,11 +1453,11 @@ export default defineComponent({
                 mode={pageId.value === 'mode_indicator' ? undefined : currentPage.value.mode}
                 document={document.value} effectiveDocument={effectiveDocument.value} appearance={appearance.value}
                 onChange={next => document.value = next} />}
-              {['normal', 'text_input', 'grid', 'recursive_grid', 'ui_hint'].includes(pageId.value) && <CommonConfigControls page={pageId.value} tab={selectedTab.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} />}
+              {['normal', 'text_input', 'text_select', 'grid', 'recursive_grid', 'ui_hint'].includes(pageId.value) && <CommonConfigControls page={pageId.value} tab={selectedTab.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} />}
               {pageId.value === 'normal' && selectedTab.value === 'behavior' && <NormalTargetingControls document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => { document.value = next; simulator.blindTargeting.pendingReset = true }} />}
-              {(pageId.value.startsWith('window') || ['grid', 'recursive_grid', 'ui_hint', 'key_help'].includes(pageId.value)) && <ModeStyleControls page={pageId.value} tab={selectedTab.value} mode={(pageId.value === 'window_card' ? 'window' : pageId.value) as any} appearance={appearance.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} onAppearanceChange={next => appearance.value = next} />}
+              {(pageId.value.startsWith('window') || ['grid', 'recursive_grid', 'ui_hint', 'text_select', 'key_help'].includes(pageId.value)) && <ModeStyleControls page={pageId.value} tab={selectedTab.value} mode={(pageId.value === 'window_card' ? 'window' : pageId.value) as any} appearance={appearance.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} onAppearanceChange={next => appearance.value = next} />}
             </div>}
-            {pageId.value === 'quick_switch' && renderQuickSwitch()}
+            {pageId.value === 'quick_switch' && selectedTab.value !== 'keys' && renderQuickSwitch()}
             {pageId.value === 'mode_usage' && renderUsage()}
             {pageId.value === 'files' && renderFiles()}
             <div hidden={pageId.value !== 'toml'}>
@@ -1447,10 +1575,11 @@ const HintOverlay = defineComponent({
     return () => {
       const characters = String(props.settings.hint_characters ?? 'asdfghjkl')
       const placement = String(props.settings.placement ?? 'bottom')
+      const labels = hintLabels(characters, positions.length, props.settings.label_direction === 'reverse')
       return (
         <div class={{ 'ks-hint-overlay': true, [`placement-${placement}`]: true }}>
           {positions.map(([x, y], index) => {
-            const label = hintLabel(characters, index)
+            const label = labels[index]
             return (
               <div class={{ target: true, boundary: Boolean(props.settings.boundary_highlight?.enabled) }} style={{ left: `${x}%`, top: `${y}%` }}>
                 <span>{label}</span>
@@ -1473,7 +1602,7 @@ const DesktopBackdrop = defineComponent({
       viewport.value.scrollLeft += x; viewport.value.scrollTop += y
     } })
     return () => (
-      <div class="ks-desktop-backdrop" aria-hidden="true">
+      <div class="ks-desktop-backdrop" aria-hidden="true" style={{ left: `${PREVIEW_WINDOW.x}px`, top: `${PREVIEW_WINDOW.y}px`, width: `${PREVIEW_WINDOW.width}px`, height: `${PREVIEW_WINDOW.height}px` }}>
         <div class="ks-desktop-window">
           <div class="ks-desktop-titlebar">
             <div class="ks-window-controls"><i /><i /><i /></div>
@@ -1612,13 +1741,6 @@ function digits(): KeySpec[] {
   return [...'1234567890'].map((digit) => key(digit, digit))
 }
 
-function hintLabel(characters: string, index: number): string {
-  const keys = [...characters]
-  if (keys.length === 0) return String(index + 1)
-  if (index < keys.length) return keys[index]
-  const offset = index - keys.length
-  return `${keys[Math.floor(offset / keys.length) % keys.length]}${keys[offset % keys.length]}`
-}
 
 function bindingTable(
   document: ConfigDocument,
@@ -1803,7 +1925,7 @@ function shortAction(action: string): string {
     move_left: '← 移动', move_down: '↓ 移动', move_up: '↑ 移动', move_right: '→ 移动',
     wheel_up: '↑ 滚动', wheel_down: '↓ 滚动', scroll_left: '← 滚动', scroll_right: '→ 滚动',
     left_click: '左键', right_click: '右键', middle_click: '中键', double_click: '双击',
-    mouse_x1: '侧键 1', mouse_x2: '侧键 2',
+    mouse_left: '左键', mouse_right: '右键', mouse_middle: '中键', mouse_x1: '侧键 1', mouse_x2: '侧键 2',
     grid: 'Grid', recursive_grid: '递归 Grid', ui_hint: 'UI Hint', normal: 'Normal', idle: 'Idle',
     precision: '精确', slow: '慢速', fast: '快速', finish: '完成', restart_mode: '重启', escape: '返回',
     precision_toggle: '切换精确', slow_toggle: '切换慢速', fast_toggle: '切换快速',
@@ -2041,15 +2163,16 @@ function readable(background: string, text = '#10172DFF', alternate = '#FFFFFFFF
 
 function windowNumberLabels(state: WindowState, card: Record<string, any>): Array<{ number: number; x: number; y: number; app: string; title: string; selected: boolean; members?: string[] }> {
   const [top, right, bottom, left] = cardPositionRatios(card.position)
-  const anchorX = (left + 1 - right) / 2
-  const anchorY = (top + 1 - bottom) / 2
+  const anchor = rectCenter(percentageRegion({ x: 0, y: 0, width: 1, height: 1 }, [top, right, bottom, left]))
   const labels: Array<{ number: number; x: number; y: number; app: string; title: string; selected: boolean; members?: string[] }> = []
   for (const window of state.windows.map(w => ({ ...w, ...tabFrame(activeTabWindow(state, w.id) ?? w) })).filter(w => (state.includeMinimized || !w.minimized) && w.screen === state.screen && state.numbers[w.id] !== undefined).sort((a, b) => state.numbers[a.id] - state.numbers[b.id])) {
     const group = containingTab(state, window.id)
     if (group && (state.tree ? group.members[0] : group.active) !== window.id) continue
     const slot = state.tree ? treeSlots(state.tree).find(s => s.window === window.id) : undefined
-    let x = Math.max(17, Math.min(83, (slot ? slot.rect.x + slot.rect.width * anchorX : (window.x + window.width * anchorX) / WINDOW_AREA.width) * 100))
-    let y = Math.max(6, Math.min(94, slot ? (card.position ? (slot.rect.y + slot.rect.height * anchorY) * 100 : slot.rect.y * 100 + 6) : (window.y + window.height * anchorY) / WINDOW_AREA.height * 100))
+    const frame = slot?.rect ?? { x: window.x / WINDOW_AREA.width, y: window.y / WINDOW_AREA.height, width: window.width / WINDOW_AREA.width, height: window.height / WINDOW_AREA.height }
+    const preferred = relativePoint(frame, anchor)
+    let x = Math.max(17, Math.min(83, preferred.x * 100))
+    let y = Math.max(6, Math.min(94, slot && !card.position ? slot.rect.y * 100 + 6 : preferred.y * 100))
     if (labels.some(l => Math.abs(l.x - x) < 33 && Math.abs(l.y - y) < 10)) {
       let distance = Infinity
       for (let row = 0; row < 9; row++) for (let col = 0; col < 3; col++) {

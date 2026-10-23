@@ -41,7 +41,7 @@ pub(super) fn compile_unbound_prefixes(
     for candidate in candidates {
         for key in candidate.chord.keys() {
             if !key.is_modifier()
-                && !key.is_mouse_side_button()
+                && !key.is_mouse_button()
                 && key != candidate.chord.activation_key()
             {
                 by_key

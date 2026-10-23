@@ -5,7 +5,7 @@ import ModeVideo from '../../.vitepress/components/ModeVideo'
 import KeyLayout from '../../.vitepress/components/KeyLayout'
 </script>
 
-`Grid` divides the active display into labelled cells.
+Target on the other side of the screen? `Grid` covers the display with lettered and numbered cells. Type the labels covering your target to narrow the area without moving the pointer all the way across.
 
 <ModeVideo file="grid.mp4" title="Grid mode demonstration" description="Large first-level labels, inner second-level previews, and rapid targeting with consecutive key presses." />
 
@@ -15,7 +15,9 @@ Enter it from Normal with `g`. The default layout is 5 columns × 4 rows:
 
 The initial screen shows a prominent first key at the centre of every top-level cell and a muted, smaller second-key grid within it. The default maximum selection depth is `max_depth = 3`.
 
-Normal bindings do not conflict with Grid labels. Hold `Primary` to temporarily enter Normal, so you can move, scroll, or click without leaving Grid.
+::: tip Jump first, fine-tune second
+Hold `Primary` to adjust with Normal movement, scrolling, and clicks. Release it to keep selecting cells.
+:::
 
 ## Controls
 

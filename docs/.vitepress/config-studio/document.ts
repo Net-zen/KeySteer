@@ -1,37 +1,18 @@
 import { cardPositionRatios } from '../simulator/window-card-position.ts'
+import { panelPositionPercentages } from '../simulator/search-panel-position.ts'
 import { toRaw } from 'vue'
 import { parse, stringify } from 'smol-toml'
 import { parseSplitRatios } from '../simulator/window-ratios.ts'
+import { normalizeConfigCompatibility } from './compatibility.ts'
+import { readSearchEditBindings } from './search-edit-keys.ts'
+import { resolvedChordKeys } from '../simulator/bindings.ts'
+import { validQuickSwitchCharacters } from '../simulator/hint-labels.ts'
 
 export type ConfigDocument = Record<string, any>
 
-const searchEditActions = new Set([
-  'accept', 'cancel', 'paste', 'copy', 'cut', 'select_all',
-  'left', 'right', 'home', 'end', 'select_left', 'select_right',
-  'select_home', 'select_end', 'backspace', 'delete',
-])
-
-/** Import legacy action = keys tables, but keep the editable/exported model key = action. */
-export function normalizeSearchEditBindings(value: unknown): Record<string, string> {
-  if (!isRecord(value)) throw new Error('ui_hint.search_edit_keys must be a key = action table')
-  const entries = Object.entries(value)
-  if (entries.every(([, action]) => typeof action === 'string' && searchEditActions.has(action))) return { ...value }
-  if (!entries.every(([action, keys]) => searchEditActions.has(action) && typeof keys === 'string')) throw new Error('ui_hint.search_edit_keys requires known editing actions')
-  const result: Record<string, string> = {}
-  for (const [action, alternatives] of entries) {
-    let keys = alternatives as string
-    while (keys in result) {
-      if (keys.trim()) throw new Error('duplicate search editing key group')
-      keys += ' '
-    }
-    result[keys] = action
-  }
-  return result
-}
-
 function mergeSearchEditBindings(defaults: unknown, configured: unknown): Record<string, string> {
-  const base = normalizeSearchEditBindings(defaults ?? {})
-  const overrides = normalizeSearchEditBindings(configured)
+  const base = readSearchEditBindings(defaults ?? {})
+  const overrides = readSearchEditBindings(configured)
   const actions = new Set(Object.values(overrides))
   const result = Object.fromEntries(Object.entries(base).filter(([, action]) => !actions.has(action)))
   for (const [key, action] of Object.entries(overrides)) {
@@ -46,6 +27,7 @@ export interface ParsedConfigDocument {
   bytes: number
   sections: number
   values: number
+  warnings: string[]
 }
 
 // Serde fills missing fields in struct sections, but a configured BTreeMap
@@ -58,6 +40,8 @@ const replacementTables = new Set([
   'mode_indicator.modes',
   'normal.bindings',
   'text_input.bindings',
+  'quick_switch.bindings',
+  'text_select.bindings',
   'window.bindings',
   'window.multi_select.bindings',
   'window_quick.bindings', 'window_editor.bindings', 'window_restore.bindings', 'window_tab.bindings',
@@ -89,36 +73,30 @@ function cloneConfigValue<T>(value: T): T {
 export function parseConfigDocument(source: string): ParsedConfigDocument {
   const parsed = parse(source)
   if (!isRecord(parsed)) throw new Error('TOML 顶层必须是配置表')
-  const scrollSettings: unknown = parsed.scroll
-  if (isRecord(scrollSettings) && 'steps_per_second' in scrollSettings) {
-    throw new Error('scroll.steps_per_second was removed; use scroll.speed (pixels/second)')
+  const warnings = normalizeConfigCompatibility(parsed)
+  const quickSwitch = parsed.quick_switch as ConfigDocument | undefined
+  if (quickSwitch && !validQuickSwitchCharacters(quickSwitch.hint_characters ?? 'wertyuiop', String(quickSwitch.key ?? 'q'))) {
+    throw new Error('quick_switch.hint_characters requires at least two unique character keys, excluding the trigger key')
   }
+  if (quickSwitch) {
+    const alphabet = new Set([...String(quickSwitch.hint_characters ?? 'wertyuiop').toLowerCase()])
+    for (const configured of Object.keys(quickSwitch.bindings ?? {})) {
+      for (const chord of configured.split(/\s+/).filter(Boolean)) {
+        for (const isMac of [false, true]) {
+          const keys = resolvedChordKeys(parsed, chord, isMac)
+          if (keys.length === 1 && alphabet.has(keys[0])) throw new Error(`quick_switch.bindings key ${chord} conflicts with hint_characters`)
+        }
+      }
+    }
+  }
+  const scrollSettings: unknown = parsed.scroll
   const scrollSpeed = isRecord(scrollSettings) ? scrollSettings.speed : undefined
   if (scrollSpeed !== undefined && (typeof scrollSpeed !== 'number' || !Number.isFinite(scrollSpeed) || scrollSpeed < 0)) {
     throw new Error('scroll.speed must be finite and non-negative')
   }
-  const oldWindow = parsed.window as Record<string, unknown> | undefined
-  for (const key of ['exit_mode', 'gap', 'split_ratios', 'layout_keys', 'double_tap_ms']) {
-    if (oldWindow && key in oldWindow) throw new Error(`window.${key} 已移除，请迁移至独立窗口模式配置；返回目标使用 bindings`)
-  }
-  function checkBindings(value: unknown): void {
-    if (Array.isArray(value)) { value.forEach(checkBindings); return }
-    if (!isRecord(value)) return
-    for (const [key, child] of Object.entries(value)) {
-      if ((key === 'bindings' || key === 'hotkeys') && isRecord(child)) for (const action of Object.values(child).flat()) {
-        if (String(action) === 'window_cycle_state') throw new Error(`${action} 已移除，请使用 window_maximize / window_minimize`)
-        if (['window_layout', 'window_edit', 'window_saved_layouts', 'window_cancel', 'window_exit'].includes(String(action))) throw new Error(`${action} 已移除，请使用 window_quick / window_editor / window_restore 或普通模式绑定`)
-      }
-      checkBindings(child)
-    }
-  }
-  checkBindings(parsed)
   const indicator = parsed.mode_indicator as ConfigDocument | undefined
   for (const ui of [indicator?.ui, ...Object.values(indicator?.modes ?? {}).map(entry => (entry as ConfigDocument)?.ui)]) {
     if (ui?.indicator_offset !== undefined && (!Array.isArray(ui.indicator_offset) || ui.indicator_offset.length !== 2 || !ui.indicator_offset.every((v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= -32768 && v <= 32767))) throw new Error('indicator_offset requires [X, Y] integers')
-    for (const field of ['position', 'indicator_x_offset', 'indicator_y_offset']) {
-      if (ui?.[field] !== undefined) throw new Error(`mode_indicator.ui.${field} was removed; use indicator_offset = [X, Y]`)
-    }
   }
   for (const mode of ['window', 'window_quick', 'window_editor', 'window_restore', 'window_tab']) {
     const settings: unknown = parsed[mode]
@@ -183,8 +161,19 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
   const priority = (parsed.ui_hint as ConfigDocument | undefined)?.search_match_priority
   if (priority !== undefined && (!Array.isArray(priority) || priority.length !== 3 || new Set(priority).size !== 3 || priority.some(value => !['label', 'text', 'pinyin'].includes(value)))) throw new Error('ui_hint.search_match_priority requires label, text and pinyin exactly once')
   const uiHint = parsed.ui_hint as ConfigDocument | undefined
+  for (const block of ['search_input_ui', 'search_info_ui']) {
+    const panel = uiHint?.[block]
+    if (!panel) continue
+    const path = `ui_hint.${block}`
+    if (panel.position !== undefined) panelPositionPercentages(panel.position)
+    if (panel.position_mode !== undefined && !(block === 'search_input_ui' ? ['screen', 'window'] : ['screen', 'window', 'search_input']).includes(panel.position_mode)) {
+      throw new Error(`${path}.position_mode is invalid`)
+    }
+  }
   const searchEditKeys = uiHint?.search_edit_keys
-  if (uiHint && searchEditKeys !== undefined) uiHint.search_edit_keys = normalizeSearchEditBindings(searchEditKeys)
+  if (searchEditKeys !== undefined) readSearchEditBindings(searchEditKeys)
+  const copyKeys = uiHint?.search_copy_keys
+  if (copyKeys !== undefined && (!Array.isArray(copyKeys) || copyKeys.length !== 4 || !copyKeys.every(key => typeof key === 'string'))) throw new Error('search_copy_keys requires four stable field shortcuts')
   const searchBindings = (parsed.ui_hint as ConfigDocument | undefined)?.search_bindings
   if (searchBindings !== undefined && (!isRecord(searchBindings) || Object.values(searchBindings).some(value => !['point_toggle', 'point_next', 'color_next'].includes(String(value))))) throw new Error('ui_hint.search_bindings requires point_toggle, point_next or color_next')
   parseSplitRatios((parsed.window_quick as Record<string, unknown> | undefined)?.split_ratios)
@@ -196,6 +185,7 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
     bytes: new TextEncoder().encode(source).byteLength,
     sections: Object.keys(parsed).length,
     values: countValues(parsed),
+    warnings,
   }
 }
 
@@ -208,7 +198,30 @@ export function resolveConfigDocument(
   defaults: ConfigDocument,
   document: ConfigDocument,
 ): ConfigDocument {
-  return mergeValue(defaults, document, '') as ConfigDocument
+  const effective = mergeValue(defaults, document, '') as ConfigDocument
+  // Match the native upgrade fallback: an older Normal map must not hide a
+  // newly added text mode, but occupied keys and remapped entries take priority.
+  const enters = (action: unknown, mode: string): boolean => action === mode
+    || Array.isArray(action) && action.some(item => enters(item, mode))
+  const tables = [effective.normal?.bindings ?? {}]
+  if ((effective.normal?.inherits ?? ['hotkeys']).some((name: string) => name === 'hotkeys' || name === 'idle')) tables.push(effective.hotkeys ?? {})
+  for (const [mode, key] of [['text_select', 'c'], ['text_input', '\\']]) {
+    if (document[mode] !== undefined || tables.some(table => Object.values(table).some(action => enters(action, mode)))) continue
+    const targeting = effective.normal?.targeting
+    if (targeting) {
+      const grid = effective[targeting.method === 'recursive_grid' ? 'recursive_grid' : 'grid']
+      if (String(targeting.keys ?? grid?.keys ?? '').includes(key)
+        || (targeting.layers ?? grid?.layers ?? []).some((layer: ConfigDocument) => String(layer.keys ?? '').includes(key))) continue
+    }
+    const occupied = tables.some(table => Object.keys(table).some(keys => keys.split(/\s+/).some(chord =>
+      [false, true].some(isMac => {
+        const resolved = resolvedChordKeys(effective, chord, isMac)
+        const expected = resolvedChordKeys(effective, key, isMac)
+        return expected.some(value => resolved.includes(value))
+      }))))
+    if (!occupied && effective.normal?.bindings) effective.normal.bindings[key] = mode
+  }
+  return effective
 }
 
 export function getConfigPath(document: ConfigDocument, path: string): unknown {
@@ -238,6 +251,13 @@ export function deleteConfigPath(document: ConfigDocument, path: string): void {
 function mergeValue(defaultValue: unknown, configuredValue: unknown, path: string): unknown {
   if (configuredValue === undefined) return cloneConfigValue(defaultValue)
   if (path === 'ui_hint.search_edit_keys') return mergeSearchEditBindings(defaultValue, configuredValue)
+  const controls = new Set(['first_level', 'previous_level', 'reopen_selection', 'confirm_selection', 'cancel_selection', 'search_selection', 'window_area_number', 'window_next_page', 'window_previous_page', 'window_multi_cancel'])
+  if (['grid.bindings', 'recursive_grid.bindings', 'ui_hint.bindings', 'window_editor.bindings', 'window_restore.bindings', 'window.multi_select.bindings'].includes(path) && isRecord(defaultValue) && isRecord(configuredValue)) {
+    const expand = (table: ConfigDocument) => Object.fromEntries(Object.entries(table).flatMap(([keys, value]) => keys.split(/\s+/).map(key => [key, value])))
+    const configured = expand(configuredValue)
+    const fallback = Object.fromEntries(Object.entries(expand(defaultValue)).filter(([key, action]) => controls.has(String(action)) || path === 'window.multi_select.bindings' && !key.includes('+') && String(action).startsWith('send ')))
+    return { ...fallback, ...configured }
+  }
   if (replacementTables.has(path) || Array.isArray(configuredValue) || !isRecord(configuredValue)) {
     return cloneConfigValue(configuredValue)
   }

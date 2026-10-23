@@ -9,6 +9,77 @@ fn text_input_engine(config: Config) -> Engine {
 }
 
 #[test]
+fn repeated_hint_rescans_and_exit_retire_prewarm_and_reject_old_results() {
+    use crate::api::{SemanticRole, UiScanResult, UiScanScope, UiTarget};
+
+    let primary = if cfg!(target_os = "windows") {
+        "left_alt"
+    } else if cfg!(target_os = "macos") {
+        "left_win"
+    } else {
+        "left_ctrl"
+    };
+    for scope in [UiScanScope::Window, UiScanScope::Active, UiScanScope::Screen, UiScanScope::All] {
+        let mut config = Config::default();
+        config.ui_hint.scan_scope = scope;
+        let mut engine = text_input_engine(config);
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
+        for round in 0..8 {
+            let id = log.lock().unwrap().scan_requests.last().unwrap().id;
+            engine.handle_backend_event(BackendEvent::UiScanned(UiScanResult {
+                id, status: UiScanStatus::Partial, retired: Vec::new(),
+                targets: (0..600).map(|index| UiTarget {
+                    rect: Rect::new((index % 25) as f64 * 35.0, (index / 25) as f64 * 30.0, 25.0, 20.0),
+                    name: format!("Control {round} {index} 设置"),
+                    role: SemanticRole::Button,
+                    details: None,
+                }).collect(),
+            }), &mut backend).unwrap();
+            engine.fire_due_timers(&mut backend).unwrap();
+            assert!(engine.scheduler.timers.contains_key("ui_hint.search_prewarm"));
+            if round % 2 == 0 {
+                point_keys(&mut engine, &mut backend, &["/"]);
+                assert!(log.lock().unwrap().text_capture);
+                // A rescan command also retires a live prompt. Ordinary search
+                // input keeps its existing editing-key precedence.
+                engine.dispatch(ModeEvent::Binding {
+                    binding: Arc::new(Binding::RescanUi),
+                    state: KeyState::Down,
+                    key: Key::new("r").unwrap(),
+                }, &mut backend).unwrap();
+            } else {
+                point_keys(&mut engine, &mut backend, &[primary, "r"]);
+            }
+            assert_eq!(engine.active_mode(), &ModeId::ui_hint());
+            assert_eq!(engine.scan_owners.len(), 1);
+            assert!(log.lock().unwrap().cancelled_scans.contains(&id));
+            assert!(!engine.scheduler.timers.contains_key("ui_hint.search_prewarm"));
+            assert!(engine.scheduler.text_prompt.is_none());
+            assert!(!log.lock().unwrap().text_capture);
+            let scenes = log.lock().unwrap().scenes.len();
+            for status in [UiScanStatus::Partial, UiScanStatus::Success, UiScanStatus::ContextChanged] {
+                engine.handle_backend_event(BackendEvent::UiScanned(UiScanResult {
+                    id, status, targets: Vec::new(), retired: Vec::new(),
+                }), &mut backend).unwrap();
+            }
+            engine.fire_due_timers(&mut backend).unwrap();
+            assert_eq!(log.lock().unwrap().scenes.len(), scenes);
+            let latest = log.lock().unwrap().scan_requests.last().unwrap().id;
+            assert_eq!(engine.scan_owners.get(&latest), Some(&ModeId::ui_hint()));
+            assert!(!log.lock().unwrap().cancelled_scans.contains(&latest));
+        }
+        let latest = log.lock().unwrap().scan_requests.last().unwrap().id;
+        point_keys(&mut engine, &mut backend, &[primary, "q"]);
+        assert_eq!(engine.active_mode(), &ModeId::normal());
+        assert!(engine.scan_owners.is_empty());
+        assert!(log.lock().unwrap().cancelled_scans.contains(&latest));
+        assert!(!engine.scheduler.timers.values().any(|timer| timer.owner == ModeId::ui_hint()));
+    }
+}
+
+#[test]
 fn hint_overlay_search_routes_editing_copy_and_stale_results_by_owner() {
     let mut engine = text_input_engine(Config::default());
     let (mut backend, log) = FakeBackend::new(Vec::new());
@@ -20,7 +91,7 @@ fn hint_overlay_search_routes_editing_copy_and_stale_results_by_owner() {
         id: scan_id, status: UiScanStatus::Success, retired: Vec::new(),
         targets: vec![crate::api::UiTarget {
             rect: Rect::new(10.0, 10.0, 50.0, 30.0), name: "复制".into(), role: crate::api::SemanticRole::Button,
-            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr: "复制文本".into(), accessibility: "Copy".into(), color: None })),
+            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr_spans: Vec::new(), ocr: "复制文本".into(), accessibility: "Copy".into(), color: None })),
         }],
     }), &mut backend).unwrap();
     for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
@@ -211,93 +282,10 @@ fn text_input_entry_stops_movement_and_releases_latched_inputs() {
 }
 
 #[test]
-fn text_input_home_row_mappings_support_modified_navigation_and_repeats() {
-    // Exercise the shipped examples as explicit user bindings, not defaults.
-    let shipped = include_str!("../../../../keysteer.default.toml");
-    let examples: Vec<_> = shipped
-        .split("[text_input.bindings]")
-        .nth(1)
-        .unwrap()
-        .split("[window]")
-        .next()
-        .unwrap()
-        .lines()
-        .filter_map(|line| line.strip_prefix("# \""))
-        .filter(|line| line.contains("primary+"))
-        .map(|line| format!("\"{line}"))
-        .collect();
-    assert_eq!(examples.len(), 36);
-    let config = Config::parse(&format!(
-        "[text_input.bindings]\n'\\' = 'normal'\nesc = 'normal'\n{}",
-        examples.join("\n")
-    ))
-    .unwrap();
-    config.validate().unwrap();
-    let primary = config.text_input.temporary_mode_keys[0].clone();
-    let mut engine = text_input_engine(config);
-    engine.set_active(ModeId::text_input());
-    let (mut backend, log) = FakeBackend::new(Vec::new());
-    for (source, target) in [
-        ("h", "arrow_left"),
-        ("j", "arrow_down"),
-        ("k", "arrow_up"),
-        ("l", "arrow_right"),
-        ("u", "backspace"),
-        ("i", "delete"),
-        ("o", "insert"),
-        ("t", "home"),
-        ("y", "end"),
-    ] {
-        for modifiers in ["", "shift+", "ctrl+", "ctrl+shift+"] {
-            let source_chord = format!("{modifiers}{primary}+{source}");
-            let keys = KeyChord::parse(&source_chord).unwrap();
-            let resolved = engine
-                .lookup_for_pressed(&Key::new(source).unwrap(), keys.keys())
-                .unwrap();
-            assert_eq!(
-                *resolved.binding,
-                Binding::parse(&format!("send {modifiers}{target}")).unwrap()
-            );
-            let before = log.lock().unwrap().sent.len();
-            for event in tap_chord(&source_chord) {
-                engine.handle_backend_event(event, &mut backend).unwrap();
-            }
-            assert_eq!(engine.active_mode(), &ModeId::text_input());
-            let recorded = log.lock().unwrap();
-            assert!(recorded.sent[before..].contains(&(target.into(), KeyState::Down)));
-            assert!(recorded.sent[before..].contains(&(target.into(), KeyState::Up)));
-        }
-    }
-    engine
-        .handle_backend_event(key_down(&primary), &mut backend)
-        .unwrap();
-    engine
-        .handle_backend_event(key_down("h"), &mut backend)
-        .unwrap();
-    let mut repeat = key_down("h");
-    if let BackendEvent::Input(ref mut input) = repeat {
-        input.repeat = true;
-    }
-    let before = log.lock().unwrap().sent.len();
-    engine
-        .handle_backend_event(repeat.clone(), &mut backend)
-        .unwrap();
-    assert!(log.lock().unwrap().sent.len() > before);
-    engine
-        .handle_backend_event(key_up(&primary), &mut backend)
-        .unwrap();
-    let before = log.lock().unwrap().sent.len();
-    engine.handle_backend_event(repeat, &mut backend).unwrap();
-    assert_eq!(log.lock().unwrap().sent.len(), before);
-    engine
-        .handle_backend_event(key_up("h"), &mut backend)
-        .unwrap();
-    assert!(engine.input.key_dispositions.is_empty());
-}
-
-#[test]
 fn text_input_borrows_normal_and_resumes_typing_when_modifier_is_released() {
-    let config = Config::default();
+    let config = Config::parse(
+        "[text_input]\ntemporary_mode = 'normal'\ntemporary_mode_keys = ['primary']"
+    ).unwrap();
     let primary = config.text_input.temporary_mode_keys[0].clone();
     let mut engine = text_input_engine(config);
     engine.set_active(ModeId::text_input());
@@ -403,8 +391,10 @@ h = "backspace"
 fn text_input_default_editing_chords_are_opt_in_and_primary_is_aliased() {
     let defaults = Config::default();
     assert_eq!(defaults.text_input.bindings.len(), 3);
+    assert!(defaults.text_input.temporary_mode.is_none());
+    assert!(defaults.text_input.temporary_mode_keys.is_empty());
     for physical in ["left_alt", "right_ctrl", "left_win"] {
-        let config = Config::parse(&format!("[key_aliases]\nprimary = '{physical}'\n[key_aliases.windows]\nprimary = '{physical}'\n[key_aliases.macos]\nprimary = '{physical}'")).unwrap();
+        let config = Config::parse(&format!("[key_aliases]\nprimary = '{physical}'\n[key_aliases.windows]\nprimary = '{physical}'\n[key_aliases.macos]\nprimary = '{physical}'\n[text_input]\ntemporary_mode = 'normal'\ntemporary_mode_keys = ['primary']")).unwrap();
         config.validate().unwrap();
         assert_eq!(config.text_input.temporary_mode_keys, [physical]);
         let mut engine = text_input_engine(config);
@@ -454,12 +444,14 @@ fn text_input_can_submit_enter_with_an_ordinary_action_sequence() {
 fn text_input_temporary_normal_routes_plugin_screen_commands_to_normal() {
     for literal in [false, true] {
         let mut config = Config::default();
+        config.text_input.temporary_mode = Some("normal".into());
         config.normal.bindings.clear();
         config
             .normal
             .bindings
             .insert("s".into(), Binding::parse("screen next").unwrap());
-        let primary = config.resolved_key_aliases()["primary"].clone();
+        let primary = primary_key(&config);
+        config.text_input.temporary_mode_keys = vec![primary.clone()];
         let mut engine = text_input_engine(config);
         let (mut backend, log) = FakeBackend::new(Vec::new());
         engine.screens = backend.screens().unwrap();
@@ -508,6 +500,35 @@ fn text_input_temporary_normal_routes_plugin_screen_commands_to_normal() {
             [KeyDisposition::Forward; 2]
         );
         assert_eq!(log.lock().unwrap().warps.len(), 2);
+    }
+}
+
+#[test]
+fn text_input_defaults_forward_application_shortcuts_without_borrowing_normal() {
+    for primary in ["left_win", "left_ctrl", "left_alt"] {
+        let mut config = Config::parse(&format!(
+            "[key_aliases]\nprimary = '{primary}'\n[key_aliases.windows]\nprimary = '{primary}'\n[key_aliases.macos]\nprimary = '{primary}'"
+        )).unwrap();
+        for key in ["a", "c", "v", "x", "z"] {
+            config.normal.bindings.insert(key.into(), Binding::Move(Direction::Left));
+        }
+        let mut engine = text_input_engine(config);
+        engine.set_active(ModeId::text_input());
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        for chord in ["a", "c", "v", "x", "z", "shift+z", "arrow_left", "shift+arrow_right"] {
+            for event in tap_chord(&format!("{primary}+{chord}")) {
+                engine.handle_backend_event(event, &mut backend).unwrap();
+                assert_eq!(engine.active_mode(), &ModeId::text_input());
+                assert_eq!(engine.display_mode(), ModeId::text_input());
+            }
+        }
+        assert!(engine.input.active_gestures.is_empty());
+        assert!(engine.input.key_dispositions.is_empty());
+        let log = log.lock().unwrap();
+        assert!(!log.dispositions.is_empty());
+        assert!(log.dispositions.iter().all(|value| *value == KeyDisposition::Forward));
+        assert!(log.sent.is_empty());
+        assert!(log.moves.is_empty());
     }
 }
 
@@ -630,26 +651,57 @@ fn search_completion_error_and_capture_loss_retire_input_before_owner_is_dropped
 
 #[test]
 fn search_accept_alternatives_close_capture_and_keep_uihint() {
-    for binding in ["enter", "/", "primary+q", "f9"] {
-        let config = if binding == "f9" { Config::parse("[ui_hint.search_edit_keys]\nf9 = 'accept'").unwrap() } else { Config::default() };
-        let primary = if cfg!(target_os = "macos") { "left_win" } else if cfg!(target_os = "windows") { "left_alt" } else { "left_ctrl" };
+    for binding in ["enter", "/", "primary+q", "f9", "Finish", "x"] {
+        let config = Config::parse(&format!(
+            "[key_aliases]\nFinish = 'f9'\n[ui_hint.search_edit_keys]\n{binding:?} = 'accept'"
+        )).unwrap();
+        let chord = KeyChord::parse_with_aliases(binding, config.resolved_key_aliases()).unwrap();
+        let keys: Vec<_> = chord.injection_keys().iter().map(Key::as_str).collect();
         let (mut engine, mut backend, log) = point_search_fixture(config);
-        let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
-        engine.handle_backend_event(BackendEvent::TextPromptChanged { id, text: "button".into() }, &mut backend).unwrap();
-        point_keys(&mut engine, &mut backend, &["tab"]);
-        assert!(log.lock().unwrap().warps.is_empty());
-        let modified = binding == "primary+q";
-        if modified { engine.handle_backend_event(key_down(primary), &mut backend).unwrap(); }
-        let key = if modified { "q" } else { binding };
-        for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
-        if modified { engine.handle_backend_event(key_up(primary), &mut backend).unwrap(); }
-        assert!(engine.scheduler.text_prompt.is_none(), "{binding}");
-        assert!(!log.lock().unwrap().text_capture, "{binding}");
-        assert_eq!(engine.active_mode(), &ModeId::ui_hint());
-        assert_eq!(log.lock().unwrap().warps, [Point::new(40.0, 20.0)], "{binding}");
+        for (round, held) in ["z", "caps_lock", "fn"].into_iter().enumerate() {
+            if round != 0 { point_keys(&mut engine, &mut backend, &["/"]); }
+            engine.handle_backend_event(key_down(held), &mut backend).unwrap();
+            let id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+            engine.handle_backend_event(BackendEvent::TextPromptChanged {
+                id, text: "button".into(),
+            }, &mut backend).unwrap();
+            // Both editing and acceptance work while earlier keys remain held.
+            point_keys(&mut engine, &mut backend, &["a", "backspace"]);
+            assert_eq!(log.lock().unwrap().scenes.last().unwrap().labels.iter()
+                .find(|label| label.z_index == 10_002).unwrap().text.as_str(), "button");
+            point_keys(&mut engine, &mut backend, &["tab"]);
+            point_keys(&mut engine, &mut backend, &keys);
+            engine.handle_backend_event(key_up(held), &mut backend).unwrap();
+            assert!(engine.scheduler.text_prompt.is_none(), "{binding}: {held}");
+            assert!(!log.lock().unwrap().text_capture);
+            assert_eq!(engine.active_mode(), &ModeId::ui_hint());
+            assert_eq!(log.lock().unwrap().warps, vec![Point::new(40.0, 20.0); round + 1], "{binding}: {held}");
+        }
     }
 }
 
+#[test]
+fn search_edit_chords_require_members_and_exact_modifiers() {
+    let config = Config::parse("[ui_hint.search_edit_keys]\n'right_ctrl+a+b a+b' = 'accept'").unwrap();
+    let (mut engine, mut backend, _) = point_search_fixture(config);
+    for keys in [
+        &["enter"][..], &["/"], &["b"], &["right_ctrl", "b"],
+        &["left_ctrl", "a", "b"], &["right_ctrl", "left_shift", "a", "b"],
+    ] {
+        point_keys(&mut engine, &mut backend, keys);
+        assert!(engine.scheduler.text_prompt.is_some(), "must not accept {keys:?}");
+    }
+    point_keys(&mut engine, &mut backend, &["z", "right_ctrl", "a", "b"]);
+    assert!(engine.scheduler.text_prompt.is_none());
+    point_keys(&mut engine, &mut backend, &["/"]);
+    point_keys(&mut engine, &mut backend, &["z", "a", "b"]);
+    assert!(engine.scheduler.text_prompt.is_none());
+    point_keys(&mut engine, &mut backend, &["/"]);
+    point_keys(&mut engine, &mut backend, &["left_shift", "esc"]);
+    assert!(engine.scheduler.text_prompt.is_some());
+    point_keys(&mut engine, &mut backend, &["z", "esc"]);
+    assert!(engine.scheduler.text_prompt.is_none());
+}
 
 #[test]
 fn live_search_routes_overlap_modifiers_and_preserves_preview_on_top() {
@@ -724,7 +776,7 @@ fn point_search_fixture(mut config: Config) -> (Engine, FakeBackend, Arc<Mutex<R
         id, status: UiScanStatus::Success, retired: Vec::new(),
         targets: ["alpha$", "bravo"].into_iter().enumerate().map(|(i, name)| crate::api::UiTarget {
             rect: Rect::new(10.0 + i as f64 * 20.0, 10.0, 20.0, 20.0), name: name.into(), role: crate::api::SemanticRole::Button,
-            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr: name.into(), accessibility: name.into(), color: None })),
+            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr_spans: Vec::new(), ocr: name.into(), accessibility: name.into(), color: None })),
         }).collect(),
     }), &mut backend).unwrap();
     assert!(log.lock().unwrap().point_requests.is_empty(), "label scanning must not sample pixels");

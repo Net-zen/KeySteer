@@ -7,16 +7,19 @@ Mode/Plugin 是平台无关状态机：接收 `ModeEvent` 和 `HostContext`，�
 | 能力 | 位置 |
 | --- | --- |
 | 空闲、连续移动与滚动 | `src/modes/idle.rs`、`src/modes/normal.rs` |
-| 网格与共享定位状态 | `src/modes/grid.rs`、`src/modes/targeting.rs` |
+| 网格与共享定位状态 | `src/modes/grid/mod.rs`、`src/modes/targeting.rs` |
 | Hint 标签、搜索、扫描会话 | `src/modes/hint/` |
-| 窗口模式、编辑、分组与恢复 | `src/modes/window.rs`、`src/modes/window/` |
+| 窗口模式、编辑、分组与恢复 | `src/modes/window/mod.rs`、`src/modes/window/` |
+| 快速模式切换 | `src/modes/quick_switch.rs` |
 | 临时文本透传 | `src/modes/text_input.rs` |
-| 插件 | `src/plugins/builtin/` |
+| 插件 | `src/plugins/` |
 | 注册与生命周期词汇 | `src/app/mode_catalog.rs`、`src/api/lifecycle.rs` |
 
 普通网格与递归网格共用 `GridMode` 的事件、命令和生命周期实现，保留各自的视图、样式和模式身份。catalog 直接装配 `TargetingController` 与样式；几何选择仍由控制器负责，Normal 的静默定位也复用该控制器。
 
 Normal 移动与滚动共用原生显示帧时钟，各自维护手势状态并输出独立命令：按下立即执行短步，随后按帧的实际经过时间持续更新，不等待键盘重复延迟；仅在最后一个移动／滚动手势释放后停止时钟。普通滚动使用配置预编译且独立于短按距离的每秒速度，叠加当前速度倍率并保留小数余量；帧到达后忽略 OS 重复，没有显示帧时保留键盘重复回退。连续滚动输出可取消的 `ScrollFrame`，短按保留 `Scroll`；移动按下／释放不取消滚动帧，滚动自身状态改变且已发出连续帧时才作废旧帧；短按和页滚动不取消不存在的帧，页滚动也不重算连续滚动速度，原生执行策略见[平台后端](06-platform-backends.md)。半页／整页动作和普通滚动的仅短按配置不启动滚动帧时钟，也不接受重复滚动。模式借用仍按原 owner 接收帧与释放，会话清理清空全部保持状态。
+
+移动与滚动均以按键和动作保存保持身份；同键序列中的多个移动方向不会互相覆盖。多个按键、斜向移动、横纵滚动可以叠加，反向移动按原有方向合成规则抵消；释放只移除对应动作，不停止仍被其他动作使用的共享时钟。原生暂停只停止帧投递并清除待交付帧，资源保留到后端退出。
 
 ## 关键约束
 
@@ -57,3 +60,15 @@ UIHint 搜索输入期间，按匹配程度和配置类别优先级自动显示�
 UIHint 在结果信息面板出现时按需创建点位检查状态。完整标签代码优先，文字／简拼仅在唯一命中时选中；未完成、无效和歧义项不计入 Point 总数。确定标签按查询顺序去重，以普通跳转坐标的等权平均作为初始点，调整期间通过 point_next（默认 Tab）依次切换，末项回到首项。OCR／辅助功能默认按选择顺序拼接，坐标／颜色跟随当前点；field_modes 四项均可独立切换 concat／switch。单点和已确定的多点均显示颜色栏并启动后台取样；颜色 concat 按选择顺序逐点采集并缓存，保持一个在途请求，全部完成后执行待定复制，失败的成员保留空位。关闭面板取消采样，迟到结果不恢复颜色。
 
 轻触切换输入／调整；调整时隐藏文字光标，以右侧圆点和可选的多点计数提示状态，切回恢复查询及选区。移动复用 Normal 状态机和原生帧时钟，只改变检查点，接受搜索才移动原生指针。点击等操作先接受当前点并退出搜索，再沿原操作路径执行；调整中复制信息成功也接受当前点，失败保留调整。单点文字按全部扫描目标中的最小包含矩形命中，空白处清除旧文字。每次移动取样带递增版本；定时刷新不叠加在途请求，颜色复制复用当前样本或等待当前请求，失败不复制旧颜色。帧和回调不重建成员集合。选择集合改变立即请求新样本，但复用已运行的刷新计时器；仅进入／离开检查状态时启停计时器，关闭面板仍显式清理。原生调整状态只在可用性或调整状态变化时更新；切换查询时仍停止正在进行的点位移动。
+
+快速切换是 `modes/quick_switch.rs` 中注册的普通模式，使用普通生命周期、按键绑定和 Presenter；`app/runtime/quick_switch.rs` 只检测长按进入并抑制原手势接管后的重复。短按与原绑定 Down／Up 配对保留；未达到长按期限的其他按键取消进入，松开触发键不退出已进入的模式。默认 Esc／再次按 Q 的 `cancel_selection` 返回前一模式，Backspace 的 `previous_level` 删除前缀，均由 `quick_switch.bindings` 配置。
+
+进入时通过 `RequestModeList`／`ModeList` 取得按使用次数及 id 排序的注册模式快照，排除自身、前一模式、上下文插件和黑名单，不限制九项。与 UIHint 共用 `api/hint.rs` 的无前缀冲突标签生成与匹配；筛选不重新编号，死前缀只丢弃最后一字。窗口定位复用 `RequestPanelWindowBounds`，先显示再异步查询，退出／重入隔离迟到结果。绘制按屏幕高度分列，并为多字符键帽预留宽度。
+
+## 文字选择与可配置导航
+
+`src/modes/text_select/` 是独立 OCR 文字选择状态机；`document.rs` 保存原文范围、原位置及区域／词语／字符选择快照。共用 UIHint 的 `ScanSession` 增量去重、查询缓冲、匹配排序与空格多选过滤，输入默认直接搜索，普通 `c` 输入、`Primary+C` 细分。输入编辑使用共享 `Selection` 与 UIHint 编辑键。查询未匹配时继续接收扫描；条目确定选中后冻结快照，重置才应用迟到结果；上一层恢复选择。复制按原文顺序，只有剪贴板成功回执才退出。字符按 Unicode grapheme 拆分。
+
+只请求 Vision 文字，词位置通过同一 OCR 请求的可选元数据提供，不请求 AX/UIA 或轮廓。区域／词语 Hint 在原位置，只有字符层放大选字。`src/presentation/text_select.rs` 复用 Hint 输入、面板样式和原生窗口，信息区仅预览待复制文字及数量，层级使用标准英文 mode indicator。首份场景先提交，后续扫描增量和索引预热使用可取消的零延迟维护计时器。系统分词通过 `Command::SegmentText` 发起；取消／返回／重置撤销所有权，迟到结果按 id 丢弃。
+
+Grid、Recursive Grid、UIHint、屏幕选择器的导航通过 `first_level`／`previous_level`／`confirm_selection` 等绑定接收；`cancel_selection` 返回本模式的来源，不能等同于全局 `escape` 进入 Idle。UIHint 的 `reopen_selection` 只在选择完成后返回，保留原 Tab 语义。Normal 盲操的多层导航从所选网格模式取得 `first_level`／`previous_level`，不覆盖显式 Normal 绑定及应用覆盖；生成的绑定不向继承 Normal 的模式传播。Window Editor 的区域前缀及 Restore 的翻页也使用 WindowAction。数字／标签输入、空格分隔及大小写范围选择属于输入语法，操作键由绑定表决定。

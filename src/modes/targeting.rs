@@ -168,28 +168,9 @@ impl TargetingController {
                     .current()
                     .map_or(Selection::Cancel, |area| Selection::Commit(area.center()));
             }
-            "backspace" | "tab" => {
-                if self.session.stack.len() <= 1 {
-                    return Selection::Cancel;
-                }
-                self.session.stack.pop();
-                self.session.path.pop();
-                self.session.terminal = false;
-                self.session.finished = false;
-                return Selection::Changed;
-            }
-            "space" => {
-                let root = if self.min_size.is_some() {
-                    Some(bounds)
-                } else {
-                    self.session.root()
-                };
-                let Some(root) = root else {
-                    return Selection::Cancel;
-                };
-                self.reset(root);
-                return Selection::Changed;
-            }
+            // Compatibility for explicit `targeting_key` bindings.
+            "backspace" | "tab" => return self.parent(),
+            "space" => return self.reset_selection(bounds),
             _ => {}
         }
         if self.session.terminal || self.session.finished {
@@ -219,6 +200,32 @@ impl TargetingController {
         } else {
             Selection::Changed
         }
+    }
+}
+
+impl TargetingController {
+    pub fn parent(&mut self) -> Selection {
+        if self.session.stack.len() <= 1 {
+            return Selection::Cancel;
+        }
+        self.session.stack.pop();
+        self.session.path.pop();
+        self.session.terminal = false;
+        self.session.finished = false;
+        Selection::Changed
+    }
+
+    pub fn reset_selection(&mut self, bounds: Rect) -> Selection {
+        let root = if self.min_size.is_some() {
+            Some(bounds)
+        } else {
+            self.session.root()
+        };
+        let Some(root) = root else {
+            return Selection::Cancel;
+        };
+        self.reset(root);
+        Selection::Changed
     }
 }
 

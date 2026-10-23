@@ -8,7 +8,9 @@ Start with one window, then build a reusable workspace. Window and its four defa
 
 ## Try it once
 
-Pointer over a window → `Alt+W` → release the entry keys → `H/J/K/L` → `Q`. On macOS use Option+W, not Command+W.
+::: tip Move one window first
+Pointer over a window → `Alt+W` → release the entry keys → move with `H/J/K/L` → `Q`. On macOS, use Option+W.
+:::
 
 | Task | Mode | From Window |
 | --- | --- | --- |

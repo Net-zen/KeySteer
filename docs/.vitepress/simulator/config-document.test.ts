@@ -2,6 +2,22 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { reactive } from 'vue'
 import { readFile } from 'node:fs/promises'
+import { hintLabels } from './hint-labels.ts'
+
+test('UI Hint display scopes use scan_scope without a second screens setting', async () => {
+  const { stringify } = await import('smol-toml')
+  const { frequentFields } = await import('../config-studio/fields.ts')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  assert.equal(defaults.ui_hint.scan_scope, 'window')
+  const scopes = frequentFields.find(field => field.path === 'ui_hint.scan_scope')?.options?.map(option => option.value)
+  assert.deepEqual(scopes, ['window', 'active', 'screen', 'all'])
+  for (const scope of scopes) {
+    const effective = resolveConfigDocument(defaults, parseConfigDocument(`[ui_hint]\nscan_scope = "${scope}"`).document)
+    const exported = parseConfigDocument(stringify(effective)).document
+    assert.equal(exported.ui_hint.scan_scope, scope)
+    assert.equal(exported.ui_hint.screens, undefined)
+  }
+})
 
 test('held scroll speed validates, exports and resets to shipped defaults', async () => {
   assert.throws(() => parseConfigDocument('[scroll]\nsteps_per_second = 10'), /steps_per_second/)
@@ -58,6 +74,11 @@ test('complete shipped defaults load with guide-line settings', async () => {
   const source = await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')
   const parsed = parseConfigDocument(source).document
   assert.equal(parsed.window.card.guide_line_enabled, true)
+  const effective = resolveConfigDocument(parsed, parseConfigDocument('').document)
+  assert.equal(effective.window.screens, 'all')
+  for (const mode of ['window_quick', 'window_editor', 'window_restore', 'window_tab']) {
+    assert.equal(effective[mode].screens, 'current', mode)
+  }
   assert.equal(parsed.quick_switch.position, 'mouse')
   assert.equal(parsed.recursive_grid.ui.font_size, 0)
 })
@@ -71,8 +92,33 @@ test('usage checkpoint and quick-switch options survive sparse import and export
   assert.equal(effective.mode_usage.save_after_entries, 37)
   assert.equal(effective.quick_switch.hold_ms, 350)
   assert.equal(effective.quick_switch.ui.font_size, 28)
+  assert.equal(effective.quick_switch.hint_characters, 'wertyuiop')
+  for (const characters of ['ASDF', '123456789', '甲乙']) {
+    const custom = parseConfigDocument(`[quick_switch]\nhint_characters = "${characters}"`).document
+    assert.equal(parseConfigDocument(stringify(custom)).document.quick_switch.hint_characters, characters)
+  }
+  for (const characters of ['', 'w', 'wW', 'qwe', 'we ']) {
+    assert.throws(() => parseConfigDocument(`[quick_switch]\nhint_characters = "${characters}"`), /quick_switch.hint_characters/)
+  }
   // TOML tables may have null prototypes; cloning compares configuration data.
   assert.deepEqual(cloneConfigDocument(parseConfigDocument(stringify(effective)).document), cloneConfigDocument(effective))
+})
+
+test('quick switch and UI Hint previews share prefix-free labels beyond nine modes', () => {
+  assert.deepEqual(hintLabels('wertyuiop', 10), ['w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'pw', 'pe'])
+  assert.deepEqual(hintLabels('asdf', 5), ['a', 's', 'd', 'fa', 'fs'])
+  assert.deepEqual(hintLabels('asdf', 5, true), ['aa', 'sa', 'da', 'fa', 'as'])
+  for (const alphabet of ['wertyuiop', 'AB', '甲乙']) {
+    for (const count of [1, 9, 10, 30, 82, 130]) {
+      for (const reverse of [false, true]) {
+        const labels = hintLabels(alphabet, count, reverse)
+        assert.equal(new Set(labels).size, count)
+        for (const label of labels) {
+          assert.equal(labels.filter(other => other.startsWith(label)).length, 1)
+        }
+      }
+    }
+  }
 })
 
 test('window card defaults and custom styles survive browser export', async () => {
@@ -180,7 +226,7 @@ test('an explicit binding table replaces that default map like Rust serde', () =
   const uploaded = parseConfigDocument('[normal.bindings]\nh = "move_right"\n').document
   const effective = resolveConfigDocument(defaults, uploaded)
 
-  assert.deepEqual(effective.normal.bindings, { h: 'move_right' })
+  assert.deepEqual(effective.normal.bindings, { h: 'move_right', c: 'text_select', '\\': 'text_input' })
 })
 
 test('a missing binding table still receives the built-in defaults', () => {
@@ -188,7 +234,7 @@ test('a missing binding table still receives the built-in defaults', () => {
   const uploaded = parseConfigDocument('[normal]\nlong_press_toggle_ms = 800\n').document
   const effective = resolveConfigDocument(defaults, uploaded)
 
-  assert.deepEqual(effective.normal.bindings, { h: 'move_left' })
+  assert.deepEqual(effective.normal.bindings, { h: 'move_left', c: 'text_select', '\\': 'text_input' })
 })
 
 
@@ -226,19 +272,34 @@ test('text input keeps independent editing bindings and configurable temporary N
   const defaults = parseConfigDocument(source).document
   assert.equal(defaults.normal.bindings['\\'], 'text_input')
   assert.deepEqual(cloneConfigDocument(defaults.text_input.bindings), { 'enter \\ esc': 'normal' })
-  assert.deepEqual(defaults.text_input.temporary_mode_keys, ['primary'])
-  const examples = source.split('[text_input.bindings]')[1].split('[window]')[0].split('\n').filter(line => line.startsWith('# \"') && line.includes('primary+')).map(line => line.slice(2))
-  assert.equal(examples.length, 36)
-  const configured = resolveConfigDocument(defaults, parseConfigDocument('[text_input.bindings]\n' + examples.join('\n') + '\n').document)
+  assert.equal(defaults.text_input.temporary_mode, undefined)
+  assert.equal(defaults.text_input.temporary_mode_keys, undefined)
+  const [example, translatedExample] = await Promise.all(['../../modes/normal.md', '../../en/modes/normal.md'].map(async relative => {
+    const markdown = await readFile(new URL(relative, import.meta.url), 'utf8')
+    const examples = [...markdown.matchAll(/```toml[^\n]*\r?\n([\s\S]*?)```/g)]
+      .filter(([, source]) => source.includes('[text_input.bindings]'))
+      .map(([, source]) => parseConfigDocument(source).document)
+    const example = examples.find(document => document.text_input?.bindings?.['primary+h'] === 'arrow_left')
+    assert.ok(example, `Missing inline editing example in ${relative}`)
+    return example
+  }))
+  assert.deepEqual(example, translatedExample)
+  const configured = resolveConfigDocument(defaults, example)
+  assert.equal(Object.keys(configured.text_input.bindings).length, 37)
   assert.equal(resolveLayeredPhysicalBinding(configured, 'text_input', ['left_alt', 'h'], 'h', false)?.value, 'arrow_left')
   assert.equal(resolveLayeredPhysicalBinding(configured, 'text_input', ['left_ctrl', 'left_shift', 'left_alt', 'h'], 'h', false)?.value, 'send ctrl+shift+arrow_left')
-  assert.equal(resolveLayeredPhysicalBinding(defaults, 'text_input', ['left_alt', 'h'], 'h', false)?.value, 'move_left')
+  assert.equal(resolveLayeredPhysicalBinding(defaults, 'text_input', ['left_alt', 'h'], 'h', false), undefined)
   assert.equal(resolveLayeredPhysicalBinding(defaults, 'text_input', ['h'], 'h', false), undefined)
-  const custom = parseConfigDocument('[text_input]\ninherits = ["normal"]\ntemporary_mode_keys = ["right_ctrl"]\n[text_input.bindings]\nf8 = "normal"').document
+  for (const [key, value] of Object.entries({ a: 'move_left', c: 'left_click', v: 'move_right' })) defaults.normal.bindings[key] = value
+  for (const key of ['a', 'c', 'v', 'x', 'z']) {
+    assert.equal(resolveLayeredPhysicalBinding(defaults, 'text_input', ['left_win', key], key, true), undefined)
+  }
+  const custom = parseConfigDocument('[text_input]\ninherits = ["normal"]\ntemporary_mode = "normal"\ntemporary_mode_keys = ["right_ctrl"]\n[text_input.bindings]\nf8 = "normal"').document
   const effective = resolveConfigDocument(defaults, custom)
   assert.deepEqual(effective.text_input.bindings, { f8: 'normal' })
   assert.deepEqual(effective.text_input.inherits, ['normal'])
   assert.deepEqual(effective.text_input.temporary_mode_keys, ['right_ctrl'])
+  assert.equal(resolveLayeredPhysicalBinding(effective, 'text_input', ['right_ctrl', 'h'], 'h', false)?.value, 'move_left')
 })
 
 
@@ -337,7 +398,6 @@ test('search match priorities validate, round-trip and reset without expanding s
 
 test('search editing key-action tables inherit actions and migrate legacy imports', async () => {
   const { stringify } = await import('smol-toml')
-  const { normalizeSearchEditBindings } = await import('../config-studio/document.ts')
   const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
   assert.equal(defaults.ui_hint.search_edit_keys['enter / primary+q'], 'accept')
   assert.equal(defaults.ui_hint.search_edit_keys.accept, undefined)
@@ -358,10 +418,44 @@ test('search editing key-action tables inherit actions and migrate legacy import
     assert.equal(exported.ui_hint.search_edit_keys.paste, undefined)
     assert.deepEqual(cloneConfigDocument(resolveConfigDocument(defaults, exported)), cloneConfigDocument(effective))
   }
-  const disabled = normalizeSearchEditBindings({ copy: '', cut: '' })
+  const disabled = parseConfigDocument('[ui_hint.search_edit_keys]\ncopy = ""\ncut = ""').document.ui_hint.search_edit_keys
   assert.deepEqual(Object.values(disabled).sort(), ['copy', 'cut'])
   const effective = resolveConfigDocument(defaults, { ui_hint: { search_edit_keys: disabled } })
   assert.equal(effective.ui_hint.search_edit_keys['primary+c'], undefined)
   assert.equal(effective.ui_hint.search_edit_keys['primary+x'], undefined)
   assert.throws(() => parseConfigDocument('[ui_hint.search_edit_keys]\nf9 = "unknown_action"'), /editing actions/)
+})
+
+
+test('quick-switch bindings replace defaults so Escape and Q can be configured independently', async () => {
+  assert.throws(() => parseConfigDocument('[quick_switch.bindings]\nw = "cancel_selection"'), /quick_switch.bindings/)
+  assert.throws(() => parseConfigDocument('[key_aliases]\nexit = "w"\n[quick_switch.bindings]\nexit = "cancel_selection"'), /quick_switch.bindings/)
+
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  for (const source of ['esc = "cancel_selection"', 'q = "cancel_selection"', '"esc q" = "cancel_selection"']) {
+    const configured = parseConfigDocument(`[quick_switch.bindings]\n${source}`).document
+    const effective = resolveConfigDocument(defaults, configured)
+    assert.deepEqual(Object.entries(effective.quick_switch.bindings), Object.entries(configured.quick_switch.bindings))
+  }
+})
+
+test('older configurations retain text modes and receive only missing unoccupied entrance keys', async () => {
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  const effective = resolveConfigDocument(defaults, { normal: { bindings: { h: 'move_left' } } })
+  assert.equal(effective.text_select.enabled, true)
+  assert.deepEqual(effective.text_select.bindings, { ...defaults.text_select.bindings })
+  assert.equal(effective.normal.bindings.c, 'text_select')
+  assert.equal(effective.normal.bindings['\\'], 'text_input')
+  for (const configured of [
+    { normal: { bindings: { c: 'none', '\\': 'none' } } },
+    { normal: { bindings: { c: 'grid', '\\': 'grid' } } },
+    { normal: { bindings: { f8: 'text_select', f9: 'text_input' } } },
+    { normal: { bindings: {} }, hotkeys: { c: 'none', '\\': 'none' } },
+    { normal: { bindings: { 'c+h': 'arrow_left', '\\+h': 'arrow_right' } } },
+    { normal: { bindings: {} }, text_select: { enabled: false }, text_input: {} },
+  ]) {
+    const resolved = resolveConfigDocument(defaults, configured)
+    assert.notEqual(resolved.normal.bindings.c, 'text_select')
+    assert.notEqual(resolved.normal.bindings['\\'], 'text_input')
+  }
 })

@@ -16,6 +16,7 @@ use std::time::Duration;
 /// Something that happened natively and must reach the engine.
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
+    TextSegmented(super::text_select::Segmented),
     PointSampled(super::point_sample::Sample),
     TextPromptChanged {
         id: u64,
@@ -109,6 +110,8 @@ pub enum UpdateCheckResult {
         current: String,
         latest: String,
         path: PathBuf,
+        /// Digest supplied directly by the publisher's release API, if available.
+        sha256: Option<String>,
     },
     Failed(String),
 }
@@ -128,6 +131,10 @@ pub enum KeyDisposition {
 /// A native backend. Implementations live in `src/platform/<os>.rs` and are
 /// selected by `cfg(target_os)` in `src/platform/mod.rs`.
 pub trait Backend {
+    fn request_text_segmentation(&mut self, _request: super::text_select::Request) -> bool {
+        false
+    }
+    fn cancel_text_segmentation(&mut self) {}
     /// Queue a replaceable one-pixel sample; never capture on the input thread.
     fn request_point_sample(&mut self, _request: super::point_sample::Request) -> bool {
         false
@@ -137,6 +144,7 @@ pub trait Backend {
     /// Invoke `turn` on the engine thread without retaining it after returning,
     /// without reentering it, and without holding another backend borrow.
     /// `Some(delay)` schedules the next nonblocking turn; `None` requests exit.
+    /// `Duration::MAX` means wait for an event without a deadline.
     /// Wake promptly for queued input/results even before that deadline. Errors
     /// must unwind native tracking and return so the engine can clean up.
     /// Return `None` without calling `turn` to use the ordinary polling loop.
@@ -178,6 +186,8 @@ pub trait Backend {
     ///
     /// Returning `Ok(None)` on timeout is how the engine gets its chance to
     /// run timers, so backends must honour the timeout even when idle.
+    /// `Duration::MAX` means wait for an event without a deadline. Do not add
+    /// this sentinel to an `Instant`; native maintenance may shorten the wait.
     fn poll(&mut self, timeout: std::time::Duration) -> Result<Option<BackendEvent>, String>;
 
     /// Tell the backend how to dispose of the key event it just delivered.
@@ -425,7 +435,13 @@ pub trait Backend {
         Ok(())
     }
 
-    /// Called once after the engine loop ends.
+    /// Stop synchronous physical-input capture without waiting for workers.
+    /// Called before exit cleanup can block; synthetic releases must remain
+    /// available until shutdown. Repeated calls must be harmless.
+    fn stop_input_capture(&mut self) {}
+
+    /// Release native resources, including after startup failure. Runtime exit
+    /// finishes persistence attempts before this final acknowledgement.
     fn shutdown(&mut self) -> Result<(), String> {
         Ok(())
     }

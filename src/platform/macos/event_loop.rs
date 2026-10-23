@@ -43,7 +43,11 @@ pub(super) fn wait_for_app_event(timeout: Duration) {
         return;
     }
     autoreleasepool(|_| {
-        let deadline = NSDate::dateWithTimeIntervalSinceNow(timeout.as_secs_f64());
+        let deadline = if timeout == Duration::MAX {
+            NSDate::distantFuture()
+        } else {
+            NSDate::dateWithTimeIntervalSinceNow(timeout.as_secs_f64())
+        };
         NSRunLoop::mainRunLoop().runMode_beforeDate(
             super::native::default_run_loop_modes().foundation,
             &deadline,
@@ -117,7 +121,11 @@ impl Driver<'_> {
                 unsafe {
                     CFRunLoopTimerSetNextFireDate(
                         self.timer.get(),
-                        CFAbsoluteTimeGetCurrent() + delay.as_secs_f64(),
+                        if delay == Duration::MAX {
+                            NSDate::distantFuture().timeIntervalSinceReferenceDate()
+                        } else {
+                            CFAbsoluteTimeGetCurrent() + delay.as_secs_f64()
+                        },
                     );
                 }
             }
@@ -253,7 +261,7 @@ pub(super) fn run(menu: Option<&NSMenu>, turn: &mut Turn<'_>) -> Result<(), Stri
         // may keep sendEvent on the stack while observers continue engine turns.
         pump_app_events();
         if driver.result.borrow().is_none() {
-            wait_for_app_event(Duration::from_secs(3600));
+            wait_for_app_event(Duration::MAX);
         }
     }
     drop(registration);

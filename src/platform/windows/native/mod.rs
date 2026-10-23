@@ -1,5 +1,4 @@
 //! Native boundary entry point; resource owners live in focused modules.
-mod capture;
 mod com;
 mod compositor;
 mod dimensions;
@@ -10,15 +9,14 @@ mod ocr_bridge;
 mod uia_cache;
 mod window;
 mod winrt;
-pub(crate) use capture::PreparedCapture;
 pub(crate) use com::ComApartment;
 pub(crate) use compositor::{
     CompositorClockSignal, CompositorWait, boost_compositor_clock, display_output_for_monitor,
-    dwm_composition_enabled, interrupt_compositor_clock, monitor_for_point, prefer_dynamic_vblank,
+    dwm_composition_enabled, interrupt_compositor_clock, prefer_dynamic_vblank,
     wait_for_compositor_frame, wait_for_dwm_frame,
 };
 pub(crate) use dimensions::NativeDimensions;
-pub(crate) use gdi::{GdiDibSurface, OwnedFont, ScreenDc};
+pub(crate) use gdi::{GdiDibSurface, OwnedFont, PreparedCapture, ScreenDc};
 pub(crate) use handles::KillOnCloseJob;
 use handles::OwnedHandle;
 pub(crate) use message_loop::{
@@ -449,11 +447,15 @@ pub(crate) fn apps_use_light_theme() -> bool {
 
 #[inline(always)]
 pub(crate) fn wait_for_input(timeout_ms: u32) {
-    use windows::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjects, QS_ALLINPUT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, QS_ALLINPUT,
+    };
 
     // SAFETY: no handles are supplied, so Windows waits only on queued input.
     unsafe {
-        MsgWaitForMultipleObjects(None, false, timeout_ms, QS_ALLINPUT);
+        // Include messages observed by PeekMessage but left in the queue by a
+        // bounded pump. Waiting only for new input could strand that backlog.
+        MsgWaitForMultipleObjectsEx(None, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 }
 
@@ -786,7 +788,7 @@ mod tests {
     #[test]
     fn compositor_clock_stop_event_is_immediately_interruptible_when_available() {
         let Some(signal) = CompositorClockSignal::try_new() else {
-            // Windows 10 intentionally uses the DXGI compatibility path.
+            // Missing runtime API support intentionally selects compatibility.
             return;
         };
 

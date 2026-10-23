@@ -1,5 +1,7 @@
 # Modes and actions reference
 
+Use this page to look up action names and arguments when editing a binding. For your first remapping, start with [Configuration](/en/reference/configuration#minimal-configuration).
+
 Every binding in a configuration has this form:
 
 ```toml
@@ -22,11 +24,13 @@ Array entries run in written order. Empty arrays are invalid. Arrays do not bloc
 | `normal` | Move, scroll, click, and enter targeting modes. |
 | `grid` | Full-screen coordinate grid. |
 | `recursive_grid` | Repeatedly subdivides the current region. |
+| `text_select` | OCR text selection: regions → words → characters. |
 | `ui_hint` | Shows labels for interactive elements. |
 | `window` | Locks the window under the pointer for movement, centred resizing, layouts, and tiling. |
 | `window_quick` | Quick ratio layout. |
 | `window_editor` | Automatic arrangement and region editing. |
-| `window_restore` | Restore saved layouts. |
+| `window_restore` | Restore a layout or tab template. |
+| `window_tab` | Combine windows into switchable tab groups. |
 | `plugin:<id>` | A plugin Mode, for example `plugin:screen-selector`. |
 
 ```toml
@@ -45,85 +49,153 @@ f = "recursive_grid"
 
 ## Window mode
 
-New to window control? Start with the [Window guide](/en/modes/window) for practical recipes and default keys.
-
-Window, Quick, Editor, Restore and Tabs each have two independent settings:
-
-```toml
-[window]
-screens = "current"       # "current" or "all"
-include_minimized = false
-```
-
-Use the same keys in `[window_quick]`, `[window_editor]`, `[window_restore]` and `[window_tab]`. Defaults select non-minimized windows on the current display. With `screens = "all"`, numbering includes all displays; automatic layouts and groups stay on each window’s own display. Enabling `include_minimized` also makes minimized windows eligible for selection and layout. Re-entering a fresh Window session numbers the current candidates from 1, releasing old numbers held by closed or excluded windows; refreshes within a session keep surviving numbers stable. Identity cards avoid each other and the bottom help panel.
-
-Window operations use five independently registered modes. Each has its own bindings, inheritance, application overrides, temporary mode and style. H/J/K/L are explicit defaults and do not follow Normal remapping.
+For a first exercise, see the [Window guide](/en/modes/window). This section covers actions and configurable behavior.
 
 | Mode | Default entry | Default Q destination |
 | --- | --- | --- |
-| `window` | Global Alt+W | `idle` |
-| `window_quick` | A in Window | `window` |
-| `window_editor` | E in Window | `window` |
-| `window_restore` | R in Window | `window` |
-| `window_tab` | T in Window | `window` |
+| `window` | Global `Alt+W` (Option+W on macOS) | `idle` |
+| `window_quick` | Window's `A` | `window` |
+| `window_editor` | Window's `E` | `window` |
+| `window_restore` | Window's `R` | `window` |
+| `window_tab` | Window's `T` | `window` |
 
-Q is an ordinary mode binding and behaves identically regardless of the entry path. Launching Editor directly from Idle still makes its default Q enter Window. Rebinding Q selects another destination; activating the current mode follows the normal toggle-to-Idle rule.
+Each mode has its own keys, inheritance, app exceptions, and style. Q follows its binding regardless of entry path: entering Editor directly still makes Q return to Window. Triggering the current mode's entry again returns to Idle.
 
-Alt+W locks the window under the pointer. By default, non-minimized windows on the current display receive stable numbers; closing one does not renumber the others. A complete number focuses and locks its window and centers the pointer; only ambiguous prefixes wait, for 250ms by default. Tab / Shift+Tab cycles within the current tab group, or through ordinary windows when outside a group; number selection can leave a group, S switches movement/centered resizing, H/J/K/L adjusts, D changes display, F cycles maximize → minimize → restore, C centers, Z undoes one step, Shift+Z redoes, and Shift+C restores the initial state of the current window session.
+### Choose windows and scope
 
-Quick adjusts each axis independently with H/J/K/L. The first direction chooses the configured ratio nearest one half; the same direction shrinks and the opposite expands. `window_quick.split_ratios` defaults to 1/4, 1/3, 1/2, 2/3 and 3/4, with full size appended automatically. Tab changes target and resets ratios; Z undoes.
+```toml
+[window]
+screens = "all"           # "current" or "all" (default)
+include_minimized = false
+```
 
-Editor automatically arranges windows on entry. H/J/K/L navigates regions, Shift+direction splits, the default Ctrl+H/L shrinks/grows the selected region's width and Ctrl+K/J shrinks/grows its height using Editor's own `resize_step`/`resize_speed`. Neighboring regions adjust to preserve tiling. All keys are configurable. X removes a region and Z undoes. Select two window numbers to swap them, or use backtick followed by a region number to select or fill an empty region. Changes apply immediately. Pending transactions finish before handoff; window modes preserve the target and stable numbers. New splits reuse the lowest available region number without renumbering survivors.
+| Setting | Window default | Other four modes |
+| --- | --- | --- |
+| `screens` | `"all"` displays | `"current"` display |
+| `include_minimized` | false | false |
 
-Ctrl+S in Editor opens the bottom note field and saves a layout. Notes are optional and limited to 80 characters. In Restore, type a layout number; PageUp/PageDown changes pages. Only successful application triggers `window_restore.lifecycle.after_finish`, which defaults to Editor. Failure stays in Restore with an error. Layouts store geometry, window count and notes without application or native window identity. Restoration fills regions in recent-activity order, leaves extra windows untouched and retains empty regions when there are fewer windows.
+Enable `include_minimized` to include minimized windows. Automatic tiling and grouping still happen separately on each display. Numbers stay stable within a session and are rebuilt from current candidates on re-entry. Cards avoid other numbers and the help panel.
 
-X toggles restore/delete inside Restore, preserving the page and cancelling any pending choice. In delete state, type a number to see the selected name, then Enter to delete. X returns to restore; Q follows Restore’s binding back to Window. Deletion stays in delete state, refreshes pages and preserves all other IDs. Deleting the final item writes a valid empty library. The record is reread before submission; external changes require selection again, and failed writes preserve the original file.
+Alt+W defaults to the window under the pointer; moving the pointer afterward does not change the target. A complete number selects a window and centers the pointer. Only a possible multi-digit prefix waits, for 250 ms by default.
 
-Layouts and Tabs templates share `workspace.ksw` in the same application-data directory as logs. Default names are `Layout N` and `Tabs N`; a nonempty note becomes the name. Both types share saving, the Restore list and deletion. It interoperates with the [web simulator](/en/simulator). Browser edits affect demo windows and browser storage; download and replace the program’s workspace file, then enter Restore to read it.
+| Default key | Action | Purpose |
+| --- | --- | --- |
+| `H/J/K/L` | `window_left/down/up/right` | Move; S changes to resizing around the center |
+| `S` | `window_size` | Toggle movement / resizing |
+| `D` | `window_screen_next` | Move to the next display |
+| `F` / `Shift+F` | `window_maximize` / `window_minimize` | Maximize / restore; minimize / restore |
+| `C` | `window_center` | Center |
+| `Tab` / `Shift+Tab` | `window_select` / `window_select_previous` | Next / previous; prefer tabs in the current group |
+| `X` | `window_close` | Request close; the app may ask you to save |
+| `Ctrl` / `Ctrl+X` | `window_multi_select` / `window_multi_clear` | Start / clear multi-selection |
+
+Confirm multi-selection with Ctrl or Enter, or move/resize directly. `E` arranges only the selection; `T` combines it into a group. See [Select multiple windows](/en/window-management/window#select-multiple-windows). X closes only the current tab member; a one-member group dissolves automatically. Editor's X still removes a region.
+
+### Quick, Editor, and presets
+
+| Mode | Main operations |
+| --- | --- |
+| Quick | H/J/K/L adjusts proportions: repeat a direction to shrink, reverse it to expand; axes are independent. Start nearest half-screen, with full-screen included automatically. Tab changes windows and resets proportions |
+| Editor | Tiles on entry; directions select, Shift+direction splits, Ctrl+H/L changes width, Ctrl+K/J changes height; neighbors adjust together |
+| Editor selection | Two window numbers swap positions. Backtick plus a region number selects a region or moves into an empty one. New regions reuse free numbers without renumbering others |
+| Save | Ctrl+S in Editor/Tabs, optional note, Enter; up to 80 characters, or Layout N / Tabs N when empty |
+| Restore | Type a preset number; PageUp/PageDown changes pages. Successful layouts enter Editor by default; failures stay in the list with a reason |
+| Delete | X in Restore toggles deletion; select a number, check its name, Enter to confirm. X returns to restoration |
+
+Changes apply immediately and remain on exit. Layouts store regions, window counts, and notes. Restoration fills them with current windows in recent activity order; extra windows stay put and missing windows leave empty regions. Apps are not launched and documents are not reopened.
+
+Layouts and tab templates share `workspace.ksw` in the data directory. Exchange files with the [simulator](/en/simulator), replace the file in the data directory, then re-enter Restore. Deleting a preset does not change existing windows or groups. Failed saves preserve the original file; externally changed records must be selected again.
+
+### Undo, redo, and reset
+
+| Default key | Action | Effect |
+| --- | --- | --- |
+| `Z` | `window_undo` | Undo one step; continuous movement/resizing counts as one group |
+| `Shift+Z` | `window_redo` | Redo; a new change clears redo history |
+| `Shift+C` | `window_reset_initial` | Restore adjusted windows' positions, sizes, and states from session start |
+
+All three are available by default in Window, Quick, and Editor. Switching between window modes preserves the starting point. Leaving the group for Idle or another mode and re-entering creates a new one.
+
+Ordinary adjustments retain the last 32 history groups. Editor supports individual undo while open and counts the whole editing round as one group afterward. Initial states are not limited by the 32 groups, and resetting can itself be undone. Undo does not reopen closed windows or restore application content.
+
+### Grid targeting
+
+Window's grid entries are independent of Normal:
+
+```toml
+[window.bindings]
+g = "grid"
+"primary+f" = "recursive_grid"
+```
+
+G opens Grid and Primary+F opens Recursive Grid. Bare F still maximizes/restores. Remap them or set `none` to disable; existing custom tables need the entries added. Other window modes do not have these two default entries. Holding Primary also follows temporary-layer rules.
 
 ### T: persistent tab groups
 
-Initial numbering keeps windows from the same application together where possible; later refreshes preserve existing numbers. Minimizing the active application window minimizes the whole group. Restoring a member shows that member while the others remain tucked away.
+Press T from Window: a multi-selection becomes one group, including entire existing groups when their members are selected. Without multi-selection, compatible ungrouped windows are grouped by app on each display. Existing groups remain; Z undoes the arrangement.
 
-The strip reserves space at the top of the group's layout rectangle, including maximized and tiled layouts. Alt+W lists every member's number, application and title, with the active member marked. On Windows, vertical or horizontal scrolling browses overflowing tabs; selecting a member scrolls it into view.
-
-On Windows, drag tabs even after leaving Window mode: reorder within a strip or move a window onto another group's strip. Drag the `~group number` to merge the whole group. An insertion line shows the destination; release outside a strip or right-click to cancel. Strips follow their application's stacking order. Switching preserves window content where supported to reduce redisplay flicker; applications that already use layered drawing retain the compatible show/hide path.
-
-Windows and macOS share the same grouping workflow. Alt+W then T groups compatible ungrouped windows from the same application within each selected display, preserving existing groups. Each group shows its active member with an independent clickable tab strip. Groups persist after leaving the mode until dissolved or KeySteer exits.
-
-New groups use the smallest available group number without renumbering existing groups; after all groups dissolve, numbering starts at `~1` again. Tab strips remain visible when another application gains focus. On Windows, native window-position events move the strip directly, without a fixed polling interval or display-frame schedule.
-
-Digits always identify individual windows. Groups use `~1`, `~2`, and so on. The first item establishes the starting window or group; the second immediately groups, and later items append. T ends this batch and starts the next; no Enter is required and T creates no undo record.
+For manual grouping, enter one window number, then another to form a group immediately. Keep adding numbers; T ends that group and starts another. Space ends a number, and `~` selects a whole group.
 
 | Input | Result |
 | --- | --- |
-| `12t34t` | Group windows 1–2, then 3–4, when those numbers are unambiguous |
-| `123t` | Group windows 1, 2 and 3 |
+| `12t34t` | Windows 1+2 and 3+4 form two groups; only when numbers have no multi-digit ambiguity |
+| `123t` | Windows 1, 2, and 3 form one group |
 | `~1` | Select group 1 |
-| `~1 4t` | Append window 4 to group 1 |
-| `~1 ~2t` | Merge all of group 2 into group 1, retaining group 1's number |
-| `1 Space 2 t` / `12 Space t` | Explicitly choose windows 1 and 2 / window 12 |
+| `~1 4t` | Add window 4 to group 1 |
+| `~1 ~2t` | Merge group 2 into group 1, retaining number 1 |
+| `1 Space 2 t` / `12 Space t` | Explicitly choose windows 1+2 / window 12 |
 
-The configurable `~` action immediately highlights group numbers; a complete group number returns to window input. Existing ambiguous multi-digit parsing is preserved; Space explicitly ends a number, and T processes a pending valid number before ending the batch. Invalid numbers explain the failure without redirecting the target. A window number transfers only that member from its previous group; a group number transfers the entire group. Selecting an existing target member only activates it.
+A window number selects one member; a group number selects the whole group. Selecting an existing member only switches tabs. Invalid numbers show a reason and keep the current target. New groups use the lowest free number, starting again at ~1 after all dissolve. T finishes valid pending number input without adding an undo step.
 
-| Key | Operation |
+| Default key | Action / effect |
 | --- | --- |
-| T | End this batch; an empty batch or single independent window only clears selection |
-| D / X | Remove the active member, retaining the old group target / dissolve and end the batch |
-| Tab / Shift+Tab | Next / previous tab |
-| H / L (`move_left` / `move_right`) | Reorder the active tab |
-| K / J (`move_up` / `move_down`) | Previous / next tab |
-| Z / Shift+Z | Undo / redo membership and order changes |
-| Ctrl+S | Save a Tab template and optional note |
-| Q / Esc | Return to Window / exit, preserving completed groups |
+| `T` | `window_tab_end`: finish the group; clear selection if fewer than two windows |
+| `~` / Space | `window_tab_group` / `window_number_end`: group prefix / number separator |
+| `D` / `X` | `window_tab_remove` / `window_tab_dissolve`: remove the current member / dissolve the group |
+| `Tab` / `Shift+Tab`, or `J` / `K` | Next / previous tab |
+| `H` / `L` | Reorder the tab left / right |
+| `Z` / `Shift+Z` | Undo / redo grouping, removal, dissolution, and ordering |
+| `Ctrl+S` | `window_save_layout`: save a template and note |
+| `Q` / `Esc` | Return to Window / exit to Idle, keeping completed groups |
 
-All bindings live in `[window_tab.bindings]`, including `window_tab_group` for the prefix and `window_number_end` for the separator. Grouping edits apply inside T. Window mode retains number selection, Tab for next and Shift+Tab for previous across ordinary windows and every group member. Configure these as `window_select` / `window_select_previous` in `[window.bindings]`. Outside Window mode, application Tab and number input remains untouched; mouse tab switching is still available.
+Edit these in `[window_tab.bindings]`. After exit, apps receive Tab and digits normally, while the tab bar remains clickable. On Windows, drag tabs to reorder or transfer members, or drag `~group number` to merge a group. An insertion line marks the destination. Release outside the bar or right-click to cancel; scroll long tab bars.
 
-Applications remain independent windows. Only the active member is shown; dragging and resizing move that window alone. Selecting another tab first aligns the new member to the current group position, then shows it. Window/Quick/Editor layouts treat a group as one target. Closing the tab strip dissolves the group and reveals its members. Closing an application removes that member and selects an adjacent one; a single survivor becomes an ordinary window. Window history restores group geometry, while T has separate membership/order history.
+Only the active member is visible. Quick/Editor treat a group as one target. Switching aligns the new member with the group's position; minimizing the active member minimizes the group. Closing the tab bar dissolves the group, while closing an app removes only that member. Dissolving or quitting KeySteer normally restores windows hidden by KeySteer.
 
-Tab templates appear in the existing Restore/Delete list with a Tabs label. They store member count, selection order, active position, normalized area and note, without native window identities. Restoring enters T to collect windows in order and applies automatically when the count is reached. Incomplete selection changes no windows and Q/Esc cancels it. Deleting a template leaves running groups intact.
+::: info Save a template to reuse a group
+Groups last until dissolved or KeySteer exits. Templates store member count, order, active position, area, and note, without app identities. Restore by choosing windows in order; changes apply after all are selected. Q/Esc cancels before then.
+:::
 
-Supported members are ordinary resizable windows on the current desktop; native fullscreen and incompatible windows are rejected. Windows hides inactive members without changing their parent or embedding styles. macOS uses per-window minimization through Accessibility, so system minimize/restore animations may still appear. Dissolving or normal shutdown reveals the windows hidden by KeySteer. Tab templates are available on both platforms.
+Ordinary resizable windows are supported. Native fullscreen and incompatible windows show a reason. Windows hides inactive members; macOS minimizes/restores individual windows, so system animations may appear. The tab bar uses space at the top of the group without covering the app's bottom edge.
+
+### Target application audio
+
+In Window, Quick, and Editor, hold V and use J/K to lower/raise app volume by 1% per step. V+M toggles mute. Hold a direction to keep adjusting; release V to stop. Raising volume does not unmute. Several windows from the same app may change together.
+
+For existing custom binding tables, add these lines to each relevant mode:
+
+```toml
+"v+j" = "window_volume_down"
+"v+k" = "window_volume_up"
+"v+m" = "window_volume_mute"
+```
+
+### Application output and system audio
+
+| Default key | Action |
+| --- | --- |
+| `V+H` / `V+L` | `window_audio_previous` / `window_audio_next`: app output device |
+| `Shift+V+J` / `Shift+V+K` | `window_system_volume_down` / `window_system_volume_up`: system volume |
+| `Shift+V+M` | `window_system_volume_mute`: system mute |
+| `Shift+V+H` / `Shift+V+L` | `window_system_audio_previous` / `window_system_audio_next`: system output device |
+
+Devices cycle by name, one per press; the panel shows the target name. App output does not change the system default. Some apps adopt a device only after playback restarts. Holding a mute key does not keep toggling it.
+
+::: info Audio availability
+Windows apps need an audio session; start playback if none exists. System audio works on macOS 14+. Independent app audio needs macOS 14.2+, the packaged KeySteer.app, and System Audio Recording permission.
+:::
+
+macOS app audio is processed in memory without recording or uploading, but adds playback latency. Settings remain after leaving the mode; quitting KeySteer restores the original path. Devices without software volume support show a reason. See [Apple Core Audio Tap](https://developer.apple.com/documentation/CoreAudio/capturing-system-audio-with-core-audio-taps) for technical background.
 
 ## Movement, scrolling, and speed
 
@@ -149,25 +221,27 @@ h = "move_left"
 
 ## Pointer buttons and dragging
 
-| Action | Description |
+| Action | Purpose |
 | --- | --- |
-| `left_click`, `right_click`, `middle_click`, `mouse_x1`, `mouse_x2` | With long-press detection enabled, send MouseDown immediately and MouseUp on a short release; at the threshold, only latch the existing press. With it disabled, inject an atomic click on key-down. |
-| `double_click` | Immediately starts the first left-button press, completes the double-click on a short release, or latches the left button on a long press. |
-| `left_press`, `right_press` | Hold a pointer button. |
-| `left_release`, `right_release` | Release a held pointer button. |
-| `toggle_left`, `toggle_right` | Toggle the held state of that pointer button. |
-| `toggle` | Without parameters, latch each companion's effective Normal keyboard or mouse target regardless of which key was pressed first. A short standalone tap, returning to Normal, or entering Idle releases all latches; a long standalone hold latches its activating key. |
-| `press <target...>` | Hold one or more keys or pointer buttons. |
-| `release <target...>` | Release targets that were previously held. |
-| `toggle <target...>` | Toggle the state of targets. |
+| `mouse_left` / `mouse_right` / `mouse_middle` / `mouse_x1` / `mouse_x2` | Click the button; the first three also accept `left_click` / `right_click` / `middle_click`; long presses keep it held by default |
+| `double_click` | Short press double-clicks; long press holds only the left button |
+| `left_press` / `right_press` | Hold left / right mouse button |
+| `left_release` / `right_release` | Release left / right mouse button |
+| `toggle_left` / `toggle_right` | Toggle left / right held state |
+| `toggle` without arguments | Lock partner keys or mouse buttons according to their Normal bindings |
+| `press <target...>` / `release <target...>` / `toggle <target...>` | Hold / release / toggle one or more explicit targets |
 
-Targets are key names or `mouse_left`, `mouse_right`, and `mouse_middle`, `mouse_x1`, `mouse_x2`:
+Targets can be key names or `mouse_left`, `mouse_right`, `mouse_middle`, `mouse_x1`, and `mouse_x2`:
 
 ```toml
 [normal.bindings]
 n = "toggle"
 x = ["press shift", "left_click", "release shift"]
 ```
+
+The default no-argument toggle is N. Pair N with `;` to hold the left mouse button, in either press order. Several partners can be locked. Tap N alone, return to Normal, or enter Idle to release all. Holding N alone locks N itself.
+
+`long_press_toggle_ms` defaults to 500 ms. While enabled, pressing a click key presses the mouse button, and release lets go; reaching the threshold keeps it held. With 0, pressing immediately completes a click instead. A short double-click press completes on release. See [Dragging and holding](/en/modes/normal#dragging-and-holding) for steps and automatic-release conditions.
 
 ## Send a key
 
@@ -183,7 +257,7 @@ t = "home"
 
 ## Run an external command: `exec`
 
-Use `exec` to connect KeySteer to scripts, launchers, or other desktop tools. It starts a program but does not wait for it to complete or show its output in KeySteer.
+Use `exec` to launch scripts, apps, or desktop tools. These examples are for macOS:
 
 ```toml
 [normal.bindings]
@@ -197,19 +271,21 @@ Syntax:
 exec <program> [arg1] [arg2] ...
 ```
 
-The first word is the program and every subsequent word is a separate argument. KeySteer invokes Rust's process API directly, not a shell: it does not expand `~`, environment variables, pipes, redirections, or `&&`.
+The first word is the program; later words are separate arguments. It starts in the background. KeySteer does not wait for completion or show command output. Launch failures are logged.
 
-For shell syntax, put the logic in a script and execute that script directly. On Windows you can explicitly use `cmd`:
+::: info When you need shell syntax
+`exec` runs a program directly. It does not expand `~`, variables, pipes, redirection, or `&&`. Put complex logic in a script or call a shell explicitly.
+:::
 
 ```toml
 # Execute a script or program whose path contains no spaces.
 x = "exec /usr/local/bin/keysteer-script"
 
 # Windows: arguments are split on spaces.
-x = "exec cmd /C start notepad"
+y = "exec cmd /C start notepad"
 ```
 
-Configuration values are split on spaces and do not offer quote-escaping. Use a script or a wrapper program without spaces for paths or complex arguments. Commands are detached; KeySteer does not wait for an exit status or display stdout/stderr. A failed launch is logged.
+Arguments split on spaces without quote escaping. For paths containing spaces or complex arguments, use a wrapper script at a path without spaces.
 
 ## Plugin verbs and arguments
 
@@ -230,14 +306,11 @@ Explicit `call` is useful for a no-argument invocation or to avoid ambiguity. An
 
 ## Switch the active window
 
-`window_activate_next` / `window_activate_previous` cycle from the window under the pointer,
-falling back to the foreground window when no candidate is under it. They activate the destination
-and center the pointer on it. The ring includes every ordinary candidate, excluding minimized windows.
-Tab members stay adjacent in tab order; ungrouped windows of the same application and display
-stay adjacent too. Cycling continues into other applications after passing those peers, in either direction.
-For example, A1, B1, A2, B2 becomes A1 → A2 → B1 → B2. Window mode retains its existing
-within-tab-group behavior; these Normal actions can leave tab groups. They reuse the selection logic without entering
-Window mode or showing titles, numbers, or controls. There are no new default shortcuts:
+`window_activate_next` / `window_activate_previous` switches windows directly, without entering Window or showing numbers.
+
+By default, it starts with the pointer's window, falling back to the active window. The pointer moves to the selected window's center. All ordinary non-minimized windows participate. Tabs members stay adjacent in tab order; windows on the same display and in the same app are kept together where possible. Cycling continues past the group, for example A1 → A2 → B1 → B2.
+
+No default shortcut is assigned. Add your own:
 
 ```toml
 [normal.bindings]
@@ -247,13 +320,11 @@ c = "window_activate_previous"
 
 ## Cycle overlapping windows
 
-`window_overlap_next` / `window_overlap_previous` select windows in the overlap-connected component
-of the focused window, falling back to the window under the pointer when focus is unavailable. If A overlaps B and B overlaps C, all three belong to the same component even when A and C do not overlap directly. Touching edges do not count.
-Existing Tabs groups take priority in their tab order, followed by the remaining global candidates.
-Candidates outside the component are skipped in the requested direction. If the component contains only the starting window, the pointer moves to its center without reactivating it.
-Without a valid starting window or an available candidate, nothing changes; there is no fallback outside the component.
-Each step checks fresh window geometry, reusing the component while unchanged and recomputing when needed; minimized windows cannot connect components.
-The pointer follows the activated window's center; no Window mode or window labels appear.
+`window_overlap_next` / `window_overlap_previous` cycles only within a group of overlapping windows, without entering Window.
+
+If A overlaps B and B overlaps C, all three belong to one group even if A does not touch C. Touching edges alone does not count. Each press uses the latest positions; minimized windows are excluded.
+
+By default, the active window is preferred, falling back to the pointer's window. Tabs are checked in tab order, but only within the overlap group. A lone window only centers the pointer; no valid target means no action.
 
 ```toml
 [normal.bindings]
@@ -263,13 +334,18 @@ c = "window_overlap_previous"
 
 ## Move a window between displays
 
-The bundled Window Mover plugin exports `move_window next`, `move_window previous` (or `prev`), and numbered destinations such as `move_window 2`.
-It targets the application window under the physical pointer when invoked. The pointer follows the window, keeping its position within it; focus and the active mode remain unchanged. If a maximized window changes size, the pointer keeps its proportional position. The pointer stays within the destination display for oversized or partly off-screen windows.
-Display numbers follow the `screen` plugin. One display or no movable window is a no-op.
+`move_window next` selects the next display; `previous` (or `prev`) selects the previous one. `move_window 2` selects display 2, using the same numbering as the `screen` plugin.
 
-Equal display dimensions preserve the offset and window size, even with different taskbar layouts. Different dimensions map the fraction of available travel within work areas and keep the window accessible where possible.
-Windows maximized windows move directly while retaining their state, without a restore/maximize cycle, and receive a migrated restore position. macOS native-fullscreen windows automatically exit full screen, move, and return to full screen using the system animations. The pointer follows when the transition completes. Applications may restrict movement or fullscreen changes.
-Applications can impose their own position or DPI size constraints. The default binding is `Primary+S+D → move_window next`; releasing `Primary+S` still only switches the pointer display. Both bindings are configurable in any binding table.
+By default, `Primary+D` moves the pointer's window. The pointer follows, keeping its relative position where possible; focus and current mode stay unchanged. `Primary+S` only switches the pointer's display. One display or no movable window means no action.
+
+| Situation | Behavior |
+| --- | --- |
+| Equal display sizes | Preserve window size and offset |
+| Different display sizes | Scale position within the available space and fit the work area where possible |
+| Maximized window on Windows | Keep maximized and migrate its restore position |
+| Native fullscreen on macOS | Leave fullscreen, move, then restore fullscreen, with system animations |
+
+The pointer stays within the target display. Apps may restrict movement, fullscreen transitions, or sizing at different DPI settings.
 
 ## Other actions
 
@@ -313,66 +389,54 @@ See the [default configuration](/generated/keysteer.default.toml) for the comple
 
 ## `key_help`
 
-Toggle the available-key panel without restarting the active mode or clearing its selection. Enable with `"?" = "key_help"` in Normal, inherited by targeting modes. Omit or comment out the entry to disable it. Configure its appearance in `[key_help]`.
+Show or hide mode controls without clearing selection or filters.
 
-Window cards emphasize application names above longer window titles and use thicker leader lines when displaced. Editing uses a shaded grid with region numbers centered in their regions. The help panel keeps the configured font size and falls back to the screen when the target is too small. Move / Resize / Quick / Edit appear as separate keycap badges; the application and window title each get their own line. Backtick plus a region number also opens the tree editor from ordinary Window or Quick, selects that region, and activates its window; empty regions move the pointer to their center.
-
-The default is `f = "size_cycle"`. After minimizing, press F to restore the same window to its original position and size, then press F again to repeat.
-
-Window, Quick, and Editor bind Z to `window_undo`, Shift+Z to `window_redo`, and Shift+C to `window_reset_initial`. C remains `window_center` in Window. Rebind these actions in each mode’s existing bindings table while keeping other bindings. A new adjustment clears redo. Continuous movement/resizing is one undo group; edits undo step by step while editing, then become one group on leaving the editor.
-
-Reset restores positions, sizes, and maximized/minimized states of windows modified in the current window-mode session. Its baseline survives switches among the six window modes and is renewed after leaving the group and entering again. Reset itself is undoable and redoable. It does not reopen closed windows, restore application content, or modify untouched windows. The initial baseline is retained independently of the 32-group history limit.
+Normal defaults to `"?" = "key_help"`; targeting modes can inherit it. Keep this entry in custom tables. See [Key help](/en/reference/configuration#key-help) for default visibility and styling.
 
 ## UI Hint scan scope
 
 ```toml
 [ui_hint]
-scan_scope = "window" # window / active / screen
+scan_scope = "window" # window / active / screen / all
 ```
 
-`window` (default) resolves pointer window → active window → pointer display. `active` resolves active window → pointer window → pointer display. `screen` selects the pointer display directly. Only unavailable windows trigger fallback; providers scan the selected scope once, without changing scope after empty results or provider failures. Pointer-first selection attempts to activate that window before scanning; activation refusal does not change the selected scope. Windows and macOS share these rules.
-
-Works with Hybrid, Accessibility Tree, and Vision. Screen scope covers visible content on the display
-containing the pointer. Moving to another display, including a custom `Alt+S` binding to `screen next`,
-clears old hints and starts a new scan automatically. `Primary+R` manually refreshes the scan.
-
-Entering ordinary Window mode (Alt+W by default) activates and raises the window under the pointer without moving the pointer. X invokes `window_close`, requesting normal closure of the selected window; the application handles save/cancel dialogs. Rebind it in `[window.bindings]`, for example `"f9" = "window_close"`, and remove or disable the original X binding. X in the layout editor still deletes a region.
-
-For a tab group in ordinary Window mode, X closes only its active member. Once closure is confirmed, a group with one remaining member dissolves automatically and reveals that window. A/E/T and other modes retain their own X bindings.
-
-
-### Target application audio
-
-In Window, Quick (A), and Editor (E), hold V and press J/K to lower/raise the target application volume by 1%. V+M toggles mute. Direction keys repeat while the whole chord stays held; mute toggles once per press. Windows sharing an audio process share volume. An application without an audio session reports that status; Windows and macOS share the same bindings and request interface.
-
-The configurable actions are `window_volume_down`, `window_volume_up`, and `window_volume_mute`. Bindings are independent per mode: update the volume chords too when changing direction keys. Existing explicit binding tables replace defaults; add `"v+j" = "window_volume_down"`, `"v+k" = "window_volume_up"`, and `"v+m" = "window_volume_mute"` to each of the three modes.
-
-
-### Application output and system audio
-
-Window, Quick (A), and Editor (E) share these defaults:
-
-| Shortcut | Action |
+| `scan_scope` | Area |
 | --- | --- |
-| V+J / V+K | Application volume down / up, 1% per step, repeats while held |
-| V+M | Toggle application mute |
-| V+H / V+L | Previous / next application output device |
-| Shift+V+J / Shift+V+K | System volume down / up, 1% per step, repeats while held |
-| Shift+V+H / Shift+V+L | Previous / next system default output device |
+| `window` (default) | Pointer's window, then active window if unavailable, then pointer's display |
+| `active` | Active window, then pointer's window, then pointer's display |
+| `screen` | Pointer's whole display, without combining other displays |
+| `all` | Visible windows and UI on all displays; spanning windows are traversed once |
 
-Device selection cycles through active outputs sorted by name, once per press. Application routing does not change system defaults; some applications need playback restarted to adopt a new output. The configurable actions are `window_audio_previous`, `window_audio_next`, `window_system_volume_down`, `window_system_volume_up`, `window_system_audio_previous`, and `window_system_audio_next`.
+All strategies use these rules on both platforms. The default attempts to activate the pointer's window. Once selected, empty results, source failure, or activation failure do not change the scope.
 
+`screen` / `all` use the global `strategy`, without applying the foreground application's `app_configs` strategy to other applications. Visibility checks exclude fully covered windows and retain visible portions of controls; visual sources read the composited desktop. Results grow dynamically with no default 10,000-target ceiling. For visual-only scans, `rectangle_max_candidates = 0` means unlimited; explicit positive values still apply, and Hybrid ignores that option. Timeouts, cancellation and image-size protections remain active.
 
-On macOS, system audio uses Core Audio. Per-application volume, mute, and output require macOS 14.2+ and System Audio Recording permission; use the packaged KeySteer.app. Audio is processed and replayed only in memory, with some added latency, and is never saved or uploaded. Unsupported systems/devices report a reason. App audio controls remain active after leaving the mode; quitting KeySteer restores the original playback path. See [Apple’s Core Audio Tap permission requirements](https://developer.apple.com/documentation/CoreAudio/capturing-system-audio-with-core-audio-taps).
-
-
-In Window, Quick and Editor, `V+M` toggles application mute and `Shift+V+M` toggles system mute. Holding either chord does not toggle repeatedly. The system action is `window_system_volume_mute`; add `"shift+v+m" = "window_system_volume_mute"` to existing custom binding tables.
+Changing displays or targets clears old labels and scans again; moving between displays within `all` preserves labels. Ordinary pointer movement does not keep rescanning. Press `Primary+R` to refresh manually.
 
 ## Window target source
 
-Each of `[window]`, `[window_quick]`, `[window_editor]`, `[window_restore]` and `[window_tab]` accepts optional `target = "active"` or `target = "mouse"`. These set lookup priority on entry: `active` tries the focused window first, then the window under the pointer; `mouse` reverses that order. The second source is queried only when the first has no usable window. Omission preserves existing behavior: pointer selection for a new session and the selected window across Window mode handoffs. Explicit entry selection waits for any required layout commit.
+Choose the active window or the window under the pointer with each window mode's `target` setting:
 
-Bindings can independently append a source:
+```toml
+[window]
+target = "active"
+[window_quick]
+target = "mouse"
+[window_editor]
+target = "active"
+[window_restore]
+target = "mouse"
+[window_tab]
+target = "active"
+```
+
+| Value | Priority |
+| --- | --- |
+| `active` | Active window → pointer's window |
+| `mouse` | Pointer's window → active window |
+| Omitted | Pointer's window for a new session; retain selection between window submodes |
+
+An explicit setting chooses again on each mode entry. A suffix on an individual action overrides the mode's `target`:
 
 ```toml
 [normal.bindings]
@@ -387,19 +451,57 @@ Bindings can independently append a source:
 "h" = "window_left mouse"
 ```
 
-An entry binding overrides the mode's `target`. In-mode actions without a suffix retain the selected window. Explicit actions resolve asynchronously once at gesture start and hold that identity throughout continuous movement or resizing. If neither source has a usable window, no target operation runs. A valid isolated overlap anchor still only centers the pointer and does not switch sources. Query errors, native changes and operation or permission failures do not redirect the action to another window.
+Within a mode, actions without a suffix keep using the selected window. A suffix chooses when each action starts; held movement/resizing stays with that target. A valid preferred window prevents fallback. A rejected operation does not switch to another window.
 
-Supported operations include cycling, mode entry, moving across displays, movement/resize/state/close/application audio, layout navigation/split/ratio/region removal, and tab member operations. Layout actions require membership in the existing layout; tab actions affect the selected window's group without merging groups. History, initial-state restoration, preset save/delete/confirm, numeric input, and system audio have independent scopes and reject a source suffix.
+| Accept a suffix | Do not accept a suffix |
+| --- | --- |
+| Window cycling, mode entry, moving between displays | Undo, redo, reset to initial state |
+| Moving, resizing, state, closing, app audio | Preset save/delete/confirm, number input |
+| Layout direction, splitting, ratios, region removal, tab-member actions | System audio |
+
+Layout actions can only choose windows already in the layout. Tab actions affect the selected window's group without merging groups. Overlap cycling with no companion only centers the pointer on the preferred window. If neither source has a valid window, nothing happens.
 
 ## UIHint search and information copying
 
-Press `/` to open the directly drawn overlay editor, even before the first scan batch. It supports keyboard characters, selection and Unicode copy/paste. IME composition is not implemented; paste Chinese text or type pinyin initials. Search matches original hint labels, OCR text, accessibility names and semantic roles, including simplified-Chinese pinyin initials (`复制` / `fz`, `按钮` / `an` / `button`). Labels retain their original codes. Even a complete label only filters while searching.
+Start with the [UI Hint exercise](/en/modes/ui-hint#search-and-result-previews). This section covers search syntax, copying, and style settings.
 
-Enter closes search and restores all hints while staying in UIHint. A unique match or space-separated selection moves the pointer to the current inspection point, initially the equal-weight mean of ordinary label jump destinations. Empty results or an ambiguous single search term do not move it. Esc cancels without moving.
+### Search and confirm
 
-The four stable shortcuts default to Ctrl+1 (OCR), Ctrl+2 (accessibility name and role), Ctrl+3 (current point coordinates), and Ctrl+4 (live point color) on both Windows and macOS. Configure each independently with `ui_hint.search_copy_keys`; explicit `primary` follows `[key_aliases]`. The panel shows numbered keycaps and category titles. Missing information leaves an empty slot and does not change the clipboard.
+Press `/` to search, even before the first labels arrive. Search labels, OCR text, accessibility names, or control types, such as `Copy`, `复制` / `fz`, or `按钮` / `an` / `button`. Chinese supports initials or pasted text; system input-method candidate windows are not supported yet.
 
-A unique search match or space-separated selection exposes an adjustable point and starts sampling without confirmation. Ordinary hints, empty selections and ambiguous single terms do not sample pixels. Tap Ctrl to toggle editing/adjustment. Adjustment hides the caret/selection and always uses a green input background with a small dot on the right, without a Point caption. Text stays left aligned at the same vertical position; long input scrolls to its tail using actual glyph widths. Movement reuses Normal controls and speeds. Clicking first accepts the point and closes search, then executes normally. Ctrl+Shift+4 enters adjustment and cycles HEX → RGB → HSL; Shift+4 still types `$`. Copy shortcuts work directly in adjustment: success accepts the current point, moves the pointer and closes search; failure preserves adjustment. Inspection hides the ordinary cursor ring. A single initial point uses the same actual destination as typing its label in ordinary UIHint, independent of label styling and offsets.
+| Operation | Default key / result |
+| --- | --- |
+| Preview next result | `Tab`; changes preview without moving the pointer |
+| Accept preview | `Enter`, `/`, `Primary+Q`; move, clear the query, stay in UI Hint |
+| Cancel search | `Esc`; restore labels without moving |
+| Labels only | `@la` or `la@`; `@l` narrows by label prefix |
+
+`@` alone keeps candidate labels visible; it does not select all. An ordinary label filters rather than jumping immediately. Label codes stay stable during search. Confirming with no valid result does not move the pointer.
+
+### Multiple selections and order
+
+Separate selections with spaces, such as `@la @ka` or `fz button ab`. Results merge in input order, keeping the first occurrence of duplicates. Repeated spaces add no empty items; a trailing space shows candidates for the next item. Editing any item updates results.
+
+Complete labels select directly. Text/initials count as selected points only on a unique match. Several points initially show their average center, `0/N`. N counts confirmed, unique labels only; unfinished or ambiguous items do not count.
+
+### Copy the four fields
+
+| Default key (both platforms) | Content |
+| --- | --- |
+| `Ctrl+1` | OCR text |
+| `Ctrl+2` | Accessibility name and control type |
+| `Ctrl+3` | Current point coordinates |
+| `Ctrl+4` | Current point color |
+
+Successful information copying confirms the point, moves the pointer, and closes search, keeping UI Hint labels. Empty fields or failure keep search open and preserve the clipboard. Visually truncated text is copied in full.
+
+`search_copy_keys` requires four distinct, non-conflicting chords. An explicit `primary` follows platform aliases; the defaults use Ctrl, including on macOS.
+
+### Adjust points and pick colors
+
+Tap Ctrl to switch between input and adjustment. While adjusting, use Normal directions and speed keys. A green input background and right-side dot mark adjustment. Click actions first confirm the point, then perform the click.
+
+`Ctrl+Shift+4` enters adjustment and cycles HEX → RGB → HSL. `Shift+4` still types `$`.
 
 ```toml
 [ui_hint.search_bindings]
@@ -408,43 +510,110 @@ tab = "point_next" # Any valid key or chord
 "ctrl+shift+4" = "color_next"
 ```
 
-Bindings use `key = action`; an explicit table replaces the defaults, and an empty table disables these operations. `point_toggle` takes a single tap key; `point_next` and `color_next` accept chords. Multiple points initially show the collection center as `0/N`. N counts distinct resolved labels in the current input. Complete label codes take priority; text and pinyin terms count only when they identify a unique target. Unfinished, invalid, ambiguous and repeated items do not increase the count. During adjustment, Tab selects the first original label point, then each following point, cycling from the last back to the first; the counter shows `1/N` through `N/N`. Override marker styling and `color_formats` in `[ui_hint.search_point]`; formats must be distinct, with the first used initially. Background sampling excludes KeySteer overlays; unavailable samples stay empty rather than retaining old colors. macOS requires Screen Recording permission.
+`point_toggle` must be a single tapped key. `point_next` and `color_next` accept chords. A custom `search_bindings` replaces the whole table; an empty table disables these actions.
 
-The four-entry `field_modes` array controls multi-selection display and copying in OCR, accessibility, coordinates and color order. `concat` joins original label-point information in selection order with newlines; `switch` follows the current inspection point as Tab or movement changes it. The defaults join fields 1–2 and switch fields 3–4. Single-point text still follows the smallest scanned element containing the current point, leaving text empty in blank space. Configuration loading compiles enums, keys and styles. Color concatenation samples members asynchronously with one request in flight. Edit the array and cycle key under **UI Hint → Behavior**.
+With multiple points, Tab moves from the average center to the first label, then cycles in selection order, showing `1/N…N/N`. Initial points match direct label jumps, regardless of label display offsets.
+
+`[ui_hint.search_point]` supports `marker_color`, `marker_radius`, and `marker_width`. `color_formats` specifies a non-repeating order, with the first as default, such as `["rgb", "hex", "hsl"]`.
+
+Colors come from the screen, excluding KeySteer's overlays. macOS needs screen-recording permission. Copying waits for current samples; failures keep an empty field instead of copying an old color.
+
+### Displaying multiple points
+
+The four `field_modes` entries correspond to OCR, accessibility, coordinates, and color:
 
 ```toml
 [ui_hint.search_point]
 field_modes = ["concat", "concat", "switch", "switch"] # Built-in defaults; optional
 ```
 
-Color copying uses the displayed format and samples. It waits for the current sample when needed, or all member samples when concatenating colors, then clears the query and closes search on success. A square swatch appears beside `Color`, centered on the heading row, for a single point or switching colors; concatenated colors hide the single swatch. Optional `[ui_hint.search_point.color_preview]` settings are `enabled = true`, `width = 16`, `height = 16`, `x_offset = 4`, `y_offset = 0`, and `border_width = 1`. Sizes accept 1–64 logical pixels, offsets −200–200 (positive right/down), and border width 0–10. Offsets are relative to the title end and heading center. Defaults remain absent from the default file and native export. Edit and preview under UI Hint → Appearance; reset removes the override.
+| Value | Display and copy |
+| --- | --- |
+| `concat` | Join initial-point information in selection order, separated by newlines |
+| `switch` | Follow the current inspected point as Tab or directions change it |
 
-Optional `[ui_hint.search_point]` fields `input_background_color` and `input_border_color` customize adjustment colors, including alpha and `{ light = "#RRGGBBAA", dark = "#RRGGBBAA" }` variants. The default background uses light `#E8F6F0FF` / dark `#284D44FF`, matching selected window cards, and the border inherits ordinary search input. Defaults are omitted from configuration. Editing and adjustment share the same vertical text position and left alignment. Both overrides and ordinary search styles are editable under UI Hint → Appearance, with comparison previews and individual reset.
+Text and accessibility concatenate by default; coordinates and color follow the current point. Single-point text comes from the element under that point. Empty space retains coordinates and color only. Edit these options under **UI Hint → Behavior** on the website.
 
-`ui_hint.search_input_ui` and `ui_hint.search_info_ui` share font, size, color, border, radius, padding, width and offset settings. `position` accepts four percentage strings in top/right/bottom/left order, reusing Window card parsing. The input defaults to `position_mode = "screen"` and `["100%", "50%", "0%", "50%"]`; use `window` for window-relative placement. Details default to `position_mode = "search_input"` and `["0%", "50%", "100%", "50%"]`, above the input, and also support `screen` / `window`. Old anchor strings remain readable.
+### Search input editing keys
 
-Search data is prepared as scan batches arrive. Repeated searches reuse session indexes and query storage; leaving UIHint or rescanning releases them.
+`[ui_hint.search_edit_keys]` uses key = action, for example `"enter / primary+q" = "accept"`, `"primary+v" = "paste"`, `"primary+c" = "copy"`, and `"primary+a" = "select_all"`.
 
-Panel percentages, light/dark styles, headings, field behavior enums and shortcuts are compiled during configuration loading. Search reuses those results; target text and Chinese initial-letter indexes are prepared as scan results arrive. Member collections update only when the query or scanned geometry changes, without rebuilding during frames or sample callbacks.
+Spaces on the left separate alternative keys. Configuring an action replaces all its default keys; omitted actions retain defaults. Legacy action = key tables are still readable; exports use the new form. Copying an input selection copies query text without closing search.
 
-Spaces separate independent searches: `fz button ab` unions matches in input order, retaining each target at its first match. Trailing spaces restore candidates for the next search. Selected points show all four fields; OCR and accessibility concatenate by default, while coordinates and color follow the current point. Configure this with `field_modes`. Successful copying closes search and restores all hints while staying in UIHint; failures and empty fields preserve search. Display text is elided to one line; copying preserves full content.
+### Panels and color styles
 
-Search editing shortcuts are configurable in `[ui_hint.search_edit_keys]`, e.g. `"primary+v" = "paste"`, `"primary+c" = "copy"`, `"primary+a" = "select_all"`. Omitted actions inherit default keys. `primary` follows `[key_aliases]` (left Alt in the shipped Windows configuration, Cmd on macOS); explicit `cmd` and `ctrl` are also accepted. Copying selected input keeps search open; successfully copying an information field closes search.
-
-Search accept shortcuts default to `"enter / primary+q" = "accept"`: Enter, `/`, and Primary+Q all confirm the current preview and move the pointer. All editing bindings use key = action. Separate alternatives with spaces on the left, or bind the same action on multiple lines. Configuring an action replaces all its default keys; omitted actions retain defaults. Legacy action = keys tables remain readable; exports use the new format. Accept closes search and restores hints while staying in UIHint. Esc cancels without moving. Shortcuts are validated and compiled during loading.
-
-Use `@la` to match only the exact label `la`; `la` still searches label prefixes, text and initials. `@la @ka` selects two labels, and `@la button` mixes exact labels with ordinary search terms in input order.
-
-A bare `@` keeps candidate labels visible without selecting them all. Continue with `@l` to filter by label prefix, then complete `@la` to match that label. The same rule applies after a space, e.g. `@ka @`.
-
-The marker also works as a suffix: `ld@` is equivalent to `@ld`. Append `@` to a mixed query to restrict it to labels; removing it restores mixed matching. Prefix and suffix forms can be mixed in multi-selection, e.g. `ld@ @ka`.
-
-Window Move targeting entrances are configured independently in `[window.bindings]`. Grid / recursive_grid entrances are no longer copied automatically from Normal. Rebind these defaults or set them to `"none"` to disable them. Normal bindings and app overrides do not change Window’s own bindings; holding primary retains the existing temporary-layer precedence. Add the entries as needed to existing explicit `[window.bindings]` tables.
+This example sets copying keys and the color swatch. Single-point colors show a swatch beside the title; concatenated multi-point colors do not show one swatch.
 
 ```toml
-[window.bindings]
-g = "grid"
-"primary+f" = "recursive_grid"
+[ui_hint]
+search_copy_keys = ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"]
+
+[ui_hint.search_point.color_preview]
+enabled = true
+width = 16
+height = 16
+x_offset = 4
+y_offset = 0
+border_width = 1
 ```
 
-`primary+g` is not a Window default binding; g follows the configured temporary layer while primary is held. Other Window submodes do not receive these two default targeting entrances.
+Point adjustment can have its own border and background:
+
+```toml
+[ui_hint.search_point]
+input_border_color = { light = "#16856BFF", dark = "#68D9B1FF" }
+```
+
+The default background is green: light `#E8F6F0FF` / dark `#284D44FF`. An unmodified border follows `search_input_ui.border_color`. Edit, preview, or reset these under **UI Hint → Appearance**.
+
+The input and information panels support the same fonts, colors, borders, corners, and padding. The input defaults to width 280 and vertical padding 6. This example customizes the appearance:
+
+```toml
+[ui_hint.search_input_ui]
+position_mode = "screen"
+position = ["95%", "50%", "5%", "50%"]
+width = 420
+font_family = "Microsoft YaHei UI"
+font_size = 16
+padding_x = 12
+padding_y = 6
+border_radius = 8
+border_width = 1
+background_color = "#0A1338F2"
+text_color = "#E8EEFFFF"
+border_color = "#6E82D6FF"
+
+[ui_hint.search_info_ui]
+position_mode = "search_input"
+position = ["44%", "50%", "56%", "50%"]
+width = 520
+font_size = 14
+```
+
+Position uses a reference and four percentage insets; see [Search panel positioning](/en/reference/configuration#search-panel-positioning). Preview both panels together in the web editor. Default styles do not need to be repeated in your file.
+
+## Text Select
+
+Press `c` in Normal to enter `text_select`. The input and text panels open immediately, reusing UIHint's scan scope, OCR options and appearance. This mode requests OCR text only.
+
+Type a region label to select its text and move the pointer to its end without clicking. Press `Primary+C` to refine into system-tokenized words, then Unicode grapheme characters. Ordinary `c` remains input. Missing language rules fall back to characters without a bundled dictionary.
+
+Input uses the same search and multi-selection rules as UIHint: type text, pinyin initials, or space-separated labels such as `a d f`. Use `@a @d` for explicit labels. A trailing space reveals all hints again. Completed labels resolve selections; unresolved text previews the highest-ranked match. Duplicate terms select once. Uppercase is case-insensitive; `adf` is one search term.
+
+Backspace edits nonempty input and updates the selection; with empty input it returns to the parent. Tab always returns to the parent, restoring its selection. Ctrl+Backspace resets to regions; Space separates input terms. Enter copies the preview and returns after clipboard success. PageUp/PageDown page the enlarged characters; Esc exits; `?` shows effective keys. All controls are configurable.
+
+Text is copied in source order. Adjacent selections retain source spacing; disjoint English words get a separator and disjoint letters concatenate. Regions and words keep hints at their original screen positions; only characters are enlarged in the panel. The text-only panel previews up to four lines with paragraph breaks and a selection count, while copying includes all selected text. The standard Text Select indicator shows the level. Initial hints and input paint before cooperative search indexing; refinement does not capture the screen again.
+
+## Configurable selection controls
+
+`first_level` clears the selection and returns to the first level; `previous_level` goes back one level. `confirm_selection` confirms and `cancel_selection` cancels the selection and returns to the source mode. `search_selection` opens UIHint search. UIHint's `reopen_selection` only reopens a completed selection, retaining its original Tab behavior. Global `escape` still enters Idle. A group such as `"tab backspace"` means either key, not a chord.
+
+Existing defaults are unchanged. Sparse/older configurations inherit the formerly fixed controls; explicit `none` disables a key. For example:
+
+```toml
+[grid.bindings]
+space = "none"
+"ctrl+backspace" = "first_level"
+```
+
+Recursive Grid has its own binding table. Normal blind targeting also accepts reset/parent actions. UIHint and the screen selector plugin expose their controls in their binding tables. Window Editor's backtick uses `window_area_number`; Restore uses `window_previous_page` / `window_next_page`; Window selection input uses `window_multi_cancel` and configurable editing mappings. Defaults remain backtick, PageUp/PageDown, Esc and the existing editing keys. Help follows effective bindings, including disabled keys.

@@ -10,7 +10,9 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
 
 <ModeVideo file="save.mp4" title="保存布局与标签组演示" description="演示填写备注和留空保存；此片段展示保存，恢复步骤请看下文。" />
 
-在 Editor 或 Tabs 按 `Ctrl+S`，在底部输入备注并按 Enter 保存；备注可留空，留空时自动生成默认名称，最多 80 个字符。例如命名为“写代码”或“阅读与笔记”。
+1. 在 Editor 或 Tabs 按 `Ctrl+S`。
+2. 输入备注，例如“写代码”；可留空，最多 80 字符。
+3. 按 Enter 保存，留空时自动命名为 Layout N 或 Tabs N。
 
 ## 恢复操作 {#restore}
 
@@ -21,7 +23,9 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
 | Layout 布局 | 用当前窗口填入保存的区域；成功后默认进入 Editor，继续微调 |
 | Tabs 标签模板 | 进入 Tabs，依次选择所需窗口，选满后自动应用；选满前可取消 |
 
-**模板不保存应用身份，也不会启动应用或重新打开文档。** 布局恢复使用当前窗口的最近活动顺序，多余窗口保持原位，窗口不足时保留空区域。标签模板由你重新指定成员。
+::: info 恢复的是安排，使用的是当前窗口
+布局按当前窗口的最近活动顺序填入，多余窗口保持原位，不足则留空。标签模板需重新指定成员；模板不会启动应用或重开文档。
+:::
 
 要删除预设，在 Restore 按 `X` 切到删除状态，输入编号核对名称，再按 `Enter` 删除。再按 `X` 回到恢复状态。删除模板不影响已经运行的标签组。
 

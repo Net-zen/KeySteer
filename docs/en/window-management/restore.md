@@ -10,7 +10,9 @@ Save an arrangement, then fill it with the windows you need today.
 
 <ModeVideo file="save.mp4" title="Saving layouts and tab groups" description="Optional notes and automatic names. This clip demonstrates saving; follow the steps below to restore." />
 
-Press `Ctrl+S` in Editor or Tabs, type a note in the bottom field, and press Enter to save. Notes are optional and limited to 80 characters; leaving the field empty generates a default name. Try names such as “Coding” or “Reading and notes”.
+1. Press `Ctrl+S` in Editor or Tabs.
+2. Enter an optional note, such as “Coding”, up to 80 characters.
+3. Press Enter. An empty note uses an automatic Layout N or Tabs N name.
 
 ## Restore an arrangement {#restore}
 
@@ -21,7 +23,9 @@ Press `R` from Window to open the shared preset list, then type a preset number.
 | Layout | Fills saved regions with current windows; on success, enters Editor by default for further adjustment |
 | Tabs | Enters Tabs so you can choose the required windows in order; applies when all are selected, and can be cancelled before then |
 
-**Templates do not save application identities, launch apps, or reopen documents.** Layout restoration uses the current windows' recent activity order. Extra windows stay where they are; missing windows leave empty regions. For tab templates, you choose the members again.
+::: info Restore arrangements with current windows
+Layouts fill regions in recent activity order. Extra windows stay put; missing windows leave empty regions. Choose tab-template members again. Templates do not launch apps or reopen documents.
+:::
 
 To delete a preset, press `X` in Restore to switch to deletion, type its number, check the displayed name, and press `Enter`. Press `X` again to return to restoration. Deleting a template does not affect an existing tab group.
 

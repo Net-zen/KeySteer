@@ -310,7 +310,7 @@ fn history_fixture(count: u64) -> (Session, Fake, BTreeMap<WindowId, Snapshot>) 
     access.async_states = true;
     (session, access, original)
 }
-fn finish_history(pending: &mut history_confirmation::PendingHistory, session: &mut Session, access: &mut Fake, cancel: bool) -> WindowResult {
+fn finish_history(pending: &mut history::PendingHistory, session: &mut Session, access: &mut Fake, cancel: bool) -> WindowResult {
     let now = Instant::now();
     for step in 0..30 {
         acknowledge(access);
@@ -327,7 +327,7 @@ fn asynchronous_undo_redo_and_reset_preserve_grouped_history_and_current_titles(
     for operation in [WindowOperation::Undo, WindowOperation::Redo, WindowOperation::ResetInitial { group: 10 }] {
         let reset = !matches!(operation, WindowOperation::Redo);
         let request = WindowRequest { session: 1, id: 7, scope: None, operation };
-        let mut pending = history_confirmation::PendingHistory::begin(&mut session, &mut access, &request, &screens().into()).unwrap().unwrap();
+        let mut pending = history::PendingHistory::begin(&mut session, &mut access, &request, &screens().into()).unwrap().unwrap();
         finish_history(&mut pending, &mut session, &mut access, false);
         for (id, window) in if reset { &original } else { &moved } { assert!(same_placement(window, &access.windows[id])); }
         assert_eq!(access.windows[&WindowId(1)].info.title, "new title");
@@ -339,7 +339,7 @@ fn asynchronous_undo_redo_and_reset_preserve_grouped_history_and_current_titles(
 fn cancelled_history_retains_unstarted_work_and_inverse_of_submitted_changes() {
     let (mut session, mut access, _) = history_fixture(20);
     let request = WindowRequest { session: 1, id: 7, scope: None, operation: WindowOperation::Undo };
-    let mut pending = history_confirmation::PendingHistory::begin(&mut session, &mut access, &request, &screens().into()).unwrap().unwrap();
+    let mut pending = history::PendingHistory::begin(&mut session, &mut access, &request, &screens().into()).unwrap().unwrap();
     assert!(pending.advance(&mut session, &mut access, &|| false, Instant::now()).is_none());
     let submitted = access.submitted.len();
     assert!((1..=8).contains(&submitted));

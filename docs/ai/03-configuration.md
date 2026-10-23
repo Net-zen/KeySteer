@@ -3,9 +3,10 @@
 ## 查找入口
 
 - `src/config/`：文档模型、默认值、别名、校验和保留注释的写回。
+- `src/config/compatibility.rs`、`compatibility.json`、`build/compatibility.rs`：配置入口统一规范化旧字段、绑定和表格式；原生与网页共用规则，Rust 在编译时生成静态规则。
 - `src/app/configuration.rs`：配置编译边界；`src/app/mode_catalog.rs`：模式 Settings 与路由装配。
 - `src/api/input.rs`、`src/api/binding.rs`：键与动作语法。
-- `src/app/paths.rs`、`src/app/restart.rs`、`src/app/preset_store.rs`：路径、重载进程、工作区存储。
+- `src/app/paths.rs`、`src/app/restart.rs`、`src/app/preset_store/mod.rs`：路径、重载进程、工作区存储。
 
 ## 保留的语义
 
@@ -14,13 +15,18 @@
 - 配置发现按入口文件名选择普通文件和指向文件的软链接；用户 profile 按名称排序并优先于 default。保留入口路径用于重载，保存前解析真实目标并在其目录原子替换；断链、循环、非文件目标或只读目标明确失败，不替换链接，首次创建普通配置仍受支持。
 - `app/cli.rs` 将启动选项和执行命令保存在同一 `CliOptions`，默认 `CliCommand::Run`；Windows 只为输出命令和解析错误准备控制台，不另维护参数白名单。执行命令（包括帮助／版本）以最后一个参数为准，不依赖枚举顺序；`--config` 只修改启动选项。内部 helper 在普通 CLI 解析前分派，重载沿用默认启动命令。
 - 字符输入与物理键身份分开；保持修饰键匹配、长按重复和 Down/Up 配对。
+- 五个鼠标键 `mouse_left`／`mouse_right`／`mouse_middle`／`mouse_x1`／`mouse_x2` 均可作绑定触发或点击动作；前三项动作兼容原有 `left_click`／`right_click`／`middle_click`。Windows／macOS Hook 将物理按键交给普通绑定管线，未绑定或禁用时成对透传，不参与模式的键盘捕获或字符输入；回放保留鼠标目标身份。
 - 生产 Reload 先验证并准备新进程，失败保留旧实例；旧实例有序退出后交接已验证配置。进程内 `set_config` 仍原子替换完整计划。
 - 配置与工作区 I/O 不阻塞输入循环；写入失败不覆盖有效数据，格式变更需考虑兼容性。
 - macOS 打包应用的数据在 `~/Library/Application Support/KeySteer/`；portable 使用可执行文件目录。数据目录不能取进程工作目录；显式相对配置路径另按 CLI 规则解析。
 
-字段、默认键位和格式细节直接查 `keysteer.default.toml`、解析代码及测试。修改用户配置语义时同步用户参考和网页编辑器适用部分。
+`keysteer.default.toml` 保留常用参数、完整默认键位和简短说明；高级扫描阈值及角色列表省略后使用 Rust 默认值，不在入门文件中展开。完整配置可用 `--dump-config` 查看，编辑键完整示例内嵌在中英文 Normal 文档的折叠代码块中，并由测试核对两份示例一致。修改用户配置语义时同步用户参考和网页编辑器适用部分。
+
+只有 Window 的屏幕范围缺省为全部屏幕；Quick、Editor、Restore 和 Tabs 缺省为当前屏幕。发布配置、Rust 默认值及网页模拟器保持一致，网页保留屏幕范围选择并按模式说明默认值。各模式仍保留独立配置和入口目标语义。
 
 网页按键编辑区共用同一绑定表，通过“动作／映射到按键”切换编辑原生动作或发送按键。`config-studio/KeyMappingEditor.tsx` 提供常用键与点击录制：仅在录制按钮聚焦期间捕获按键，松开后应用，Esc／失焦／切换编辑对象取消；Esc 本身可通过常用键选择。`simulator/key-mapping.ts` 按物理键识别组合，录制实际 Ctrl／Alt／Shift／Win（macOS 为 Cmd），不擅自换成可被用户覆盖的 Primary。普通单键可导出 `t = "home"`，组合键和有歧义的名称使用显式 `send`；已有配置保留用户及平台别名。网页预览只显示发送结果，不向系统注入按键；动作序列不自动识别为单键映射。
+
+网页 `config-studio/MouseDiagram.tsx` 提供五键鼠标图示，与键盘共用选中组合键、动作拖放、绑定继承及 TOML 写回入口。点击图示编辑该鼠标键的触发绑定；将图示按键拖到键盘，则把目标键绑定为对应的 `mouse_*` 点击动作，沿用当前组合键。图示只提交按键身份与指针事件，不维护第二套绑定或拖放状态。左键触发绑定只在实际设置、禁用或移除时弹出原生模态确认，确认前不改配置；选中查看、重复设置相同值及将左键点击动作拖给键盘均不弹出。检测沿用共享别名解析，也覆盖带修饰键的左键。鼠标区域使用容器查询适应编辑区宽度：宽布局直接在键盘右侧显示鼠标，不提供折叠箭头；窄布局默认折叠，通过键盘下方居中箭头展开到键盘下方。折叠时键盘占满可用宽度，完整键盘仍由 `FittedKeyboard` 缩放。
 
 `scroll.speed` 是普通长按滚动的像素/秒，默认 500，独立于短按距离；接受有限非负小数，0 为仅短按。未发布的 `steps_per_second` 已移除，不提供兼容转换。模式装配时将短按距离和每秒速度编译为 `ScrollSettings`，半页／整页仅按次执行，其连续速度为 0。模式按键变化时缓存方向速度与持续手势状态，帧热路径只做时间积分，不读取配置或解析字段。网页 `docs/.vitepress/simulator/scroll.ts` 同样预编译速度，控件与移动速度一样直接编辑数值，不设额外速度档位，导出仅使用 `speed`，保留速度修饰键和 macOS 方向设置。
 
@@ -28,9 +34,17 @@
 
 UIHint 搜索样式缺省时使用 `UiHint::default()` 的对应面板默认值。部分 `search_input_ui`／`search_info_ui` 表也在配置反序列化阶段补齐各自默认字段；信息面板不能退回输入框的通用宽度和屏幕锚点。补齐后沿用共享校验和启动样式编译，运行时不解析配置。
 
+旧配置在 TOML 结构解析后、类型反序列化前统一处理；原生 `Config::parse`／带诊断的加载路径与网页 `parseConfigDocument` 各调用一次兼容模块。共享 `compatibility.json` 按路径声明 `ignore`（丢弃）、`reject`（提示替代项）、`copy`（按优先级补齐缺省字段）、`reject_values`（旧绑定名）和表格式转换；路径的 `*` 匹配一级表名或数组项，覆盖应用覆盖表、插件及动作序列。简单规则只需修改该表，复杂转换只放在兼容模块；当前字段的格式校验仍留在各自模型中。
+
+旧滚动反转值在入口迁移为两个当前轴字段，保持显式值、新旧开关及缺省平台表的原有优先级；DTO、设置解析和导出不再保留旧字段或回退逻辑，导出直接序列化当前模型。旧搜索编辑“动作 = 按键”表在此转换，后续反序列化和网页预览只处理“按键 = 动作”；空键组仍可分别禁用动作。旧五项复制键在入口丢弃末尾已移除的标签项，校验与模式装配只接收四项。诊断随加载结果返回并沿用启动日志策略，不保存在 Config 或运行时 Settings 中。
+
+`build.rs` 调用 `build/compatibility.rs`，在编译时解析并校验共享 JSON，将字段、分段路径和转换枚举生成为 `OUT_DIR/compatibility_rules.rs` 中的静态借用数组；原生通过 `include!` 使用，不在启动时解析 JSON 或构造规则。网页仍将同一 JSON 打入构建产物，两端均无需部署独立规则文件。兼容处理只在配置加载时应用一次，不在输入、帧处理、导出或网页预览合并时重新迁移。当前格式配置的原生兼容遍历有零堆分配测试；实际旧字段转换和诊断仅在加载时按需分配。`tests/fixtures/config-compatibility.json` 由两端共同验证原文规范化、优先级、诊断、幂等和导出回读。命名锚点、分数／小数等仍受支持且有独立语义的当前语法不属于旧字段迁移；保留其正常解析与数值编译。
+
+两个搜索面板与窗口卡片共用四边百分比的校验、区域、中心点和边界限制计算；面板统一由 `CompiledSearchPanel::place` 定位，信息面板直接使用实际高度，不重复计算输入框布局。仅用 `position_mode` 与 `position` 定位，百分比限定为 0–100%；旧 `x_offset`／`y_offset` 兼容接受但忽略，类型模型和导出不保留。输入框缺省为当前屏幕高度的 95%；信息面板以输入框中心为基准，上／下半区决定上方／下方，两面板半高之和先分离边缘，再以区域中心距 50% 中线的比例乘以总高度计算间距。缺省 `44% / 56%` 在普通字号下约留 12 像素，四个 `50%` 紧贴上方。`window` 参照识别窗口，无窗口时退回当前屏幕。网页复用 `CardPositionEditor` 的点选、范围拖动、预设及四边滑块，修改直接更新右侧实时预览的 `SearchPanelsOverlay`；它与 `simulator/search-panel-position.ts` 共用定位计算，并通过 `config-studio/preview-geometry.ts` 与桌面背景共用屏幕／窗口矩形，设置区不另绘制布局预览。编辑写回各自 TOML 路径。`tests/fixtures/search-panel-layout.json` 同时验证 Rust／网页的窗口回退、负屏幕坐标、缩放、贴边、超大尺寸和跟随间距；运行时仅计算当前几何，定位与样式复用有零分配回归测试。
+
 `ui_hint.search_highlight` 只覆盖当前预览／已选单点的标签底色、文字、边框和线宽；缺省复用 Window 的选中绿色。可选主题颜色在 catalog 预编译，默认值不导出；网页外观页有相同校验、重置和 Tab 切换预览。绘制层从当前信息面板及 Point position 取标签身份，只改该标签样式并提升到标签顶层；普通 Hint 标签循环保持不变，集合中心不标记单个成员。
 
-`ui_hint.search_edit_keys` 对外使用“按键 = 动作”表，加载时按动作归并并覆盖该动作的默认键；省略动作保留默认值。内部沿用动作到快捷键的模型和编译后的 Settings；与信息复制键一起校验冲突，并在启动阶段解析为 KeyChord。编辑键、复制键与 `ui_hint.search_bindings` 一起在启动时展开组合键内部的配置别名；`primary` 遵循平台别名覆盖（发布 Windows 为 left_alt），也允许显式 cmd、ctrl。
+`ui_hint.search_edit_keys` 对外使用“按键 = 动作”表，加载时按动作归并并覆盖该动作的默认键；省略动作保留默认值。内部沿用动作到快捷键的模型和编译后的 Settings；与信息复制键一起校验冲突，并在启动阶段解析为 KeyChord。编辑键、复制键与 `ui_hint.search_bindings` 一起在启动时展开组合键内部的配置别名；`primary` 遵循平台别名覆盖（默认 macOS 为 Cmd，其余平台为 Ctrl），也允许显式 cmd、ctrl。
 
 搜索编辑键在左侧以空格分隔多个快捷键，也可多行绑定同一动作，启动时展开与校验，不在输入热路径解析。默认 `"enter / primary+q" = "accept"`。旧“动作 = 按键”表兼容读取，原生导出统一使用新格式并保留禁用动作；网页导入也转换为新格式，按动作合并稀疏覆盖并复用现有绑定控件。
 
@@ -45,3 +59,11 @@ Window 多选入口与清空沿用 `window.bindings` 的 `window_multi_select`�
 Point 输入框的 `search_point.input_background_color`／`input_border_color` 为可选主题颜色；缺省背景采用窗口多选卡片同款浅／深绿色，边框继承普通搜索框。两项在装配时预编译，默认值不写入配置；网页外观页同时编辑普通搜索框和 Point 覆盖并预览对照。
 
 `ui_hint.search_match_priority` 是固定三项枚举数组，label／text／pinyin 各一次，默认 pinyin／text／label（简拼、文字、标签）；只控制同等匹配程度下的结果预览类别顺序，不改变普通完整标签解析和显式 @label 语义。完整词／标签、前缀、包含匹配依次排列，同分保持扫描顺序、空格词项保持输入顺序。配置校验拒绝缺项、重复及未知值，catalog 将已解析枚举编译为 64 项匹配度／优先级查表，运行时不遍历配置；网页编辑器提供相同校验和重置。
+
+快速切换通过 `quick_switch.hint_characters` 配置有序标签字符，默认 `wertyuiop`；名称与 UIHint 一致。启动时校验至少两个规范化后不同的字符且不含触发键，编译为字符数组；网页导入、控件与预览使用同一语义。可显式设为 `123456789` 保留数字选择偏好。
+
+`quick_switch.bindings` 与其他模式一样整表替换默认绑定，默认 Esc／Q 为 `cancel_selection`，Backspace 为 `previous_level`；可仅保留其中一个退出键。校验阻止绑定占用标签字符。模式样式与候选设置在 catalog 装配，Engine 只保留入口手势与原生字符注册所需配置。
+
+`text_select` 配置启用状态、标签字符和绑定，识别范围／OCR 参数与面板外观复用 `ui_hint`；Normal 默认 `c` 进入。旧配置缺少 `[text_select]`／`[text_input]` 时沿用模式默认设置，并为旧 Normal 绑定表补上未被占用的 `c`／`\` 入口；同模式已有改键、明确 `none`、显式模式表及禁用设置优先。原生与网页解析保持一致。文字选择默认 `Primary+C` 细分（普通 `c` 是搜索文字）、Ctrl+Backspace 重置、Tab 返回、Backspace 有输入时删除／空输入时返回、Enter 复制，Space 保留输入。默认展开输入框与文字面板；`?` 显示实际绑定帮助。
+
+原来写在模式内部的控制键进入各模式 `bindings`。`config::with_control_defaults` 从内置默认表提取这些旧控制，补齐旧版／稀疏配置，显式 `none` 或同键绑定优先，按标准键别名判断占用。配置解析和 catalog 都使用该入口；不会把原来可配置的其他默认动作重新补入显式表。默认键及旧行为保持：网格 Space／Tab／Backspace／Enter／Esc，UIHint `/`／Enter／Esc／Backspace，以及仅在完成后生效的 Tab；窗口与屏幕选择也保留原键。网页按键面板暴露新动作，默认值仍来自发布配置。

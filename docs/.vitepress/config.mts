@@ -1,7 +1,8 @@
 import vueJsx from '@vitejs/plugin-vue-jsx'
-import { withMermaid } from 'vitepress-plugin-mermaid'
+import type { MarkdownRenderer } from 'vitepress'
 import { loadLatestRelease } from './latest-release.ts'
 import { releaseHistory } from './release-history.ts'
+import { mermaidMarkdown } from './mermaid-markdown.ts'
 
 const base = process.env.KEYSTEER_DOCS_BASE || '/'
 const windowSidebar = (prefix = '', english = false) => ({
@@ -15,11 +16,23 @@ const windowSidebar = (prefix = '', english = false) => ({
     { text: english ? 'Restore · Saved workspaces' : 'Restore 保存与恢复', link: `${prefix}/window-management/restore` },
   ],
 })
+const developmentSidebar = (prefix = '', english = false) => ({
+  text: english ? 'Development' : '开发',
+  items: [
+    { text: english ? 'Architecture' : '架构', link: `${prefix}/development/architecture` },
+    { text: english ? 'Extension guide' : '扩展指南', link: `${prefix}/development/extension-guide` },
+    { text: english ? 'Workflow and tests' : '开发流程与测试', link: `${prefix}/development/workflow` },
+    { text: english ? 'Plugin development' : '插件开发', link: `${prefix}/development/plugin-development` },
+    { text: english ? 'Safety and performance' : '安全与性能约束', link: `${prefix}/development/safety-and-performance` },
+  ],
+})
 const englishTheme = {
   nav: [
     { text: 'Get started', link: '/en/guide/getting-started' },
     { text: 'Modes', link: '/en/modes/' },
     { text: 'Configuration', link: '/en/reference/configuration' },
+    { text: 'Development', link: '/en/development/architecture' },
+    { text: 'Performance', link: '/en/performance' },
     { text: 'Configuration & simulator', link: '/en/editor/' },
   ],
   sidebar: [
@@ -34,6 +47,8 @@ const englishTheme = {
       { text: 'Configuration', link: '/en/reference/configuration' },
       { text: 'Modes and actions', link: '/en/reference/modes-and-actions' }, { text: 'Release notes', link: '/en/releases/' },
     ] },
+    developmentSidebar('/en', true),
+    { text: 'Performance', items: [{ text: 'Response & memory', link: '/en/performance' }] },
     { text: 'Tools', items: [{ text: 'Configuration & simulator', link: '/en/editor/' }] },
   ],
   search: {
@@ -48,7 +63,7 @@ const englishTheme = {
       },
     },
   },
-  outline: { label: 'On this page' },
+  outline: { label: 'On this page', level: [2, 3] as [number, number] },
   docFooter: { prev: 'Previous page', next: 'Next page' },
   lastUpdated: { text: 'Last updated' },
 }
@@ -58,9 +73,11 @@ const languageStateScript = `(() => {
   const englishPages = new Set([
     '', 'guide/getting-started', 'guide/macos', 'modes/', 'modes/grid',
     'modes/window', 'modes/normal', 'modes/recursive-grid', 'modes/ui-hint', 'reference/configuration',
-    'reference/modes-and-actions', 'editor/', 'simulator', 'releases/',
+    'reference/modes-and-actions', 'editor/', 'simulator', 'releases/', 'performance',
     'window-management/', 'window-management/window', 'window-management/quick',
     'window-management/editor', 'window-management/tabs', 'window-management/restore',
+    'development/architecture', 'development/extension-guide', 'development/workflow',
+    'development/plugin-development', 'development/safety-and-performance',
   ])
   const relativePath = () => decodeURIComponent(location.pathname.startsWith(base)
     ? location.pathname.slice(base.length) : location.pathname.slice(1))
@@ -91,13 +108,13 @@ const languageStateScript = `(() => {
   }, true)
 })()`
 
-export default async ({ command }: { command: string }) => {
-  // Vite passes serve/build explicitly; do not infer it from argv or NODE_ENV.
+export default async ({ command }: { command: unknown }) => {
+  // Use the supplied command rather than global argv or NODE_ENV.
   const latestRelease = await loadLatestRelease(command, process.env.GITHUB_TOKEN, process.env.KEYSTEER_DOCS_RELEASE_TAG)
-  return withMermaid({
+  return {
   // Internal maintenance notes are repository documentation, not site pages.
   srcExclude: ['ai/**'],
-  markdown: { config: releaseHistory },
+  markdown: { config(md: MarkdownRenderer) { releaseHistory(md); mermaidMarkdown(md) } },
   base,
   lang: 'zh-CN',
   locales: {
@@ -121,6 +138,11 @@ export default async ({ command }: { command: string }) => {
     ['script', {}, languageStateScript],
   ],
   vite: {
+    optimizeDeps: {
+      // Mermaid's lazy diagram chunks import CommonJS dependencies such as elkjs.
+      // Prebundle the entry so those imports are converted before browser loading.
+      include: ['mermaid'],
+    },
     build: {
       // Pages serves the built files; gzip size reporting is only a console statistic.
       reportCompressedSize: false,
@@ -130,9 +152,7 @@ export default async ({ command }: { command: string }) => {
     },
     plugins: [vueJsx()],
     ssr: {
-      // Compile the Vue plugin, but let Node load Mermaid during SSR.
-      // Diagrams render onMounted; bundling Mermaid again on the server is wasteful.
-      noExternal: ['vitepress-plugin-mermaid'],
+      // Diagrams import Mermaid only after mounting in the browser.
       external: ['mermaid'],
     },
   },
@@ -143,6 +163,7 @@ export default async ({ command }: { command: string }) => {
       { text: '模式', link: '/modes/' },
       { text: '配置参考', link: '/reference/configuration' },
       { text: '一起开发', link: '/development/architecture' },
+      { text: '性能', link: '/performance' },
       { text: '配置与模拟器', link: '/editor/' },
     ],
     sidebar: [
@@ -172,15 +193,8 @@ export default async ({ command }: { command: string }) => {
           { text: '更新日志 / Release Notes', link: '/releases/' },
         ],
       },
-      {
-        text: '开发',
-        items: [
-          { text: '架构', link: '/development/architecture' },
-          { text: '扩展指南', link: '/development/extension-guide' },
-          { text: '开发流程与测试', link: '/development/workflow' },
-          { text: '插件开发', link: '/development/plugin-development' },
-        ],
-      },
+      developmentSidebar(),
+      { text: '性能', items: [{ text: '响应与内存', link: '/performance' }] },
       {
         text: '工具',
         items: [{ text: '配置与模拟器', link: '/editor/' }],
@@ -238,7 +252,7 @@ export default async ({ command }: { command: string }) => {
         },
       },
     },
-    outline: { label: '本页内容' },
+    outline: { label: '本页内容', level: [2, 3] as [number, number] },
     docFooter: { prev: '上一页', next: '下一页' },
     lastUpdated: { text: '最近更新' },
     locales: {
@@ -251,6 +265,8 @@ export default async ({ command }: { command: string }) => {
           { text: 'Get started', link: '/en/guide/getting-started' },
           { text: 'Modes', link: '/en/modes/' },
           { text: 'Configuration', link: '/en/reference/configuration' },
+          { text: 'Development', link: '/en/development/architecture' },
+          { text: 'Performance', link: '/en/performance' },
           { text: 'Configuration & simulator', link: '/en/editor/' },
         ],
         sidebar: [
@@ -280,6 +296,8 @@ export default async ({ command }: { command: string }) => {
               { text: 'Release notes', link: '/en/releases/' },
             ],
           },
+          developmentSidebar('/en', true),
+          { text: 'Performance', items: [{ text: 'Response & memory', link: '/en/performance' }] },
           {
             text: 'Tools',
             items: [{ text: 'Configuration & simulator', link: '/en/editor/' }],
@@ -311,11 +329,11 @@ export default async ({ command }: { command: string }) => {
             },
           },
         },
-        outline: { label: 'On this page' },
+        outline: { label: 'On this page', level: [2, 3] as [number, number] },
         docFooter: { prev: 'Previous page', next: 'Next page' },
         lastUpdated: { text: 'Last updated' },
       },
     },
   },
-  })
+  }
 }

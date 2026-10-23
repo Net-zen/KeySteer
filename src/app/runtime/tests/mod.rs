@@ -72,6 +72,7 @@ struct Recorder {
     scan_requests: Vec<crate::api::UiScanRequest>,
     cancelled_scans: Vec<u64>,
     opened_urls: Vec<String>,
+    input_capture_stopped: bool,
     shutdowns: usize,
     /// Button press/release/click calls, in order.
     buttons: Vec<(MouseButton, ButtonAction)>,
@@ -385,6 +386,9 @@ impl Backend for FakeBackend {
         self.log.lock().unwrap().opened_urls.push(url.to_string());
         Ok(())
     }
+    fn stop_input_capture(&mut self) {
+        self.log.lock().unwrap().input_capture_stopped = true;
+    }
     fn shutdown(&mut self) -> Result<(), String> {
         self.log.lock().unwrap().shutdowns += 1;
         Ok(())
@@ -432,6 +436,7 @@ impl Mode for ProbeMode {
     }
     fn handle(&mut self, event: &ModeEvent, _ctx: &HostContext<'_>) -> CommandBatch {
         let label = match event {
+            ModeEvent::ModeList(_) => "mode-list",
             ModeEvent::TogglePointAdjustment
             | ModeEvent::CyclePointTarget
             | ModeEvent::CyclePointColor
@@ -444,6 +449,7 @@ impl Mode for ProbeMode {
             }
             ModeEvent::CopyTextField(_) => "copy_field",
             ModeEvent::TextCopied => "text_copied",
+            ModeEvent::TextSegmented(_) => "text_segmented",
             ModeEvent::Activated { .. } => "activated",
             ModeEvent::Pushed { .. } => "pushed",
             ModeEvent::Deactivated => "deactivated",
@@ -551,6 +557,24 @@ fn key_down(name: &str) -> BackendEvent {
 
 fn key_up(name: &str) -> BackendEvent {
     key_event(name, KeyState::Up)
+}
+
+/// Use the same configured aliases and physical modifier side as injection.
+fn primary_key(config: &Config) -> String {
+    KeyChord::parse_with_aliases("primary", config.resolved_key_aliases())
+        .unwrap()
+        .injection_keys()[0]
+        .as_str()
+        .to_owned()
+}
+
+/// Windows rasterises in DPI-scaled pixels; AppKit scenes use logical points.
+fn rendered_label_rect(label: &crate::api::overlay::OverlayLabel, scale: f64) -> Rect {
+    if cfg!(target_os = "windows") {
+        crate::api::overlay::scaled_label_geometry(&label.text, label.rect, &label.style, scale).0
+    } else {
+        label.rect
+    }
 }
 
 /// An engine whose `normal` table contains exactly `chord -> binding`,
@@ -662,6 +686,7 @@ include!("performance.rs");
 include!("native_event_loop.rs");
 include!("input.rs");
 include!("text_input.rs");
+include!("text_select.rs");
 include!("normal_targeting.rs");
 include!("drag.rs");
 include!("modes.rs");

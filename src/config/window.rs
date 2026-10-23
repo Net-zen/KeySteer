@@ -120,18 +120,17 @@ pub struct MultiSelect {
 impl Default for MultiSelect {
     fn default() -> Self {
         Self {
-            bindings: Bindings::from([
-                ("ctrl enter".into(), Binding::Window(W::MultiConfirm)),
-                (
-                    "primary+h".into(),
-                    Binding::parse("arrow_left")
-                        .unwrap_or_else(|error| panic!("invalid built-in edit key: {error}")),
-                ),
-                (
-                    "primary+l".into(),
-                    Binding::parse("arrow_right")
-                        .unwrap_or_else(|error| panic!("invalid built-in edit key: {error}")),
-                ),
+            bindings: super::builtin_bindings(&[
+                ("ctrl enter", "window_multi_confirm"),
+                ("esc", "window_multi_cancel"),
+                ("backspace", "send backspace"),
+                ("delete", "send delete"),
+                ("arrow_left", "send arrow_left"),
+                ("arrow_right", "send arrow_right"),
+                ("home", "send home"),
+                ("end", "send end"),
+                ("primary+h", "arrow_left"),
+                ("primary+l", "arrow_right"),
             ]),
         }
     }
@@ -245,6 +244,7 @@ impl Default for Window {
             resize_step: 20.0,
             resize_speed: 500.0,
         };
+        window.common.screens = WindowScreens::All;
         let modifier = "ctrl";
         let clear = format!("{modifier}+x");
         window.common.temporary_mode_passthrough_keys = vec![modifier.into(), clear.clone()];
@@ -335,6 +335,7 @@ impl Default for WindowEditor {
                     ("shift+c", W::ResetInitial),
                     ("x", W::RemoveRegion),
                     ("ctrl+s", W::SaveLayout),
+                    ("`", W::AreaNumber),
                 ],
                 &[("r", ModeId::window_restore())],
             ),
@@ -348,7 +349,12 @@ impl Default for WindowRestore {
     fn default() -> Self {
         let mut common = common(
             ModeId::window(),
-            &[("enter", W::Confirm), ("x", W::DeletePreset)],
+            &[
+                ("enter", W::Confirm),
+                ("x", W::DeletePreset),
+                ("page_up", W::PreviousPage),
+                ("page_down", W::NextPage),
+            ],
             &[],
         );
         common.lifecycle.after_finish = LifecycleAction::Mode(ModeId::window_editor());
@@ -466,8 +472,23 @@ mod scope_tests {
     #[test]
     fn window_scope_defaults_and_flat_mode_configuration() {
         let default = Window::default();
-        assert_eq!(default.screens, WindowScreens::Current);
+        assert_eq!(default.screens, WindowScreens::All);
         assert!(!default.include_minimized);
+        let window: Window = toml::from_str("").unwrap();
+        assert_eq!(window.screens, WindowScreens::All);
+        for common in [
+            WindowQuick::default().common,
+            WindowEditor::default().common,
+            WindowRestore::default().common,
+            WindowTab::default().common,
+            toml::from_str::<WindowQuick>("").unwrap().common,
+            toml::from_str::<WindowEditor>("").unwrap().common,
+            toml::from_str::<WindowRestore>("").unwrap().common,
+            toml::from_str::<WindowTab>("").unwrap().common,
+        ] {
+            assert_eq!(common.screens, WindowScreens::Current);
+            assert!(!common.include_minimized);
+        }
         let editor: WindowEditor =
             toml::from_str("screens = 'all'\ninclude_minimized = true").unwrap();
         assert_eq!(editor.screens, WindowScreens::All);

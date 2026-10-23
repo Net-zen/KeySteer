@@ -1,0 +1,936 @@
+//! macOS input capture, keycode mapping and CoreGraphics input injection.
+
+#![forbid(unsafe_code)]
+
+pub(super) mod hook;
+mod latest_point_mailbox;
+pub(super) mod multi_click;
+
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+
+use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, EventField};
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use objc2_core_foundation::{CFRetained, CGPoint};
+use objc2_core_graphics::{
+    CGAssociateMouseAndMouseCursorPosition, CGError, CGEvent as NativeEvent,
+    CGEventField as NativeEventField, CGEventFlags as NativeEventFlags,
+    CGEventTapLocation as NativeEventTapLocation, CGEventType as NativeEventType,
+    CGMouseButton as NativeMouseButton, CGScrollEventUnit, CGWarpMouseCursorPosition,
+};
+
+use crate::api::command::{ButtonAction, MouseButton};
+use crate::api::geometry::Point;
+use crate::api::input::{Key, KeyState};
+
+use self::multi_click::ClickTracker;
+
+/// Tags our synthetic events so the tap can ignore them. Any value works as
+/// long as it is unlikely to collide with another tool's.
+pub const INJECTED_TAG: i64 = 0x4E4D_4B31;
+
+const LEFT_CTRL_DEVICE_FLAG: u64 = 0x0000_0001;
+const LEFT_SHIFT_DEVICE_FLAG: u64 = 0x0000_0002;
+const RIGHT_SHIFT_DEVICE_FLAG: u64 = 0x0000_0004;
+const LEFT_COMMAND_DEVICE_FLAG: u64 = 0x0000_0008;
+const RIGHT_COMMAND_DEVICE_FLAG: u64 = 0x0000_0010;
+const LEFT_OPTION_DEVICE_FLAG: u64 = 0x0000_0020;
+const RIGHT_OPTION_DEVICE_FLAG: u64 = 0x0000_0040;
+const RIGHT_CTRL_DEVICE_FLAG: u64 = 0x0000_2000;
+
+pub(super) const DRAG_MODIFIER_SHIFT: u8 = 1 << 0;
+pub(super) const DRAG_MODIFIER_CONTROL: u8 = 1 << 1;
+pub(super) const DRAG_MODIFIER_OPTION: u8 = 1 << 2;
+pub(super) const DRAG_MODIFIER_COMMAND: u8 = 1 << 3;
+const DRAG_MODIFIER_ALL: u8 =
+    DRAG_MODIFIER_SHIFT | DRAG_MODIFIER_CONTROL | DRAG_MODIFIER_OPTION | DRAG_MODIFIER_COMMAND;
+
+/// Compress the physical left/right modifier state reported by a FlagsChanged
+/// event into the four semantic flags a synthetic mouse-drag event needs.
+/// The hook is the sole writer, so this representation fits in one atomic byte.
+pub(super) fn compact_drag_modifier_flags(flags: u64) -> u8 {
+    let mut compact = 0;
+    if flags
+        & (LEFT_SHIFT_DEVICE_FLAG | RIGHT_SHIFT_DEVICE_FLAG | NativeEventFlags::MaskShift.bits())
+        != 0
+    {
+        compact |= DRAG_MODIFIER_SHIFT;
+    }
+    if flags
+        & (LEFT_CTRL_DEVICE_FLAG | RIGHT_CTRL_DEVICE_FLAG | NativeEventFlags::MaskControl.bits())
+        != 0
+    {
+        compact |= DRAG_MODIFIER_CONTROL;
+    }
+    if flags
+        & (LEFT_OPTION_DEVICE_FLAG
+            | RIGHT_OPTION_DEVICE_FLAG
+            | NativeEventFlags::MaskAlternate.bits())
+        != 0
+    {
+        compact |= DRAG_MODIFIER_OPTION;
+    }
+    if flags
+        & (LEFT_COMMAND_DEVICE_FLAG
+            | RIGHT_COMMAND_DEVICE_FLAG
+            | NativeEventFlags::MaskCommand.bits())
+        != 0
+    {
+        compact |= DRAG_MODIFIER_COMMAND;
+    }
+    compact
+}
+
+fn native_drag_modifier_flags(compact: u8) -> NativeEventFlags {
+    debug_assert_eq!(compact & !DRAG_MODIFIER_ALL, 0);
+    let mut flags = NativeEventFlags::empty();
+    if compact & DRAG_MODIFIER_SHIFT != 0 {
+        flags.insert(NativeEventFlags::MaskShift);
+    }
+    if compact & DRAG_MODIFIER_CONTROL != 0 {
+        flags.insert(NativeEventFlags::MaskControl);
+    }
+    if compact & DRAG_MODIFIER_OPTION != 0 {
+        flags.insert(NativeEventFlags::MaskAlternate);
+    }
+    if compact & DRAG_MODIFIER_COMMAND != 0 {
+        flags.insert(NativeEventFlags::MaskCommand);
+    }
+    flags
+}
+
+pub(super) struct KeyboardInjector {
+    source: Result<CGEventSource, String>,
+}
+
+impl KeyboardInjector {
+    pub(super) fn new() -> Self {
+        Self {
+            source: CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+                .map_err(|_| "cannot create a CoreGraphics event source".to_string()),
+        }
+    }
+
+    fn source(&self) -> Result<&CGEventSource, String> {
+        self.source.as_ref().map_err(Clone::clone)
+    }
+
+    pub(super) fn send_key(&self, key: &Key, state: KeyState) -> Result<(), String> {
+        post_key_event(self.source()?, key, state)
+    }
+
+    pub(super) fn send_keys(&self, events: Vec<(Key, KeyState)>) -> Result<(), String> {
+        // Reject an invalid member before posting any prefix of the batch.
+        for (key, _) in &events {
+            if keycode_for(key).is_none() {
+                return Err(format!("no macOS keycode for {key}"));
+            }
+        }
+        let source = self.source()?;
+        for (key, state) in events {
+            post_key_event(source, &key, state)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn send_chord(&self, keys: &[Key]) -> Result<(), String> {
+        self.send_chord_suspending(keys, &[])
+    }
+
+    pub(super) fn send_chord_suspending(
+        &self,
+        keys: &[Key],
+        modifiers: &[Key],
+    ) -> Result<(), String> {
+        // Validate the complete chord before posting its first edge so an
+        // unsupported member cannot leave an earlier modifier pressed.
+        for key in keys {
+            if keycode_for(key).is_none() {
+                return Err(format!("no macOS keycode for {key}"));
+            }
+        }
+        let source = self.source()?;
+        let mut flags = ChordEventFlags::new(modifiers);
+        for (pressed, key) in keys.iter().enumerate() {
+            if let Err(error) = post_chord_key_event(source, key, KeyState::Down, &mut flags) {
+                let mut errors = crate::support::errors::ErrorBundle::default();
+                errors.push(format!("press {key}"), error);
+                for pressed_key in keys[..pressed].iter().rev() {
+                    errors.record(
+                        format!("compensating release {pressed_key}"),
+                        post_chord_key_event(source, pressed_key, KeyState::Up, &mut flags),
+                    );
+                }
+                return errors.into_result();
+            }
+        }
+        for key in keys.iter().rev() {
+            if let Err(error) = post_chord_key_event(source, key, KeyState::Up, &mut flags) {
+                // Key-up is idempotent. Releasing the complete chord is safer
+                // than trying to infer which native posts reached the session.
+                let mut errors = crate::support::errors::ErrorBundle::default();
+                errors.push(format!("release {key}"), error);
+                for pressed_key in keys.iter().rev() {
+                    errors.record(
+                        format!("compensating release {pressed_key}"),
+                        post_chord_key_event(source, pressed_key, KeyState::Up, &mut flags),
+                    );
+                }
+                return errors.into_result();
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn cursor_position() -> Result<Point, String> {
+    // A NULL source is sufficient for reading the global cursor and avoids
+    // allocating a separate CGEventSource for every mouse action.
+    let Some(event) = NativeEvent::new(None) else {
+        return Err("cannot read the cursor position".into());
+    };
+    let position = NativeEvent::location(Some(&event));
+    Ok(Point::new(position.x, position.y))
+}
+
+pub fn warp_cursor(to: Point) -> Result<(), String> {
+    // Decoupling briefly stops the hardware delta from fighting the warp.
+    CGAssociateMouseAndMouseCursorPosition(false);
+    let status = CGWarpMouseCursorPosition(CGPoint::new(to.x, to.y));
+    CGAssociateMouseAndMouseCursorPosition(true);
+
+    if status == CGError::Success {
+        Ok(())
+    } else {
+        Err(format!("CGWarpMouseCursorPosition failed: {}", status.0))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MouseEventSpec {
+    event_type: NativeEventType,
+    button: NativeMouseButton,
+}
+
+fn button_number(button: MouseButton) -> NativeMouseButton {
+    match button {
+        MouseButton::Left => NativeMouseButton::Left,
+        MouseButton::Right => NativeMouseButton::Right,
+        MouseButton::Middle => NativeMouseButton::Center,
+        MouseButton::X1 => NativeMouseButton(3),
+        MouseButton::X2 => NativeMouseButton(4),
+    }
+}
+
+fn button_event(button: MouseButton, down: bool) -> MouseEventSpec {
+    let event_type = match (button, down) {
+        (MouseButton::Left, true) => CGEventType::LeftMouseDown,
+        (MouseButton::Left, false) => CGEventType::LeftMouseUp,
+        (MouseButton::Right, true) => CGEventType::RightMouseDown,
+        (MouseButton::Right, false) => CGEventType::RightMouseUp,
+        (_, true) => CGEventType::OtherMouseDown,
+        (_, false) => CGEventType::OtherMouseUp,
+    };
+    MouseEventSpec {
+        event_type: NativeEventType(event_type as u32),
+        button: button_number(button),
+    }
+}
+
+fn drag_event(button: MouseButton) -> MouseEventSpec {
+    let event_type = match button {
+        MouseButton::Left => CGEventType::LeftMouseDragged,
+        MouseButton::Right => CGEventType::RightMouseDragged,
+        _ => CGEventType::OtherMouseDragged,
+    };
+    MouseEventSpec {
+        event_type: NativeEventType(event_type as u32),
+        button: button_number(button),
+    }
+}
+
+pub const fn button_mask(button: MouseButton) -> u8 {
+    1 << (button as u8)
+}
+
+fn movement_event(held_buttons: u8) -> MouseEventSpec {
+    for button in [
+        MouseButton::Left,
+        MouseButton::Right,
+        MouseButton::Middle,
+        MouseButton::X1,
+        MouseButton::X2,
+    ] {
+        if held_buttons & button_mask(button) != 0 {
+            return drag_event(button);
+        }
+    }
+    MouseEventSpec {
+        event_type: NativeEventType::MouseMoved,
+        button: NativeMouseButton::Left,
+    }
+}
+
+fn create_mouse_event(
+    spec: MouseEventSpec,
+    at: Point,
+    click_count: i64,
+) -> Option<CFRetained<NativeEvent>> {
+    let event =
+        NativeEvent::new_mouse_event(None, spec.event_type, CGPoint::new(at.x, at.y), spec.button)?;
+    NativeEvent::set_integer_value_field(
+        Some(&event),
+        NativeEventField::EventSourceUserData,
+        INJECTED_TAG,
+    );
+    if click_count > 0 {
+        NativeEvent::set_integer_value_field(
+            Some(&event),
+            NativeEventField::MouseEventClickState,
+            click_count,
+        );
+    }
+    if spec.button.0 > NativeMouseButton::Center.0 {
+        NativeEvent::set_integer_value_field(
+            Some(&event),
+            NativeEventField::MouseEventButtonNumber,
+            i64::from(spec.button.0),
+        );
+    }
+    Some(event)
+}
+
+fn post_mouse_event(spec: MouseEventSpec, at: Point) -> Result<(), String> {
+    let Some(event) = create_mouse_event(spec, at, 0) else {
+        return Err("cannot create a macOS mouse movement event".into());
+    };
+    NativeEvent::post(NativeEventTapLocation::SessionEventTap, Some(&event));
+    Ok(())
+}
+
+fn post_drag_event(spec: MouseEventSpec, at: Point, modifier_flags: u8) -> Result<(), String> {
+    let Some(event) = create_mouse_event(spec, at, 0) else {
+        return Err("cannot create a macOS mouse drag event".into());
+    };
+    NativeEvent::set_flags(Some(&event), native_drag_modifier_flags(modifier_flags));
+    NativeEvent::post(NativeEventTapLocation::SessionEventTap, Some(&event));
+    Ok(())
+}
+
+pub fn move_cursor_relative(
+    from: Point,
+    dx: f64,
+    dy: f64,
+    held_buttons: u8,
+    drag_modifier_flags: u8,
+) -> Result<Point, String> {
+    let to = Point::new(from.x + dx, from.y + dy);
+    let event = movement_event(held_buttons);
+    if held_buttons == 0 {
+        // Ordinary pointer movement keeps its existing path: it neither reads
+        // nor attaches the hook's modifier snapshot.
+        post_mouse_event(event, to)?;
+    } else {
+        post_drag_event(event, to, drag_modifier_flags)?;
+    }
+    Ok(to)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ButtonStep {
+    down: bool,
+    click_count: i64,
+}
+
+fn button_steps(action: ButtonAction, click_counts: &[i64]) -> ([ButtonStep; 4], usize) {
+    let mut steps = [ButtonStep {
+        down: false,
+        click_count: 0,
+    }; 4];
+    let down_edges: &[bool] = match action {
+        ButtonAction::Press => &[true],
+        ButtonAction::Release => &[false],
+        ButtonAction::Click => &[true, false],
+        ButtonAction::DoubleClick => &[true, false, true, false],
+    };
+    debug_assert_eq!(down_edges.len(), click_counts.len());
+    for (index, (down, click_count)) in down_edges
+        .iter()
+        .copied()
+        .zip(click_counts.iter().copied())
+        .enumerate()
+    {
+        steps[index] = ButtonStep { down, click_count };
+    }
+    (steps, down_edges.len())
+}
+
+pub fn mouse_button(
+    tracker: &Mutex<ClickTracker>,
+    button: MouseButton,
+    action: ButtonAction,
+) -> Result<(), String> {
+    let at = cursor_position()?;
+    let mut tracker = tracker
+        .lock()
+        .map_err(|_| "macOS multi-click state is unavailable".to_string())?;
+    let plan = tracker.prepare(button, action, at, Instant::now());
+    let (steps, step_count) = button_steps(action, plan.counts());
+
+    // Create the complete sequence before posting any part of it. If event
+    // allocation fails, no partial click can leave a target application with a
+    // button held down.
+    let mut events: [Option<CFRetained<NativeEvent>>; 4] = std::array::from_fn(|_| None);
+    for index in 0..step_count {
+        events[index] = create_mouse_event(
+            button_event(button, steps[index].down),
+            at,
+            steps[index].click_count,
+        );
+        if events[index].is_none() {
+            return Err("cannot create a macOS mouse button event".into());
+        }
+    }
+    for event in events[..step_count].iter().flatten() {
+        NativeEvent::post(NativeEventTapLocation::SessionEventTap, Some(event));
+    }
+    tracker.commit(plan);
+    Ok(())
+}
+
+pub fn scroll(dx: f64, dy: f64) -> Result<(), String> {
+    // NULL event source, both axes declared, and session-level posting.
+    let vertical = (-dy).round() as i32;
+    let horizontal = (-dx).round() as i32;
+    if vertical == 0 && horizontal == 0 {
+        return Ok(());
+    }
+    let at = cursor_position()?;
+
+    let Some(event) = NativeEvent::new_scroll_wheel_event2(
+        None,
+        CGScrollEventUnit::Pixel,
+        2,
+        vertical,
+        horizontal,
+        0,
+    ) else {
+        return Err("cannot create a macOS pixel scroll event".into());
+    };
+    NativeEvent::set_location(Some(&event), CGPoint::new(at.x, at.y));
+    NativeEvent::post(NativeEventTapLocation::SessionEventTap, Some(&event));
+    Ok(())
+}
+
+fn post_key_event(source: &CGEventSource, key: &Key, state: KeyState) -> Result<(), String> {
+    let code = keycode_for(key).ok_or_else(|| format!("no macOS keycode for {key}"))?;
+    let event = CGEvent::new_keyboard_event(source.clone(), code, state == KeyState::Down)
+        .map_err(|_| format!("cannot create a key event for {key}"))?;
+    event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, INJECTED_TAG);
+    event.post(CGEventTapLocation::HID);
+    Ok(())
+}
+
+// The Engine supplies the same suspension decision on every platform. macOS
+// carries modifier state on each event; posting an Up alone does not prevent a
+// subsequent HIDSystemState event from inheriting the physical modifier again.
+struct ChordEventFlags {
+    suppressed: u64,
+    current: Option<u64>,
+}
+
+const KEYBOARD_MODIFIER_MASK: u64 = 0x0080_0000
+    | NativeEventFlags::MaskShift.bits()
+    | NativeEventFlags::MaskControl.bits()
+    | NativeEventFlags::MaskAlternate.bits()
+    | NativeEventFlags::MaskCommand.bits()
+    | LEFT_CTRL_DEVICE_FLAG
+    | RIGHT_CTRL_DEVICE_FLAG
+    | LEFT_SHIFT_DEVICE_FLAG
+    | RIGHT_SHIFT_DEVICE_FLAG
+    | LEFT_OPTION_DEVICE_FLAG
+    | RIGHT_OPTION_DEVICE_FLAG
+    | LEFT_COMMAND_DEVICE_FLAG
+    | RIGHT_COMMAND_DEVICE_FLAG;
+
+fn keyboard_modifier_flags(key: &Key) -> (u64, u64, u64) {
+    let (side, family, sides) = match key.as_str() {
+        "left_shift" | "right_shift" => (
+            if key.as_str() == "left_shift" {
+                LEFT_SHIFT_DEVICE_FLAG
+            } else {
+                RIGHT_SHIFT_DEVICE_FLAG
+            },
+            NativeEventFlags::MaskShift.bits(),
+            LEFT_SHIFT_DEVICE_FLAG | RIGHT_SHIFT_DEVICE_FLAG,
+        ),
+        "left_ctrl" | "right_ctrl" => (
+            if key.as_str() == "left_ctrl" {
+                LEFT_CTRL_DEVICE_FLAG
+            } else {
+                RIGHT_CTRL_DEVICE_FLAG
+            },
+            NativeEventFlags::MaskControl.bits(),
+            LEFT_CTRL_DEVICE_FLAG | RIGHT_CTRL_DEVICE_FLAG,
+        ),
+        "left_alt" | "right_alt" => (
+            if key.as_str() == "left_alt" {
+                LEFT_OPTION_DEVICE_FLAG
+            } else {
+                RIGHT_OPTION_DEVICE_FLAG
+            },
+            NativeEventFlags::MaskAlternate.bits(),
+            LEFT_OPTION_DEVICE_FLAG | RIGHT_OPTION_DEVICE_FLAG,
+        ),
+        "left_win" | "right_win" => (
+            if key.as_str() == "left_win" {
+                LEFT_COMMAND_DEVICE_FLAG
+            } else {
+                RIGHT_COMMAND_DEVICE_FLAG
+            },
+            NativeEventFlags::MaskCommand.bits(),
+            LEFT_COMMAND_DEVICE_FLAG | RIGHT_COMMAND_DEVICE_FLAG,
+        ),
+        "fn" => (0, 0x0080_0000, 0),
+        _ => (0, 0, 0),
+    };
+    (side, family, sides)
+}
+
+impl ChordEventFlags {
+    fn new(modifiers: &[Key]) -> Self {
+        let suppressed = modifiers.iter().fold(0, |mask, key| {
+            let (side, family, _) = keyboard_modifier_flags(key);
+            mask | family | side
+        });
+        Self {
+            suppressed,
+            current: None,
+        }
+    }
+
+    fn advance(&mut self, inherited: u64, key: &Key, state: KeyState) -> u64 {
+        let flags = self.current.get_or_insert_with(|| {
+            let mut flags = inherited & KEYBOARD_MODIFIER_MASK & !self.suppressed;
+            // Suppressing one side must not erase a retained target on the
+            // other side of the same family (e.g. LeftCtrl -> RightCtrl+J).
+            for (family, sides) in [
+                (
+                    NativeEventFlags::MaskShift.bits(),
+                    LEFT_SHIFT_DEVICE_FLAG | RIGHT_SHIFT_DEVICE_FLAG,
+                ),
+                (
+                    NativeEventFlags::MaskControl.bits(),
+                    LEFT_CTRL_DEVICE_FLAG | RIGHT_CTRL_DEVICE_FLAG,
+                ),
+                (
+                    NativeEventFlags::MaskAlternate.bits(),
+                    LEFT_OPTION_DEVICE_FLAG | RIGHT_OPTION_DEVICE_FLAG,
+                ),
+                (
+                    NativeEventFlags::MaskCommand.bits(),
+                    LEFT_COMMAND_DEVICE_FLAG | RIGHT_COMMAND_DEVICE_FLAG,
+                ),
+            ] {
+                if flags & sides != 0 {
+                    flags |= family;
+                }
+            }
+            flags
+        });
+        let (side, family, sides) = keyboard_modifier_flags(key);
+        match state {
+            KeyState::Down => *flags |= side | family,
+            KeyState::Up => {
+                *flags &= !side;
+                if *flags & sides == 0 {
+                    *flags &= !family;
+                }
+            }
+        }
+        // Numeric-pad, Caps Lock, and other event properties belong to each
+        // newly created event, not to the first key of the chord.
+        (inherited & !KEYBOARD_MODIFIER_MASK) | *flags
+    }
+}
+
+fn post_chord_key_event(
+    source: &CGEventSource,
+    key: &Key,
+    state: KeyState,
+    flags: &mut ChordEventFlags,
+) -> Result<(), String> {
+    let code = keycode_for(key).ok_or_else(|| format!("no macOS keycode for {key}"))?;
+    let event = CGEvent::new_keyboard_event(source.clone(), code, state == KeyState::Down)
+        .map_err(|_| format!("cannot create a key event for {key}"))?;
+    let current = flags.advance(event.get_flags().bits(), key, state);
+    event.set_flags(core_graphics::event::CGEventFlags::from_bits_retain(
+        current,
+    ));
+    event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, INJECTED_TAG);
+    event.post(CGEventTapLocation::HID);
+    Ok(())
+}
+
+/// Virtual keycode table, ordered to mirror `keycode_for`.
+macro_rules! macos_keycodes {
+    ($(($code:expr, $name:literal)),+ $(,)?) => {
+        const KEYCODES: &[(u16, &str)] = &[$(($code, $name)),+];
+
+        pub fn keycode_for(key: &Key) -> Option<u16> {
+            match key.as_str() {
+                $($name => Some($code),)+
+                _ => None,
+            }
+        }
+    };
+}
+
+macos_keycodes! {
+    (0x00, "a"),
+    (0x01, "s"),
+    (0x02, "d"),
+    (0x03, "f"),
+    (0x04, "h"),
+    (0x05, "g"),
+    (0x06, "z"),
+    (0x07, "x"),
+    (0x08, "c"),
+    (0x09, "v"),
+    (0x0B, "b"),
+    (0x0C, "q"),
+    (0x0D, "w"),
+    (0x0E, "e"),
+    (0x0F, "r"),
+    (0x10, "y"),
+    (0x11, "t"),
+    (0x12, "1"),
+    (0x13, "2"),
+    (0x14, "3"),
+    (0x15, "4"),
+    (0x16, "6"),
+    (0x17, "5"),
+    (0x18, "="),
+    (0x19, "9"),
+    (0x1A, "7"),
+    (0x1B, "-"),
+    (0x1C, "8"),
+    (0x1D, "0"),
+    (0x1E, "]"),
+    (0x1F, "o"),
+    (0x20, "u"),
+    (0x21, "["),
+    (0x22, "i"),
+    (0x23, "p"),
+    (0x24, "enter"),
+    (0x25, "l"),
+    (0x26, "j"),
+    (0x27, "'"),
+    (0x28, "k"),
+    (0x29, ";"),
+    (0x2A, "\\"),
+    (0x2B, ","),
+    (0x2C, "/"),
+    (0x2D, "n"),
+    (0x2E, "m"),
+    (0x2F, "."),
+    (0x30, "tab"),
+    (0x31, "space"),
+    (0x32, "`"),
+    (0x33, "backspace"),
+    (0x35, "esc"),
+    (0x36, "right_win"),
+    (0x37, "left_win"),
+    (0x38, "left_shift"),
+    (0x39, "caps_lock"),
+    (0x3A, "left_alt"),
+    (0x3B, "left_ctrl"),
+    (0x3C, "right_shift"),
+    (0x3D, "right_alt"),
+    (0x3E, "right_ctrl"),
+    (0x3F, "fn"),
+    (0x40, "f17"),
+    (0x4F, "f18"),
+    (0x50, "f19"),
+    (0x5A, "f20"),
+    (0x60, "f5"),
+    (0x61, "f6"),
+    (0x62, "f7"),
+    (0x63, "f3"),
+    (0x64, "f8"),
+    (0x65, "f9"),
+    (0x67, "f11"),
+    (0x69, "f13"),
+    (0x6A, "f16"),
+    (0x6B, "f14"),
+    (0x6D, "f10"),
+    (0x6F, "f12"),
+    (0x71, "f15"),
+    (0x72, "insert"),
+    (0x73, "home"),
+    (0x74, "page_up"),
+    (0x75, "delete"),
+    (0x76, "f4"),
+    (0x77, "end"),
+    (0x78, "f2"),
+    (0x79, "page_down"),
+    (0x7A, "f1"),
+    (0x7B, "arrow_left"),
+    (0x7C, "arrow_right"),
+    (0x7D, "arrow_down"),
+    (0x7E, "arrow_up"),
+}
+
+pub fn key_for_keycode(code: i64) -> Option<Key> {
+    let index = usize::try_from(code).ok()?;
+    key_map().get(index)?.clone()
+}
+
+static KEY_BY_CODE: OnceLock<[Option<Key>; 128]> = OnceLock::new();
+
+fn key_map() -> &'static [Option<Key>; 128] {
+    KEY_BY_CODE.get_or_init(|| crate::platform::common::build_key_map(KEYCODES))
+}
+
+pub(super) fn prewarm_key_map() {
+    let _ = key_map();
+}
+
+/// Modifier state extracted from a `FlagsChanged` event, since macOS reports
+/// modifiers as a bitmask rather than as key up/down.
+pub fn modifier_is_down(flags: u64, key: &Key) -> bool {
+    // Device-independent CGEventFlagMask values.
+    const CAPS_LOCK: u64 = 0x0001_0000;
+    const FN: u64 = 0x0080_0000;
+
+    let mask = match key.as_str() {
+        "left_shift" => LEFT_SHIFT_DEVICE_FLAG,
+        "right_shift" => RIGHT_SHIFT_DEVICE_FLAG,
+        "left_ctrl" => LEFT_CTRL_DEVICE_FLAG,
+        "right_ctrl" => RIGHT_CTRL_DEVICE_FLAG,
+        "left_alt" => LEFT_OPTION_DEVICE_FLAG,
+        "right_alt" => RIGHT_OPTION_DEVICE_FLAG,
+        "left_win" => LEFT_COMMAND_DEVICE_FLAG,
+        "right_win" => RIGHT_COMMAND_DEVICE_FLAG,
+        "caps_lock" => CAPS_LOCK,
+        "fn" => FN,
+        _ => return false,
+    };
+    flags & mask != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mapped_keyboard_events_remove_all_source_modifier_combinations() {
+        for side in ["left", "right"] {
+            for combination in 1..16 {
+                let modifiers: Vec<_> = ["ctrl", "alt", "shift", "win"]
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(bit, _)| combination & (1 << bit) != 0)
+                    .map(|(_, family)| Key::new(format!("{side}_{family}")).unwrap())
+                    .collect();
+                let inherited = modifiers.iter().fold(0, |bits, key| {
+                    let (side, family, _) = keyboard_modifier_flags(key);
+                    bits | side | family
+                });
+                for _ in 0..3 {
+                    let mut flags = ChordEventFlags::new(&modifiers);
+                    let arrow = Key::new("arrow_down").unwrap();
+                    assert_eq!(
+                        flags.advance(inherited | 0x0001_0000, &arrow, KeyState::Down),
+                        0x0001_0000
+                    );
+                    assert_eq!(
+                        flags.advance(inherited | 0x0020_0000, &arrow, KeyState::Up),
+                        0x0020_0000
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mapped_keyboard_events_track_target_sides_and_preserve_retained_modifiers() {
+        let command = Key::new("left_win").unwrap();
+        let left = Key::new("left_ctrl").unwrap();
+        let right = Key::new("right_ctrl").unwrap();
+        let arrow = Key::new("arrow_down").unwrap();
+        let inherited = NativeEventFlags::MaskCommand.bits()
+            | LEFT_COMMAND_DEVICE_FLAG
+            | NativeEventFlags::MaskShift.bits()
+            | RIGHT_SHIFT_DEVICE_FLAG;
+        let mut flags = ChordEventFlags::new(&[command]);
+        let retained = NativeEventFlags::MaskShift.bits() | RIGHT_SHIFT_DEVICE_FLAG;
+        flags.advance(inherited, &left, KeyState::Down);
+        flags.advance(inherited, &right, KeyState::Down);
+        flags.advance(inherited, &right, KeyState::Up);
+        assert_eq!(
+            flags.advance(inherited, &arrow, KeyState::Down),
+            retained | NativeEventFlags::MaskControl.bits() | LEFT_CTRL_DEVICE_FLAG
+        );
+        assert_eq!(flags.advance(inherited, &left, KeyState::Up), retained);
+        let mut flags = ChordEventFlags::new(&[left]);
+        let both =
+            NativeEventFlags::MaskControl.bits() | LEFT_CTRL_DEVICE_FLAG | RIGHT_CTRL_DEVICE_FLAG;
+        assert_eq!(
+            flags.advance(both, &arrow, KeyState::Down),
+            NativeEventFlags::MaskControl.bits() | RIGHT_CTRL_DEVICE_FLAG
+        );
+    }
+
+    #[test]
+    fn movement_uses_dragged_event_for_the_held_button() {
+        assert_eq!(
+            movement_event(0).event_type.0,
+            CGEventType::MouseMoved as u32
+        );
+        assert_eq!(
+            movement_event(button_mask(MouseButton::Left)).event_type.0,
+            CGEventType::LeftMouseDragged as u32
+        );
+        assert_eq!(
+            movement_event(button_mask(MouseButton::Right)).event_type.0,
+            CGEventType::RightMouseDragged as u32
+        );
+        assert_eq!(
+            movement_event(button_mask(MouseButton::Middle))
+                .event_type
+                .0,
+            CGEventType::OtherMouseDragged as u32
+        );
+    }
+
+    #[test]
+    fn movement_uses_a_stable_button_priority_when_several_are_held() {
+        let held = button_mask(MouseButton::Right) | button_mask(MouseButton::Left);
+        assert_eq!(
+            movement_event(held),
+            drag_event(MouseButton::Left),
+            "one CGEvent can represent only one drag button"
+        );
+    }
+
+    #[test]
+    fn extra_buttons_keep_their_native_button_numbers() {
+        assert_eq!(button_event(MouseButton::X1, true).button.0, 3);
+        assert_eq!(button_event(MouseButton::X2, false).button.0, 4);
+        assert_eq!(
+            drag_event(MouseButton::X1).event_type.0,
+            CGEventType::OtherMouseDragged as u32
+        );
+    }
+
+    #[test]
+    fn double_click_uses_native_click_counts_in_order() {
+        let tracker = ClickTracker::new(std::time::Duration::from_millis(500));
+        let plan = tracker.prepare(
+            MouseButton::Left,
+            ButtonAction::DoubleClick,
+            Point::new(10.0, 20.0),
+            Instant::now(),
+        );
+        let (steps, count) = button_steps(ButtonAction::DoubleClick, plan.counts());
+        assert_eq!(count, 4);
+        assert_eq!(
+            &steps[..count],
+            &[
+                ButtonStep {
+                    down: true,
+                    click_count: 1,
+                },
+                ButtonStep {
+                    down: false,
+                    click_count: 1,
+                },
+                ButtonStep {
+                    down: true,
+                    click_count: 2,
+                },
+                ButtonStep {
+                    down: false,
+                    click_count: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn keycode_mapping_round_trips() {
+        for (code, name) in KEYCODES {
+            let key = Key::new(name).unwrap();
+            assert_eq!(keycode_for(&key), Some(*code), "{name}");
+            assert_eq!(key_for_keycode(*code as i64).as_ref(), Some(&key), "{name}");
+        }
+    }
+
+    #[test]
+    fn unknown_keycodes_are_rejected() {
+        assert!(key_for_keycode(0xFFFF).is_none());
+        assert!(keycode_for(&Key::new("nonexistent").unwrap()).is_none());
+    }
+
+    #[test]
+    fn modifier_flags_distinguish_left_from_right() {
+        let left = Key::new("left_shift").unwrap();
+        let right = Key::new("right_shift").unwrap();
+        assert!(modifier_is_down(0x02, &left));
+        assert!(!modifier_is_down(0x02, &right));
+        assert!(modifier_is_down(0x04, &right));
+        assert!(modifier_is_down(
+            0x0001_0000,
+            &Key::new("caps_lock").unwrap()
+        ));
+        assert!(modifier_is_down(0x0080_0000, &Key::new("fn").unwrap()));
+    }
+
+    #[test]
+    fn drag_modifiers_compress_both_sides_and_combinations() {
+        for (physical, expected) in [
+            (LEFT_SHIFT_DEVICE_FLAG, DRAG_MODIFIER_SHIFT),
+            (RIGHT_SHIFT_DEVICE_FLAG, DRAG_MODIFIER_SHIFT),
+            (LEFT_CTRL_DEVICE_FLAG, DRAG_MODIFIER_CONTROL),
+            (RIGHT_CTRL_DEVICE_FLAG, DRAG_MODIFIER_CONTROL),
+            (LEFT_OPTION_DEVICE_FLAG, DRAG_MODIFIER_OPTION),
+            (RIGHT_OPTION_DEVICE_FLAG, DRAG_MODIFIER_OPTION),
+            (LEFT_COMMAND_DEVICE_FLAG, DRAG_MODIFIER_COMMAND),
+            (RIGHT_COMMAND_DEVICE_FLAG, DRAG_MODIFIER_COMMAND),
+        ] {
+            assert_eq!(compact_drag_modifier_flags(physical), expected);
+        }
+
+        let physical_combination = LEFT_SHIFT_DEVICE_FLAG
+            | RIGHT_CTRL_DEVICE_FLAG
+            | LEFT_OPTION_DEVICE_FLAG
+            | RIGHT_COMMAND_DEVICE_FLAG;
+        assert_eq!(
+            compact_drag_modifier_flags(physical_combination),
+            DRAG_MODIFIER_ALL
+        );
+        assert_eq!(
+            compact_drag_modifier_flags(
+                NativeEventFlags::MaskShift.bits()
+                    | NativeEventFlags::MaskControl.bits()
+                    | NativeEventFlags::MaskAlternate.bits()
+                    | NativeEventFlags::MaskCommand.bits()
+            ),
+            DRAG_MODIFIER_ALL,
+            "device-independent flags are retained when side bits are unavailable"
+        );
+    }
+
+    #[test]
+    fn compact_drag_modifiers_expand_to_mouse_event_flags() {
+        assert_eq!(
+            native_drag_modifier_flags(DRAG_MODIFIER_ALL),
+            NativeEventFlags::MaskShift
+                | NativeEventFlags::MaskControl
+                | NativeEventFlags::MaskAlternate
+                | NativeEventFlags::MaskCommand
+        );
+        assert!(native_drag_modifier_flags(0).is_empty());
+    }
+}

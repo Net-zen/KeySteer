@@ -17,7 +17,6 @@ struct Slot {
     generation: u64,
     disposition: Option<KeyDisposition>,
     forwarded_timeout: Option<u64>,
-    #[cfg(any(target_os = "macos", test))]
     closed: bool,
 }
 
@@ -29,18 +28,14 @@ pub(crate) struct DispositionMailbox {
 
 impl DispositionMailbox {
     /// Reserve the reusable slot for one native callback.
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(test)]
     pub(crate) fn begin(&self) -> u64 {
-        let mut slot = self.slot.lock().unwrap_or_else(|error| error.into_inner());
-        slot.generation = slot.generation.wrapping_add(1);
-        slot.disposition = None;
-        slot.generation
+        self.try_begin().unwrap()
     }
 
-    /// Reserve the macOS callback slot unless native input capture has entered
+    /// Reserve the callback slot unless native input capture has entered
     /// its terminal state. The check shares the existing slot lock, so it adds
     /// no atomic, allocation, or second synchronization step to the callback.
-    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn try_begin(&self) -> Option<u64> {
         let mut slot = self.slot.lock().unwrap_or_else(|error| error.into_inner());
         if slot.closed {
@@ -118,7 +113,6 @@ impl DispositionMailbox {
     /// Permanently fail open this mailbox. A native callback racing with
     /// shutdown either reserves its generation before this lock and is woken,
     /// or observes `closed` and returns without waiting.
-    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn close(&self) {
         let mut slot = self.slot.lock().unwrap_or_else(|error| error.into_inner());
         slot.closed = true;

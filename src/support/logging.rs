@@ -3,8 +3,9 @@
 //! Errors and panics are always persisted because the normal app may have no
 //! console. Debug, info and warning records are emitted only while logging is
 //! enabled by the active configuration. Files are rotated at a fixed bound.
-//! Error writes and `flush` are synchronous, but do not promise power-loss
-//! durability (`File::sync_all` is deliberately absent from interactive paths).
+//! A bounded FIFO writer owns file/console I/O and rotation. Saturation applies
+//! backpressure rather than dropping errors. Explicit flush/shutdown and panic
+//! reporting wait for queued records; none promise power-loss durability.
 //! Callers must finish input recovery before reporting aggregated failures.
 
 use std::backtrace::Backtrace;
@@ -15,11 +16,14 @@ use std::io::IsTerminal;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex, Once, OnceLock};
+use std::thread::{JoinHandle, ThreadId};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const RETAINED_LOGS: usize = 3;
+const LOG_QUEUE_CAPACITY: usize = 256;
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 static PANIC_HOOK: Once = Once::new();
@@ -57,14 +61,37 @@ struct RepeatedError {
 }
 
 struct LoggerState {
-    file: Option<File>,
-    bytes: u64,
     repeated: Option<RepeatedError>,
+    sender: Option<SyncSender<Output>>,
+    sink_available: Arc<AtomicBool>,
 }
 
 struct Logger {
     path: PathBuf,
     state: Mutex<LoggerState>,
+    writer: Mutex<Option<JoinHandle<()>>>,
+    writer_id: ThreadId,
+}
+
+enum Output {
+    Record {
+        line: String,
+        console: Option<String>,
+        error: bool,
+    },
+    Flush(SyncSender<()>),
+    #[cfg(test)]
+    Pause {
+        entered: SyncSender<()>,
+        release: Receiver<()>,
+    },
+}
+
+struct FileSink {
+    path: PathBuf,
+    file: Option<File>,
+    bytes: u64,
+    available: Arc<AtomicBool>,
 }
 
 // Error rendering happens outside the logger mutex: a caller's Display
@@ -95,7 +122,7 @@ fn suppress(
     now: Instant,
 ) -> bool {
     if level == Level::Error
-        && state.file.is_some()
+        && state.sink_available.load(Ordering::Acquire)
         && let Some(repeated) = &mut state.repeated
         && repeated.target == target
         && repeated.console == console
@@ -116,19 +143,22 @@ fn suppress(
 
 impl Logger {
     fn open(path: PathBuf) -> io::Result<Self> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        rotate_before_open(&path)?;
-        let file = open_append(&path)?;
-        let bytes = file.metadata()?.len();
+        let sink = FileSink::open(path.clone())?;
+        let sink_available = Arc::clone(&sink.available);
+        let (sender, receiver) = mpsc::sync_channel(LOG_QUEUE_CAPACITY);
+        let writer = std::thread::Builder::new()
+            .name("diagnostic-log".into())
+            .spawn(move || run_writer(sink, receiver))?;
+        let writer_id = writer.thread().id();
         Ok(Self {
             path,
             state: Mutex::new(LoggerState {
-                file: Some(file),
-                bytes,
                 repeated: None,
+                sender: Some(sender),
+                sink_available,
             }),
+            writer: Mutex::new(Some(writer)),
+            writer_id,
         })
     }
 
@@ -147,6 +177,11 @@ impl Logger {
         console: bool,
         now: Instant,
     ) {
+        // The panic hook must never enqueue onto, or wait for, its own writer.
+        if std::thread::current().id() == self.writer_id {
+            write_emergency_stderr(message);
+            return;
+        }
         if let Some(key) = identity {
             {
                 let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -187,11 +222,11 @@ impl Logger {
             return;
         }
         self.write_repeats(&mut state);
-        if console {
-            write_emergency_stderr(format_args!("{message}"));
-        }
-        self.write_record(&mut state, level, target, message);
-        if level == Level::Error && state.file.is_some() && target.len() + message.len() <= 4096 {
+        Self::queue_record(&state, level, target, message, console);
+        if level == Level::Error
+            && state.sink_available.load(Ordering::Acquire)
+            && target.len() + message.len() <= 4096
+        {
             state.repeated = Some(RepeatedError {
                 target: target.into(),
                 message: message.into(),
@@ -210,19 +245,126 @@ impl Logger {
                 "{} (repeated {} additional times)",
                 repeated.message, repeated.suppressed
             );
-            if repeated.console {
-                write_emergency_stderr(format_args!("{message}"));
-            }
-            self.write_record(state, Level::Error, &repeated.target, &message);
+            Self::queue_record(
+                state,
+                Level::Error,
+                &repeated.target,
+                &message,
+                repeated.console,
+            );
         }
     }
-    fn write_record(&self, state: &mut LoggerState, level: Level, target: &str, message: &str) {
-        let line = format_line(level, target, message);
-        if state.file.is_none() {
+
+    fn queue_record(state: &LoggerState, level: Level, target: &str, message: &str, console: bool) {
+        // Format here to retain the originating thread and timestamp. The
+        // worker never takes state, including when a full queue applies backpressure.
+        let output = Output::Record {
+            line: format_line(level, target, message),
+            console: console.then(|| message.to_owned()),
+            error: level == Level::Error,
+        };
+        if state
+            .sender
+            .as_ref()
+            .is_none_or(|sender| sender.send(output).is_err())
+        {
+            state.sink_available.store(false, Ordering::Release);
+            write_emergency_stderr(format_args!("diagnostic writer unavailable: {message}"));
+        }
+    }
+
+    fn flush(&self) {
+        if std::thread::current().id() == self.writer_id {
+            return;
+        }
+        let (sent, received) = mpsc::sync_channel(0);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.write_repeats(&mut state);
+        let queued = state
+            .sender
+            .as_ref()
+            .is_some_and(|sender| sender.send(Output::Flush(sent)).is_ok());
+        drop(state);
+        if queued {
+            let _ = received.recv();
+        }
+    }
+
+    fn shutdown(&self) {
+        if std::thread::current().id() == self.writer_id {
+            return;
+        }
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            self.write_repeats(&mut state);
+            // Disconnect after the final record. The worker drains FIFO and
+            // flushes before returning; concurrent late reports use stderr.
+            state.sender.take();
+        }
+        let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(writer) = writer.take()
+            && writer.join().is_err()
+        {
+            write_emergency_stderr(format_args!("diagnostic writer panicked"));
+        }
+    }
+}
+
+impl Drop for Logger {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn run_writer(mut sink: FileSink, receiver: Receiver<Output>) {
+    while let Ok(output) = receiver.recv() {
+        match output {
+            Output::Record {
+                line,
+                console,
+                error,
+            } => {
+                if let Some(message) = console {
+                    write_emergency_stderr(format_args!("{message}"));
+                }
+                sink.write_record(&line, error);
+            }
+            Output::Flush(sent) => {
+                sink.flush();
+                let _ = sent.send(());
+            }
+            #[cfg(test)]
+            Output::Pause { entered, release } => {
+                let _ = entered.send(());
+                let _ = release.recv();
+            }
+        }
+    }
+    sink.flush();
+}
+
+impl FileSink {
+    fn open(path: PathBuf) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        rotate_before_open(&path)?;
+        let file = open_append(&path)?;
+        let bytes = file.metadata()?.len();
+        Ok(Self {
+            path,
+            file: Some(file),
+            bytes,
+            available: Arc::new(AtomicBool::new(true)),
+        })
+    }
+
+    fn write_record(&mut self, line: &str, error_record: bool) {
+        if self.file.is_none() {
             match open_append(&self.path) {
                 Ok(file) => {
-                    state.bytes = file.metadata().map_or(0, |metadata| metadata.len());
-                    state.file = Some(file);
+                    self.bytes = file.metadata().map_or(0, |metadata| metadata.len());
+                    self.file = Some(file);
                 }
                 Err(error) => {
                     write_emergency_stderr(format_args!(
@@ -233,8 +375,8 @@ impl Logger {
                 }
             }
         }
-        if state.bytes.saturating_add(line.len() as u64 + 1) > MAX_LOG_BYTES
-            && let Err(error) = self.rotate(state)
+        if self.bytes.saturating_add(line.len() as u64 + 1) > MAX_LOG_BYTES
+            && let Err(error) = self.rotate()
         {
             write_emergency_stderr(format_args!(
                 "cannot rotate diagnostic log {}: {error}",
@@ -242,11 +384,11 @@ impl Logger {
             ));
         }
         let mut flush_failed = false;
-        let write_result = match state.file.as_mut() {
+        let write_result = match self.file.as_mut() {
             Some(file) => {
                 let result = writeln!(file, "{line}");
                 if result.is_ok()
-                    && level == Level::Error
+                    && error_record
                     && let Err(error) = file.flush()
                 {
                     write_emergency_stderr(format_args!(
@@ -264,34 +406,39 @@ impl Logger {
                 "cannot write diagnostic log {}: {error}",
                 self.path.display()
             ));
-            state.file = None;
+            self.file = None;
+            self.available.store(false, Ordering::Release);
             return;
         }
         if flush_failed {
-            // A sink that cannot honour the synchronous Error contract is no
+            // A sink that cannot honour the Error flush contract is no
             // longer usable. Reopen it on the next record instead of keeping
             // a poisoned handle for the rest of the process.
-            state.file = None;
+            self.file = None;
+            self.available.store(false, Ordering::Release);
             return;
         }
-        state.bytes = state.bytes.saturating_add(line.len() as u64 + 1);
+        self.bytes = self.bytes.saturating_add(line.len() as u64 + 1);
+        self.available.store(true, Ordering::Release);
     }
 
-    fn rotate(&self, state: &mut LoggerState) -> io::Result<()> {
-        if let Some(file) = state.file.as_mut()
+    fn rotate(&mut self) -> io::Result<()> {
+        if let Some(file) = self.file.as_mut()
             && let Err(error) = file.flush()
         {
-            state.file = None;
+            self.file = None;
+            self.available.store(false, Ordering::Release);
             return Err(error);
         }
-        drop(state.file.take());
+        drop(self.file.take());
         let rotation = rotate_files(&self.path);
         match open_append(&self.path) {
             Ok(file) => {
-                state.bytes = file.metadata().map_or(0, |metadata| metadata.len());
-                state.file = Some(file);
+                self.bytes = file.metadata().map_or(0, |metadata| metadata.len());
+                self.file = Some(file);
             }
             Err(reopen_error) => {
+                self.available.store(false, Ordering::Release);
                 return match rotation {
                     Ok(()) => Err(reopen_error),
                     Err(rotation_error) => Err(io::Error::new(
@@ -306,19 +453,15 @@ impl Logger {
         rotation
     }
 
-    fn flush(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.write_repeats(&mut state);
-        let flush_error = state.file.as_mut().and_then(|file| file.flush().err());
+    fn flush(&mut self) {
+        let flush_error = self.file.as_mut().and_then(|file| file.flush().err());
         if let Some(error) = flush_error {
             write_emergency_stderr(format_args!(
                 "cannot flush diagnostic log {}: {error}",
                 self.path.display()
             ));
-            state.file = None;
+            self.file = None;
+            self.available.store(false, Ordering::Release);
         }
     }
 }
@@ -509,7 +652,7 @@ pub(crate) fn report_warning_args(target: &str, message: fmt::Arguments<'_>) {
 }
 
 /// Formatting macros keep disabled warning/info paths allocation-free. Errors
-/// bypass the non-error switch, reach stderr and the file, and flush eagerly.
+/// bypass the non-error switch; the writer emits stderr/file and flushes errors.
 #[macro_export]
 macro_rules! log_info {
     ($target:expr, $($arg:tt)*) => {
@@ -538,6 +681,14 @@ macro_rules! report_error {
 pub fn flush() {
     if let Some(logger) = LOGGER.get() {
         logger.flush();
+    }
+}
+
+/// Called after runtime shutdown, including CLI failures. Unlike ordinary
+/// logging this intentionally waits for every queued record and the writer.
+pub(crate) fn shutdown() {
+    if let Some(logger) = LOGGER.get() {
+        logger.shutdown();
     }
 }
 
@@ -706,6 +857,119 @@ mod tests {
         ))
     }
 
+    // Wait for disk I/O without consuming the suppression window under test.
+    fn drain_output(logger: &Logger) {
+        let (sent, received) = mpsc::sync_channel(0);
+        logger
+            .state
+            .lock()
+            .unwrap()
+            .sender
+            .as_ref()
+            .unwrap()
+            .send(Output::Flush(sent))
+            .unwrap();
+        received.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn slow_sink_does_not_block_the_first_error_and_shutdown_drains_fifo() {
+        let path = temporary_log();
+        let logger = Arc::new(Logger::open(path.clone()).unwrap());
+        let (entered, waiting) = mpsc::sync_channel(0);
+        let (release, paused) = mpsc::channel();
+        logger
+            .state
+            .lock()
+            .unwrap()
+            .sender
+            .as_ref()
+            .unwrap()
+            .send(Output::Pause {
+                entered,
+                release: paused,
+            })
+            .unwrap();
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (sent, received) = mpsc::channel();
+        let producer_logger = Arc::clone(&logger);
+        let producer = std::thread::Builder::new()
+            .name("error-origin".into())
+            .spawn(move || {
+                producer_logger.write(Level::Error, "test", "first queued error");
+                producer_logger.write(Level::Info, "test", "second queued record");
+                sent.send(()).unwrap();
+            })
+            .unwrap();
+        let responsive = received.recv_timeout(Duration::from_secs(2)).is_ok();
+        release.send(()).unwrap();
+        producer.join().unwrap();
+        logger.shutdown();
+        assert!(
+            responsive,
+            "producer waited on a blocked sink with queue capacity available"
+        );
+        let text = fs::read_to_string(&path).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("first queued error"));
+        assert!(lines[1].contains("second queued record"));
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.contains("thread=error-origin"))
+        );
+        drop(logger);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn saturated_queue_applies_backpressure_and_shutdown_preserves_every_record() {
+        let path = temporary_log();
+        let logger = Arc::new(Logger::open(path.clone()).unwrap());
+        let (entered, waiting) = mpsc::sync_channel(0);
+        let (release, paused) = mpsc::channel();
+        logger
+            .state
+            .lock()
+            .unwrap()
+            .sender
+            .as_ref()
+            .unwrap()
+            .send(Output::Pause {
+                entered,
+                release: paused,
+            })
+            .unwrap();
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        for index in 0..LOG_QUEUE_CAPACITY {
+            logger.write(Level::Info, "test", &format!("record-{index}"));
+        }
+        let (started, starting) = mpsc::channel();
+        let (done, completed) = mpsc::channel();
+        let producer_logger = Arc::clone(&logger);
+        let producer = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            producer_logger.write(Level::Error, "test", "final-error");
+            done.send(()).unwrap();
+        });
+        starting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let blocked = completed.recv_timeout(Duration::from_millis(20)).is_err();
+        release.send(()).unwrap();
+        producer.join().unwrap();
+        logger.shutdown();
+        assert!(blocked, "a full bounded queue must retain its final error");
+        let text = fs::read_to_string(&path).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), LOG_QUEUE_CAPACITY + 1);
+        for (index, line) in lines[..LOG_QUEUE_CAPACITY].iter().enumerate() {
+            assert!(line.ends_with(&format!("record-{index}")));
+        }
+        assert!(lines.last().unwrap().ends_with("final-error"));
+        drop(logger);
+        fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn timestamp_is_stable_utc_iso_8601() {
         let time = UNIX_EPOCH + std::time::Duration::from_millis(1_704_067_200_123);
@@ -751,6 +1015,7 @@ mod tests {
         let logger = Logger::open(path.clone()).unwrap();
         let now = Instant::now();
         logger.write_at(Level::Error, "window", "unavailable", now);
+        drain_output(&logger);
         let first = fs::read_to_string(&path).unwrap();
         for _ in 0..100 {
             logger.write_at(Level::Error, "window", "unavailable", now);
@@ -785,6 +1050,7 @@ mod tests {
             false,
             now,
         );
+        drain_output(&logger);
         let allocation = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
         for request in 0..100 {
             logger.emit(
@@ -854,6 +1120,7 @@ mod tests {
         ] {
             logger.write_at(Level::Error, target, message, time);
         }
+        logger.flush();
         assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 4);
         drop(logger);
         fs::remove_file(path).unwrap();
@@ -866,6 +1133,7 @@ mod tests {
         set_non_error_enabled(false);
         assert!(level_enabled(Level::Error));
         logger.write(Level::Error, "test-target", "unconditional error");
+        logger.flush();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("unconditional error"), "{text}");
         drop(logger);
@@ -875,21 +1143,20 @@ mod tests {
     #[test]
     fn a_failed_file_sink_is_invalidated_and_reopened_on_the_next_error() {
         let path = temporary_log();
-        let logger = Logger::open(path.clone()).unwrap();
+        let mut sink = FileSink::open(path.clone()).unwrap();
         let read_only = fs::File::open(&path).unwrap();
-        {
-            let mut state = logger.state.lock().unwrap();
-            state.file = Some(read_only);
-        }
+        sink.file = Some(read_only);
 
-        logger.write(Level::Error, "test-target", "expected write failure");
-        assert!(logger.state.lock().unwrap().file.is_none());
+        sink.write_record("expected write failure", true);
+        assert!(sink.file.is_none());
+        assert!(!sink.available.load(Ordering::Acquire));
 
-        logger.write(Level::Error, "test-target", "reopened sink");
+        sink.write_record("reopened sink", true);
+        assert!(sink.available.load(Ordering::Acquire));
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains("expected write failure"), "{text}");
         assert!(text.contains("reopened sink"), "{text}");
-        drop(logger);
+        drop(sink);
         fs::remove_file(path).unwrap();
     }
 

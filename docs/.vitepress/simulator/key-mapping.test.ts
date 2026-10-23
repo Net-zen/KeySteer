@@ -19,7 +19,7 @@ test('direct mappings load from the shipped configuration and round-trip through
 })
 
 test('mapping keys cannot accidentally select a mode or action', () => {
-  for (const action of ['escape', 'normal', 'grid', 'move_left', 'left_click', 'mouse_x1', 'none', 'exec home', ['home'], ['home', 'end']]) {
+  for (const action of ['escape', 'normal', 'grid', 'move_left', 'left_click', 'mouse_left', 'mouse_right', 'mouse_middle', 'mouse_x1', 'mouse_x2', 'none', 'exec home', ['home'], ['home', 'end']]) {
     assert.equal(keyMappingTarget(action), undefined, String(action))
   }
   assert.deepEqual(parseKeyMapping('escape'), { target: 'escape', binding: 'send escape' })

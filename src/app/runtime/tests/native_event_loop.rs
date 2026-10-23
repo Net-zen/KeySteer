@@ -1,4 +1,64 @@
 #[test]
+fn idle_wait_has_no_deadline_but_scheduled_work_still_wakes_on_time() {
+    let mut engine = Engine::new(Config::default(), Appearance::Dark);
+    assert_eq!(engine.next_timeout(), Duration::MAX);
+    let now = Instant::now();
+    engine.scheduler.timers.insert("soon".into(), Timer {
+        fires_at: now + Duration::from_millis(10), last_fired: now,
+        interval: None, owner: ModeId::idle(),
+    });
+    assert!(engine.next_timeout() <= Duration::from_millis(10));
+    engine.scheduler.timers.get_mut("soon").unwrap().fires_at = now;
+    assert_eq!(engine.next_timeout(), Duration::ZERO);
+    engine.scheduler.timers.clear();
+    assert_eq!(engine.next_timeout(), Duration::MAX);
+}
+
+#[test]
+fn quit_skips_due_timers_and_delayed_actions_in_both_event_loops() {
+    struct Deferred(Arc<Mutex<Recorder>>);
+    impl Mode for Deferred {
+        fn id(&self) -> ModeId { ModeId::idle() }
+        fn handle(&mut self, event: &ModeEvent, _: &HostContext<'_>) -> CommandBatch {
+            match event {
+                ModeEvent::Activated { .. } => CommandBatch::two(
+                    Command::SetTimer { id: "due-on-quit".into(), delay: Duration::ZERO, repeating: false },
+                    Command::DispatchActions(vec![
+                        Binding::Wait { min_ms: 0, max_ms: 0 }, Binding::Warp { x: 1, y: 2 },
+                    ]),
+                ),
+                ModeEvent::Timer { .. } => {
+                    self.0.lock().unwrap().timeline.push("timer-after-quit");
+                    CommandBatch::new()
+                }
+                _ => CommandBatch::new(),
+            }
+        }
+    }
+    for native in [false, true] {
+        for bound in [false, true] {
+            let mut config = Config::default();
+            config.hotkeys.insert("f6".into(), Binding::Quit);
+            let mut engine = Engine::from_plan(
+                crate::app::configuration::compile(&config).unwrap(), Appearance::Dark,
+            ).unwrap();
+            let event = if bound { key_down("f6") } else { BackendEvent::Quit };
+            let (mut backend, log) = FakeBackend::new(if native { Vec::new() } else { vec![event.clone()] });
+            if native { backend.native_batches = Some(vec![Ok(vec![event])]); }
+            engine.register(Box::new(Deferred(log.clone())));
+            engine.run(&mut backend).unwrap();
+            let log = log.lock().unwrap();
+            assert_eq!(
+                (log.timeline.contains(&"timer-after-quit"), log.warps.len()),
+                (false, 0), "native={native} bound={bound}",
+            );
+            assert!(log.input_capture_stopped);
+            assert_eq!(log.shutdowns, 1);
+        }
+    }
+}
+
+#[test]
 fn native_event_loop_keeps_grid_selection_across_dispatch_boundaries() {
     for mode in ["grid", "recursive_grid"] {
         let mut config = blind_config("grid", "[]");
@@ -71,6 +131,8 @@ fn native_event_loop_services_due_timers_and_async_scan_results() {
                 ModeEvent::Activated { .. } => CommandBatch::two(
                     Command::SetTimer { id: "native-timer".into(), delay: Duration::ZERO, repeating: false },
                     Command::scan_ui(crate::api::UiScanRequest {
+                        screen_bounds: Vec::new(),
+
                         id: 77, scope: crate::api::UiScanScope::Active,
                         timeout_ms: 2_500, bounds: None, roles: Vec::new(), max_depth: 0,
                         visible_only: false, clickable_only: false,

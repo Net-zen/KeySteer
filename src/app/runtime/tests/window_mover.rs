@@ -997,17 +997,21 @@ fn keyboard_chord_mappings_repeat_with_native_events_and_stop_without_prefix() {
 
 #[test]
 fn direct_keyboard_mappings_repeat_and_release_without_an_extra_tap() {
-    for (source, output, prefix) in [
-        ("x", "backspace", None),
-        ("ctrl+x", "shift+arrow_left", Some("left_ctrl")),
+    for (mode, source, output, prefix) in [
+        (ModeId::normal(), "x", "backspace", None),
+        (ModeId::normal(), "ctrl+x", "shift+arrow_left", Some("left_ctrl")),
+        (ModeId::text_input(), "x", "backspace", None),
+        (ModeId::text_input(), "ctrl+x", "shift+arrow_left", Some("left_ctrl")),
     ] {
         let config = Config::parse(&format!(
-            "[normal.bindings]\n\"{source}\" = \"send {output}\""
+            "[{mode}.bindings]\n\"{source}\" = \"send {output}\""
         ))
         .unwrap();
         let mut engine = chord_test_engine(&config);
         let (mut backend, log) = FakeBackend::new(enter_normal());
         engine.run(&mut backend).unwrap();
+        engine.set_active(mode.clone());
+        engine.rebuild_tables();
         if let Some(prefix) = prefix {
             engine
                 .handle_backend_event(key_down(prefix), &mut backend)
@@ -1025,12 +1029,23 @@ fn direct_keyboard_mappings_repeat_and_release_without_an_extra_tap() {
             .unwrap();
         let sends = log.lock().unwrap().sent.clone();
         assert_eq!(sends.len(), if prefix.is_some() { 12 } else { 4 });
+        if let Some(prefix) = prefix {
+            engine
+                .handle_backend_event(key_up(prefix), &mut backend)
+                .unwrap();
+            engine
+                .handle_backend_event(repeat.clone(), &mut backend)
+                .unwrap();
+            assert_eq!(log.lock().unwrap().sent, sends);
+        }
         engine
             .handle_backend_event(key_up("x"), &mut backend)
             .unwrap();
+        assert!(engine.input.key_dispositions.is_empty());
         // Stray repeat after release cannot start a new gesture.
         engine.handle_backend_event(repeat, &mut backend).unwrap();
         assert_eq!(log.lock().unwrap().sent, sends);
+        assert_eq!(engine.active_mode(), &mode);
     }
 }
 

@@ -188,6 +188,7 @@ fn default_normal_bindings() -> Bindings {
         // Targeting modes available directly from normal.
         ("g", "grid"),
         ("f", "recursive_grid"),
+        ("c", "text_select"),
         ("primary+f", "ui_hint"),
         ("primary+s", "screen next"),
         ("primary+d", "move_window next"),
@@ -221,8 +222,8 @@ impl Default for TextInput {
     fn default() -> Self {
         Self {
             inherits: Vec::new(),
-            temporary_mode: Some("normal".into()),
-            temporary_mode_keys: vec!["primary".into()],
+            temporary_mode: None,
+            temporary_mode_keys: Vec::new(),
             temporary_mode_passthrough_keys: Vec::new(),
             bindings: default_text_input_bindings(),
         }
@@ -231,6 +232,35 @@ impl Default for TextInput {
 
 fn default_text_input_bindings() -> Bindings {
     builtin_bindings(&[("enter", "normal"), ("\\", "normal"), ("esc", "normal")])
+}
+
+/// OCR-only text selection shares UIHint's scan scope, OCR options and styles.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TextSelect {
+    pub enabled: bool,
+    pub hint_characters: String,
+    pub bindings: Bindings,
+}
+
+impl Default for TextSelect {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hint_characters: "asdfghjklqwertyuiopzvbnm".into(),
+            bindings: builtin_bindings(&[
+                ("primary+c", "text_refine"),
+                ("ctrl+backspace", "first_level"),
+                ("tab", "previous_level"),
+                ("backspace", "previous_level"),
+                ("enter", "text_copy"),
+                ("esc", "cancel_selection"),
+                ("?", "key_help"),
+                ("page_down", "text_next_page"),
+                ("page_up", "text_previous_page"),
+            ]),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -396,16 +426,14 @@ impl Default for UiHint {
             search_info_ui: SearchInputUi {
                 position_mode: crate::api::style::PanelPositionMode::SearchInput,
                 position: crate::api::style::PanelPosition::Percentages(
-                    ["0%", "50%", "100%", "50%"].map(String::from),
+                    ["44%", "50%", "56%", "50%"].map(String::from),
                 ),
                 width: 520,
-                y_offset: 12,
                 label: LabelUi {
                     font_size: 14,
                     padding_y: 16,
                     ..Default::default()
                 },
-                ..Default::default()
             },
             search_edit_keys: crate::api::text_edit::default_keys(),
             search_highlight: Default::default(),
@@ -432,6 +460,11 @@ impl Default for UiHint {
             },
             overlap_cycle_key: "shift".into(),
             bindings: Bindings::from([
+                ("esc".into(), Binding::SelectionCancel),
+                ("enter".into(), Binding::SelectionAccept),
+                ("backspace".into(), Binding::SelectionParent),
+                ("tab".into(), Binding::SelectionReopen),
+                ("/".into(), Binding::SelectionSearch),
                 ("primary+r".into(), Binding::RescanUi),
                 ("primary+q".into(), Binding::Mode(ModeId::normal())),
             ]),
@@ -520,6 +553,11 @@ impl Default for Grid {
             ui,
             bindings: Bindings::from([
                 ("`".into(), Binding::ToggleCursorFollowSelection),
+                ("enter".into(), Binding::SelectionAccept),
+                ("esc".into(), Binding::SelectionCancel),
+                ("space".into(), Binding::SelectionReset),
+                ("tab".into(), Binding::SelectionParent),
+                ("backspace".into(), Binding::SelectionParent),
                 ("primary+q".into(), Binding::Mode(ModeId::normal())),
             ]),
             app_configs: Vec::new(),
@@ -587,6 +625,11 @@ impl Default for RecursiveGrid {
             ui,
             bindings: Bindings::from([
                 ("`".into(), Binding::ToggleCursorFollowSelection),
+                ("enter".into(), Binding::SelectionAccept),
+                ("esc".into(), Binding::SelectionCancel),
+                ("space".into(), Binding::SelectionReset),
+                ("tab".into(), Binding::SelectionParent),
+                ("backspace".into(), Binding::SelectionParent),
                 ("primary+q".into(), Binding::Mode(ModeId::normal())),
             ]),
             app_configs: Vec::new(),
@@ -670,9 +713,6 @@ pub struct Scroll {
     pub scroll_step_half: i32,
     /// Pixels for `scroll_full_up` and friends.
     pub scroll_step_full: i32,
-    /// Deprecated compatibility input. Use `platform.macos.scroll.invert`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub invert_scroll: Option<bool>,
 }
 
 impl Default for Scroll {
@@ -682,7 +722,6 @@ impl Default for Scroll {
             scroll_step: 50,
             scroll_step_half: 500,
             scroll_step_full: 1_000_000,
-            invert_scroll: None,
         }
     }
 }
@@ -794,29 +833,20 @@ fn deserialize_search_edit_keys<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<std::collections::BTreeMap<crate::api::text_edit::EditAction, String>, D::Error> {
     use crate::api::text_edit::EditAction;
-    let table = toml::Table::deserialize(deserializer)?;
     // Public tables use key = action. Group alternatives by action only while
     // loading, so the existing compilation and input paths remain unchanged.
-    let bindings = table
-        .clone()
-        .try_into::<std::collections::BTreeMap<String, EditAction>>();
-    let overrides = if let Ok(bindings) = bindings {
-        let mut actions: std::collections::BTreeMap<EditAction, String> = Default::default();
-        for (alternatives, action) in bindings {
-            actions
-                .entry(action)
-                .and_modify(|keys| {
-                    keys.push(' ');
-                    keys.push_str(&alternatives);
-                })
-                .or_insert(alternatives);
-        }
-        actions
-    } else {
-        // Preserve existing action = keys configurations during migration.
-        table.try_into().map_err(serde::de::Error::custom)?
-    };
+    let bindings = std::collections::BTreeMap::<String, EditAction>::deserialize(deserializer)?;
     let mut keys = crate::api::text_edit::default_keys();
+    let mut overrides: std::collections::BTreeMap<EditAction, String> = Default::default();
+    for (alternatives, action) in bindings {
+        overrides
+            .entry(action)
+            .and_modify(|keys| {
+                keys.push(' ');
+                keys.push_str(&alternatives);
+            })
+            .or_insert(alternatives);
+    }
     keys.extend(overrides);
     Ok(keys)
 }
@@ -829,7 +859,7 @@ fn serialize_search_edit_keys<S: serde::Serializer>(
     let mut table = serializer.serialize_map(Some(actions.len()))?;
     let mut used = std::collections::BTreeSet::new();
     for (action, keys) in actions {
-        // Empty legacy bindings disable an action. Distinct empty groups keep
+        // Empty groups disable an action. Distinct empty groups keep
         // that behavior representable when exporting several disabled actions.
         let mut keys = std::borrow::Cow::Borrowed(keys.as_str());
         while !used.insert(keys.to_string()) {

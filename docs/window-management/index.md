@@ -8,7 +8,9 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
 
 ## 先试一次
 
-鼠标放到普通窗口上 → `Alt+W` → 松开入口键 → `H/J/K/L` 移动 → `Q` 结束。macOS 使用 Option+W，不是 Command+W。
+::: tip 先移动一个窗口
+鼠标放到窗口上 → `Alt+W` → 松开入口键 → `H/J/K/L` 移动 → `Q` 结束。macOS 用 Option+W。
+:::
 
 | 要做什么 | 模式 | 从 Window 进入 |
 | --- | --- | --- |

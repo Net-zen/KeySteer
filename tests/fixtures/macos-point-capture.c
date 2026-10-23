@@ -1,6 +1,6 @@
 // Windows/Linux: clang -std=c11 -Wall -Wextra -Werror tests/fixtures/macos-point-capture.c -o point-capture-test
 // macOS: add -framework CoreGraphics to also exercise real image cropping.
-#include "../../src/platform/macos/point_capture.h"
+#include "../../src/platform/macos/vision/point_capture.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

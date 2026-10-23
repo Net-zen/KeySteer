@@ -1,128 +1,22 @@
-# KeySteer portable configuration
-#
-# Every section and field is optional: omitted values fall back to the
-# defaults shown here, so you can delete anything you do not want to change.
-#
-# Windows portable builds and bare binaries read this beside the executable.
-# A packaged macOS app reads it from:
-#   ~/Library/Application Support/KeySteer/
-# Its name must match:
-#   keysteer.<any-profile-name>.toml
-#
-# Validate with:  keysteer --check -c keysteer.default.toml
-# Inspect with:   keysteer --dump-config
-# This annotated file mirrors the built-in defaults; it is not required at
-# runtime. Starting KeySteer without a config uses the same settings. During
-# automatic discovery, any other keysteer.<profile>.toml takes priority over it.
-#
-# ---------------------------------------------------------------------------
-# BINDINGS
-#
-# Every binding is `<chord> = "<what it does>"`. The same vocabulary is used
-# by the program internally, by this file, and by plugins, so a verb, a mode
-# and a plugin mode all read the same way.
-#
-#   h        = "move_left"            a verb, handled by the active mode
-#   g        = "grid"                 enter a mode (built-in or plugin)
-#   t        = "home"                 send a keystroke to the focused app
-#   "ctrl+c" = "send ctrl+c"          explicit form, needed for chords
-#   f5       = "exec make -j8"        run a command
-#   q        = "none"                 remove an inherited binding
-#
-# Verbs:
-#   move_left move_down move_up move_right
-#   scroll_left scroll_down scroll_up scroll_right
-#   scroll_half_down scroll_half_up scroll_full_down scroll_full_up
-#   left_click right_click middle_click double_click mouse_x1 mouse_x2
-#   press <keys/buttons...>            hold inputs, e.g. `press shift mouse_left`
-#   release <keys/buttons...>          release inputs held by press/toggle
-#   toggle [keys/buttons...]           toggle each input; no args makes its
-#                                      binding key modify any companion action
-#   wait [max_ms] | wait <min_ms> <max_ms>
-#                                      pause a sequence; wait/wait 0 use 100ms
-#   left_press/left_release/toggle_left and right_* remain compatible aliases
-#   slow fast                         held alongside a direction
-#   escape quit
-#
-# Mouse target names are mouse_left, mouse_right, mouse_middle, mouse_x1, mouse_x2. Keyboard
-# targets accept every key name and alias listed below. For example:
-#   n = "toggle"                      N+key toggles that action's input target;
-#                                      bare N releases all latched inputs
-#                                      while holding N latches N itself
-#   x = ["press shift", "left_click", "release shift"]
-#   h = ["home", "wait 50 100", "home"]
-#
-# Bindings are scoped to the mode that declares them, so `g` only enters the
-# grid while `normal` is active and never while you are typing.
-#
-# ---------------------------------------------------------------------------
-# KEY NAMES
-#
-# Modifiers      Aliases
-#   primary      Cmd on macOS, Ctrl on Windows and Linux — prefer this
-#   cmd          command, super, meta
-#   ctrl         control
-#   alt          option, opt
-#   shift
-#
-# Prefix with left_/right_ (`left_shift`) to require one physical side.
-# A generic modifier (`alt`, `shift`, `ctrl`, `cmd`) matches either side.
-# User aliases are case-insensitive and may override built-ins. For example,
-# this makes every `Primary` binding require only the physical left Alt key:
-#
-# [key_aliases]
-# Hyper = "right_ctrl"
-#
-# [key_aliases.windows]
-# Primary = "left_alt"
-#
-# [key_aliases.macos]
-# Primary = "left_cmd"
-#
-# The top-level table applies everywhere. The current platform subtable
-# (`windows`, `macos`, or `linux`) overrides matching global aliases. Alias
-# values must be one known key, not a chord. Chains are allowed.
-#
-# Keys           a-z, 0-9
-#   symbols      ` - = [ ] \ ; ' , . /
-#   named        space, enter (return), esc (escape), tab, delete, backspace
-#   navigation   up, down, left, right, home, end, page_up, page_down
-#   function     f1-f20 everywhere; f21-f24 on Windows and Linux only
-#   numpad       numpad_0 - numpad_9
-#
-# Avoid platform-specific traps — the program warns about these at startup:
-#   * On macOS, Option+<letter> types a special character (Option+E is a
-#     dead-key accent) and never reaches this program. Use `primary+shift+…`.
-#   * On macOS, Cmd+Space / Cmd+Tab / Cmd+Q belong to the system.
-#   * In terminals, Ctrl+Shift+C and Ctrl+Shift+V are copy and paste.
-# ---------------------------------------------------------------------------
+# KeySteer — common settings and complete default key bindings.
+# Omitted fields use built-in defaults. User profiles: keysteer.<name>.toml.
+# A bindings table replaces that mode's defaults; keep the keys you need.
+# Primary is left Alt on Windows and Command on macOS.
+# Portable: beside the executable. macOS app: ~/Library/Application Support/KeySteer/.
+# Check: keysteer --check -c keysteer.default.toml
+# Full values: keysteer --dump-config
+# Guide: https://dccif.github.io/KeySteer/reference/configuration
+# Bindings: "+" combines keys; spaces separate alternatives; "none" disables a key.
 
+# Applications excluded from activation.
 [general]
-# Applications where the engine never activates.
 excluded_apps = []
 
-# Optional key-name overrides. Keep this table commented unless needed.
-# [key_aliases]
-# Hyper = "right_ctrl"
+# Key aliases can also be defined globally or under key_aliases.macos.
 [key_aliases.windows]
 Primary = "left_alt"
 
-# ---------------------------------------------------------------------------
-# Theme
-#
-# Five base colors per appearance. Every component color is derived from these
-# unless you override it in that component's `ui` table.
-#
-#   surface        translucent fills, badges, label backgrounds
-#   accent         borders, grid lines, primary chrome
-#   accent_alt     active/emphasis states and highlights
-#   on_accent_alt  foreground on accent_alt surfaces
-#   text           foreground on surface backgrounds
-#
-# Colors use "#RRGGBBAA" and may be written as
-# { light = "...", dark = "..." } anywhere a color is expected.
-# ---------------------------------------------------------------------------
-
+# Theme colors: #RRGGBBAA. Overrides may use { light = "...", dark = "..." }.
 [theme.dark]
 surface = "#0A1338FF"
 accent = "#6E82D6FF"
@@ -137,222 +31,84 @@ accent_alt = "#0B2377FF"
 on_accent_alt = "#F8FAFFFF"
 text = "#17327AFF"
 
-# ---------------------------------------------------------------------------
-# idle — the silent resting state
-#
-# Idle does nothing but wait, and never swallows a keystroke, so the program is
-# invisible until you ask for it. Keep this table to just the launchers.
-#
-# All chord keys resolve through key_aliases (including platform overrides).
-# This file maps Primary to left Alt on Windows. On macOS, the built-in
-# Primary fallback is Command; configure key_aliases.macos to override it.
-# ---------------------------------------------------------------------------
-
+# Global launchers.
 [hotkeys]
 "alt+w" = "window"
-# Optional mouse-side-button launcher (Windows/macOS):
-# mouse_x1 = "normal"
 "primary+e" = "normal"
 
+# Normal: move, click and scroll. Unbound keys pass through to the application.
 [normal]
 inherits = ["hotkeys"]
-# Forward keys that do not match a complete KeySteer binding. Modifier
-# combinations are matched exactly, so Alt+H does not trigger bare h unless
-# Alt is itself held by a KeySteer action. Set false for keyboard-exclusive
-# Normal behaviour.
 passthrough_unbound_keys = true
-# A click key immediately presses its mouse button; releasing before this
-# threshold immediately releases it to complete the click. Reaching the
-# threshold keeps that existing press latched without injecting a click.
-# A parameterless toggle captures any number of companions immediately in
-# either order; each companion follows its Normal binding, so `;`, `'`, and
-# `right_shift` hold the mapped mouse button instead of the physical key.
-# Holding the toggle key by itself latches that key after this threshold.
-# A standalone tap, returning to Normal, or entering Idle releases all held
-# targets. Set to 0 to use an atomic key-down click and disable both long-press
-# behaviours.
-long_press_toggle_ms = 500
-# Optional modifier-drag convenience. This applies only to a direct
-# click/double-click binding latched by long press. While one or more physical
-# Shift/Ctrl/Alt/Win or Command key is held and passed through, the first pointer
-# movement arms the delay and later movement restarts it. Explicit press/toggle
-# latches are unaffected. Set to 0 to keep manual release.
-auto_release_ms = 0
+long_press_toggle_ms = 500 # 0 disables long-press latching.
+auto_release_ms = 0 # 0 keeps manual release; otherwise delay after modifier-drag stops.
 
-# Optional blind grid positioning in Normal; no activation key or grid overlay.
-# [normal.targeting]
-# method = "grid"
-# reset_on = ["move", "click"]
-# Optional geometry overrides; omitted fields inherit the selected method above.
-# These affect Normal only; standalone grid/recursive_grid and their UI stay unchanged.
-# grid_cols = 2
-# grid_rows = 2
-# keys = "1234"
-# max_depth = 3
-# Recursive_grid only (method = "recursive_grid"):
-# min_size_width = 1
-# min_size_height = 1
-# layers = [] # Replace the whole inherited list; [] clears all layer overrides.
-# Or use per-depth entries (do not also specify layers = []):
-# [[normal.targeting.layers]]
-# depth = 0
-# grid_cols = 4
-# grid_rows = 1
-# keys = "1234"
-
-# ---------------------------------------------------------------------------
-# normal — the working mode
-#
-# Move the pointer, click, scroll, and enter the targeting modes. Bound keys
-# such as `hjkl` are captured; unbound keys and unconfigured modifier chords
-# pass through when `passthrough_unbound_keys` is enabled.
-# ---------------------------------------------------------------------------
+# Hold a speed key with a direction; tap a click key or hold it to latch.
 [normal.bindings]
 "?" = "key_help"
-# Temporarily pass typing to the focused application; rebind freely.
 '\' = "text_input"
-# Optional synthetic side clicks (the receiving app decides their behavior):
-# t = "mouse_x1"
-# y = "mouse_x2"
-# Optional side buttons: mouse_x1 (Back), mouse_x2 (Forward).
-# mouse_x1 = "key_help"
-# mouse_x2 = "grid"
-# "ctrl+mouse_x2" = "ui_hint"
-# Movement, vim style.
 h = "move_left"
 j = "move_down"
 k = "move_up"
 l = "move_right"
-# Hold shift to slow the pointer; either v or b makes it fast.
-# For point-and-toggle speed modes, bind a key to `precision_toggle`,
-# `slow_toggle`, or `fast_toggle`; press once to enable and again to clear.
-# The active toggle is shown in the second line of the mode indicator.
-# Example point-and-toggle setup:
-# v = "fast_toggle"
-# left_shift = "slow_toggle"
-# caps_lock = "precision_toggle"
 caps_lock = "precision"
 left_shift = "slow"
 "v b" = "fast"
-
-# Scrolling. A tap takes effect immediately; hold to repeat.
 m = "wheel_down"
 "," = "wheel_up"
 "." = "scroll_left"
 "/" = "scroll_right"
-
-# Pointer buttons.
 ";" = "left_click"
 "'" = "right_click"
 right_shift = "middle_click"
 n = "toggle"
-
-# Targeting modes available directly after entering normal.
 g = "grid"
 f = "recursive_grid"
+c = "text_select"
 "primary+f" = "ui_hint"
-# Move the pointer to the next display, or keep Primary+S held and press D to
-# move the application window under the pointer there. The pointer follows the
-# window and keeps its position inside it. Use `move_window previous` or
-# `move_window 2` for custom bindings.
 "primary+s" = "screen next"
 "primary+d" = "move_window next"
-
-# Optional Vim-style arrow keys sent to the focused application. Bare hjkl
-# continue to move the pointer; the more specific Primary chords send arrows.
-# "primary+h" = "arrow_left"
-# "primary+j" = "arrow_down"
-# "primary+k" = "arrow_up"
-# "primary+l" = "arrow_right"
-
-# Navigation keys sent to the focused application.
 u = "page_down"
 i = "page_up"
 t = "home"
 y = "end"
-
-# Bare q is safe in normal, which has no q-labelled cells.
 "q esc" = "idle"
 
-# ---------------------------------------------------------------------------
-# text_input — temporary native text entry, then return to normal
-# ---------------------------------------------------------------------------
-
-[text_input]
-inherits = []
-# Hold Primary to borrow Normal; release it to continue typing.
-temporary_mode = "normal"
-temporary_mode_keys = ["primary"]
-temporary_mode_passthrough_keys = []
-
+# Text Input: all other keys, including Cmd/Ctrl shortcuts, go to the application.
+# Enter, backslash or Esc returns to Normal; remove Enter here for multiline typing.
 [text_input.bindings]
-# These keys are consumed. Replace this table to choose your own return keys.
 'enter \ esc' = "normal"
-# Optional: submit Enter to the application before returning to Normal.
-# Replace the grouped binding above with these two lines:
+# Optional: send Enter before returning; replace the grouped binding above:
 # '\ esc' = "normal"
 # enter = ["send enter", "normal"]
 
-# Optional home-row editing: uncomment only the mappings you want.
-# Primary resolves through key_aliases; choose modifiers that do not duplicate it.
-# "primary+h" = "arrow_left"
-# "primary+j" = "arrow_down"
-# "primary+k" = "arrow_up"
-# "primary+l" = "arrow_right"
-# "primary+u" = "backspace"
-# "primary+i" = "delete"
-# "primary+o" = "insert"
-# "primary+t" = "home"
-# "primary+y" = "end"
-# "shift+primary+h" = "send shift+arrow_left"
-# "shift+primary+j" = "send shift+arrow_down"
-# "shift+primary+k" = "send shift+arrow_up"
-# "shift+primary+l" = "send shift+arrow_right"
-# "shift+primary+u" = "send shift+backspace"
-# "shift+primary+i" = "send shift+delete"
-# "shift+primary+o" = "send shift+insert"
-# "shift+primary+t" = "send shift+home"
-# "shift+primary+y" = "send shift+end"
-# "ctrl+primary+h" = "send ctrl+arrow_left"
-# "ctrl+primary+j" = "send ctrl+arrow_down"
-# "ctrl+primary+k" = "send ctrl+arrow_up"
-# "ctrl+primary+l" = "send ctrl+arrow_right"
-# "ctrl+primary+u" = "send ctrl+backspace"
-# "ctrl+primary+i" = "send ctrl+delete"
-# "ctrl+primary+o" = "send ctrl+insert"
-# "ctrl+primary+t" = "send ctrl+home"
-# "ctrl+primary+y" = "send ctrl+end"
-# "ctrl+shift+primary+h" = "send ctrl+shift+arrow_left"
-# "ctrl+shift+primary+j" = "send ctrl+shift+arrow_down"
-# "ctrl+shift+primary+k" = "send ctrl+shift+arrow_up"
-# "ctrl+shift+primary+l" = "send ctrl+shift+arrow_right"
-# "ctrl+shift+primary+u" = "send ctrl+shift+backspace"
-# "ctrl+shift+primary+i" = "send ctrl+shift+delete"
-# "ctrl+shift+primary+o" = "send ctrl+shift+insert"
-# "ctrl+shift+primary+t" = "send ctrl+shift+home"
-# "ctrl+shift+primary+y" = "send ctrl+shift+end"
+# OCR text selection shares UI Hint's scan scope, OCR and panel appearance.
+[text_select]
+enabled = true
+hint_characters = "asdfghjklqwertyuiopzvbnm" # Bare command keys are excluded.
 
-# ---------------------------------------------------------------------------
-# window — lock, move, resize and arrange ordinary windows
-# ---------------------------------------------------------------------------
+[text_select.bindings]
+"primary+c" = "text_refine" # Select text, then refine; plain c remains input.
+"ctrl+backspace" = "first_level" # 回到区域层，清空选择；Space 用于输入空格。
+"tab backspace" = "previous_level" # 返回上一层；输入非空时 Backspace 删除文字。
+enter = "text_copy"
+page_down = "text_next_page"
+page_up = "text_previous_page"
+esc = "cancel_selection"
+"?" = "key_help"
 
-# All five window modes have independent bindings. Q is an ordinary mode binding.
-# Any mode can be entered directly from [hotkeys], for example:
-# "alt+a" = "window_quick"
-# "alt+e" = "window_editor"
-# "alt+r" = "window_restore"
+# Window modes have independent bindings; Q follows each mode's binding.
+# The target/screens/temporary-mode options also apply to Quick, Editor, Restore and Tabs.
+# Optional entry priority: "active" or "mouse"; omit to preserve session handoffs.
 [window]
-# Optional entry priority: "active" or "mouse"; fall back to the other if absent.
-# Omit to preserve session handoffs.
 # target = "active"
-screens = "current"
+screens = "all" # "current" = current screen; "all" = all screens (Window default).
 include_minimized = false
 enabled = true
 inherits = ["hotkeys"]
-temporary_mode = "normal"
+temporary_mode = "normal" # Hold Primary to borrow Normal.
 temporary_mode_keys = ["primary"]
-# Skip the temporary layer for these full or trigger-stripped chords.
-temporary_mode_passthrough_keys = ["ctrl", "ctrl+x"]
+temporary_mode_passthrough_keys = ["ctrl", "ctrl+x"] # Keep multi-selection keys in Window.
 number_timeout_ms = 250
 move_step = 20.0
 move_speed = 600.0
@@ -362,7 +118,6 @@ border_width = 3.0
 
 [window.bindings]
 "?" = "key_help"
-# Independent targeting entrances; changes to normal.bindings do not affect these.
 g = "grid"
 "primary+f" = "recursive_grid"
 h = "window_left"
@@ -375,8 +130,8 @@ e = "window_editor"
 t = "window_tab"
 r = "window_restore"
 d = "window_screen_next"
-f = "window_maximize" # Maximize / restore
-"shift+f" = "window_minimize" # Minimize / restore
+f = "window_maximize"
+"shift+f" = "window_minimize"
 c = "window_center"
 x = "window_close"
 tab = "window_select"
@@ -394,44 +149,31 @@ tab = "window_select"
 z = "window_undo"
 "shift+z" = "window_redo"
 "shift+c" = "window_reset_initial"
-# Ctrl means Control on every platform, including macOS.
-# First run: single-digit labels. After a space: complete labels (e.g. 1234567 12 23).
-# Spaced labels apply only at the next Space or confirmation, never while partially typed.
-# Action keys confirm and execute immediately; Ctrl/Enter can confirm without an action.
-# Backspace edits; Ctrl+X keeps only the original target.
 "ctrl" = "window_multi_select"
 "ctrl+x" = "window_multi_clear"
 q = "idle"
 "primary+q" = "idle"
 
-# These bindings override window.bindings only while entering selection numbers.
+# Active only while typing selection numbers. Ctrl/Enter confirms; Backspace edits.
 [window.multi_select.bindings]
-"ctrl enter" = "window_multi_confirm" # Either key confirms; + means a combination.
+esc = "window_multi_cancel"
+"backspace" = "send backspace"
+"delete" = "send delete"
+"arrow_left" = "send arrow_left"
+"arrow_right" = "send arrow_right"
+"home" = "send home"
+"end" = "send end"
+"ctrl enter" = "window_multi_confirm"
 "primary+h" = "arrow_left"
 "primary+l" = "arrow_right"
 
+# Shared card style for Window, Quick, Editor, Restore and Tabs.
+# Omitted colors inherit the theme; 0 font size follows the window UI.
 [window.card]
-# Guide from the window center to a displaced card, including collision avoidance.
 guide_line_enabled = true
 guide_line_width = 3.0
-# Inherits the card border color; alpha controls transparency.
-# guide_line_color = "#6E82D680"
-position_mode = "window" # window or screen
-position = ["50%", "50%", "50%", "50%"] # top, right, bottom, left
-# Shared by Window / Quick / Editor / Restore / Tabs.
-# Optional colors: remove the leading # to override the inherited ui/theme color.
-# background_color = { light = "#EEF2FFFF", dark = "#0A1338FF" }
-# border_color = { light = "#465FBCFF", dark = "#6E82D6FF" }
-# number_color = { light = "#10172DFF", dark = "#E8EEFFFF" }
-# app_color = { light = "#10172DFF", dark = "#E8EEFFFF" }
-# title_color = { light = "#10172DFF", dark = "#E8EEFFFF" }
-# Selected cards use built-in soft mint colors and keep the check mark.
-# Optional overrides; omitted values retain the built-in selected style.
-# Colors accept #RRGGBBAA or { light = "...", dark = "..." }.
-# selected_background_color = { light = "#E8F6F0FF", dark = "#284D44FF" }
-# selected_border_color = { light = "#60B49CFF", dark = "#85CDB8FF" }
-# selected_border_width = 1.5 # 0–20; 0 hides the selected card border.
-# 0 = automatic font size; empty font family and omitted colors inherit ui.
+position_mode = "window" # "window" or "screen".
+position = ["50%", "50%", "50%", "50%"]
 app_font_size = 0.0
 title_font_size = 0.0
 app_font_family = ""
@@ -448,18 +190,14 @@ number_min_width = 38.0
 [window.ui]
 font_size = 28
 
+# Quick: directional split ratios, followed by full-screen size.
 [window_quick]
-# Optional entry priority: "active" or "mouse"; fall back to the other if absent.
-# Omit to preserve session handoffs.
-# target = "active"
 screens = "current"
 include_minimized = false
 enabled = true
 inherits = ["hotkeys"]
 temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
-# Skip the temporary layer for these full or trigger-stripped chords.
-temporary_mode_passthrough_keys = []
 number_timeout_ms = 250
 split_ratios = ["1/4", "1/3", "1/2", "2/3", "3/4"]
 gap = 0.0
@@ -494,18 +232,14 @@ q = "window"
 [window_quick.ui]
 font_size = 28
 
+# Editor: tile windows and adjust their regions.
 [window_editor]
-# Optional entry priority: "active" or "mouse"; fall back to the other if absent.
-# Omit to preserve session handoffs.
-# target = "active"
 screens = "current"
 include_minimized = false
 enabled = true
 inherits = ["hotkeys"]
 temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
-# Skip the temporary layer for these full or trigger-stripped chords.
-temporary_mode_passthrough_keys = []
 number_timeout_ms = 250
 resize_step = 20.0
 resize_speed = 500.0
@@ -513,6 +247,7 @@ gap = 0.0
 border_width = 3.0
 
 [window_editor.bindings]
+"`" = "window_area_number"
 "?" = "key_help"
 h = "window_layout_left"
 j = "window_layout_down"
@@ -547,6 +282,7 @@ r = "window_restore"
 q = "window"
 "primary+q" = "idle"
 
+# Editor overrides only the shared card position.
 [window_editor.card]
 position_mode = "window"
 position = ["0%", "50%", "100%", "50%"]
@@ -554,18 +290,14 @@ position = ["0%", "50%", "100%", "50%"]
 [window_editor.ui]
 font_size = 28
 
+# Restore: saved workspace layouts.
 [window_restore]
-# Optional entry priority: "active" or "mouse"; fall back to the other if absent.
-# Omit to preserve session handoffs.
-# target = "active"
 screens = "current"
 include_minimized = false
 enabled = true
 inherits = ["hotkeys"]
 temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
-# Skip the temporary layer for these full or trigger-stripped chords.
-temporary_mode_passthrough_keys = []
 number_timeout_ms = 250
 gap = 0.0
 border_width = 3.0
@@ -575,8 +307,10 @@ after_finish = "window_editor"
 after_click = "keep"
 
 [window_restore.bindings]
+page_up = "window_previous_page"
+page_down = "window_next_page"
 "?" = "key_help"
-x = "window_delete" # Toggle restore/delete within this list
+x = "window_delete"
 enter = "window_confirm"
 q = "window"
 "primary+q" = "idle"
@@ -584,20 +318,14 @@ q = "window"
 [window_restore.ui]
 font_size = 28
 
-# Active-member window groups: 12t34t creates two groups; ~ selects a group number.
-# Ordinary digits keep their window identities. Space ends an ambiguous number.
+# Tabs: 12t34t creates two groups; ~ selects a group number.
 [window_tab]
-# Optional entry priority: "active" or "mouse"; fall back to the other if absent.
-# Omit to preserve session handoffs.
-# target = "active"
 screens = "current"
 include_minimized = false
 enabled = true
 inherits = ["hotkeys"]
 temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
-# Skip the temporary layer for these full or trigger-stripped chords.
-temporary_mode_passthrough_keys = []
 number_timeout_ms = 250
 border_width = 3
 
@@ -625,157 +353,64 @@ esc = "idle"
 [window_tab.ui]
 font_size = 28
 
-# ---------------------------------------------------------------------------
-# ui_hint — label every clickable element
-# Type a label to click it. `/` filters elements by name instead.
-# ---------------------------------------------------------------------------
+# UI Hint: type a label to click; / searches names, OCR and Chinese initials.
+# scan_scope: window (pointer window first), active (focused window first),
+# screen (pointer's display), all (all displays). Display scopes scan visible UI.
+# strategy: hybrid (default), axtree, vision or contour.
+# Advanced OCR/contour thresholds and roles use built-in defaults; see --dump-config.
 [ui_hint]
-# Stable slots: OCR, accessibility, coordinates, color. Missing values stay empty.
-# Ctrl+1/2/3/4 on both Windows and macOS; each shortcut is independently configurable.
-search_copy_keys = ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"]
-# window: pointer window -> active window -> pointer display; tries to activate the pointer window.
-# active: active window -> pointer window -> pointer display. screen: pointer display only.
-# Fallback resolves unavailable windows before scanning; one selected scope per scan.
+search_copy_keys = ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"] # OCR / accessibility / coordinates / color.
 scan_scope = "window"
 enabled = true
-# Both macOS and Windows support "axtree", "vision", "contour", and "hybrid".
-# Default hybrid merges accessibility, OCR and contour targets concurrently.
-# vision combines OCR and contours; contour uses pixels only, without OCR/AX.
-# Contour targets have no text names. Timeout and target limit reuse the vision
-# section below; detect_rectangles controls contours in vision/hybrid, while
-# strategy="contour" always enables them. macOS capture needs Screen Recording.
 strategy = "hybrid"
-# Characters used to build hint labels.
 hint_characters = "asdfghjkl"
-# Keep label keys available; hold either modifier for normal pointer controls.
 inherits = ["hotkeys", "normal"]
 temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
-# Skip the temporary layer for these full or trigger-stripped chords.
-temporary_mode_passthrough_keys = []
-# Hold to raise the next label in every overlapping group; release to restore.
-# If this is also listed in temporary_mode_keys, overlap cycling wins in UI Hint.
-overlap_cycle_key = "shift"
-# "normal"  keeps single-character labels as long as possible
-# "reverse" fills the two-character tier uniformly
-label_direction = "normal"
-# Search-result group priority for equal match quality; include each exactly once.
-# text includes OCR, accessibility text and control types (e.g. text_field).
-# Whole words/codes precede prefixes, then substrings; ties retain scan order.
-# The first result panel appears automatically; point_next advances from it.
-search_match_priority = ["pinyin", "text", "label"]
-# Accessibility tree depth limit; 0 means unlimited.
-max_depth = 50
-# Soft scan budget. Results stream onto the screen before this expires.
+overlap_cycle_key = "shift" # Hold to cycle overlapping labels.
+label_direction = "normal" # "normal" or "reverse".
+search_match_priority = ["pinyin", "text", "label"] # Each of pinyin/text/label once; equal-quality ties.
+max_depth = 50 # 0 = unlimited.
 scan_timeout_ms = 2500
-# Retry only when no labels appeared; each retry gets a progressively longer budget.
 scan_retry_count = 1
 scan_retry_delay_ms = 200
-# Skip the clickability heuristic and hint every matching role.
 ignore_clickable_check = false
-# Hit-test each element; slower, but removes hints for occluded controls.
-visible_check_enabled = false
-# Where labels sit relative to their element: "top", "center" or "bottom".
-placement = "bottom"
-# Fine adjustment after placement. Negative y moves labels upward.
+visible_check_enabled = false # Hit-testing occluded controls costs extra time.
+placement = "bottom" # "top", "center" or "bottom".
 label_x_offset = 0
 label_y_offset = -8
-# Semantic roles that receive a hint. These are platform-independent; the
-# backend maps them to AX roles or UIA control types. Prefix with `ax:` or
-# `uia:` to name a native role directly.
-clickable_roles = [
-  "button",
-  "menu_button",
-  "popup_button",
-  "combo_box",
-  "link",
-  "checkbox",
-  "radio",
-  "switch",
-  "text_field",
-  "text_area",
-  "search_field",
-  "slider",
-  "stepper",
-  "tab",
-  "menu_item",
-  "cell",
-  "list_item",
-]
 
-# Finish marks this targeting session complete without re-entering the mode.
-# Actions: keep, restart, return, any built-in/plugin mode, or a click action.
-# after_click additionally accepts finish, but never another click action.
+# Completion actions: keep, restart, return, a mode or a click; after_click also accepts finish.
 [ui_hint.lifecycle]
 after_finish = "normal"
 after_click = "normal"
 
 [ui_hint.bindings]
+enter = "confirm_selection"
+esc = "cancel_selection"
+backspace = "previous_level"
+tab = "reopen_selection"
+"/" = "search_selection"
 "primary+r" = "rescan"
 "primary+q" = "normal"
 
-# Hybrid always combines accessibility, every available OCR provider and contour.
-# Source switches below apply to vision; candidate limits apply to vision/contour.
-# Hybrid uses the shared 10000-target scan budget regardless of these switches/caps.
-[ui_hint.vision]
-detect_text = true
-detect_rectangles = true
-request_timeout_ms = 5000
-minimum_confidence = 0.0
-merge_iou_threshold = 0.5
-rectangle_max_candidates = 10000
-rectangle_min_size = 0.01
-rectangle_min_aspect = 0.3
-rectangle_max_aspect = 10.0
-button_min_confidence = 0.3
-button_min_aspect = 0.8
-button_max_aspect = 8.0
-button_icon_max_size = 48
-link_min_aspect = 5.0
-link_max_height = 40
-link_min_width = 50
-image_min_size = 48
-checkbox_max_size = 32
-generic_clickable_min_confidence = 0.5
-
 [ui_hint.ui]
 font_size = 17
-# Empty means the platform default UI font.
 font_family = ""
 border_width = 1
-# -1 means "auto": derived from font_size.
-border_radius = -1
+border_radius = -1 # -1 = automatic; also applies to padding.
 padding_x = -1
 padding_y = -1
-# Uncomment to override the theme-derived defaults. Colors use #RRGGBBAA.
-# `matched_text_color` highlights the already typed label prefix.
-# background_color   = "#0A1338F2"
-# text_color         = "#E8EEFFFF"
-# matched_text_color = "#E4B400FF"
-# border_color       = "#6E82D6FF"
 
-# Current search result / selected Point member uses Window-style green.
-# Optional overrides; defaults are not expanded when exporting configuration.
-# [ui_hint.search_highlight]
-# background_color = { light = "#E8F6F0FF", dark = "#284D44FF" }
-# text_color = { light = "#17327AFF", dark = "#E8EEFFFF" }
-# border_color = { light = "#60B49CFF", dark = "#85CDB8FF" }
-# border_width = 1.5 # 0 hides the current-label border.
-
-# Outline each hinted element.
+# Optional element outlines.
 [ui_hint.boundary_highlight]
 enabled = false
 border_width = 1
 border_radius = -1
-# background_color = "#8FA2F033"
-# border_color     = "#8FA2F0FF"
 
-# Search matches labels, accessibility semantics, OCR and Chinese initials.
-# Accept exits search and restores labels; a unique result also moves the pointer.
-# Shared overlay editor shortcuts. primary follows [key_aliases].
-# Keys = action; omitted actions inherit defaults. Multiple alternatives use spaces.
+# Keys = editing action; omitted actions inherit their defaults.
 [ui_hint.search_edit_keys]
-"enter / primary+q" = "accept" # alternatives separated by spaces
+"enter / primary+q" = "accept"
 "esc" = "cancel"
 "primary+v" = "paste"
 "primary+c" = "copy"
@@ -792,227 +427,137 @@ border_radius = -1
 "backspace" = "backspace"
 "delete" = "delete"
 
-# A solo tap toggles point adjustment; copy chords never toggle it.
-# point_next previews search results while typing and switches points while adjusting.
-# Color cycling also enters adjustment automatically when a result panel is visible.
+# Ctrl toggles point adjustment; Tab previews results or switches selected points.
 [ui_hint.search_bindings]
 ctrl = "point_toggle"
 tab = "point_next"
 "ctrl+shift+4" = "color_next"
 
+# Position arrays are [top, right, bottom, left], relative to position_mode.
 [ui_hint.search_input_ui]
-position_mode = "screen" # screen or window
-position = ["100%", "50%", "0%", "50%"] # top, right, bottom, left
-x_offset = 0
-y_offset = 24
+position_mode = "screen" # "screen" or "window".
+position = ["95%", "50%", "5%", "50%"]
 width = 280
 font_size = 14
 padding_y = 6
-# font_family = ""
-# border_radius = 8
-# border_width = 1
-# padding_x = 12
-# background_color = "#0A1338F2"
-# text_color = "#E8EEFFFF"
-# border_color = "#6E82D6FF"
 
-# A single result shows four slots; space-separated searches aggregate the first three.
+# Four result slots: OCR, accessibility, coordinates and color.
 [ui_hint.search_info_ui]
-position_mode = "search_input" # search_input, screen or window
-position = ["0%", "50%", "100%", "50%"]
-x_offset = 0
-y_offset = 12
+position_mode = "search_input" # "search_input", "screen" or "window".
+position = ["44%", "50%", "56%", "50%"] # Above the input, with a small gap.
 width = 520
 font_size = 14
 padding_y = 16
-# Supports the same font/color/border/padding options as search_input_ui.
 
-# ---------------------------------------------------------------------------
-# grid — a full-screen labelled coordinate grid
-# ---------------------------------------------------------------------------
-
+# Grid: select max_depth nested cells, then return to Normal.
 [grid]
 enabled = true
-# qwert / asdfg / zxcvb / yuiop / hjkl; / nm,./
 grid_cols = 5
 grid_rows = 4
 keys = "12345qwertasdfgzxcvb"
-# Select this many nested cells before the target is confirmed.
 max_depth = 3
-# Grid labels own most keys; hold a temporary-normal modifier to move/click.
 inherits = ["hotkeys", "normal"]
 temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
-# Skip the temporary layer for these full or trigger-stripped chords.
-temporary_mode_passthrough_keys = []
-# Move to each selected cell centre while narrowing the grid.
 cursor_follow_selection = true
 
-# Selecting max_depth finishes and returns to normal. Clicking early first
-# finishes the current grid, then after_finish chooses where to go.
 [grid.lifecycle]
 after_finish = "normal"
 after_click = "finish"
 
 [grid.bindings]
-# Toggle cursor following for only the active grid session.
+enter = "confirm_selection" # 确认当前选择
+esc = "cancel_selection" # 取消选择，返回来源模式
+"tab backspace" = "previous_level" # Tab 或 Backspace：返回上一层
+space = "first_level" # 回到第一层，重新选择
 "`" = "follow"
 "primary+q" = "normal"
 
 [grid.ui]
-# Maximum font size; nested layers shrink automatically to stay inside cells.
-# Grid keeps all labels visible, including the third layer.
-# The initial screen overlays a large first key on a faint grid of second keys.
-# matched_text_color tints the large key; matched_border_color tints inner lines.
 font_size = 20
 border_width = 1
-# matched_text_color       = "#8FA2F0FF"
-# matched_background_color = "#8FA2F0FF"
-# matched_border_color     = "#8FA2F0FF"
 
-# ---------------------------------------------------------------------------
-# recursive_grid — each keystroke subdivides the previous cell
-#
-# backspace widens back out, space resets, enter clicks the current centre.
-# ---------------------------------------------------------------------------
-
+# Recursive Grid: Backspace widens, Space resets, Enter clicks the current centre.
 [recursive_grid]
 enabled = true
-# A classic nine-cell recursive grid.
 grid_cols = 3
 grid_rows = 3
-# Must hold exactly grid_cols * grid_rows characters, in row-major order.
 keys = "qweasdzxc"
-# Stop subdividing once a cell would be smaller than this.
 min_size_width = 1
 min_size_height = 1
-# Recursion limit, 1..=20.
 max_depth = 10
-# Move to each selected cell centre while narrowing the grid.
 cursor_follow_selection = true
 inherits = ["hotkeys", "normal"]
 temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
-# Skip the temporary layer for these full or trigger-stripped chords.
-temporary_mode_passthrough_keys = []
 
-# A click keeps the current recursive grid live, so more letters can continue
-# subdividing it. Natural endpoints and explicit Finish keep their final state.
 [recursive_grid.lifecycle]
 after_finish = "keep"
 after_click = "keep"
 
 [recursive_grid.bindings]
-# Toggle cursor following for only the active recursive-grid session.
+enter = "confirm_selection" # 确认当前选择
+esc = "cancel_selection" # 取消选择，返回来源模式
+"tab backspace" = "previous_level" # Tab 或 Backspace：返回上一层
+space = "first_level" # 回到第一层，重新选择
 "`" = "follow"
 "primary+q" = "normal"
 
-# Per-depth shape overrides. Any omitted field inherits from above.
-# layers = [
-#   { depth = 0, grid_cols = 2, grid_rows = 2, keys = "crtn" },
-# ]
-
+# font_size = 0 sizes letters automatically; empty label_char keeps normal labels.
 [recursive_grid.ui]
-# 0 sizes letters at 40% of the shorter cell edge.
-# Positive values set a maximum font size; small cells shrink labels to fit.
 font_size = 0
 label_min_font_size = 6
 line_width = 1
-# line_color      = "#6E82D6FF"
-# highlight_color = "#8FA2F0FF"
-# Draw a filled pill behind each cell key.
 label_background = false
-# Replace every cell label with a single character, e.g. "·".
 label_char = ""
-# Additional hide threshold based on the fitted font size. 0 disables it.
 label_autohide_multiplier = 1.5
-# Preview the next level's keys inside each cell.
 sub_key_preview = false
 sub_key_preview_font_size = 8
 sub_key_preview_autohide_multiplier = 1.5
 
-# ---------------------------------------------------------------------------
-# Scrolling and pointer tuning
-#
-# These are parameters, not modes: scrolling is a set of bindings any mode can
-# use, so there is no scroll mode to enter.
-# ---------------------------------------------------------------------------
-
+# Distances are pixels; speed is pixels/second when held (0 = tap only).
 [scroll]
-# Cross-platform distances for scroll bindings.
-# Ordinary held scrolling speed in pixels/second, independent of tap distance.
-# 0 means tap-only. Precision/slow/fast modifiers still apply.
 speed = 500.0
-# Pixels for scroll_up / scroll_down / scroll_left / scroll_right.
 scroll_step = 50
-# Pixels per press for scroll_half_* (no held repeat).
 scroll_step_half = 500
-# Pixels per press for scroll_full_* (no held repeat).
 scroll_step_full = 1000000
 
-# ---------------------------------------------------------------------------
-# Platform-specific behavior
-#
-# Keep operating-system integration choices here rather than mixing them with
-# portable scroll distances and pointer acceleration.
-# ---------------------------------------------------------------------------
-
+# macOS wheel direction.
 [platform.macos.scroll]
-# macOS users commonly reverse vertical wheel direction but keep horizontal.
 invert_horizontal = false
 invert_vertical = true
 
+# Pointer speed: pixels/second; acceleration: pixels/second².
 [pointer]
-# Velocities are pixels/second; acceleration is pixels/second², independent
-# of display refresh rate. `tap_distance` keeps short taps responsive.
 initial_speed = 1000.0
 max_speed = 2200.0
 acceleration = 3000.0
-# Ease into and out of acceleration. Set false for linear acceleration.
 smooth_acceleration = true
 tap_distance = 2.5
 slow_multiplier = 0.35
 precision_multiplier = 0.12
 fast_multiplier = 2.0
 
-# ---------------------------------------------------------------------------
-# Mode indicator — a badge pinned near the cursor
-#
-# Non-idle modes show their name at the pointer's lower-left by default,
-# except text_input, whose badge is disabled below.
-# Disable or rename one with `[mode_indicator.modes.<mode_id>]`.
-# ---------------------------------------------------------------------------
-
+# Cursor ring and held-button colors.
 [mode_indicator.cursor]
 enabled = true
 radius = 13
 stroke_width = 2
-# fill_color = "#8FA2F022"
-# stroke_color = "#8FA2F0D2"
-# Synthetic press/toggle states and physically held click keys use a
-# 20%-opaque fill and an opaque stroke. Atomic clicks still run on key-down.
 left_pressed_color = "#00FF00FF"
 middle_pressed_color = "#FF00FFFF"
 right_pressed_color = "#00FFFFFF"
 
+# Shared mode badge. indicator_offset is [X, Y] from the cursor hotspot.
 [mode_indicator.ui]
-# Shared by all modes; per-mode .ui tables only override specified fields.
 font_size = 11
 font_family = ""
-# -1 sizes adapt to the font automatically.
 border_radius = -1
 padding_x = -1
 padding_y = -1
 border_width = 1
-# Colors follow the current mode/theme when omitted.
-# background_color = "#0A1338FF"
-# text_color = "#E8EEFFFF"
-# border_color = "#6E82D6FF"
-# Badge right/top anchor relative to the cursor hotspot (the ring centre).
-# [X, Y]: positive X moves right; positive Y moves down. Drag in the web editor.
 indicator_offset = [-12, 18]
 
-# Recommended: show a badge in `normal`, where nothing else marks the mode.
+# Individual modes may override enabled, text, cursor and ui.
 [mode_indicator.modes.normal]
 enabled = true
 text = "Normal"
@@ -1020,80 +565,33 @@ text = "Normal"
 [mode_indicator.modes.text_input]
 enabled = false
 
-# Optional per-mode visual overrides:
-# [mode_indicator.modes.normal.cursor]
-# radius = 15
-# fill_color = "#8FA2F033"
-# stroke_color = "#8FA2F0FF"
-# left_pressed_color = "#34C759FF"
-#
-# [mode_indicator.modes.normal.ui]
-# background_color = "#0A1338FF"
-# text_color = "#E8EEFFFF"
-# border_color = "#6E82D6FF"
-
-# ---------------------------------------------------------------------------
-# Plugin modes
-#
-# Plugins can expose parameterized verbs and mode-local settings.
-# Screen Selector defaults to preserving Grid/Recursive Grid selection paths.
-# Set false to restart those modes from the root on the target display.
-# ---------------------------------------------------------------------------
+# Preserve targeting selections when switching displays.
+[plugin_modes."plugin:screen-selector".bindings]
+esc = "cancel_selection"
+enter = "confirm_selection"
+backspace = "previous_level"
 
 [plugin_modes."plugin:screen-selector".settings]
 preserve = true
 
-# Additional examples for [normal.bindings]:
-# "primary+shift+s" = "call screen"       # numbered interactive selector
-# "primary+alt+s" = "screen previous"
-# "primary+1" = "screen 1"
-# "primary+2" = "screen 2"
-
-# ---------------------------------------------------------------------------
-# Per-application overrides
-#
-# `bundle_id` matches a macOS bundle id, a Linux WM_CLASS/app_id, a Windows
-# executable name, or a substring of the window title.
-# ---------------------------------------------------------------------------
-
-# [[app_configs]]
-# bundle_id = "com.apple.Terminal"
-# bindings = { "primary+shift+e" = "none" }
-#
-# [[normal.app_configs]]
-# bundle_id = "Figma"
-# bindings = { v = "none" }
-
-# [debug]
-# # Print the complete input -> binding -> action -> backend pipeline to stderr.
-# enabled = false
-# keys = true
-# actions = true
-# modes = true
-# backend = true
-# pointer = false
-# motion = false
-# overlay = true
-# timers = true
-
-# ── 实时按键提示面板 ──────────────────────────────────────────────────────────
-# 默认绑定 "?" = "key_help"；两个开关仅决定初始显示，? 始终可切换。
-# mouse_key_help 控制鼠标模式默认显示；字号用于按键与说明，标题与布局自动适配。
-# 空字体及未指定的背景/文字色继承模式指示器与主题；尺寸为逻辑像素。
-# 颜色支持 "#RRGGBBAA" 或 { light = "#RRGGBBAA", dark = "#RRGGBBAA" }。
+# Save usage after this many entries and on orderly exit; no periodic save timer.
 [mode_usage]
-# Save after this many new mode entries, and on workspace edits / orderly exit.
-# No periodic save timer. Counts are stored in workspace.ksw.
 save_after_entries = 100
 
+# Hold Q to open the mode switcher; a short tap keeps the current mode binding.
 [quick_switch]
 enabled = true
 key = "q"
+hint_characters = "wertyuiop" # UI Hint labels; more modes use multi-character labels.
 hold_ms = 350
-# Only filters this panel; original mode shortcuts remain available.
 blacklist = ["idle"]
-# screen = current screen center; window = focused window center; mouse = below indicator.
-position = "mouse"
+position = "mouse" # "mouse", "screen" or "window".
+
+# The mode remains open after releasing the trigger. Omit an exit key to disable it.
+[quick_switch.bindings]
+esc = "cancel_selection"
+q = "cancel_selection"
+backspace = "previous_level"
 
 [quick_switch.ui]
 font_size = 28
@@ -1102,17 +600,13 @@ border_radius = -1
 padding_x = 10
 padding_y = -1
 border_width = 1
-# Optional background_color, text_color, matched_text_color, border_color: #RRGGBBAA
 
+# ? toggles help; these switches only set its initial visibility.
 [key_help]
-# Window / A / E / R / T 初始面板显示；false 时仍可按 ? 切换。
 window_key_help = true
 mouse_key_help = false
 font_family = ""
 font_size = 12.0
-# background_color = "#465FBCFF"
-# text_color = "#FFFFFFFF"
-# border_color = "#00000000"
 border_width = 0.0
 border_radius = 10.0
 padding_x = 24.0

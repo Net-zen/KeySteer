@@ -1,6 +1,6 @@
 # macOS
 
-KeySteer supports macOS 14 and later. Move `KeySteer.app` to your Applications folder.
+KeySteer supports macOS 14 and later. After installing, grant keyboard and pointer control permission (formerly Accessibility), then try your first click in [Getting started](/en/guide/getting-started).
 
 ## Install and upgrade with Homebrew
 
@@ -16,7 +16,7 @@ brew update
 brew upgrade --cask dccif/keysteer/keysteer
 ```
 
-User configuration stays in the data directory below across upgrades. Grant Accessibility and Screen Recording permissions after installing.
+User configuration stays in the data directory below across upgrades. Complete the permission steps below after installing.
 
 ## Install from a GitHub Release
 
@@ -28,11 +28,22 @@ sudo xattr -cr /Applications/KeySteer.app
 
 ## First-time permissions
 
-1. Before opening `KeySteer.app`, go to **System Settings → Privacy & Security → Accessibility**.
-2. Allow KeySteer to control your computer.
-3. Restart KeySteer and test it with `Primary+E`.
+1. Open `/Applications/KeySteer.app`.
+2. Go to **System Settings → Privacy & Security**, then open the permission for your macOS version:
 
-Vision detection in `UI Hint` also needs **Screen Recording** permission. Grid and Recursive Grid do not inspect screen contents, but keyboard capture still needs Accessibility permission. Grant both permissions up front to avoid later interruptions.
+   - **macOS 27:** Device Control and Data Access.
+   - **macOS 14–26:** Accessibility.
+
+3. Allow KeySteer to control your computer.
+4. Restart KeySteer and test it with `Command+E`.
+
+If you cannot find the permission, search System Settings for “Device Control” or “Accessibility” and open the app permission list. If KeySteer is missing, click `+` and add `/Applications/KeySteer.app`. Older app messages mentioning “Accessibility permission” refer to the renamed permission on macOS 27.
+
+Visual recognition in `UI Hint` also needs **Screen & System Audio Recording** permission (called **Screen Recording** on older versions), on the same privacy page. Grid and Recursive Grid do not read screen contents, but still need the keyboard and pointer control permission above.
+
+::: tip Missing visual labels?
+Check Screen & System Audio Recording permission, then restart KeySteer.
+:::
 
 ## File locations
 
@@ -62,13 +73,15 @@ invert_vertical = true
 
 If the top status icon appears but keys do nothing:
 
-1. Check that the Accessibility list authorises `KeySteer.app`.
+1. Check that **Device Control and Data Access** (or **Accessibility** on older versions) authorises `KeySteer.app`.
 2. Quit and reopen KeySteer.
 3. Run `keysteer --doctor` to check whether the keyboard is available.
 4. If it persists, inspect `keysteer.log` in the data directory.
 
-Because future builds may not have a stable Developer ID signature, upgrades can require you to grant permission again.
+::: tip Keys stop working after an upgrade
+Remove the old KeySteer entry from the permission list, add `/Applications/KeySteer.app` again, then restart the app.
+:::
 
 ## Top status icon
 
-Direct and login launches create one KeySteer status icon at the right side of the top bar after AppKit finishes launching. Click it to open the controls for pausing, reloading configuration, checking for updates, and quitting. KeySteer does not create a regular application main menu or Dock icon.
+While KeySteer is running, its status icon appears at the top right of the screen. Use it to pause control, reload configuration, check for updates, or quit. This menu is where you manage the app; there is no separate Dock icon.

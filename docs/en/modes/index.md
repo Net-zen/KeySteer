@@ -3,23 +3,33 @@
 Think of KeySteer as three operating layers: `Idle` waits quietly, `Normal` handles everyday movement and clicking, and a targeting mode helps you find an exact target.
 
 ```mermaid
+---
+config:
+    layout: dagre
+    look: classic
+    flowchart:
+        curve: linear
+        nodeSpacing: 24
+        rankSpacing: 44
+---
 flowchart LR
-    idle["Idle"]
-    normal["Normal"]
-    subgraph target["Targeting modes"]
-        grid["Grid"]
-        rg["Recursive Grid"]
-        ui["UI Hint"]
-    end
+    idle("Idle<br/>Standby"):::mode-step
+    normal("Normal<br/>Everyday control"):::mode-primary
+    grid("Grid<br/>Screen regions"):::mode-step
+    rg("Recursive Grid<br/>Precise targeting"):::mode-step
+    ui("UI Hint<br/>Controls and text"):::mode-step
     idle -->|"Primary+E"| normal
     normal -->|g| grid
     normal -->|f| rg
     normal -->|"Primary+F"| ui
-    normal -->|"Esc / q"| idle
-    target -->|"Esc / Primary+Q"| normal
+    class idle diagram-blue
+    class normal diagram-violet
+    class grid diagram-green
+    class rg diagram-amber
+    class ui diagram-rose
 ```
 
-All three targeting modes return to Normal with `Esc` or `Primary+Q`.
+All three targeting modes return to Normal with `Esc` or `Primary+Q`. In Normal, press `Esc` or `q` to return to Idle.
 
 ## Which mode should I choose?
 
@@ -47,9 +57,9 @@ Keep at least one entry key.
 
 ## Temporarily use Normal
 
-Grid, Recursive Grid, and UI Hint inherit Normal by default and use `Primary` as a temporary-mode modifier. Hold it to use Normal's movement, scrolling, and click bindings while keeping the current targeting session; release it to resume targeting.
+Need a small pointer adjustment while targeting? Hold `Primary` to use Normal movement, scrolling, and clicks. Release it to continue selecting.
 
-Full chords are matched first, temporary mode before current mode. If neither matches, activation keys are removed and the same layer order is used. Thus an explicit `primary+s` precedes bare `s`, and Grid’s `primary+q` precedes Normal’s bare `q`. Set `temporary_mode_passthrough_keys = ["q"]` to skip the temporary layer for Q. Other modifiers still participate in matching.
+These are Grid's default settings. Recursive Grid and UI Hint work the same way:
 
 ```toml
 [grid]
@@ -58,9 +68,11 @@ temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
 ```
 
+Full chords take priority. For example, `Primary+S` still switches displays, and `Primary+Q` returns to Normal. See [Temporary input layers](/en/reference/configuration#temporary-input-layers) to change the modifier or resolve conflicts.
+
 ## End states
 
-Targeting modes have a **finished state** and a **clicked state**:
+After locating a target, return to Normal or keep working in the selected area. Configure this with `lifecycle`:
 
 ```toml
 [grid.lifecycle]
@@ -68,14 +80,22 @@ after_finish = "normal"
 after_click = "finish"
 ```
 
-For either state you can choose:
+| Field | When it applies |
+| --- | --- |
+| `after_finish` | The last grid level or a complete label finishes targeting |
+| `after_click` | A click made through KeySteer succeeds; physical mouse clicks do not trigger it |
 
-- `keep`: preserve the current session.
-- `restart`: begin it again.
-- A Mode name: switch to that Mode, such as `idle` or `normal`.
-- A built-in verb such as `left_click`: perform it after completion.
+| Value | Effect |
+| --- | --- |
+| `keep` | Keep the mode and current selection |
+| `restart` | Stay in the mode and start selecting again |
+| Mode name, such as `normal` or `idle` | Switch to that mode |
+| `finish` | Follow `after_finish`; only valid for `after_click` |
+| `left_click` / `right_click` / `middle_click` / `double_click` | Click as soon as targeting finishes; only valid for `after_finish` |
 
-The finished state means no label or character remains to select, common in Grid and UI Hint. The clicked state is entered after a pointer click, common in Recursive Grid. By default, Grid and UI Hint return to Normal after finishing or clicking; Recursive Grid keeps its session.
+::: info Default behavior
+Grid and UI Hint return to Normal after locating or clicking. Recursive Grid keeps the current area so you can subdivide it further.
+:::
 
 ## Multiple displays
 
@@ -83,4 +103,6 @@ Grid and Recursive Grid target the display containing the pointer by default. Th
 
 ## Important
 
-If a high-integrity Windows application rejects synthetic input, such as Task Manager, KeySteer clears its input state and returns to Idle so that no state is left behind.
+::: warning Elevated windows may reject input
+Windows Task Manager and other elevated windows may reject simulated input. When that happens, KeySteer releases its input state and returns to Idle.
+:::

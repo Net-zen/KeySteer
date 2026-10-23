@@ -1,6 +1,64 @@
 //! Mailbox, cancellation and the native worker event loop.
-use super::transaction::PendingTransaction;
+use super::history::PendingHistory;
+use super::layout_confirmation::PendingLayout;
 use super::*;
+
+/// One ordered barrier around layout and history confirmation.
+pub(super) enum PendingTransaction {
+    Layout(PendingLayout),
+    History(PendingHistory),
+}
+impl PendingTransaction {
+    pub fn is_layout(&self) -> bool {
+        matches!(self, Self::Layout(_))
+    }
+    pub fn take_begin(
+        session: &mut Session,
+        access: &mut impl WindowAccess,
+        request: &mut WindowRequest,
+        screens: &Arc<[Screen]>,
+    ) -> Result<Option<Self>, String> {
+        if let Some(layout) = PendingLayout::take_begin(session, access, request, screens)? {
+            return Ok(Some(Self::Layout(layout)));
+        }
+        Ok(PendingHistory::begin(session, access, request, screens)?.map(Self::History))
+    }
+    pub fn request(&self) -> &WindowRequest {
+        match self {
+            Self::Layout(work) => &work.request,
+            Self::History(work) => &work.request,
+        }
+    }
+    pub fn preparing(&self) -> bool {
+        match self {
+            Self::Layout(work) => work.preparing(),
+            Self::History(work) => work.preparing(),
+        }
+    }
+    pub fn targets(&self) -> impl Iterator<Item = WindowId> + '_ {
+        let (layout, history) = match self {
+            Self::Layout(work) => (Some(work), None),
+            Self::History(work) => (None, Some(work)),
+        };
+        layout
+            .into_iter()
+            .flat_map(PendingLayout::targets)
+            .chain(history.into_iter().flat_map(PendingHistory::targets))
+    }
+    pub fn advance_checked(
+        &mut self,
+        session: &mut Session,
+        access: &mut impl WindowAccess,
+        cancelled: &dyn Fn() -> bool,
+        now: Instant,
+    ) -> Option<WindowResult> {
+        match self {
+            Self::Layout(work) => work.advance_checked(session, access, cancelled, now),
+            Self::History(work) => work.advance(session, access, cancelled, now),
+        }
+    }
+}
+
 enum Pending {
     FocusedBounds {
         id: u64,
@@ -459,8 +517,7 @@ impl WindowWorker {
                             );
                         }
                     });
-                    let audio_active = A::native_batch(|| {
-                        let active = access.maintain_audio();
+                    A::native_batch(|| {
                         if (access.persistent() || !frames.is_empty() || layout.is_some())
                             && let Err(error) =
                                 access.pump(&displays, &|| input.stop.load(Ordering::Acquire))
@@ -471,7 +528,6 @@ impl WindowWorker {
                                 format_args!("operation=maintain"),
                             );
                         }
-                        active
                     });
                     let pending = {
                         let mut queue = input.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -483,8 +539,6 @@ impl WindowWorker {
                                     Some(Duration::ZERO)
                                 } else if !frames.is_empty() || layout.is_some() {
                                     Some(Duration::from_millis(16))
-                                } else if audio_active {
-                                    Some(Duration::from_millis(250))
                                 } else {
                                     None
                                 };
@@ -497,7 +551,6 @@ impl WindowWorker {
                                 && (access.persistent()
                                     || !frames.is_empty()
                                     || layout.is_some()
-                                    || audio_active
                                     || access.native_deadline().is_some())
                             {
                                 input.native_waiting.store(true, Ordering::Release);

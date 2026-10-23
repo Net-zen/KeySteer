@@ -91,8 +91,8 @@ impl NativeDialogGuard {
     fn acquire() -> Option<Self> {
         NATIVE_DIALOG_VISIBLE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-            .then_some(Self)
+            .ok()?;
+        Some(Self)
     }
 }
 
@@ -578,6 +578,7 @@ pub(super) fn present_update_result(result: &UpdateCheckResult) -> Result<(), St
                     current,
                     latest,
                     path,
+                    ..
                 } => show_message(
                         "KeySteer Update",
                         &format!(
@@ -841,7 +842,7 @@ extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if resumes_input_capture(message, wparam.0 as u32) {
-        if let Err(error) = super::hook::request_renewal(true) {
+        if let Err(error) = super::input::hook::request_renewal(true) {
             crate::report_error!("windows-hook", "{error}");
         }
         return LRESULT(isize::from(message == WM_POWERBROADCAST));
@@ -957,7 +958,9 @@ mod tests {
     #[test]
     fn native_dialog_is_single_instance_and_releases_its_guard() {
         let first = NativeDialogGuard::acquire().expect("first dialog should acquire the guard");
-        assert!(NativeDialogGuard::acquire().is_none());
+        for _ in 0..3 {
+            assert!(NativeDialogGuard::acquire().is_none());
+        }
 
         drop(first);
         assert!(NativeDialogGuard::acquire().is_some());
@@ -990,6 +993,7 @@ mod tests {
             current: "0.5.0".into(),
             latest: "0.6.0".into(),
             path: "KeySteer.zip".into(),
+            sha256: None,
         });
         assert_eq!(
             update_menu_entry(),

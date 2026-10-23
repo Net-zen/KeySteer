@@ -80,7 +80,7 @@ export const WINDOW_MOTION = new Set(['window_left', 'window_down', 'window_up',
 export function createWindowState(): WindowState {
   return {
     audio: {}, systemAudio: { volume: 1, output: 0, muted: false },
-    screens: 'current', includeMinimized: false,
+    screens: 'all', includeMinimized: false,
     tabs: createDemoTabs(),
     mode: 'window', deletingPresets: false, deleteSelection: null, presets: [], library: false, libraryPage: 0, libraryIndex: new Map(), noteOpen: false, recent: [], editingPresetId: null, savedEditSnapshot: '',
     windows: [
@@ -117,7 +117,7 @@ export function enterWindow(state: SimulatorState, settings: Record<string, any>
   if (isWindowMode(state.mode)) return
   state.windowHelpOverride = null
   w.previous = state.mode
-  w.screens = settings.screens === 'all' ? 'all' : 'current'; w.includeMinimized = settings.include_minimized === true
+  w.screens = settings.screens === 'current' ? 'current' : 'all'; w.includeMinimized = settings.include_minimized === true
   w.size = false; w.temporary = false; w.history = []; w.redo = []; w.editRedo = []; w.initial = snapshot(w); w.changedWindows = []; w.gesture = false
   w.library = false; w.noteOpen = false
   w.editingPresetId = null; w.savedEditSnapshot = ''
@@ -147,7 +147,9 @@ export function switchWindowMode(state: SimulatorState, mode: WindowMode, settin
   if (!isWindowMode(state.mode)) enterWindow(state, settings)
   const w = state.window
   if (w.mode === 'window_tab' && mode !== 'window_tab') { w.tabs.target = null; w.tabs.restore = null }
-  const scope = settings.screens === 'all' ? 'all' : 'current', includeMinimized = settings.include_minimized === true
+  const defaultScope = mode === 'window' ? 'all' : 'current'
+  const scope = settings.screens === 'all' || settings.screens === 'current' ? settings.screens : defaultScope
+  const includeMinimized = settings.include_minimized === true
   if (w.screens !== scope || w.includeMinimized !== includeMinimized) { w.numbers = {}; w.nextNumber = 1 }
   w.screens = scope; w.includeMinimized = includeMinimized
   refreshWindowNumbers(w)
@@ -292,8 +294,6 @@ export function windowSelectionKey(state: SimulatorState, key: string, settings:
   const w = state.window
   if (!isWindowMode(state.mode) || w.temporary) return false
   if (w.library) {
-    if (key === 'page_down') { w.libraryPage = Math.min(w.libraryPage + 1, Math.floor(Math.max(0, availableWindowPresets(w).length - 1) / 6)); return true }
-    if (key === 'page_up') { w.libraryPage = Math.max(0, w.libraryPage - 1); return true }
     if (!/^\d$/.test(key)) return false
     w.deleteSelection = null
     if (w.numberPrefix && !w.libraryIndex.has(w.numberPrefix + key)) finishWindowNumber(state, settings)
@@ -304,11 +304,6 @@ export function windowSelectionKey(state: SimulatorState, key: string, settings:
     else if (prefix.longer) w.numberDeadline = now + settingsNumber(settings, 'number_timeout_ms', 250)
     else finishWindowNumber(state, settings)
     return true
-  }
-  if (key === '`' && state.mode === 'window_editor') {
-    if (w.panel === 'quick') endWindowEdit(state, true)
-    if (w.panel === 'none') startWindowEdit(state, true, settings)
-    cancelWindowNumber(w); w.numberSlot = true; w.numberDisplay = '`'; return true
   }
   if (!/^\d$/.test(key)) return false
 
@@ -566,9 +561,11 @@ export function windowInputStatus(w: WindowState): string {
 }
 export function windowActionAvailable(w: WindowState, action: string): boolean {
   if ((!action.startsWith('window_') && action !== 'size_cycle') || isWindowMode(action)) return true
-  if (w.library) return action === 'window_delete' || action === 'window_confirm' && (!!w.numberPrefix || !!w.deleteSelection)
+  if (w.library) return action === 'window_next_page' || action === 'window_previous_page' || action === 'window_delete' || action === 'window_confirm' && (!!w.numberPrefix || !!w.deleteSelection)
   if (action === 'window_delete') return false
   if (w.mode === 'window_tab') return action.startsWith('window_tab_') || ['window_number_end', 'window_undo', 'window_redo', 'window_save_layout'].includes(action)
+  if (action === 'window_area_number') return w.mode === 'window_editor'
+  if (action === 'window_next_page' || action === 'window_previous_page') return w.library
   if (action.startsWith('window_tab_') || action === 'window_number_end') return false
   if (action === 'window_save_layout' || action === 'window_remove_region') return w.mode === 'window_editor' && w.panel === 'tree'
   if (/^window_(layout_|split_|ratio_)/.test(action)) return w.mode === 'window_editor' || w.mode === 'window_quick' && action.startsWith('window_layout_')
@@ -591,6 +588,9 @@ export function applyWindowAction(state: SimulatorState, action: string, setting
   const w = state.window, target = windowTarget(w)
   if (w.temporary || !windowActionAvailable(w, action)) return true
   if (w.library) {
+    if (action === 'window_next_page') w.libraryPage = Math.min(w.libraryPage + 1, Math.floor(Math.max(0, availableWindowPresets(w).length - 1) / 6))
+    if (action === 'window_previous_page') w.libraryPage = Math.max(0, w.libraryPage - 1)
+
     if (action === 'window_delete') { w.deletingPresets = !w.deletingPresets; w.deleteSelection = null; cancelWindowNumber(w); state.lastEvent = w.deletingPresets ? '输入编号选择要删除的预设' : '输入预设编号恢复' }
     if (action === 'window_confirm') { if (w.deleteSelection) deleteWindowPreset(state); else finishWindowNumber(state, settings) }
     return true
@@ -608,6 +608,7 @@ export function applyWindowAction(state: SimulatorState, action: string, setting
     } else cancelWindowNumber(w)
     const applied = tabAction(state, action); refreshWindowNumbers(w); return applied
   }
+  if (action === 'window_area_number') { cancelWindowNumber(w); w.numberSlot = true; w.numberDisplay = '`'; return true }
   if (action === 'window_save_layout') { w.noteOpen = true; return true }
   const layoutAction = /^window_(layout|split|ratio)_(left|down|up|right)$/.exec(action)
   if (layoutAction) { w.swapSource = null; cancelWindowNumber(w)

@@ -26,30 +26,25 @@ use crate::api::overlay::{Color, OverlayText};
 use crate::api::style::compiled::{BoundaryHighlight, LabelUi};
 use crate::api::style::{CompiledSearchPanel, HintPlacement};
 use crate::api::theme::Palette;
-pub(crate) mod labeling;
 mod point;
-mod search;
+pub(crate) mod search;
 pub use point::PointSettings;
-mod session;
+pub(crate) mod session;
 
+use crate::api::hint::{self as hints, CompactHint, LabelMatch as Match, match_label_input};
 use crate::api::presentation::{
     HintContent, HintSelectionView, HintStyle, HintView, StatusView, View, VisualLayerPlan,
 };
-use labeling::{self as hints, CompactHint};
 use session::ScanSession;
-
-#[derive(Debug, Clone, PartialEq)]
-enum Match<T> {
-    Complete(T),
-    Partial { remaining: usize },
-    None,
-}
 
 const SCAN_RETRY_TIMER_ID: &str = "ui_hint.scan_retry";
 const SEARCH_PREWARM_TIMER_ID: &str = "ui_hint.search_prewarm";
 // A work quantum, not a scan batch threshold or a delay. Rearming yields to
 // input and native event polling between chunks, including large scans.
 const SEARCH_PREWARM_TARGETS: usize = 256;
+// Once text is waiting, larger bounded continuations reduce scheduler overhead
+// without moving the full index rebuild back onto the input dispatch.
+const SEARCH_PENDING_TARGETS: usize = 1_024;
 const NO_WINDOW_UNDER_POINTER: &str =
     "No window under the pointer — move the pointer over a window";
 use crate::api::presentation::hint_cache::INLINE_LABELS;
@@ -161,24 +156,6 @@ pub struct HintMode {
 }
 
 impl HintMode {
-    #[cfg(feature = "benchmark-hooks")]
-    pub(crate) fn benchmark_targets(&self) -> &[crate::api::UiTarget] {
-        &self.session.scanned
-    }
-
-    #[cfg(feature = "benchmark-hooks")]
-    pub(crate) fn benchmark_labels(
-        &self,
-    ) -> impl Iterator<Item = (&crate::api::UiTarget, &str, Rect)> {
-        self.session.hints.iter().map(|hint| {
-            (
-                &self.session.scanned[hint.value],
-                hint.label.as_str(),
-                hint.bounds,
-            )
-        })
-    }
-
     pub fn new(config: Settings) -> Self {
         Self {
             scene_cache: Default::default(),
@@ -252,7 +229,14 @@ impl HintMode {
 
     fn scan_request(&mut self, ctx: &HostContext<'_>) -> Command {
         self.session.scan_id = self.session.scan_id.wrapping_add(1);
-        let bounds = ctx.active_bounds();
+        let screens = if self.config.scan_scope == crate::api::UiScanScope::All {
+            ctx.screens
+        } else {
+            ctx.active_screen()
+                .map(std::slice::from_ref)
+                .unwrap_or_default()
+        };
+        let bounds = crate::api::Screen::virtual_bounds(screens);
         self.session.scan_bounds = Some(bounds);
         let timeout_multiplier = u64::from(self.session.retry_attempt).saturating_add(1);
         let timeout_ms = self
@@ -263,13 +247,26 @@ impl HintMode {
         Command::scan_ui(UiScanRequest {
             id: self.session.scan_id,
             scope: self.config.scan_scope,
+            screen_bounds: if screens.len() > 1 {
+                screens.iter().map(|screen| screen.bounds).collect()
+            } else {
+                Vec::new()
+            },
+
             timeout_ms,
             bounds: Some(bounds),
             roles: self.config.clickable_roles.clone(),
             max_depth: self.config.max_depth,
             visible_only: self.config.visible_check_enabled,
             clickable_only: !self.config.ignore_clickable_check,
-            strategy: self.config.strategy_for(ctx.focused_app),
+            strategy: if matches!(
+                self.config.scan_scope,
+                crate::api::UiScanScope::Screen | crate::api::UiScanScope::All
+            ) {
+                self.config.strategy
+            } else {
+                self.config.strategy_for(ctx.focused_app)
+            },
             vision: self.config.vision.clone(),
             app: ctx.focused_app.cloned(),
         })
@@ -508,7 +505,7 @@ impl HintMode {
     }
 
     fn uniform_label_chars(&self) -> Option<usize> {
-        labeling::LabelPlan::for_stream(
+        hints::LabelPlan::for_stream(
             self.session.label_plan_count,
             self.alphabet.len(),
             self.config.label_direction,
@@ -617,7 +614,13 @@ impl HintMode {
     }
 
     fn view(&self) -> View<'_> {
-        if self.session.finished {
+        if self.session.search_pending {
+            View::Status(StatusView {
+                text: "Preparing search…",
+                ui: &self.config.ui,
+                clip: self.session.scan_bounds,
+            })
+        } else if self.session.finished {
             View::HintSelection(HintSelectionView {
                 target: self
                     .session
@@ -728,7 +731,7 @@ impl HintMode {
     }
 
     fn search_result_hints(&self) -> Option<(bool, &[CompactHint<usize>])> {
-        if !self.session.active || self.session.finished {
+        if !self.session.active || self.session.finished || self.session.search_pending {
             return None;
         }
         let Input::Search(query) = &self.input else {
@@ -828,6 +831,7 @@ impl HintMode {
     }
 
     fn release_search(&mut self) {
+        self.session.search_pending = false;
         self.session.search_hints.clear();
         self.session.search_matches.clear();
         self.session.search_cycle.clear();
@@ -843,7 +847,11 @@ impl HintMode {
     }
 
     fn finish_search(&mut self, accept: bool, ctx: &HostContext<'_>) -> CommandBatch {
-        if accept && self.session.pending_relabel {
+        if accept && (self.session.pending_relabel || self.session.search_pending) {
+            // Explicit acceptance must use the latest complete query, even if
+            // Enter overtakes prewarming. Ordinary typing never does this work.
+            self.session.apply_deferred();
+            self.session.ensure_search_names();
             self.relabel_with_refresh(ctx, false);
         }
         let destination = accept
@@ -910,22 +918,30 @@ impl HintMode {
         )
     }
 
-    fn key_down(&mut self, key: &Key, ctx: &HostContext<'_>) -> CommandBatch {
+    fn selection_action(&mut self, action: &Binding, ctx: &HostContext<'_>) -> CommandBatch {
+        let action = if *action == Binding::SelectionReopen {
+            if !self.session.finished {
+                return CommandBatch::new();
+            }
+            &Binding::SelectionParent
+        } else {
+            action
+        };
         if matches!(self.input, Input::Search(_)) {
-            if key.as_str() == "enter" {
+            if matches!(action, Binding::SelectionAccept) {
                 return self.finish_search(true, ctx);
             }
-            if key.as_str() == "esc" {
+            if matches!(action, Binding::SelectionCancel) {
                 return self.finish_search(false, ctx);
             }
-            if key.as_char().is_some() || key.as_str() == "backspace" {
+            if matches!(action, Binding::SelectionParent) {
                 self.session.search_focus = None;
             }
         }
         if self.session.finished {
-            return match key.as_str() {
-                "esc" => self.cancel(),
-                "backspace" | "tab" => {
+            return match action {
+                Binding::SelectionCancel => self.cancel(),
+                Binding::SelectionParent => {
                     self.session.finished = false;
                     self.session.selected = None;
                     if let Input::Labels(typed) = &mut self.input {
@@ -941,17 +957,17 @@ impl HintMode {
         if self.session.scanning
             && self.session.hints.is_empty()
             && matches!(self.input, Input::Labels(_))
-            && key.as_str() != "/"
+            && !matches!(action, Binding::SelectionSearch)
         {
-            return if key.as_str() == "esc" {
+            return if matches!(action, Binding::SelectionCancel) {
                 self.cancel()
             } else {
                 CommandBatch::new()
             };
         }
 
-        match key.as_str() {
-            "esc" => {
+        match action {
+            Binding::SelectionCancel => {
                 // Escape leaves search first, then the mode.
                 return match &self.input {
                     Input::Search(_) => {
@@ -962,7 +978,7 @@ impl HintMode {
                     Input::Labels(_) => self.cancel(),
                 };
             }
-            "/" if matches!(self.input, Input::Labels(_)) => {
+            Binding::SelectionSearch if matches!(self.input, Input::Labels(_)) => {
                 if self.session.pending_relabel {
                     self.input = Input::Labels(OverlayText::default());
                     self.relabel(ctx);
@@ -992,7 +1008,7 @@ impl HintMode {
                 commands.push(self.open_search(ctx));
                 return commands;
             }
-            "backspace" => {
+            Binding::SelectionParent => {
                 let text = self.input.text();
                 if text.is_empty() {
                     // Nothing left to undo: leave search, or leave the mode.
@@ -1022,7 +1038,7 @@ impl HintMode {
                 }
                 return self.redraw();
             }
-            "enter" => {
+            Binding::SelectionAccept => {
                 // Accept the first visible candidate, never one filtered out by
                 // the label prefix.
                 return match self
@@ -1038,6 +1054,13 @@ impl HintMode {
             _ => {}
         }
 
+        CommandBatch::new()
+    }
+
+    fn key_down(&mut self, key: &Key, ctx: &HostContext<'_>) -> CommandBatch {
+        if self.session.finished {
+            return CommandBatch::new();
+        }
         let Some(ch) = key.as_char() else {
             return CommandBatch::new();
         };
@@ -1056,9 +1079,15 @@ impl HintMode {
                     return CommandBatch::new();
                 }
                 typed.push(ch);
-                match match_compact_input(&self.session.hints, typed) {
+                match match_label_input(
+                    self.session
+                        .hints
+                        .iter()
+                        .map(|hint| (hint.label.as_str(), hint.value)),
+                    typed,
+                ) {
                     Match::Complete(index) => self.select(index),
-                    Match::Partial { .. } => {
+                    Match::Partial => {
                         self.refresh_overlap_plan(ctx);
                         self.redraw()
                     }
@@ -1077,27 +1106,6 @@ impl HintMode {
                 }
             }
         }
-    }
-}
-
-fn match_compact_input(hints: &[CompactHint<usize>], input: &str) -> Match<usize> {
-    if input.is_empty() {
-        return Match::Partial {
-            remaining: hints.len(),
-        };
-    }
-    let mut remaining = 0usize;
-    for hint in hints {
-        let label = hint.label.as_str();
-        if label == input {
-            return Match::Complete(hint.value);
-        }
-        remaining += usize::from(label.starts_with(input));
-    }
-    if remaining == 0 {
-        Match::None
-    } else {
-        Match::Partial { remaining }
     }
 }
 
@@ -1155,28 +1163,21 @@ impl Mode for HintMode {
         self.overlap_cycle_chord
             .as_ref()
             .is_some_and(|chord| chord.activation_matches(key))
-            || key.as_char().is_some_and(|character| {
-                character == '/'
-                    || character.is_ascii_alphanumeric()
-                    || self.alphabet.contains(&character)
-            })
+            || key
+                .as_char()
+                .is_some_and(|character| self.alphabet.contains(&character))
     }
 
     fn available_keys(&self) -> Vec<(String, String)> {
-        let mut keys = vec![("esc".into(), "cancel".into())];
+        let mut keys = Vec::new();
         if self.session.finished {
-            keys.push(("backspace".into(), "back".into()));
-            keys.push(("tab".into(), "back".into()));
             return keys;
         }
         if self.session.scanning && self.session.hints.is_empty() {
             return keys;
         }
-        keys.push(("backspace".into(), "back".into()));
-        keys.push(("enter".into(), "select first match".into()));
         match &self.input {
             Input::Labels(prefix) => {
-                keys.push(("/".into(), "search names".into()));
                 let next: std::collections::BTreeSet<_> = self
                     .session
                     .hints
@@ -1460,14 +1461,28 @@ impl HintMode {
                     self.session.search_selection,
                     self.uniform_label_chars(),
                 );
+                let budget = if self.session.search_pending {
+                    SEARCH_PENDING_TARGETS
+                } else {
+                    SEARCH_PREWARM_TARGETS
+                };
                 let scene_ready = ctx.presenter.warm_hint_scene(
                     &self.scene_cache,
                     content,
                     &self.overlap_plan,
                     ctx,
-                    SEARCH_PREWARM_TARGETS,
+                    budget,
                 );
-                let names_ready = self.session.prepare_search_names(SEARCH_PREWARM_TARGETS);
+                let names_ready = self.session.prepare_search_names(budget);
+                if names_ready && self.session.search_pending {
+                    // Preparation alone does not change label geometry. Keep
+                    // the existing scene/layers when the latest query still
+                    // displays the same targets, just as live text edits do.
+                    if self.relabel_with_refresh(ctx, false) {
+                        self.refresh_overlap_plan(ctx);
+                    }
+                    return self.redraw();
+                }
                 if scene_ready && names_ready {
                     CommandBatch::new()
                 } else {
@@ -1493,6 +1508,35 @@ impl HintMode {
                 binding,
                 state: KeyState::Down,
                 ..
+            } if matches!(
+                binding.as_ref(),
+                Binding::SelectionParent
+                    | Binding::SelectionReopen
+                    | Binding::SelectionAccept
+                    | Binding::SelectionCancel
+                    | Binding::SelectionSearch
+            ) =>
+            {
+                self.selection_action(binding, ctx)
+            }
+            ModeEvent::Binding {
+                binding,
+                state: KeyState::Down,
+                ..
+            } if matches!(binding.as_ref(), Binding::SelectionReset) => {
+                if matches!(self.input, Input::Search(_)) {
+                    return self.finish_search(false, ctx);
+                }
+                self.session.finished = false;
+                self.session.selected = None;
+                self.input = Input::Labels(OverlayText::default());
+                self.relabel(ctx);
+                self.redraw()
+            }
+            ModeEvent::Binding {
+                binding,
+                state: KeyState::Down,
+                ..
             } if self.session.active && matches!(binding.as_ref(), Binding::RescanUi) => {
                 self.request_scan(ctx)
             }
@@ -1505,10 +1549,14 @@ impl HintMode {
             ModeEvent::PointerMoved(_)
                 if self.session.active
                     && !self.session.finished
-                    && self
-                        .session
-                        .scan_bounds
-                        .is_some_and(|bounds| bounds != ctx.active_bounds()) =>
+                    && self.session.scan_bounds.is_some_and(|bounds| {
+                        bounds
+                            != if self.config.scan_scope == crate::api::UiScanScope::All {
+                                crate::api::Screen::virtual_bounds(ctx.screens)
+                            } else {
+                                ctx.active_bounds()
+                            }
+                    }) =>
             {
                 self.request_scan(ctx)
             }
@@ -1836,6 +1884,7 @@ mod tests {
             .map(|(i, name)| {
                 let mut item = target(name, i as f64 * 200.0);
                 item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                    ocr_spans: Vec::new(),
                     ocr: name.into(),
                     accessibility: name.into(),
                     color: None,
@@ -2254,6 +2303,7 @@ mod tests {
                 role: SemanticRole::Button,
                 details: Some(Box::new(crate::api::geometry::UiTargetDetails {
                     ocr: format!("text{i}"),
+                    ocr_spans: Vec::new(),
                     accessibility: format!("item{i}"),
                     color: None,
                 })),
@@ -2354,6 +2404,7 @@ mod tests {
                 .map(|(i, name)| {
                     let mut item = target(name, i as f64 * 200.0);
                     item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                        ocr_spans: Vec::new(),
                         ocr: name.into(),
                         accessibility: name.into(),
                         color: None,
@@ -3038,7 +3089,7 @@ mod tests {
             assert!(mode.scene_cache.needs_warm());
             press(&mut mode, &env, "/");
             mode.handle(&ModeEvent::TextChanged("button".into()), &env.ctx());
-            // Visit a not-yet-prepared target before any further timer dispatch.
+            // Small lists complete inline; visit before any more prewarming.
             for _ in 0..300 {
                 mode.handle(&ModeEvent::CyclePointTarget, &env.ctx());
             }
@@ -3137,7 +3188,10 @@ mod tests {
             mode.handle(&timer, &env.ctx());
         }
         press(&mut mode, &env, "/");
-        let query = mode.handle(&ModeEvent::TextChanged("button".into()), &env.ctx());
+        let mut query = mode.handle(&ModeEvent::TextChanged("button".into()), &env.ctx());
+        while mode.session.search_pending {
+            query = mode.handle(&timer, &env.ctx());
+        }
         let frame = scene_of(&query);
         let source = frame.retained.as_ref().unwrap().scene.clone();
         let selected_style = frame.labels[0].style.identity();
@@ -3170,7 +3224,7 @@ mod tests {
         let new_source = &scene_of(&out).retained.as_ref().unwrap().scene;
         assert!(!std::sync::Arc::ptr_eq(&source, new_source));
         let id = mode.session.scan_id;
-        let out = mode.handle_owned(
+        let mut out = mode.handle_owned(
             ModeEvent::UiScanned(UiScanResult {
                 id,
                 targets: vec![target("Control added", 100_000.0)],
@@ -3179,6 +3233,9 @@ mod tests {
             }),
             &env.ctx(),
         );
+        while mode.session.search_pending {
+            out = mode.handle(&timer, &env.ctx());
+        }
         assert_eq!(scene_of(&out).materialized(), mode.scene(&env.ctx()));
         assert!(!std::sync::Arc::ptr_eq(
             new_source,
@@ -3655,6 +3712,7 @@ mod tests {
             .map(|i| target(&format!("项目 {i}"), i as f64 * 25.0))
             .collect();
         targets[7].details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+            ocr_spans: Vec::new(),
             ocr: "复制文本".into(),
             accessibility: "Copy".into(),
             color: None,
@@ -3707,6 +3765,7 @@ mod tests {
             let original = "这是一段很长的 OCR 内容\n不能换行也不能越过面板边界 ".repeat(60);
             let mut item = target("复制", 200.0);
             item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                ocr_spans: Vec::new(),
                 ocr: original.clone(),
                 accessibility: "复制".into(),
                 color: None,
@@ -3886,6 +3945,7 @@ mod tests {
             .map(|(index, name)| {
                 let mut target = target(name, index as f64 * 200.0);
                 target.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                    ocr_spans: Vec::new(),
                     ocr: name.into(),
                     accessibility: name.into(),
                     color: Some(Color::rgb(1, 2, 3)),
@@ -4128,15 +4188,17 @@ mod tests {
                     let packed: Vec<_> = placements
                         .iter()
                         .map(|(index, _)| {
-                            mode.overlap_plan
-                                .layer_info(*index)
-                                .map_or(u32::MAX, |(layer, depth)| {
-                                    ((depth as u32) << 16) | layer as u32
-                                })
+                            mode.overlap_plan.layer_info(*index).map_or(
+                                crate::api::presentation::hint_cache::LayerInfo::default(),
+                                |(layer, depth)| crate::api::presentation::hint_cache::LayerInfo {
+                                    layer,
+                                    depth,
+                                },
+                            )
                         })
                         .collect();
                     let mut general = VisualLayerPlan::default();
-                    general.finish(&placements, count, &packed, mode.overlap_plan.layer_count());
+                    general.finish(&placements, count, packed, mode.overlap_plan.layer_count());
                     assert!(!general.is_canonical_stack());
                     for cycle in [0, 1, count / 2, count - 1] {
                         mode.overlap_cycle = cycle;
@@ -4309,6 +4371,21 @@ mod tests {
     }
 
     fn press(mode: &mut HintMode, env: &Env, name: &str) -> Vec<Command> {
+        let key = Key::new(name).unwrap();
+        let binding = env.config.ui_hint.bindings.get(name);
+        if let Some(binding) = binding {
+            return mode
+                .handle(
+                    &ModeEvent::Binding {
+                        binding: binding.clone().into(),
+                        state: KeyState::Down,
+                        key,
+                    },
+                    &env.ctx(),
+                )
+                .into_iter()
+                .collect();
+        }
         mode.handle(
             &ModeEvent::Key {
                 key: Key::new(name).unwrap(),
@@ -4570,6 +4647,141 @@ mod tests {
     }
 
     #[test]
+    fn all_displays_share_one_scan_and_pointer_crossing_preserves_its_labels() {
+        let mut config = Config::default();
+        config.ui_hint.scan_scope = crate::api::UiScanScope::All;
+        let mut env = Env::with(config);
+        env.screens.push(Screen {
+            bounds: Rect::new(-1400.0, -100.0, 1200.0, 900.0),
+            work_area: Rect::new(-1400.0, -100.0, 1200.0, 900.0),
+            is_primary: false,
+            scale: 2.0,
+            name: None,
+        });
+        let mut mode = crate::app::mode_catalog::hint(&env.config);
+        let out = activate(&mut mode, &env);
+        let request = out
+            .iter()
+            .find_map(|command| match command {
+                Command::ScanUi(request) => Some(request),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(request.scope, crate::api::UiScanScope::All);
+        assert_eq!(request.bounds, Some(Screen::virtual_bounds(&env.screens)));
+        assert_eq!(
+            request.capture_regions().collect::<Vec<_>>(),
+            env.screens
+                .iter()
+                .map(|screen| screen.bounds)
+                .collect::<Vec<_>>()
+        );
+        let old_scan_id = request.id;
+        let targets: Vec<_> = (0..800)
+            .map(|index| {
+                let mut item = target(
+                    if index % 2 == 0 {
+                        "Primary"
+                    } else {
+                        "Secondary"
+                    },
+                    0.0,
+                );
+                item.rect = Rect::new(
+                    if index % 2 == 0 { 0.0 } else { -1400.0 } + (index / 2 % 20) as f64 * 48.0,
+                    (index / 40) as f64 * 38.0,
+                    24.0,
+                    24.0,
+                );
+                item
+            })
+            .collect();
+        let mut previous = 0;
+        for count in [2, 9, 10, 81, 82, 512, 513, 729, 730, 800] {
+            let mut batch = targets[previous..count].to_vec();
+            // Native first-element previews can reappear in the complete query.
+            batch.push(targets[0].clone());
+            let out = mode.handle_owned(
+                ModeEvent::UiScanned(UiScanResult {
+                    id: old_scan_id,
+                    targets: batch,
+                    retired: Vec::new(),
+                    status: UiScanStatus::Partial,
+                }),
+                &env.ctx(),
+            );
+            assert_eq!(mode.session.hints.len(), count);
+            let mut codes: Vec<_> = mode
+                .session
+                .hints
+                .iter()
+                .map(|hint| hint.label.as_str())
+                .collect();
+            codes.sort_unstable();
+            assert!(codes.windows(2).all(|pair| !pair[1].starts_with(pair[0])));
+            let scene = scene_of(&out).materialized();
+            assert_eq!(scene.labels.len(), count);
+            let mut drawn: Vec<_> = scene
+                .labels
+                .iter()
+                .map(|label| label.text.as_str())
+                .collect();
+            drawn.sort_unstable();
+            assert_eq!(
+                drawn, codes,
+                "both displays must draw each code exactly once"
+            );
+            previous = count;
+        }
+        let labels: Vec<_> = mode
+            .session
+            .hints
+            .iter()
+            .map(|hint| hint.label.clone())
+            .collect();
+        env.cursor = Point::new(-500.0, 200.0);
+        let moved = mode.handle(&ModeEvent::PointerMoved(env.cursor), &env.ctx());
+        assert!(
+            !moved
+                .iter()
+                .any(|command| matches!(command, Command::ScanUi(_)))
+        );
+        assert_eq!(mode.session.scan_id, old_scan_id);
+        assert_eq!(
+            mode.session
+                .hints
+                .iter()
+                .map(|hint| hint.label.clone())
+                .collect::<Vec<_>>(),
+            labels
+        );
+
+        let search = press(&mut mode, &env, "/");
+        assert_eq!(
+            scene_of(&search).clip,
+            Some(Screen::virtual_bounds(&env.screens)),
+            "search must preserve labels on every selected display"
+        );
+        let changed = mode.handle(&ModeEvent::TextChanged("Primary".into()), &env.ctx());
+        assert_eq!(
+            scene_of(&changed).clip,
+            Some(Screen::virtual_bounds(&env.screens))
+        );
+        assert_eq!(mode.session.hints.len(), 400);
+        let restored = mode.handle(&ModeEvent::TextChanged(String::new()), &env.ctx());
+        let scene = scene_of(&restored).materialized();
+        let mut drawn: Vec<_> = scene
+            .labels
+            .iter()
+            .filter(|label| label.z_index < 10_000)
+            .map(|label| label.text.as_str())
+            .collect();
+        drawn.sort_unstable();
+        assert_eq!(drawn.len(), 800);
+        assert!(drawn.windows(2).all(|pair| !pair[1].starts_with(pair[0])));
+    }
+
+    #[test]
     fn scan_results_produce_one_label_per_target() {
         let env = Env::new();
         let mut mode = crate::app::mode_catalog::hint(&env.config);
@@ -4641,7 +4853,7 @@ mod tests {
             id: SEARCH_PREWARM_TIMER_ID.into(),
             elapsed: Duration::ZERO,
         };
-        let values = (0..1_024)
+        let values = (0..3_072)
             .map(|index| UiTarget {
                 rect: Rect::new(
                     (index % 100) as f64 * 80.0,
@@ -4664,7 +4876,7 @@ mod tests {
             &env.ctx(),
         );
         assert!(matches!(commands[0], Command::ShowOverlay(_)));
-        assert_eq!(scene_of(&commands).labels.len(), 1_024);
+        assert_eq!(scene_of(&commands).labels.len(), 3_072);
         assert_eq!(mode.session.search_text.capacity(), 0);
         let continuation = mode.handle(&warm, &env.ctx());
         assert_eq!(mode.session.search_text.len(), SEARCH_PREWARM_TARGETS);
@@ -4684,7 +4896,7 @@ mod tests {
             }),
             &env.ctx(),
         );
-        assert_eq!(scene_of(&commands).labels.len(), 1_025);
+        assert_eq!(scene_of(&commands).labels.len(), 3_073);
         assert_eq!(mode.session.search_text.len(), SEARCH_PREWARM_TARGETS);
         assert_eq!(mode.session.search_text.as_ptr(), text_storage);
         press(&mut mode, &env, "/");
@@ -4694,8 +4906,18 @@ mod tests {
             "empty search must preserve the bounded prewarm, not finish it synchronously"
         );
         mode.handle(&ModeEvent::TextChanged("unique".into()), &env.ctx());
+        assert!(mode.session.search_pending);
+        assert_eq!(mode.session.search_text.len(), 2 * SEARCH_PREWARM_TARGETS);
+        assert!(mode.point_candidates().is_empty());
+        assert!(matches!(mode.view(), View::Status(_)));
+        for _ in 0..3 {
+            let before = mode.session.search_text.len();
+            mode.handle(&warm, &env.ctx());
+            assert!(mode.session.search_text.len() - before <= SEARCH_PENDING_TARGETS);
+        }
+        assert!(!mode.session.search_pending);
         assert!(mode.session.search_names_initialized);
-        assert_eq!(mode.session.search_text.len(), 1_025);
+        assert_eq!(mode.session.search_text.len(), 3_073);
         assert_eq!(mode.session.hints.len(), 1);
         assert_eq!(
             mode.session.scanned[mode.session.hints[0].value].name,
@@ -4705,6 +4927,73 @@ mod tests {
         mode.handle(&ModeEvent::Deactivated, &env.ctx());
         assert!(mode.handle(&warm, &env.ctx()).is_empty());
         assert_eq!(mode.session.search_text.capacity(), 0);
+    }
+
+    #[test]
+    fn pending_search_uses_latest_query_on_accept_and_cannot_survive_cancel_or_restart() {
+        for action in ["accept", "cancel", "restart", "label"] {
+            let mut env = Env::new();
+            env.screens[0].bounds = Rect::new(0.0, 0.0, 300_000.0, 100_000.0);
+            env.screens[0].work_area = env.screens[0].bounds;
+            let mut mode = crate::app::mode_catalog::hint(&env.config);
+            activate(&mut mode, &env);
+            mode.handle_owned(
+                ModeEvent::UiScanned(UiScanResult {
+                    id: mode.session.scan_id,
+                    retired: Vec::new(),
+                    status: UiScanStatus::Success,
+                    targets: (0..2400)
+                        .map(|i| {
+                            target(
+                                if i == 2399 { "Newest unique" } else { "Other" },
+                                i as f64 * 80.0,
+                            )
+                        })
+                        .collect(),
+                }),
+                &env.ctx(),
+            );
+            let expected = mode.session.scanned[2399].rect.center();
+            let label = mode.session.hints[2399].label.as_str().to_owned();
+            press(&mut mode, &env, "/");
+            mode.handle(&ModeEvent::TextChanged("other".into()), &env.ctx());
+            mode.handle(&ModeEvent::TextChanged("newest".into()), &env.ctx());
+            assert!(mode.session.search_pending);
+            assert_eq!(mode.session.search_text.len(), 2 * SEARCH_PREWARM_TARGETS);
+            assert!(mode.point_candidates().is_empty());
+            let out = match action {
+                "accept" => {
+                    mode.handle(&ModeEvent::TextSubmitted(Some("unique".into())), &env.ctx())
+                }
+                "cancel" => mode.handle(&ModeEvent::TextSubmitted(None), &env.ctx()),
+                "restart" => mode.handle(&ModeEvent::Restarted, &env.ctx()),
+                _ => mode.handle(&ModeEvent::TextChanged(format!("@{label}")), &env.ctx()),
+            };
+            assert!(!mode.session.search_pending);
+            if action == "accept" {
+                assert!(out.contains(&Command::warp_to(expected)));
+            } else {
+                assert!(!out.iter().any(|c| matches!(c, Command::WarpPointer { .. })));
+            }
+            if action == "label" {
+                assert_eq!(mode.session.hints.len(), 1);
+                assert_eq!(mode.session.hints[0].value, 2399);
+                assert!(!mode.session.search_names_initialized);
+            }
+            let late = mode.handle(
+                &ModeEvent::Timer {
+                    id: SEARCH_PREWARM_TIMER_ID.into(),
+                    elapsed: Duration::ZERO,
+                },
+                &env.ctx(),
+            );
+            assert!(
+                !late
+                    .iter()
+                    .any(|c| matches!(c, Command::WarpPointer { .. }))
+            );
+            assert!(!mode.session.search_pending);
+        }
     }
 
     #[test]
@@ -5854,6 +6143,60 @@ mod tests {
             assert!(mode.session.hints.capacity() <= 16_384);
             assert_eq!(mode.session.search_text.capacity(), 0);
             assert!(mode.wide_placements.is_none());
+        }
+    }
+
+    #[test]
+    fn label_prefix_matching_preserves_identity_after_reordering_and_removal() {
+        for alphabet in ["asdf", "甲乙丙丁"] {
+            let alphabet: Vec<_> = alphabet.chars().collect();
+            for direction in [LabelDirection::Normal, LabelDirection::Reverse] {
+                for count in [1, 4, 5, 16, 17, 64, 65] {
+                    let mut hints = Vec::new();
+                    hints::assign_compact_into(
+                        &mut hints,
+                        (0..count).map(|index| (Rect::new(index as f64, 0.0, 1.0, 1.0), index)),
+                        &alphabet,
+                        direction,
+                    )
+                    .unwrap();
+                    hints.reverse();
+                    hints.retain(|hint| hint.value % 3 != 1);
+                    for hint in &hints {
+                        let code = hint.label.as_str();
+                        assert_eq!(
+                            match_label_input(
+                                hints.iter().map(|hint| (hint.label.as_str(), hint.value)),
+                                code
+                            ),
+                            Match::Complete(hint.value)
+                        );
+                        for (end, _) in code.char_indices().skip(1) {
+                            assert_eq!(
+                                match_label_input(
+                                    hints.iter().map(|hint| (hint.label.as_str(), hint.value)),
+                                    &code[..end]
+                                ),
+                                Match::Partial
+                            );
+                        }
+                    }
+                    assert_eq!(
+                        match_label_input(
+                            hints.iter().map(|hint| (hint.label.as_str(), hint.value)),
+                            "?"
+                        ),
+                        Match::None
+                    );
+                    assert_eq!(
+                        match_label_input(
+                            hints.iter().map(|hint| (hint.label.as_str(), hint.value)),
+                            ""
+                        ),
+                        Match::Partial
+                    );
+                }
+            }
         }
     }
 

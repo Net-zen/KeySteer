@@ -534,28 +534,17 @@ impl Engine {
         if self.window_presets.pending.is_some() {
             return self.handle_key_inner(input, backend);
         }
-        let switch_was_visible = self
-            .quick_switch
-            .pending
-            .as_ref()
-            .is_some_and(|p| p.visible);
         // Window's help is always visible, independently of the optional `?`
         // panel. Its effective bindings must also refresh on key releases.
         if !self.overlay.key_help_visible && !self.registry.active.is_window() {
-            self.handle_key_inner(input, backend)?;
-            if switch_was_visible && self.quick_switch.pending.is_none() {
-                self.refresh_overlay(backend)?;
-            }
-            return Ok(());
+            return self.handle_key_inner(input, backend);
         }
         let refresh = !input.injected && !input.repeat;
         if refresh {
             self.overlay.key_help_cache = None;
         }
         self.handle_key_inner(input, backend)?;
-        if (refresh && (self.overlay.key_help_visible || self.registry.active.is_window()))
-            || (switch_was_visible && self.quick_switch.pending.is_none())
-        {
+        if refresh && (self.overlay.key_help_visible || self.registry.active.is_window()) {
             self.refresh_overlay(backend)?;
         }
         Ok(())
@@ -588,6 +577,17 @@ impl Engine {
             .collect()
     }
 
+    fn prompt_chord_matches(chord: &KeyChord, activation: &Key, pressed: &[Key]) -> bool {
+        chord.activation_matches(activation)
+            && chord.matches_pressed(pressed)
+            // Match the parsed user binding, allowing unrelated query keys to
+            // remain held during typing. Every configured member is required;
+            // held modifiers must all belong to this chord.
+            && pressed.iter().filter(|key| key.is_modifier()).all(|key| {
+                chord.keys().iter().any(|configured| Self::keys_match(configured, key))
+            })
+    }
+
     fn point_input_event(&mut self, input: &crate::api::input::InputEvent) -> Option<ModeEvent> {
         let (owner, prompt) = self.scheduler.text_prompt.as_ref()?;
         let keys = prompt.point_keys.as_ref()?;
@@ -597,11 +597,8 @@ impl Engine {
                 // the recorded tap/held owner and must not resolve chords again.
                 let pressed = self.prompt_pressed(&input.key);
                 let state = &mut self.scheduler.point_input;
-                let matches = |chord: &KeyChord| {
-                    chord.activation_matches(&input.key)
-                        && chord.keys().len() == pressed.len()
-                        && chord.matches_pressed(&pressed)
-                };
+                let matches =
+                    |chord: &KeyChord| Self::prompt_chord_matches(chord, &input.key, &pressed);
                 state.tap = if state.available
                     && keys.iter().any(|(key, action)| {
                         *action == crate::api::point_sample::Action::PointToggle && matches(key)
@@ -698,11 +695,7 @@ impl Engine {
         }
         let (owner, prompt) = self.scheduler.text_prompt.as_ref()?;
         let pressed = self.prompt_pressed(&input.key);
-        let matches = |chord: &KeyChord| {
-            chord.activation_matches(&input.key)
-                && chord.keys().len() == pressed.len()
-                && chord.matches_pressed(&pressed)
-        };
+        let matches = |chord: &KeyChord| Self::prompt_chord_matches(chord, &input.key, &pressed);
         // Copy must keep its source alive until the normal clipboard success
         // event clears search. Editing and cancellation keep their own paths.
         if prompt.copy_keys.iter().any(matches)
@@ -815,11 +808,19 @@ impl Engine {
                 } else {
                     let pressed = self.prompt_pressed(&input.key);
                     let matches = |chord: &crate::api::KeyChord| {
-                        chord.activation_matches(&input.key)
-                            && chord.keys().len() == pressed.len()
-                            && chord.matches_pressed(&pressed)
+                        Self::prompt_chord_matches(chord, &input.key, &pressed)
                     };
-                    if let Some(index) = prompt.copy_keys.iter().position(matches) {
+                    if let Some(binding) = self
+                        .registry
+                        .keyboard_prompt_mode(&owner)
+                        .and_then(|mode| mode.keyboard_prompt_binding(&input.key, &pressed))
+                    {
+                        (!input.repeat).then_some(ModeEvent::Binding {
+                            binding,
+                            state: input.state,
+                            key: input.key.clone(),
+                        })
+                    } else if let Some(index) = prompt.copy_keys.iter().position(matches) {
                         (!input.repeat).then_some(ModeEvent::CopyTextField(index))
                     } else if let Some((_, action)) =
                         prompt.edit_keys.iter().find(|(key, _)| matches(key))
@@ -1186,7 +1187,7 @@ impl Engine {
             && self.key_may_change_temporary_mode(&input.key)
             && self.temporary_mode_is_active(&self.registry.active);
         let captures = captures_temporary_trigger
-            || (!input.key.is_mouse_side_button()
+            || (!input.key.is_mouse_button()
                 && self
                     .registry
                     .get(&self.registry.active)
@@ -1216,7 +1217,7 @@ impl Engine {
 
         // Raw-mode handling may redraw a large target scene, so it must also
         // happen after the hook has received its disposition.
-        if !input.key.is_mouse_side_button() {
+        if !input.key.is_mouse_button() {
             self.dispatch(
                 ModeEvent::Key {
                     key: input.key.clone(),
@@ -1856,10 +1857,9 @@ impl Engine {
     }
 
     fn replay_target(key: &Key) -> InputTarget {
-        match key.as_str() {
-            "mouse_x1" => InputTarget::Mouse(crate::api::binding::Button::X1),
-            "mouse_x2" => InputTarget::Mouse(crate::api::binding::Button::X2),
-            _ => InputTarget::Key(key.clone()),
+        match key.as_mouse_button() {
+            Some(button) => InputTarget::Mouse(button),
+            None => InputTarget::Key(key.clone()),
         }
     }
 

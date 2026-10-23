@@ -6,15 +6,13 @@ use crate::api::command::UiScanStatus;
 use crate::api::geometry::UiTarget;
 #[cfg(test)]
 use crate::api::geometry::{Rect, SemanticRole};
-use crate::platform::common::scan_fusion::{Handle, Options, Sink};
+use crate::platform::common::scan_fusion::{Handle, Options, Sink, combined_status};
 use crate::platform::common::scan_mailbox::ScanMailbox;
 use crate::platform::common::spatial_index::TargetSource;
 #[cfg(test)]
 use crate::platform::common::spatial_index::{SpatialIndex, rectangles_match};
 use smallvec::SmallVec;
 use std::sync::{Arc, Mutex};
-#[cfg(test)]
-const MAX_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
 
 pub(super) struct ScanSession {
     sink: Sink,
@@ -75,8 +73,28 @@ impl ScanSession {
     ) -> Arc<Self> {
         let sink = fusion.begin(Options {
             id: plan.id,
+
             generation,
             threshold: plan.vision.merge_iou_threshold,
+            defer_visual: crate::platform::common::contour::sources(plan.strategy, &plan.vision).0,
+            progress_sources: {
+                let (text, contours) =
+                    crate::platform::common::contour::sources(plan.strategy, &plan.vision);
+                let mut sources = Vec::new();
+                if matches!(
+                    plan.strategy,
+                    crate::api::UiScanStrategy::Hybrid | crate::api::UiScanStrategy::AxTree
+                ) {
+                    sources.push(TargetSource::Accessibility);
+                }
+                if text {
+                    sources.extend([TargetSource::SystemOcr, TargetSource::WechatOcr]);
+                }
+                if contours {
+                    sources.push(TargetSource::Contour);
+                }
+                sources
+            },
             output: mailbox,
             wake: Arc::new(move || wake.wake()),
             accepts: Arc::new(move |target| plan.target_center_is_visible(target)),
@@ -166,38 +184,6 @@ impl Drop for ScanSource {
     }
 }
 
-fn combined_status(statuses: &[UiScanStatus]) -> UiScanStatus {
-    if statuses
-        .iter()
-        .any(|status| status == &UiScanStatus::ContextChanged)
-    {
-        return UiScanStatus::ContextChanged;
-    }
-    if statuses
-        .iter()
-        .any(|status| status == &UiScanStatus::Success)
-    {
-        return UiScanStatus::Success;
-    }
-    if statuses
-        .iter()
-        .any(|status| status == &UiScanStatus::TimedOut)
-    {
-        return UiScanStatus::TimedOut;
-    }
-    statuses
-        .iter()
-        .find_map(|status| match status {
-            UiScanStatus::PermissionDenied(message) => {
-                Some(UiScanStatus::PermissionDenied(message.clone()))
-            }
-            UiScanStatus::Unsupported(message) => Some(UiScanStatus::Unsupported(message.clone())),
-            UiScanStatus::Failed(message) => Some(UiScanStatus::Failed(message.clone())),
-            _ => None,
-        })
-        .unwrap_or(UiScanStatus::Success)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +196,8 @@ mod tests {
 
     fn request(id: u64) -> UiScanRequest {
         UiScanRequest {
+            screen_bounds: Vec::new(),
+
             scope: crate::api::UiScanScope::Window,
             id,
             timeout_ms: 1_000,
@@ -225,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn late_accessible_row_retires_both_immediately_published_visual_fragments() {
+    fn late_accessible_row_resolves_unpublished_visual_fragments() {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(41);
         let (events, _) = crate::platform::common::event_queue::channel();
@@ -251,10 +239,10 @@ mod tests {
         };
         visual.push_from(TargetSource::Contour, vec![fragment(20.0)]);
         session.flush();
-        assert_eq!(mailbox.take().unwrap().targets.len(), 1);
+        assert!(mailbox.take().is_none());
         visual.push_from(TargetSource::Contour, vec![fragment(200.0)]);
         session.flush();
-        assert_eq!(mailbox.take().unwrap().targets.len(), 1);
+        assert!(mailbox.take().is_none());
         let row = UiTarget {
             details: None,
             rect: rect(10.0, 95.0, 400.0, 32.0),
@@ -265,7 +253,7 @@ mod tests {
         session.flush();
         let update = mailbox.take().unwrap();
         assert_eq!(update.targets, vec![row]);
-        assert_eq!(update.retired.len(), 2);
+        assert!(update.retired.is_empty());
         visual.finish(UiScanStatus::Success);
         ax.finish(UiScanStatus::Success);
         session.flush();
@@ -273,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn merged_sources_accept_ten_thousand_and_bound_the_tail() {
+    fn merged_sources_accept_more_than_ten_thousand_without_truncation() {
         let mailbox = Arc::new(ScanMailbox::default());
         let generation = mailbox.begin(42);
         let (events, _) = crate::platform::common::event_queue::channel();
@@ -311,7 +299,7 @@ mod tests {
         visual.finish(UiScanStatus::Success);
         session.flush();
         let result = mailbox.take().unwrap();
-        assert_eq!(result.targets.len(), MAX_TARGETS);
+        assert_eq!(result.targets.len(), 10001);
         assert_eq!(result.status, UiScanStatus::Success);
     }
 
@@ -332,6 +320,32 @@ mod tests {
             ..target
         };
         assert!(!plan.target_center_is_visible(&outside));
+    }
+
+    #[test]
+    fn all_scope_accepts_both_displays_and_rejects_the_gap() {
+        let mut input = request(99);
+        input.scope = crate::api::UiScanScope::All;
+        input.screen_bounds = vec![
+            rect(-1000.0, 0.0, 800.0, 600.0),
+            rect(0.0, 0.0, 800.0, 600.0),
+        ];
+        input.bounds = Some(input.screen_bounds[0].union(&input.screen_bounds[1]));
+        let plan = super::super::accessibility::test_scan_plan(input);
+        for (x, visible) in [
+            (-500.0, true),
+            (100.0, true),
+            (-100.0, false),
+            (900.0, false),
+        ] {
+            let target = UiTarget {
+                details: None,
+                rect: rect(x, 100.0, 20.0, 20.0),
+                name: String::new(),
+                role: SemanticRole::Control,
+            };
+            assert_eq!(plan.target_center_is_visible(&target), visible);
+        }
     }
 
     #[test]

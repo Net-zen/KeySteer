@@ -66,43 +66,61 @@ use std::path::{Path, PathBuf};
 // thread-affine Win32 region aperture with explicit HRGN transfer/cleanup, and
 // one bounded macOS opaque-owner/four-byte FFI call. Both samplers reuse small
 // capture resources; portable routing and cancellation contain no unsafe code.
-const MAX_UNSAFE_EXPRESSIONS: usize = 405;
-const MAX_UNSAFE_FILES: usize = 41;
+// Workspace notifications replace periodic focus/appearance polling with three
+// audited boundaries: NSObject initialization, exact selector/KVO registration,
+// and paired removal before the retained main-thread observer is released.
+// Callbacks only invalidate an atomic cache and wake the loop; no raw context,
+// engine borrow, Send/Sync override or ownership transfer is introduced.
+// Whole-display UI Hint adds one read-only FindFirstBuildCache call before the
+// existing complete query, to stream a control while that bulk call is pending.
+// It borrows the same worker-owned MTA interfaces and finite provider timeout.
+// No raw pointer ownership, callback, or Send/Sync surface is added.
+// AX batching adds a bounded CopyMultiple call and checked CF-slot retention;
+// single-attribute Copy/adoption now share one ownership scope. A native-only
+// test adds one typed AXValue/CFNull fixture block. Net: two audited blocks,
+// no raw cross-thread references, callbacks or Send/Sync implementations.
+// macOS updates add four audited operations in one native owner: create a
+// kqueue, adopt its fd, submit/wait for a process-exit event, and atomically
+// exchange two complete bundles. No executable bytes are overwritten in place.
+const MAX_UNSAFE_EXPRESSIONS: usize = 415;
+const MAX_UNSAFE_FILES: usize = 43;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
     // with one bounded diagnostic callback into centralized logging.
     ("src/platform/macos/window_audio.rs", 6),
-    ("src/platform/windows/window_audio.rs", 10),
-    ("src/platform/windows/audio_policy.rs", 7),
+    ("src/platform/windows/window_audio/mod.rs", 10),
+    ("src/platform/windows/window_audio/policy.rs", 7),
     ("src/platform/macos/accessibility/window_tabs.rs", 12),
     ("src/platform/macos/window_tabs.rs", 2),
     ("src/platform/windows/window_tabs/strip.rs", 11),
-    ("src/platform/macos/accessibility.rs", 18),
+    ("src/platform/macos/accessibility/mod.rs", 20),
     ("src/platform/macos/accessibility/window_manager.rs", 13),
     ("src/platform/macos/autostart.rs", 5),
-    ("src/platform/macos/display_link.rs", 4),
+    ("src/platform/macos/display/display_link.rs", 4),
     ("src/platform/macos/native.rs", 7),
-    ("src/platform/macos/overlay.rs", 7),
+    ("src/platform/macos/update_installer/native.rs", 4),
+    ("src/platform/macos/display/overlay.rs", 7),
     ("src/platform/macos/permissions.rs", 5),
     // Shutdown adds only NSObjectProtocol / NSApplicationDelegate conformance on
     // the retained main-thread status target; no new raw native calls or Send/Sync.
     ("src/platform/macos/status_item.rs", 10),
     ("src/platform/macos/event_loop.rs", 6),
+    ("src/platform/macos/workspace.rs", 3),
     ("src/platform/windows/text_prompt.rs", 17),
-    ("src/platform/macos/vision.rs", 7),
-    ("src/platform/windows/accessibility.rs", 30),
+    ("src/platform/macos/vision/mod.rs", 7),
+    ("src/platform/windows/accessibility.rs", 31),
     ("src/platform/windows/autostart.rs", 4),
-    ("src/platform/windows/gpu_overlay.rs", 28),
-    ("src/platform/windows/hook.rs", 8),
+    ("src/platform/windows/display/gpu_overlay.rs", 28),
+    ("src/platform/windows/input/hook.rs", 8),
     // Includes a test-only read of INPUT.Anonymous.ki for mapped-chord
     // modifier restoration. The batch constructor activates INPUT_KEYBOARD;
     // no pointer dereference, native call or production unsafe block is added.
-    ("src/platform/windows/input.rs", 10),
-    ("src/platform/windows/overlay.rs", 5),
-    ("src/platform/windows/screens.rs", 5),
+    ("src/platform/windows/input/mod.rs", 10),
+    ("src/platform/windows/display/overlay.rs", 5),
+    ("src/platform/windows/display/mod.rs", 5),
     ("src/platform/windows/window_mover.rs", 4),
     ("src/platform/windows/window_manager.rs", 29),
-    ("src/platform/windows/window_tabs.rs", 7),
+    ("src/platform/windows/window_tabs/mod.rs", 7),
     ("src/platform/windows/status_item.rs", 14),
     ("src/platform/windows/update_installer/candidate.rs", 4),
     ("src/platform/windows/update_installer/mod.rs", 11),

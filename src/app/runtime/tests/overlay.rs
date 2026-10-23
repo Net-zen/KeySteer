@@ -77,6 +77,24 @@ fn pointer_motion_uses_position_only_backend_update() {
 }
 
 #[test]
+fn complete_scene_restores_coordinates_after_a_position_only_move() {
+    let (mut engine, mut backend, log) = visible_normal_overlay();
+    backend.accept_position_updates = true;
+    let original = engine.cursor;
+    engine.cursor = Point::new(200.0, 300.0);
+    engine.refresh_overlay_positions(&mut backend).unwrap();
+
+    // A command can return to the last complete scene's point without going
+    // through the position path (for example a target selection/refresh).
+    engine.cursor = original;
+    engine.refresh_overlay(&mut backend).unwrap();
+    let log = log.lock().unwrap();
+    assert_eq!(log.positions.len(), 1);
+    assert_eq!(log.presents, 2, "stale complete-scene cache suppressed the return");
+    assert_eq!(log.scenes.last().unwrap().cursor_marker.as_ref().unwrap().center, original);
+}
+
+#[test]
 #[ignore = "allocation probe; run alone with --test-threads=1"]
 fn overlay_position_path_is_allocation_free() {
     let (mut engine, mut backend, log) = visible_dense_overlay();

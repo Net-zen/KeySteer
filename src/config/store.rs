@@ -128,8 +128,11 @@ impl ConfigStore {
         let text = candidate.to_string();
         let config = Config::parse(&text)?;
         config.validate()?;
-        let mut store = self.clone();
-        store.source = StoreSource::Parsed(candidate);
+        let store = Self {
+            path: self.path.clone(),
+            source: StoreSource::Parsed(candidate),
+            replace_file: self.replace_file,
+        };
         Ok((store, config))
     }
 
@@ -444,14 +447,22 @@ mod tests {
         let path = std::env::temp_dir().join(test_file_name("keysteer-prepared-store"));
         let original = Config::default().to_toml().unwrap();
         std::fs::write(&path, &original).unwrap();
-        let store = ConfigStore::open(&path, &Config::default(), replace_file).unwrap();
+        let mut store = ConfigStore::open(&path, &Config::default(), replace_file).unwrap();
+        for speed in ["17", "23"] {
+            let before = store.source_text();
+            let (candidate, config) = store.prepare_set("pointer.initial_speed", speed).unwrap();
+            assert_eq!(config.pointer.initial_speed, speed.parse::<f64>().unwrap());
+            assert_eq!(store.source_text(), before);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
 
-        let (candidate, config) = store.prepare_set("pointer.initial_speed", "17").unwrap();
-        assert_eq!(config.pointer.initial_speed, 17.0);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-
-        candidate.persist().unwrap();
-        assert_ne!(std::fs::read_to_string(&path).unwrap(), original);
+            candidate.persist().unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                candidate.source_text()
+            );
+            store = candidate;
+        }
+        assert_ne!(store.source_text(), original);
         let _ = std::fs::remove_file(path);
     }
 

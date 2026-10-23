@@ -15,66 +15,102 @@ const INLINE_GRAPH_WORDS: usize = INLINE_LABELS * INLINE_LABELS.div_ceil(128);
 enum InlineRows {
     Single([u128; 128]),
     Multi([u128; INLINE_GRAPH_WORDS]),
-    Unused,
+    Sparse,
+    Dense,
     Uninitialized,
 }
 
 struct ConflictGraph {
-    // Fixed storage avoids a SmallVec representation check on each edge visit.
     inline_rows: InlineRows,
     inline_degrees: [u16; INLINE_LABELS],
-    dynamic_rows: Vec<u64>,
-    dynamic_degrees: Vec<GraphRowInfo>,
-    len: usize,
+    edges: Vec<(usize, usize)>,
+    offsets: Vec<usize>,
+    neighbors: Vec<usize>,
+    dense: Vec<u128>,
+    dense_threshold: Option<usize>,
     words: usize,
+    len: usize,
 }
 
 impl ConflictGraph {
     #[inline(always)]
     fn new(len: usize) -> Self {
-        let words = if len <= INLINE_LABELS {
-            0
-        } else {
-            len.div_ceil(64)
-        };
         Self {
-            inline_rows: if words != 0 {
-                InlineRows::Unused
-            } else {
+            inline_rows: if len <= INLINE_LABELS {
                 InlineRows::Uninitialized
+            } else {
+                InlineRows::Sparse
             },
             inline_degrees: [0; INLINE_LABELS],
-            dynamic_rows: vec![0; len.saturating_mul(words)],
-            dynamic_degrees: if words == 0 {
-                Vec::new()
-            } else {
-                vec![GraphRowInfo::default(); len]
-            },
+            edges: Vec::new(),
+            offsets: Vec::new(),
+            neighbors: Vec::new(),
+            dense: Vec::new(),
+            dense_threshold: Self::dense_threshold(len),
+            words: len.div_ceil(128),
             len,
-            words,
         }
     }
 
     #[inline(always)]
-    fn new_wide(len: usize, mut rows: Vec<u64>, mut degrees: Vec<GraphRowInfo>) -> Self {
-        let words = len.div_ceil(64);
-        rows.resize(len.saturating_mul(words), 0);
-        rows.fill(0);
-        degrees.resize(len, GraphRowInfo::default());
-        degrees.fill(GraphRowInfo::default());
+    fn new_wide(
+        len: usize,
+        mut edges: Vec<(usize, usize)>,
+        mut offsets: Vec<usize>,
+        mut neighbors: Vec<usize>,
+        mut dense: Vec<u128>,
+    ) -> Self {
+        edges.clear();
+        offsets.clear();
+        neighbors.clear();
+        dense.clear();
         Self {
-            inline_rows: InlineRows::Unused,
+            inline_rows: InlineRows::Sparse,
             inline_degrees: [0; INLINE_LABELS],
-            dynamic_rows: rows,
-            dynamic_degrees: degrees,
+            edges,
+            offsets,
+            neighbors,
+            dense,
+            dense_threshold: Self::dense_threshold(len),
+            words: len.div_ceil(128),
             len,
-            words,
         }
     }
 
     fn recycle(self, wide: &mut WideVisualLayerWorkspace) {
-        wide.graph_rows = self.dynamic_rows;
-        wide.degrees = self.dynamic_degrees;
+        wide.graph_edges = self.edges;
+        wide.graph_offsets = self.offsets;
+        wide.graph_neighbors = self.neighbors;
+        wide.graph_dense = self.dense;
+    }
+
+    fn dense_threshold(len: usize) -> Option<usize> {
+        let bytes = len
+            .checked_mul(len.div_ceil(128))?
+            .checked_mul(std::mem::size_of::<u128>())?;
+        (bytes <= isize::MAX as usize).then_some(bytes / (4 * std::mem::size_of::<usize>()))
+    }
+
+    #[inline(always)]
+    fn add_dense_edge(&mut self, left: usize, right: usize) {
+        let words = self.words;
+        self.dense[left * words + right / 128] |= 1u128 << (right % 128);
+        self.dense[right * words + left / 128] |= 1u128 << (left % 128);
+        self.offsets[left] += 1;
+        self.offsets[right] += 1;
+    }
+
+    fn promote_dense(&mut self) {
+        self.dense.resize(self.len * self.len.div_ceil(128), 0);
+        self.offsets.resize(self.len, 0);
+        for index in 0..self.edges.len() {
+            let (left, right) = self.edges[index];
+            self.add_dense_edge(left, right);
+        }
+        // The bit rows replace both edge buffers; do not retain a second graph.
+        self.edges = Vec::new();
+        self.neighbors = Vec::new();
+        self.inline_rows = InlineRows::Dense;
     }
 
     #[cold]
@@ -87,6 +123,7 @@ impl ConflictGraph {
         };
     }
 
+    #[inline(always)]
     fn add_edge(&mut self, left: usize, right: usize) {
         if matches!(self.inline_rows, InlineRows::Uninitialized) {
             self.initialize_inline_rows();
@@ -100,43 +137,65 @@ impl ConflictGraph {
                 self.inline_degrees[right] += 1;
             }
             InlineRows::Multi(rows) => {
-                let words = self.len.div_ceil(128);
+                let words = self.words;
                 rows[left * words + right / 128] |= 1u128 << (right % 128);
                 rows[right * words + left / 128] |= 1u128 << (left % 128);
                 self.inline_degrees[left] += 1;
                 self.inline_degrees[right] += 1;
             }
-            InlineRows::Unused => {
-                self.dynamic_rows[left * self.words + right / 64] |= 1u64 << (right % 64);
-                self.dynamic_rows[right * self.words + left / 64] |= 1u64 << (left % 64);
-                Self::extend_row(&mut self.dynamic_degrees[left], right / 64);
-                Self::extend_row(&mut self.dynamic_degrees[right], left / 64);
+            InlineRows::Sparse => {
+                self.edges.push((left, right));
+                if self
+                    .dense_threshold
+                    .is_some_and(|threshold| self.edges.len() > threshold)
+                {
+                    self.promote_dense();
+                }
             }
+            InlineRows::Dense => self.add_dense_edge(left, right),
         }
     }
 
-    fn extend_row(row: &mut GraphRowInfo, word: usize) {
-        debug_assert!(word < u16::MAX as usize);
-        let word = word as u16;
-        if row.degree == 0 {
-            row.first_word = word;
-            row.end_word = word + 1;
-        } else {
-            row.first_word = row.first_word.min(word);
-            row.end_word = row.end_word.max(word + 1);
+    /// Contiguous adjacency uses O(labels + actual edges), rather than labels²
+    /// bits. Reuse all buffers; sorted rows preserve the old traversal order.
+    fn finish_edges(&mut self) {
+        if !matches!(self.inline_rows, InlineRows::Sparse) {
+            return;
         }
-        row.degree += 1;
+        self.dense = Vec::new();
+        self.offsets.resize(self.len + 1, 0);
+        self.offsets.fill(0);
+        for &(left, right) in &self.edges {
+            self.offsets[left + 1] += 1;
+            self.offsets[right + 1] += 1;
+        }
+        for index in 1..=self.len {
+            self.offsets[index] += self.offsets[index - 1];
+        }
+        self.neighbors.resize(self.edges.len() * 2, 0);
+        for &(left, right) in &self.edges {
+            self.neighbors[self.offsets[left]] = right;
+            self.offsets[left] += 1;
+            self.neighbors[self.offsets[right]] = left;
+            self.offsets[right] += 1;
+        }
+        for index in (1..=self.len).rev() {
+            self.offsets[index] = self.offsets[index - 1];
+        }
+        self.offsets[0] = 0;
+        for row in self.offsets.windows(2) {
+            self.neighbors[row[0]..row[1]].sort_unstable();
+        }
     }
 
     fn len(&self) -> usize {
         self.len
     }
-
-    fn degree(&self, vertex: usize) -> u16 {
-        if self.words == 0 {
-            self.inline_degrees[vertex]
-        } else {
-            self.dynamic_degrees[vertex].degree
+    fn degree(&self, vertex: usize) -> usize {
+        match self.inline_rows {
+            InlineRows::Sparse => self.offsets[vertex + 1] - self.offsets[vertex],
+            InlineRows::Dense => self.offsets[vertex],
+            _ => usize::from(self.inline_degrees[vertex]),
         }
     }
 
@@ -152,7 +211,7 @@ impl ConflictGraph {
                 }
             }
             InlineRows::Multi(rows) => {
-                let words = self.len.div_ceil(128);
+                let words = self.words;
                 for (word_index, &word) in rows[vertex * words..(vertex + 1) * words]
                     .iter()
                     .enumerate()
@@ -165,22 +224,22 @@ impl ConflictGraph {
                     }
                 }
             }
-            InlineRows::Unused => {
-                let info = self.dynamic_degrees[vertex];
-                let first = usize::from(info.first_word);
-                let end = usize::from(info.end_word);
-                let start = vertex * self.words;
-                for (offset, &word) in self.dynamic_rows[start + first..start + end]
+            InlineRows::Sparse => {
+                for &neighbor in &self.neighbors[self.offsets[vertex]..self.offsets[vertex + 1]] {
+                    visit(neighbor);
+                }
+            }
+            InlineRows::Dense => {
+                let words = self.words;
+                for (index, &word) in self.dense[vertex * words..(vertex + 1) * words]
                     .iter()
                     .enumerate()
                 {
-                    let mut neighbors = word;
-                    while neighbors != 0 {
-                        let neighbor = (first + offset) * 64 + neighbors.trailing_zeros() as usize;
-                        neighbors &= neighbors - 1;
-                        if neighbor < self.len {
-                            visit(neighbor);
-                        }
+                    let mut bits = word;
+                    while bits != 0 {
+                        let neighbor = index * 128 + bits.trailing_zeros() as usize;
+                        bits &= bits - 1;
+                        visit(neighbor);
                     }
                 }
             }
@@ -417,7 +476,7 @@ fn build_general_plan(
         // those layers front-to-back regardless of the coloring candidate.
         if component
             .iter()
-            .all(|&vertex| usize::from(graph.degree(vertex)) == component.len() - 1)
+            .all(|&vertex| graph.degree(vertex) == component.len() - 1)
         {
             for (layer, &vertex) in component.iter().rev().enumerate() {
                 packed_component_layers[vertex] =
@@ -431,14 +490,17 @@ fn build_general_plan(
         global_layer_count = global_layer_count.max(layer_count);
         for &vertex in component.iter() {
             packed_component_layers[vertex] =
-                ((layer_count as u32) << u16::BITS) | u32::from(coloring.best[vertex]);
+                ((layer_count as u32) << u16::BITS) | coloring.best[vertex];
         }
     }
 
     plan.finish(
         placements,
         hint_count,
-        &packed_component_layers[..placements.len()],
+        packed_component_layers[..placements.len()]
+            .iter()
+            .copied()
+            .map(LayerInfo::from_packed),
         global_layer_count,
     );
 }
@@ -506,12 +568,13 @@ fn build_wide_plan(
 ) {
     let len = placements.len();
     let valid_sweep = prepare_wide_sweep(placements, &mut wide.sweep_order);
-    if valid_sweep
+    if let Some(axis) = valid_sweep
         && !wide_sweep_has_edge(
             placements,
             visually_stacked,
             &wide.sweep_order,
             &mut wide.sweep_active,
+            axis,
         )
     {
         plan.finish_unstacked();
@@ -519,8 +582,10 @@ fn build_wide_plan(
     }
     let mut graph = ConflictGraph::new_wide(
         len,
-        std::mem::take(&mut wide.graph_rows),
-        std::mem::take(&mut wide.degrees),
+        std::mem::take(&mut wide.graph_edges),
+        std::mem::take(&mut wide.graph_offsets),
+        std::mem::take(&mut wide.graph_neighbors),
+        std::mem::take(&mut wide.graph_dense),
     );
     build_wide_edges(
         placements,
@@ -530,10 +595,11 @@ fn build_wide_plan(
         &mut wide.sweep_active,
         valid_sweep,
     );
+    graph.finish_edges();
     wide.visited.resize(len, false);
     wide.visited.fill(false);
-    wide.packed.resize(len, WIDE_UNSTACKED);
-    wide.packed.fill(WIDE_UNSTACKED);
+    wide.packed.resize(len, DEEP_UNSTACKED);
+    wide.packed.fill(DEEP_UNSTACKED);
     wide.best.resize(len, UNCOLORED);
     wide.colors.resize(len, UNCOLORED);
     wide.component.clear();
@@ -562,10 +628,10 @@ fn build_wide_plan(
         let depth = if wide
             .component
             .iter()
-            .all(|&vertex| usize::from(graph.degree(vertex)) == wide.component.len() - 1)
+            .all(|&vertex| graph.degree(vertex) == wide.component.len() - 1)
         {
             for (layer, &vertex) in wide.component.iter().rev().enumerate() {
-                wide.best[vertex] = layer as u16;
+                wide.best[vertex] = layer as u32;
             }
             wide.component.len()
         } else {
@@ -573,10 +639,19 @@ fn build_wide_plan(
         };
         global = global.max(depth);
         for &vertex in &wide.component {
-            wide.packed[vertex] = (depth as u32) << u16::BITS | u32::from(wide.best[vertex]);
+            wide.packed[vertex] = LayerInfo {
+                layer: wide.best[vertex] as usize,
+                depth,
+            }
+            .pack_deep();
         }
     }
-    plan.finish(placements, hint_count, &wide.packed, global);
+    plan.finish(
+        placements,
+        hint_count,
+        wide.packed.iter().copied().map(LayerInfo::from_deep),
+        global,
+    );
     graph.recycle(wide);
 }
 
@@ -586,9 +661,9 @@ fn build_wide_edges(
     graph: &mut ConflictGraph,
     order: &[usize],
     active: &mut Vec<usize>,
-    prepared_sweep: bool,
+    prepared_sweep: Option<SweepAxis>,
 ) {
-    if !prepared_sweep {
+    let Some(axis) = prepared_sweep else {
         for right in 1..placements.len() {
             for left in 0..right {
                 if visually_stacked(placements[left].1, placements[right].1) {
@@ -597,11 +672,11 @@ fn build_wide_edges(
             }
         }
         return;
-    }
+    };
     active.clear();
     for &right in order.iter() {
         let right_rect = placements[right].1;
-        active.retain(|left| placements[*left].1.right() >= right_rect.x);
+        active.retain(|left| axis.end(placements[*left].1) >= axis.start(right_rect));
         for &left in active.iter() {
             let left_rect = placements[left].1;
             if left_rect.intersect(&right_rect).is_some() && visually_stacked(left_rect, right_rect)
@@ -613,28 +688,81 @@ fn build_wide_edges(
     }
 }
 
-fn prepare_wide_sweep(placements: &[(usize, Rect)], order: &mut Vec<usize>) -> bool {
-    let valid = placements.iter().all(|(_, rect)| {
-        rect.x.is_finite()
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SweepAxis {
+    X,
+    Y,
+}
+
+impl SweepAxis {
+    #[inline]
+    fn start(self, rect: Rect) -> f64 {
+        match self {
+            Self::X => rect.x,
+            Self::Y => rect.y,
+        }
+    }
+
+    #[inline]
+    fn end(self, rect: Rect) -> f64 {
+        match self {
+            Self::X => rect.right(),
+            Self::Y => rect.bottom(),
+        }
+    }
+
+    #[inline]
+    fn cross(self) -> Self {
+        match self {
+            Self::X => Self::Y,
+            Self::Y => Self::X,
+        }
+    }
+}
+
+fn prepare_wide_sweep(placements: &[(usize, Rect)], order: &mut Vec<usize>) -> Option<SweepAxis> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_right = f64::NEG_INFINITY;
+    let mut max_bottom = f64::NEG_INFINITY;
+    let mut width = 0.0_f64;
+    let mut height = 0.0_f64;
+    for &(_, rect) in placements {
+        if !(rect.x.is_finite()
             && rect.y.is_finite()
             && rect.width.is_finite()
             && rect.height.is_finite()
             && rect.width >= 0.0
-            && rect.height >= 0.0
-    });
-    if !valid {
-        return false;
+            && rect.height >= 0.0)
+        {
+            return None;
+        }
+        min_x = min_x.min(rect.x);
+        min_y = min_y.min(rect.y);
+        max_right = max_right.max(rect.right());
+        max_bottom = max_bottom.max(rect.bottom());
+        width = width.max(rect.width);
+        height = height.max(rect.height);
     }
+    // More label-width bands along an axis usually mean fewer simultaneous
+    // candidates. This choice only affects traversal: exact rectangle and
+    // visual-overlap checks still determine every edge. Degenerate/overflowing
+    // estimates keep the horizontal sweep.
+    let x_bands = (max_right - min_x) / width;
+    let y_bands = (max_bottom - min_y) / height;
+    let axis = if x_bands.is_finite() && y_bands.is_finite() && y_bands > x_bands {
+        SweepAxis::Y
+    } else {
+        SweepAxis::X
+    };
     order.clear();
     order.extend(0..placements.len());
     order.sort_unstable_by(|left, right| {
-        placements[*left]
-            .1
-            .x
-            .total_cmp(&placements[*right].1.x)
+        axis.start(placements[*left].1)
+            .total_cmp(&axis.start(placements[*right].1))
             .then_with(|| left.cmp(right))
     });
-    true
+    Some(axis)
 }
 
 fn wide_sweep_has_edge(
@@ -642,6 +770,7 @@ fn wide_sweep_has_edge(
     visually_stacked: &impl Fn(Rect, Rect) -> bool,
     order: &[usize],
     active: &mut Vec<usize>,
+    axis: SweepAxis,
 ) -> bool {
     active.clear();
     if let [left, right, ..] = order {
@@ -652,31 +781,32 @@ fn wide_sweep_has_edge(
         }
     }
     let mut next_expiry = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_bottom = f64::NEG_INFINITY;
+    let mut cross_min = f64::INFINITY;
+    let mut cross_max = f64::NEG_INFINITY;
+    let cross = axis.cross();
     for &right in order.iter() {
         let right_rect = placements[right].1;
-        // Nothing can expire until the sweep passes the earliest right edge.
-        if next_expiry < right_rect.x {
+        // Nothing can expire until the sweep passes the earliest end.
+        if next_expiry < axis.start(right_rect) {
             next_expiry = f64::INFINITY;
-            min_y = f64::INFINITY;
-            max_bottom = f64::NEG_INFINITY;
+            cross_min = f64::INFINITY;
+            cross_max = f64::NEG_INFINITY;
             active.retain(|left| {
                 let rect = placements[*left].1;
-                let end = rect.right();
-                if end < right_rect.x {
+                let end = axis.end(rect);
+                if end < axis.start(right_rect) {
                     false
                 } else {
                     next_expiry = next_expiry.min(end);
-                    min_y = min_y.min(rect.y);
-                    max_bottom = max_bottom.max(rect.bottom());
+                    cross_min = cross_min.min(cross.start(rect));
+                    cross_max = cross_max.max(cross.end(rect));
                     true
                 }
             });
         }
-        // The union of active vertical intervals is a conservative bound.
+        // Bound active intervals on the perpendicular axis conservatively.
         // Only a rectangle reaching it can conflict with an active label.
-        if right_rect.y < max_bottom && right_rect.bottom() > min_y {
+        if cross.start(right_rect) < cross_max && cross.end(right_rect) > cross_min {
             for &left in active.iter() {
                 let left_rect = placements[left].1;
                 if left_rect.intersect(&right_rect).is_some()
@@ -687,9 +817,9 @@ fn wide_sweep_has_edge(
             }
         }
         active.push(right);
-        next_expiry = next_expiry.min(right_rect.right());
-        min_y = min_y.min(right_rect.y);
-        max_bottom = max_bottom.max(right_rect.bottom());
+        next_expiry = next_expiry.min(axis.end(right_rect));
+        cross_min = cross_min.min(cross.start(right_rect));
+        cross_max = cross_max.max(cross.end(right_rect));
     }
     false
 }
@@ -716,7 +846,9 @@ fn color_component_wide(
         }
         greedy_color(graph, &wide.order, &mut wide.colors, &mut wide.occupied);
         for _ in 0..2 {
-            compact_colors(graph, component, &mut wide.colors, &mut wide.occupied);
+            if !compact_colors(graph, component, &mut wide.colors, &mut wide.occupied) {
+                break;
+            }
         }
         let depth = canonicalize_colors_wide(
             component,
@@ -744,20 +876,20 @@ fn color_component_wide(
 
 fn canonicalize_colors_wide(
     component: &[usize],
-    colors: &mut [u16],
+    colors: &mut [u32],
     frontmost: &mut Vec<usize>,
-    classes: &mut Vec<(u16, usize)>,
-    remap: &mut Vec<u16>,
+    classes: &mut Vec<(u32, usize)>,
+    remap: &mut Vec<u32>,
 ) -> usize {
     let count = component
         .iter()
-        .map(|vertex| usize::from(colors[*vertex]))
+        .map(|vertex| colors[*vertex] as usize)
         .max()
         .map_or(0, |color| color + 1);
     frontmost.resize(count, usize::MAX);
     frontmost.fill(usize::MAX);
     for &vertex in component {
-        let slot = &mut frontmost[usize::from(colors[vertex])];
+        let slot = &mut frontmost[colors[vertex] as usize];
         *slot = if *slot == usize::MAX {
             vertex
         } else {
@@ -771,29 +903,29 @@ fn canonicalize_colors_wide(
             .copied()
             .enumerate()
             .filter(|(_, front)| *front != usize::MAX)
-            .map(|(color, front)| (color as u16, front)),
+            .map(|(color, front)| (color as u32, front)),
     );
     classes.sort_unstable_by(|(lc, lf), (rc, rf)| rf.cmp(lf).then_with(|| lc.cmp(rc)));
     remap.resize(count, UNCOLORED);
     remap.fill(UNCOLORED);
     for (new, (old, _)) in classes.iter().enumerate() {
-        remap[usize::from(*old)] = new as u16;
+        remap[*old as usize] = new as u32;
     }
     for &vertex in component {
-        colors[vertex] = remap[usize::from(colors[vertex])];
+        colors[vertex] = remap[colors[vertex] as usize];
     }
     classes.len()
 }
 
 #[derive(Default)]
 struct InlineColorWorkspace {
-    best: SmallVec<[u16; INLINE_LABELS]>,
-    colors: SmallVec<[u16; INLINE_LABELS]>,
+    best: SmallVec<[u32; INLINE_LABELS]>,
+    colors: SmallVec<[u32; INLINE_LABELS]>,
     order: SmallVec<[usize; INLINE_LABELS]>,
     occupied: SmallVec<[u64; INLINE_LABELS.div_ceil(64)]>,
     frontmost: SmallVec<[Option<usize>; INLINE_LABELS]>,
-    classes: SmallVec<[(u16, usize); INLINE_LABELS]>,
-    remap: SmallVec<[u16; INLINE_LABELS]>,
+    classes: SmallVec<[(u32, usize); INLINE_LABELS]>,
+    remap: SmallVec<[u32; INLINE_LABELS]>,
 }
 
 #[cfg(test)]
@@ -801,7 +933,7 @@ fn color_component(
     graph: &ConflictGraph,
     placements: &[(usize, Rect)],
     component: &[usize],
-) -> (SmallVec<[u16; INLINE_LABELS]>, usize) {
+) -> (SmallVec<[u32; INLINE_LABELS]>, usize) {
     let mut workspace = InlineColorWorkspace::default();
     let depth = color_component_inline(graph, placements, component, &mut workspace);
     (workspace.best, depth)
@@ -827,7 +959,9 @@ fn color_component_inline(
         }
         greedy_color(graph, &w.order, &mut w.colors, &mut w.occupied);
         for _ in 0..2 {
-            compact_colors(graph, component, &mut w.colors, &mut w.occupied);
+            if !compact_colors(graph, component, &mut w.colors, &mut w.occupied) {
+                break;
+            }
         }
         let layer_count = canonicalize_colors(
             component,
@@ -901,40 +1035,45 @@ fn prepare_order_slice(
     }
 }
 
-fn greedy_color(graph: &ConflictGraph, order: &[usize], colors: &mut [u16], occupied: &mut [u64]) {
+fn greedy_color(graph: &ConflictGraph, order: &[usize], colors: &mut [u32], occupied: &mut [u64]) {
     for &vertex in order {
         occupied.fill(0);
         graph.for_each_neighbor(vertex, |neighbor| {
             let color = colors[neighbor];
             if color != UNCOLORED {
-                let color = usize::from(color);
+                let color = color as usize;
                 occupied[color / 64] |= 1u64 << (color % 64);
             }
         });
-        colors[vertex] = first_free_color(occupied) as u16;
+        colors[vertex] = first_free_color(occupied) as u32;
     }
 }
 
 fn compact_colors(
     graph: &ConflictGraph,
     component: &[usize],
-    colors: &mut [u16],
+    colors: &mut [u32],
     occupied: &mut [u64],
-) {
+) -> bool {
+    let mut changed = false;
     for &vertex in component.iter().rev() {
         occupied.fill(0);
         graph.for_each_neighbor(vertex, |neighbor| {
             let color = colors[neighbor];
             if color != UNCOLORED {
-                let color = usize::from(color);
+                let color = color as usize;
                 occupied[color / 64] |= 1u64 << (color % 64);
             }
         });
-        let first_free = first_free_color(occupied) as u16;
+        let first_free = first_free_color(occupied) as u32;
         if first_free < colors[vertex] {
             colors[vertex] = first_free;
+            changed = true;
         }
     }
+    // A complete unchanged pass is a fixed point for this deterministic order.
+    // Repeating it cannot improve the next coloring candidate.
+    changed
 }
 
 fn first_free_color(occupied: &[u64]) -> usize {
@@ -949,20 +1088,20 @@ fn first_free_color(occupied: &[u64]) -> usize {
 
 fn canonicalize_colors(
     component: &[usize],
-    colors: &mut [u16],
+    colors: &mut [u32],
     frontmost: &mut SmallVec<[Option<usize>; INLINE_LABELS]>,
-    classes: &mut SmallVec<[(u16, usize); INLINE_LABELS]>,
-    remap: &mut SmallVec<[u16; INLINE_LABELS]>,
+    classes: &mut SmallVec<[(u32, usize); INLINE_LABELS]>,
+    remap: &mut SmallVec<[u32; INLINE_LABELS]>,
 ) -> usize {
     let max_color = component
         .iter()
-        .map(|vertex| colors[*vertex])
+        .map(|vertex| colors[*vertex] as usize)
         .max()
-        .unwrap_or(0) as usize;
+        .unwrap_or(0);
     frontmost.resize(max_color + 1, None);
     frontmost.fill(None);
     for &vertex in component {
-        let entry = &mut frontmost[usize::from(colors[vertex])];
+        let entry = &mut frontmost[colors[vertex] as usize];
         *entry = Some(entry.map_or(vertex, |current| current.max(vertex)));
     }
     classes.clear();
@@ -970,7 +1109,7 @@ fn canonicalize_colors(
         frontmost
             .iter()
             .enumerate()
-            .filter_map(|(color, front)| front.map(|front| (color as u16, front))),
+            .filter_map(|(color, front)| front.map(|front| (color as u32, front))),
     );
     classes.sort_unstable_by(|(left_color, left_front), (right_color, right_front)| {
         right_front
@@ -979,15 +1118,15 @@ fn canonicalize_colors(
     });
     remap.resize(max_color + 1, UNCOLORED);
     for (new_color, (old_color, _)) in classes.iter().enumerate() {
-        remap[usize::from(*old_color)] = new_color as u16;
+        remap[*old_color as usize] = new_color as u32;
     }
     for &vertex in component {
-        colors[vertex] = remap[usize::from(colors[vertex])];
+        colors[vertex] = remap[colors[vertex] as usize];
     }
     classes.len()
 }
 
-fn visual_agreement(graph: &ConflictGraph, component: &[usize], colors: &[u16]) -> usize {
+fn visual_agreement(graph: &ConflictGraph, component: &[usize], colors: &[u32]) -> usize {
     let mut agreement = 0usize;
     for &back in component {
         graph.for_each_neighbor(back, |front| {
@@ -999,7 +1138,7 @@ fn visual_agreement(graph: &ConflictGraph, component: &[usize], colors: &[u16]) 
     agreement
 }
 
-fn lexicographically_better(component: &[usize], candidate: &[u16], current: &[u16]) -> bool {
+fn lexicographically_better(component: &[usize], candidate: &[u32], current: &[u32]) -> bool {
     component
         .iter()
         .map(|vertex| candidate[*vertex])
@@ -1038,8 +1177,9 @@ mod tests {
                 }
             }
         }
+        graph.finish_edges();
         let mut visited = vec![false; graph.len()];
-        let mut packed = vec![WIDE_UNSTACKED; graph.len()];
+        let mut packed = vec![LayerInfo::default(); graph.len()];
         let mut global = 0usize;
         for root in 0..graph.len() {
             if visited[root] || graph.degree(root) == 0 {
@@ -1062,10 +1202,13 @@ mod tests {
             let (colors, depth) = color_component(&graph, placements, &component);
             global = global.max(depth);
             for &vertex in &component {
-                packed[vertex] = (depth as u32) << u16::BITS | u32::from(colors[vertex]);
+                packed[vertex] = LayerInfo {
+                    layer: colors[vertex] as usize,
+                    depth,
+                };
             }
         }
-        plan.finish(placements, placements.len(), &packed, global);
+        plan.finish(placements, placements.len(), packed.iter().copied(), global);
     }
 
     fn assert_matches_quadratic_reference(placements: &[(usize, Rect)]) {
@@ -1277,11 +1420,15 @@ mod tests {
     }
 
     #[test]
-    fn ten_thousand_dynamic_rows_skip_empty_words_and_reset_on_reuse() {
-        let mut graph = ConflictGraph::new_wide(10_000, Vec::new(), Vec::new());
+    fn sparse_dynamic_rows_preserve_order_and_reset_on_reuse() {
+        let mut graph =
+            ConflictGraph::new_wide(100_025, Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (a, b) in [(0, 9999), (0, 127), (0, 129), (4999, 5000), (9998, 9999)] {
             graph.add_edge(a, b);
         }
+        graph.finish_edges();
+        assert_eq!(graph.neighbors.len(), 10);
+        assert_eq!(graph.offsets.len(), 100_026);
         for (vertex, expected) in [
             (0, vec![127, 129, 9999]),
             (127, vec![0]),
@@ -1292,17 +1439,88 @@ mod tests {
             let mut actual = Vec::new();
             graph.for_each_neighbor(vertex, |v| actual.push(v));
             assert_eq!(actual, expected);
-            assert_eq!(usize::from(graph.degree(vertex)), expected.len());
+            assert_eq!(graph.degree(vertex), expected.len());
         }
         let mut wide = WideVisualLayerWorkspace::default();
         graph.recycle(&mut wide);
-        let mut reused = ConflictGraph::new_wide(513, wide.graph_rows, wide.degrees);
+        let mut reused = ConflictGraph::new_wide(
+            513,
+            wide.graph_edges,
+            wide.graph_offsets,
+            wide.graph_neighbors,
+            wide.graph_dense,
+        );
         reused.add_edge(128, 512);
+        reused.finish_edges();
         let mut actual = Vec::new();
         reused.for_each_neighbor(512, |v| actual.push(v));
         assert_eq!(actual, vec![128]);
         reused.for_each_neighbor(0, |_| panic!("stale word interval"));
         assert_eq!(reused.degree(0), 0);
+    }
+
+    #[test]
+    fn dense_rows_replace_sparse_edges_and_reuse_does_not_keep_stale_neighbors() {
+        let count = 513;
+        let mut graph =
+            ConflictGraph::new_wide(count, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for right in 1..count {
+            for left in 0..right {
+                graph.add_edge(left, right);
+            }
+        }
+        graph.finish_edges();
+        assert!(!graph.dense.is_empty());
+        assert_eq!(graph.edges.capacity(), 0);
+        assert_eq!(graph.neighbors.capacity(), 0);
+        assert_eq!(graph.degree(128), count - 1);
+        let mut neighbors = Vec::new();
+        graph.for_each_neighbor(128, |neighbor| neighbors.push(neighbor));
+        assert_eq!(
+            neighbors,
+            (0..count).filter(|index| *index != 128).collect::<Vec<_>>()
+        );
+        let mut workspace = WideVisualLayerWorkspace::default();
+        graph.recycle(&mut workspace);
+        let mut sparse = ConflictGraph::new_wide(
+            count,
+            workspace.graph_edges,
+            workspace.graph_offsets,
+            workspace.graph_neighbors,
+            workspace.graph_dense,
+        );
+        sparse.add_edge(0, 512);
+        sparse.finish_edges();
+        assert_eq!(sparse.dense.capacity(), 0);
+        assert_eq!(sparse.degree(128), 0);
+        neighbors.clear();
+        sparse.for_each_neighbor(512, |neighbor| neighbors.push(neighbor));
+        assert_eq!(neighbors, [0]);
+    }
+
+    #[test]
+    fn deep_stacks_preserve_layers_beyond_sixteen_bit_indices() {
+        let count = 65_537;
+        let placements: Vec<_> = (0..count)
+            .map(|i| (i, Rect::new(0.0, 0.0, 20.0, 20.0)))
+            .collect();
+        let mut plan = VisualLayerPlan::default();
+        build_visual_layer_plan(&placements, count, overlap, &mut plan);
+        assert_eq!(plan.layer_count(), count);
+        for index in [0, 1, 65_534, 65_535, 65_536] {
+            assert_eq!(plan.layer_info(index), Some((count - 1 - index, count)));
+            assert_eq!(plan.draw_rank(index, count - 1 - index), Some(count));
+        }
+        assert!(plan.wide.is_none());
+        let LayerStorage::Deep(layers) = &plan.layers else {
+            panic!("expected two 32-bit fields");
+        };
+        assert_eq!(std::mem::size_of_val(&layers[0]), 8);
+        let info = LayerInfo {
+            layer: u32::MAX as usize - 1,
+            depth: u32::MAX as usize,
+        };
+        assert_eq!(LayerInfo::from_deep(info.pack_deep()), info);
     }
 
     #[test]
@@ -1478,14 +1696,53 @@ mod tests {
         let mut sparse_plan = VisualLayerPlan::default();
         build_visual_layer_plan(&dynamic, dynamic.len(), overlap, &mut sparse_plan);
         assert_eq!(sparse_plan.layer_count(), 0);
-        assert_eq!(sparse_plan.retained_graph_words(), 0);
+        assert_eq!(sparse_plan.retained_graph_capacity(), 0);
+    }
+
+    #[test]
+    fn adaptive_wide_sweep_preserves_streamed_pairs_in_both_orientations() {
+        // The second source appends nearby labels after the whole first source.
+        // Their input order is neither spatial nor consecutive pairs.
+        for transpose in [false, true] {
+            let placements: Vec<_> = (0..2)
+                .flat_map(|source| {
+                    (0..300).map(move |index| {
+                        let mut rect = Rect::new(
+                            (index % 5) as f64 * 100.0 + source as f64 * 5.0,
+                            (index / 5) as f64 * 60.0 + source as f64 * 4.0,
+                            30.0 + (index % 3) as f64,
+                            20.0,
+                        );
+                        if transpose {
+                            rect = Rect::new(rect.y, rect.x, rect.height, rect.width);
+                        }
+                        (source * 300 + index, rect)
+                    })
+                })
+                .collect();
+            let mut order = Vec::new();
+            assert_eq!(
+                prepare_wide_sweep(&placements, &mut order),
+                Some(if transpose {
+                    SweepAxis::X
+                } else {
+                    SweepAxis::Y
+                })
+            );
+            assert_matches_quadratic_reference(&placements);
+            // Shuffled updates must retain the same layer and selected-layer
+            // semantics as the general graph for that exact input ordering.
+            let mut shuffled = placements;
+            shuffled.rotate_left(137);
+            assert_matches_quadratic_reference(&shuffled);
+        }
     }
 
     #[test]
     fn wide_sweep_preserves_varying_heights_and_numeric_boundaries() {
         fn verify(placements: &[(usize, Rect)], active: &mut Vec<usize>) {
             let mut order = Vec::new();
-            assert!(prepare_wide_sweep(placements, &mut order));
+            let axis = prepare_wide_sweep(placements, &mut order).unwrap();
             let predicates: [fn(Rect, Rect) -> bool; 2] = [overlap, |left, right| {
                 super::super::visually_stacked(left, right, 4.0, 3.0)
             }];
@@ -1494,7 +1751,7 @@ mod tests {
                     (0..right).any(|left| predicate(placements[left].1, placements[right].1))
                 });
                 assert_eq!(
-                    wide_sweep_has_edge(placements, &predicate, &order, active),
+                    wide_sweep_has_edge(placements, &predicate, &order, active, axis),
                     expected,
                     "{placements:?}"
                 );
@@ -1632,11 +1889,15 @@ mod tests {
             let mut graph = ConflictGraph::new(count);
             graph.add_edge(0, count - 1);
             graph.add_edge(count / 2, count - 1);
+            graph.finish_edges();
             let mut actual = Vec::new();
             graph.for_each_neighbor(count - 1, |n| actual.push(n));
             assert_eq!(actual, vec![0, count / 2]);
             assert_eq!(graph.degree(count - 1), 2);
-            assert_eq!(graph.words == 0, count <= INLINE_LABELS);
+            assert_eq!(
+                matches!(graph.inline_rows, InlineRows::Sparse),
+                count > INLINE_LABELS
+            );
         }
         for count in [255, 256, 257, 511, 512, 513] {
             let placements: Vec<_> = (0..count)
@@ -1644,7 +1905,7 @@ mod tests {
                 .collect();
             assert_matches_quadratic_reference(&placements);
         }
-        // More than 255 layers must still use the 16-bit packed representation.
+        // Deep components use dynamically sized storage.
         let placements: Vec<_> = (0..512)
             .map(|i| (i, Rect::new(0.0, 0.0, 20.0, 20.0)))
             .collect();
@@ -1658,7 +1919,7 @@ mod tests {
         let LayerStorage::Wide(layers) = &plan.layers else {
             panic!("deep plan must use wide packing")
         };
-        assert!(!layers.spilled());
+        assert_eq!(layers.len(), 512);
     }
 
     #[test]

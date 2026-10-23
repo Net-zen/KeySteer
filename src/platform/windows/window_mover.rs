@@ -149,7 +149,7 @@ pub(super) fn move_from_to_screen(
         return Ok(None);
     };
 
-    let screens = super::screens::list_screens()?;
+    let screens = super::display::list_screens()?;
     let Some((source, target)) = destination(&screens, visible, target) else {
         return Ok(None);
     };

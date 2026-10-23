@@ -17,14 +17,13 @@ export function compileScrollSettings(document: Record<string, any>, mac = false
   const pixels = { step: Number(scroll.scroll_step ?? 50), half: Number(scroll.scroll_step_half ?? 500), full: Number(scroll.scroll_step_full ?? 1000000) }
   const validSpeed = Number.isFinite(speed) && speed >= 0 ? speed : 0
   const platform = document.platform?.macos?.scroll ?? {}
-  const legacy = platform.invert ?? scroll.invert_scroll
   return {
     pixels,
     speeds: { step: validSpeed, half: 0, full: 0 },
     multipliers: { precision: Number(pointer.precision_multiplier ?? .12), fast: Number(pointer.fast_multiplier ?? 2), slow: Number(pointer.slow_multiplier ?? .35) },
     continuous: validSpeed > 0,
-    xSign: mac && (platform.invert_horizontal ?? legacy ?? false) ? -1 : 1,
-    ySign: mac && (platform.invert_vertical ?? legacy ?? true) ? -1 : 1,
+    xSign: mac && (platform.invert_horizontal ?? false) ? -1 : 1,
+    ySign: mac && (platform.invert_vertical ?? true) ? -1 : 1,
   }
 }
 

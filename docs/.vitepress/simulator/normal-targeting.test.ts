@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { blindTargetingInput, createBlindTargetingState, targetingKeys, targetingLayout, targetingSingleLevel } from './normal-targeting.ts'
+import { blindTargetingAction, blindTargetingInput, createBlindTargetingState, targetingControlBindings, targetingKeys, targetingLayout, targetingSingleLevel } from './normal-targeting.ts'
 
 const document = {
   normal: { targeting: { method: 'grid', grid_cols: 2, grid_rows: 2, keys: 'asdf', max_depth: 2 } },
@@ -41,6 +41,22 @@ test('Recursive Grid layers replace inheritance and reset on the next selection'
 test('Absent targeting leaves normal input unclaimed', () => {
   const state = createBlindTargetingState()
   assert.deepEqual(blindTargetingInput({ normal: {}, grid: document.grid }, state, 'a'), { handled: false })
+})
+
+test('Normal controls inherit remapped grid chords and respect local overrides', () => {
+  const config = { ...document, grid: { ...document.grid, bindings: { space: 'none', 'ctrl+backspace': 'first_level', 'f8 f9': 'previous_level' } } }
+  const keys = targetingKeys(config)
+  assert.equal(keys.has('space'), false)
+  assert.equal(keys.has('f9'), true)
+  const state = createBlindTargetingState()
+  blindTargetingInput(config, state, 'a')
+  blindTargetingInput(config, state, 's')
+  blindTargetingInput(config, state, 'f9')
+  assert.deepEqual(state.path, [0])
+  assert.equal(blindTargetingAction(state, targetingControlBindings(config)['ctrl+backspace']), true)
+  assert.deepEqual(state.path, [])
+  const local = { ...config, normal: { ...config.normal, bindings: { f9: 'none' } } }
+  assert.equal(targetingKeys(local).has('f9'), false)
 })
 
 test('Single-level targeting continuously selects root cells for either method', () => {

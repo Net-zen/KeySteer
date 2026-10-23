@@ -161,6 +161,31 @@ fn normal_targeting_compilation_is_optional_defaults_to_grid_and_roundtrips() {
 }
 
 #[test]
+fn normal_targeting_controls_follow_source_bindings_without_leaking_to_inheritors() {
+    let mut config = blind_config("grid", "[]");
+    config.grid.bindings.insert("space".into(), Binding::Disabled);
+    config.grid.bindings.insert("f8".into(), Binding::SelectionReset);
+    config.text_input.inherits = vec!["normal".into()];
+    config.normal.app_configs.push(crate::config::AppOverride {
+        bundle_id: "test.*".into(),
+        bindings: std::collections::BTreeMap::from([("f8".into(), Binding::Disabled)]),
+    });
+    let plan = crate::app::configuration::compile(&config).unwrap();
+    let normal = plan.modes.iter().find(|mode| mode.id() == ModeId::normal()).unwrap();
+    assert_eq!(normal.route.bindings["f8"], Binding::SelectionReset);
+    assert!(!normal.route.bindings.contains_key("space"));
+    assert_eq!(normal.route.app_overrides[0].bindings["f8"], Binding::Disabled);
+    let inheritor = plan.modes.iter().find(|mode| mode.id() == ModeId::text_input()).unwrap();
+    assert_eq!(inheritor.route.bindings["f8"], Binding::Disabled);
+    let (mut engine, mut backend, _) = blind_engine(&config);
+    blind_tap(&mut engine, &mut backend, "a");
+    blind_tap(&mut engine, &mut backend, "a");
+    blind_tap(&mut engine, &mut backend, "f8");
+    blind_tap(&mut engine, &mut backend, "a");
+    assert_eq!(engine.cursor, Point::new(256.0, 256.0));
+}
+
+#[test]
 fn normal_targeting_reports_binding_alias_and_app_conflicts_before_installation() {
     let mut config = blind_config("grid", "[]");
     config
@@ -216,6 +241,7 @@ fn temporary_normal_blind_targeting_keeps_priority_over_host_grid() {
                 let mut config = blind_config(method, "[]");
                 config.grid.temporary_mode_keys = vec![trigger.into()];
                 config.recursive_grid.temporary_mode_keys = vec![trigger.into()];
+                config.text_input.temporary_mode = Some("normal".into());
                 config.text_input.temporary_mode_keys = vec![trigger.into()];
                 config.normal.bindings.remove("ctrl+a");
                 config.normal.targeting.as_mut().unwrap().grid_cols = Some(4);
@@ -327,42 +353,6 @@ fn normal_targeting_validates_referenced_geometry_even_when_standalone_mode_is_d
 }
 
 #[test]
-fn normal_targeting_documented_default_example_compiles_after_relinquishing_conflicts() {
-    let source = include_str!("../../../../keysteer.default.toml");
-    let example = source
-        .split("# [normal.targeting]")
-        .nth(1)
-        .unwrap()
-        .lines()
-        .skip(1)
-        .take(2)
-        .map(|line| line.strip_prefix("# ").unwrap())
-        .collect::<Vec<_>>()
-        .join("\n");
-    for method in ["grid", "recursive_grid"] {
-        let mut config = Config::parse(&format!(
-            "{source}\n[normal.targeting]\n{}",
-            example.replace("method = \"grid\"", &format!("method = {method:?}"))
-        ))
-        .unwrap();
-        assert!(crate::app::configuration::compile(&config).is_err());
-        let conflicts: &[&str] = if method == "grid" {
-            &["q", "t", "f", "g", "v", "b"]
-        } else {
-            &["q"]
-        };
-        for key in conflicts {
-            config
-                .normal
-                .bindings
-                .insert((*key).into(), Binding::Disabled);
-        }
-        crate::app::configuration::compile(&config).unwrap();
-        assert_eq!(config.normal.bindings["esc"], Binding::Mode(ModeId::idle()));
-    }
-}
-
-#[test]
 fn normal_targeting_replays_recursive_layers_across_screens_without_rendering() {
     let mut config = blind_config("recursive_grid", "[]");
     config.recursive_grid.layers.push(crate::config::GridLayer {
@@ -467,7 +457,7 @@ fn screen_plugin_preserves_grid_path_while_temporary_normal_is_held() {
             config.recursive_grid.cursor_follow_selection = true;
             config.normal.bindings.insert("primary+s".into(), Binding::parse("screen next").unwrap());
             config.plugin_modes.entry("plugin:screen-selector".into()).or_default().settings.insert("preserve".into(), toml::Value::Boolean(preserve));
-            let primary = config.resolved_key_aliases()["primary"].clone();
+            let primary = primary_key(&config);
             let (mut engine, mut backend, _) = blind_engine(&config);
             let mut second = engine.screens[0].clone();
             second.bounds.x = 1024.0;
@@ -502,7 +492,7 @@ fn single_level_targeting_leaves_normal_navigation_bindings_available() {
         }
         assert_eq!(log.lock().unwrap().sent.iter().filter(|(key, state)| key == "enter" && *state == KeyState::Down).count(), 5);
         config.normal.targeting.as_mut().unwrap().max_depth = Some(3);
-        assert!(crate::app::configuration::compile(&config).is_err());
+        assert!(crate::app::configuration::compile(&config).is_ok(), "navigation controls are configurable at every depth");
         config.normal.targeting.as_mut().unwrap().max_depth = Some(1);
         config.normal.bindings.insert("a".into(), Binding::parse("send enter").unwrap());
         assert!(crate::app::configuration::compile(&config).is_err());
@@ -519,6 +509,9 @@ fn normal_targeting_single_level_repeatedly_selects_root_cells() {
             targeting.grid_rows = Some(2);
             targeting.keys = Some("asdzxc".into());
             targeting.max_depth = Some(1);
+            // The test changes geometry after parsing; relinquish the new
+            // default text-mode entrance before claiming c as a grid cell.
+            config.normal.bindings.remove("c");
             let (mut engine, mut backend, _) = blind_engine(&config);
             for key in ["a", "c", "s", "s", "z", "x", "d", "tab", "space", "a"] {
                 let previous = engine.cursor;

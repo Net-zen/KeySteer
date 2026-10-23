@@ -1,0 +1,70 @@
+[
+  {
+    "sections": ["window"],
+    "reject": {
+      "exit_mode": "[window.bindings] q = \"idle\" (or another mode)",
+      "split_ratios": "window_quick.split_ratios",
+      "gap": "window_editor.gap / window_quick.gap / window_restore.gap",
+      "layout_keys": "numeric selection in the independent window modes",
+      "double_tap_ms": "direct window_quick / window_editor bindings"
+    }
+  },
+  {
+    "sections": ["ui_hint.search_input_ui", "ui_hint.search_info_ui"],
+    "ignore": ["x_offset", "y_offset"]
+  },
+  {
+    "sections": ["scroll"],
+    "reject": {
+      "steps_per_second": "scroll.speed (pixels/second)"
+    }
+  },
+  {
+    "sections": ["mode_indicator.ui", "mode_indicator.modes.*.ui"],
+    "reject": {
+      "position": "indicator_offset = [X, Y]",
+      "indicator_x_offset": "indicator_offset = [X, Y]",
+      "indicator_y_offset": "indicator_offset = [X, Y]"
+    }
+  },
+  {
+    "sections": ["platform.macos.scroll"],
+    "copy": {
+      "invert": {
+        "value_type": "boolean",
+        "targets": ["platform.macos.scroll.invert_horizontal", "platform.macos.scroll.invert_vertical"]
+      }
+    }
+  },
+  {
+    "sections": ["scroll"],
+    "copy": {
+      "invert_scroll": {
+        "value_type": "boolean",
+        "targets": ["platform.macos.scroll.invert_horizontal", "platform.macos.scroll.invert_vertical"],
+        "existing_parent_only": true,
+        "warning": "`scroll.invert_scroll` is deprecated; use `platform.macos.scroll.invert_horizontal` / `invert_vertical` instead"
+      }
+    }
+  },
+  {
+    "sections": ["ui_hint.search_edit_keys"],
+    "transform": "search_edit_keys"
+  },
+  {
+    "sections": ["ui_hint.search_copy_keys"],
+    "transform": "search_copy_keys"
+  },
+  {
+    "sections": ["hotkeys", "*.bindings", "app_configs.*.bindings", "*.app_configs.*.bindings", "plugin_modes.*.bindings", "window.multi_select.bindings"],
+    "reject_values": {
+      "window_layout": "window_quick",
+      "window_edit": "window_editor",
+      "window_saved_presets": "window_restore",
+      "window_saved_layouts": "window_restore",
+      "window_cancel": "a destination mode such as window or idle",
+      "window_exit": "a destination mode such as window or idle",
+      "window_cycle_state": "window_maximize / window_minimize"
+    }
+  }
+]

@@ -12,4 +12,6 @@ mod restart;
 #[allow(dead_code, unused_imports)]
 pub(crate) mod runtime;
 
-pub use cli::run_cli;
+pub fn run_cli() -> std::process::ExitCode {
+    crate::platform::run(cli::run_cli)
+}

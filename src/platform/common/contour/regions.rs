@@ -58,7 +58,7 @@ pub(super) fn detect(
         return Vec::new();
     };
     drop(grown);
-    let Some(parts) = components(closed, w, h, stop) else {
+    let Some(parts) = components(closed, w, h, stop, |_| true) else {
         return Vec::new();
     };
     let mut owners = Vec::new();

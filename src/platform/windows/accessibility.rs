@@ -5,8 +5,6 @@
 //! has been visited, while input and tray handling remain responsive.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -28,8 +26,9 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_I4};
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomation2, IUIAutomationCacheRequest,
-    IUIAutomationCondition, IUIAutomationElement, TreeScope_Descendants,
+    AutomationElementMode_None, CUIAutomation, IUIAutomation, IUIAutomation2,
+    IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
+    IUIAutomationElementArray, TreeScope_Descendants, TreeScope_Subtree,
     UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId, UIA_IsEnabledPropertyId,
     UIA_IsExpandCollapsePatternAvailablePropertyId, UIA_IsInvokePatternAvailablePropertyId,
     UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId,
@@ -44,15 +43,12 @@ use windows::core::{BOOL, Interface};
 use super::ui_scan::ScanSource;
 use crate::api::command::{UiScanRequest, UiScanStatus};
 use crate::api::geometry::{Rect, SemanticRole, UiTarget};
+use crate::platform::common::spatial_index::NativeTargetDeduper;
 use crate::support::worker::WorkerJoin;
 
-const MAX_TARGETS: usize = crate::api::command::MAX_UI_SCAN_TARGETS;
-const MAX_VISITED_ELEMENTS: usize = 20_000;
 const MAX_SCAN_WINDOWS: usize = 16;
-const MAX_SCREEN_WINDOWS: usize = 64;
 type InlineScanWindows = SmallVec<[ScanWindow; MAX_SCAN_WINDOWS]>;
 type InlineOccluders = SmallVec<[Rect; MAX_SCAN_WINDOWS]>;
-const MINIMUM_SPACING: f64 = 8.0;
 const MIN_SCAN_TIMEOUT_MS: u64 = 250;
 const MAX_SCAN_TIMEOUT_MS: u64 = 30_000;
 const UIA_SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
@@ -79,18 +75,48 @@ fn cancellation_context_is_gone(code: windows::core::HRESULT) -> bool {
 struct ScanJob {
     request: Arc<WindowsScanPlan>,
     generation: u64,
-    source: ScanSource,
+    work: ScanWork,
+}
+
+pub(super) enum ScanWork {
+    Complete(ScanSource),
+    Preview(crate::platform::common::scan_fusion::Sink),
 }
 
 impl ScanJob {
-    fn publish(&self, targets: Vec<UiTarget>, status: UiScanStatus) {
-        if status == UiScanStatus::Partial {
-            self.source.push(targets);
+    fn complete_region(&self, bounds: Rect) {
+        let sink = match &self.work {
+            ScanWork::Complete(source) => source.sink(),
+            ScanWork::Preview(sink) => sink.clone(),
+        };
+        sink.progress(
+            crate::platform::common::spatial_index::TargetSource::Accessibility,
+            crate::platform::common::scan_progress::Progress::Complete(bounds),
+        );
+    }
+    fn publish(&self, targets: Vec<UiTarget>) {
+        match &self.work {
+            ScanWork::Complete(source) => {
+                source.push(targets);
+            }
+            ScanWork::Preview(sink) => {
+                sink.submit(
+                    crate::platform::common::spatial_index::TargetSource::Accessibility,
+                    targets,
+                );
+            }
         }
     }
 
     fn finish(self, status: UiScanStatus) {
-        self.source.finish(status);
+        match self.work {
+            ScanWork::Complete(source) => source.finish(status),
+            ScanWork::Preview(_) => {
+                if let UiScanStatus::Failed(error) = status {
+                    crate::report_warning!("windows-uia", "optional UIA preview failed: {error}");
+                }
+            }
+        }
     }
 }
 
@@ -148,7 +174,7 @@ impl UiAutomationWorker {
         &self,
         request: Arc<WindowsScanPlan>,
         generation: u64,
-        source: ScanSource,
+        work: ScanWork,
     ) -> Result<(), String> {
         let mut state = self
             .shared
@@ -164,7 +190,7 @@ impl UiAutomationWorker {
         let replaced = state.pending.replace(ScanJob {
             request,
             generation,
-            source,
+            work,
         });
         let cancel_active = state
             .active
@@ -183,28 +209,38 @@ impl UiAutomationWorker {
         Ok(())
     }
 
-    pub fn cancel(&self, request_id: u64) {
+    pub fn cancel(&self, request_id: Option<u64>) {
         let mut state = self
             .shared
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if state
+        let pending = if state
             .pending
             .as_ref()
-            .is_some_and(|job| job.request.id == request_id)
+            .is_some_and(|job| request_id.is_none_or(|id| job.request.id == id))
         {
-            state.pending.take();
-        }
+            state.pending.take()
+        } else {
+            None
+        };
         let cancel_active = state
             .active
-            .is_some_and(|(active_id, _)| active_id == request_id);
-        if cancel_active {
+            .is_some_and(|(active_id, _)| request_id.is_none_or(|id| active_id == id));
+        // A newer queued generation is already cancelling the old active job.
+        // Cancelling that old id must not invalidate its queued replacement.
+        if pending.is_some() || cancel_active && state.pending.is_none() {
             self.shared.latest_generation.store(0, Ordering::Release);
+        }
+        if cancel_active {
             // Keep the queue lock until the request is sent, so this worker
             // cannot finish the old job and begin a newer generation first.
             let thread_id = self.thread_id.load(Ordering::Acquire);
             request_call_cancellation(thread_id);
+        }
+        drop(state);
+        if let Some(pending) = pending {
+            pending.finish(UiScanStatus::ContextChanged);
         }
     }
 
@@ -303,22 +339,33 @@ impl Drop for ComApartment {
 struct UiaQueryPlan {
     cache: IUIAutomationCacheRequest,
     all: IUIAutomationCondition,
-    interactive: Option<IUIAutomationCondition>,
+    subtree: Option<IUIAutomationCacheRequest>,
+    interactive: Option<(
+        IUIAutomationCondition,
+        IUIAutomationCacheRequest,
+        Option<IUIAutomationCacheRequest>,
+    )>,
 }
 
 impl UiaQueryPlan {
     fn new(automation: &IUIAutomation) -> Result<Self, String> {
-        let cache = create_cache_request(automation)?;
+        let cache = create_cache_request(automation, false)?;
         // SAFETY: the live automation interface creates an owned immutable
         // condition on its owning MTA thread.
         let all = unsafe { automation.CreateTrueCondition() }
             .map_err(|error| format!("cannot create the UIA scan condition: {error}"))?;
-        let interactive = match create_interactive_condition(automation) {
-            Ok(condition) => Some(condition),
+        let subtree = subtree_cache(automation, &cache, &all);
+        let interactive = match create_interactive_condition(automation).and_then(|condition| {
+            create_cache_request(automation, true).map(|cache| {
+                let subtree = subtree_cache(automation, &cache, &condition);
+                (condition, cache, subtree)
+            })
+        }) {
+            Ok(query) => Some(query),
             Err(error) => {
                 crate::report_warning!(
                     "windows-uia",
-                    "cannot create interactive UIA condition; clickable scans will filter cached properties locally: {error}"
+                    "cannot prepare interactive UIA query; clickable scans will filter cached properties locally: {error}"
                 );
                 None
             }
@@ -326,17 +373,159 @@ impl UiaQueryPlan {
         Ok(Self {
             cache,
             all,
+            subtree,
             interactive,
         })
     }
 
-    fn condition(&self, clickable_only: bool) -> (&IUIAutomationCondition, bool) {
-        if clickable_only && let Some(interactive) = self.interactive.as_ref() {
-            (interactive, true)
+    fn condition(
+        &self,
+        clickable_only: bool,
+    ) -> (
+        &IUIAutomationCacheRequest,
+        &IUIAutomationCondition,
+        bool,
+        Option<&IUIAutomationCacheRequest>,
+    ) {
+        if clickable_only && let Some((condition, cache, subtree)) = self.interactive.as_ref() {
+            (cache, condition, true, subtree.as_ref())
         } else {
-            (&self.all, false)
+            (&self.cache, &self.all, false, self.subtree.as_ref())
         }
     }
+}
+
+fn subtree_cache(
+    automation: &IUIAutomation,
+    cache: &IUIAutomationCacheRequest,
+    condition: &IUIAutomationCondition,
+) -> Option<IUIAutomationCacheRequest> {
+    // SAFETY: configure a fresh, worker-local clone using interfaces from the
+    // same MTA. Retain the original cache's view as well as the search condition;
+    // dropping the former would admit additional raw-view elements.
+    let result = unsafe {
+        (|| -> windows::core::Result<_> {
+            let subtree = cache.Clone()?;
+            let filter = automation.CreateAndCondition(condition, &cache.TreeFilter()?)?;
+            subtree.SetTreeFilter(&filter)?;
+            subtree.SetTreeScope(TreeScope_Subtree)?;
+            subtree.SetAutomationElementMode(AutomationElementMode_None)?;
+            Ok(subtree)
+        })()
+    };
+    match result {
+        Ok(cache) => Some(cache),
+        Err(error) => {
+            crate::report_warning!(
+                "windows-uia",
+                "cannot prepare a UIA subtree snapshot; using descendant queries: {error}"
+            );
+            None
+        }
+    }
+}
+
+enum CachedDescendants {
+    Flat {
+        elements: IUIAutomationElementArray,
+        next: i32,
+        count: i32,
+    },
+    Tree {
+        pending: Option<IUIAutomationElement>,
+        parents: SmallVec<[(IUIAutomationElementArray, i32, i32); 8]>,
+    },
+}
+
+impl CachedDescendants {
+    fn query(
+        root: &IUIAutomationElement,
+        condition: &IUIAutomationCondition,
+        cache: &IUIAutomationCacheRequest,
+        subtree: Option<&IUIAutomationCacheRequest>,
+        can_retry: impl Fn() -> bool,
+    ) -> windows::core::Result<Self> {
+        // SAFETY: all interfaces belong to this worker's MTA. The snapshot
+        // contains fresh values for this query only; no live element escapes.
+        // A provider timeout must not trigger another full provider call.
+        unsafe {
+            if let Some(subtree) = subtree {
+                match root.BuildUpdatedCache(subtree) {
+                    Ok(snapshot) => {
+                        return Ok(Self::Tree {
+                            pending: Some(snapshot),
+                            parents: SmallVec::new(),
+                        });
+                    }
+                    Err(error) if subtree_is_unsupported(error.code()) && can_retry() => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            let elements = root.FindAllBuildCache(TreeScope_Descendants, condition, cache)?;
+            let count = elements.Length()?.max(0);
+            Ok(Self::Flat {
+                elements,
+                next: 0,
+                count,
+            })
+        }
+    }
+
+    fn next(&mut self) -> windows::core::Result<Option<IUIAutomationElement>> {
+        // SAFETY: arrays own their cached COM references; all indices are
+        // checked against Length. GetCachedChildren reads the existing snapshot
+        // without a provider query. A successful null child collection is
+        // projected by windows-rs as an error carrying S_OK and denotes a leaf;
+        // actual failed HRESULTs must still be reported.
+        unsafe {
+            match self {
+                Self::Flat {
+                    elements,
+                    next,
+                    count,
+                } => {
+                    if *next >= *count {
+                        return Ok(None);
+                    }
+                    let element = elements.GetElement(*next)?;
+                    *next += 1;
+                    Ok(Some(element))
+                }
+                Self::Tree { pending, parents } => {
+                    if let Some(parent) = pending.take() {
+                        match parent.GetCachedChildren() {
+                            Ok(children) => {
+                                let count = children.Length()?.max(0);
+                                if count != 0 {
+                                    parents.push((children, 0, count));
+                                }
+                            }
+                            Err(error) if error.code().is_ok() => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    while let Some((children, next, count)) = parents.last_mut() {
+                        if *next == *count {
+                            parents.pop();
+                            continue;
+                        }
+                        let element = children.GetElement(*next)?;
+                        *next += 1;
+                        *pending = Some(element.clone());
+                        return Ok(Some(element));
+                    }
+                    Ok(None)
+                }
+            }
+        }
+    }
+}
+
+fn subtree_is_unsupported(code: windows::core::HRESULT) -> bool {
+    use windows::Win32::Foundation::{E_NOINTERFACE, E_NOTIMPL};
+    use windows::Win32::UI::Accessibility::UIA_E_NOTSUPPORTED;
+
+    code == E_NOINTERFACE || code == E_NOTIMPL || code.0 as u32 == UIA_E_NOTSUPPORTED
 }
 
 fn worker_main(shared: Arc<SharedQueue>, thread_id: Arc<AtomicU32>) {
@@ -519,7 +708,7 @@ pub(super) struct ScanWindow {
     hwnd: isize,
     pub(super) bounds: Rect,
     /// Prefix length in the plan's shared front-to-back occluder array.
-    occluder_end: u8,
+    occluder_end: usize,
 }
 
 /// Immutable, generation-scoped Windows scan input shared by UIA and Vision.
@@ -564,20 +753,52 @@ impl WindowsScanPlan {
         self.scan_bounds
     }
 
+    pub(super) fn progress_regions(&self, preview: bool) -> Vec<Rect> {
+        self.windows()
+            .iter()
+            .chain(
+                self.windows()
+                    .iter()
+                    .skip(if preview { 1 } else { self.windows().len() }),
+            )
+            .map(|window| window.bounds)
+            .collect()
+    }
+
     fn windows(&self) -> &[ScanWindow] {
         &self.windows
     }
 
+    pub(super) fn worker_count(&self) -> usize {
+        if matches!(
+            self.scope,
+            crate::api::UiScanScope::Screen | crate::api::UiScanScope::All
+        ) {
+            self.windows.len().clamp(1, 2)
+        } else {
+            1
+        }
+    }
+
     fn window_occluders(&self, window: &ScanWindow) -> &[Rect] {
-        &self.occluders[..usize::from(window.occluder_end)]
+        &self.occluders[..window.occluder_end]
     }
 
     pub(super) fn target_is_current(&self) -> bool {
-        if self.scope == crate::api::UiScanScope::Screen {
+        if matches!(
+            self.scope,
+            crate::api::UiScanScope::Screen | crate::api::UiScanScope::All
+        ) {
             return self.windows.iter().all(|window| {
-                scannable_target(window.hwnd()).is_some()
-                    && window_bounds(window.hwnd()).and_then(|b| b.intersect(&self.scan_bounds))
-                        == Some(window.bounds)
+                let Some((root, _, bounds)) = scannable_target(window.hwnd()) else {
+                    return false;
+                };
+                let bounds = if root == window.hwnd() {
+                    Some(bounds)
+                } else {
+                    window_bounds(window.hwnd())
+                };
+                bounds.and_then(|bounds| bounds.intersect(&self.scan_bounds)) == Some(window.bounds)
             });
         }
         let target_hwnd = self.target_hwnd();
@@ -599,7 +820,18 @@ impl WindowsScanPlan {
 
     pub(super) fn target_center_is_visible(&self, target: &UiTarget) -> bool {
         let center = target.rect.center();
-        if self.scope == crate::api::UiScanScope::Screen {
+        if !self.screen_bounds.is_empty()
+            && !self
+                .screen_bounds
+                .iter()
+                .any(|screen| screen.contains(&center))
+        {
+            return false;
+        }
+        if matches!(
+            self.scope,
+            crate::api::UiScanScope::Screen | crate::api::UiScanScope::All
+        ) {
             return self.scan_bounds.contains(&center);
         }
         self.windows.iter().any(|window| {
@@ -999,6 +1231,7 @@ struct ZOrderCollector {
     candidates: SmallVec<[HWND; MAX_SCAN_WINDOWS]>,
     full_screen: bool,
     scan_bounds: Rect,
+    screen_bounds: SmallVec<[Rect; 4]>,
     own_process_id: u32,
     scan_windows: InlineScanWindows,
     occluders: InlineOccluders,
@@ -1027,13 +1260,17 @@ extern "system" fn collect_z_order_window(hwnd: HWND, _data: LPARAM) -> BOOL {
             return BOOL(1);
         };
 
-        let limit = if collector.full_screen {
-            MAX_SCREEN_WINDOWS
-        } else {
-            MAX_SCAN_WINDOWS
-        };
-        let candidate = collector.occluders.len() < limit
-            && collector.scan_windows.len() < limit
+        if crate::platform::common::window_visibility::visible_part(
+            bounds_in_scan,
+            collector.scan_bounds,
+            &collector.occluders,
+            &collector.screen_bounds,
+        )
+        .is_none()
+        {
+            return BOOL(1);
+        }
+        let candidate = (collector.full_screen || collector.scan_windows.len() < MAX_SCAN_WINDOWS)
             && (collector.candidates.contains(&hwnd)
                 || collector.full_screen
                     && !class_name_is_shell_surface(hwnd)
@@ -1042,7 +1279,7 @@ extern "system" fn collect_z_order_window(hwnd: HWND, _data: LPARAM) -> BOOL {
             collector.scan_windows.push(ScanWindow {
                 hwnd: hwnd.0 as isize,
                 bounds: bounds_in_scan,
-                occluder_end: collector.occluders.len().min(u8::MAX as usize) as u8,
+                occluder_end: collector.occluders.len(),
             });
         }
 
@@ -1050,9 +1287,7 @@ extern "system" fn collect_z_order_window(hwnd: HWND, _data: LPARAM) -> BOOL {
         super::native::window_thread_process_id(hwnd, Some(&mut process_id));
         // Our click-through overlay was already skipped above. Ignore any other
         // helper/tray HWND owned by this process so it cannot hide application UI.
-        if (candidate || process_id != collector.own_process_id)
-            && collector.occluders.len() < limit
-        {
+        if candidate || process_id != collector.own_process_id {
             collector.occluders.push(bounds_in_scan);
         }
         BOOL(1)
@@ -1062,6 +1297,7 @@ extern "system" fn collect_z_order_window(hwnd: HWND, _data: LPARAM) -> BOOL {
 fn scan_windows_in_z_order(
     foreground: HWND,
     scan_bounds: Rect,
+    screen_bounds: &[Rect],
 ) -> Result<(InlineScanWindows, InlineOccluders), String> {
     let full_screen = foreground.is_invalid();
     let candidates = if full_screen {
@@ -1073,6 +1309,7 @@ fn scan_windows_in_z_order(
         candidates,
         full_screen,
         scan_bounds,
+        screen_bounds: SmallVec::from_slice(screen_bounds),
         own_process_id: super::native::current_process_id(),
         scan_windows: SmallVec::new(),
         occluders: SmallVec::new(),
@@ -1093,14 +1330,17 @@ pub(super) fn build_scan_plan(
     let target = request.scope.resolve_window(|source| match source {
         crate::api::UiScanScope::Window => window_under_pointer().ok().flatten(),
         crate::api::UiScanScope::Active => scannable_target(super::native::foreground_window()),
-        crate::api::UiScanScope::Screen => None,
+        crate::api::UiScanScope::Screen | crate::api::UiScanScope::All => None,
     });
     let Some(target) = target else {
-        request.scope = crate::api::UiScanScope::Screen;
+        if request.scope != crate::api::UiScanScope::All {
+            request.scope = crate::api::UiScanScope::Screen;
+        }
         let bounds = request
             .bounds
             .ok_or("screen scan requires display bounds")?;
-        let (windows, occluders) = scan_windows_in_z_order(HWND::default(), bounds)?;
+        let (windows, occluders) =
+            scan_windows_in_z_order(HWND::default(), bounds, &request.screen_bounds)?;
         return Ok(Some(Arc::new(WindowsScanPlan {
             request,
             target_hwnd: 0,
@@ -1121,16 +1361,24 @@ pub(super) fn build_scan_plan(
         .bounds
         .filter(|requested| requested.intersect(&target_bounds).is_some())
         .unwrap_or(target_bounds);
-    let (mut windows, occluders) = scan_windows_in_z_order(target_hwnd, enumeration_bounds)?;
+    let (mut windows, occluders) =
+        scan_windows_in_z_order(target_hwnd, enumeration_bounds, &request.screen_bounds)?;
     // A live target can be omitted transiently while its z-order changes. The
-    // resolved root remains a safe single-window fallback for this generation.
+    // resolved root can be reused only if it still has an uncovered region.
     if windows.is_empty()
         && let Some(bounds) = target_bounds.intersect(&enumeration_bounds)
+        && crate::platform::common::window_visibility::visible_part(
+            bounds,
+            enumeration_bounds,
+            &occluders,
+            &request.screen_bounds,
+        )
+        .is_some()
     {
         windows.push(ScanWindow {
             hwnd: target_hwnd.0 as isize,
             bounds,
-            occluder_end: 0,
+            occluder_end: occluders.len(),
         });
     }
     let scan_bounds = windows
@@ -1157,11 +1405,15 @@ fn stream_scan(
     shared: &SharedQueue,
 ) -> Result<UiScanStatus, String> {
     let hwnd = job.request.target_hwnd();
-    if hwnd.is_invalid() && job.request.scope != crate::api::UiScanScope::Screen {
+    if hwnd.is_invalid()
+        && !matches!(
+            job.request.scope,
+            crate::api::UiScanScope::Screen | crate::api::UiScanScope::All
+        )
+    {
         return Ok(UiScanStatus::Success);
     }
-    let cache = &query_plan.cache;
-    let (condition, provider_filters_interactive) =
+    let (cache, condition, provider_filters_interactive, subtree) =
         query_plan.condition(job.request.clickable_only);
     let mut allowed = control_types_for(&job.request.roles);
     if allowed.is_empty() {
@@ -1170,29 +1422,35 @@ fn stream_scan(
     let scan_bounds = job.request.scan_bounds();
     let deadline =
         Instant::now() + Duration::from_millis(u64::from(scan_timeout_ms(job.request.timeout_ms)));
-    let mut deduper = SpatialDeduper::new(MINIMUM_SPACING);
-    let mut target_count = 0usize;
+    let mut deduper = NativeTargetDeduper::new(job.request.vision.merge_iou_threshold);
     let mut visited_count = 0usize;
     let mut queried_window = false;
     let mut provider_timed_out = false;
     let mut terminal_status = UiScanStatus::Success;
 
-    // Windows are ordered front-to-back. Popup/menu targets are therefore
-    // published before their owner, and every lower window carries the bounds
-    // of higher click-receiving windows as occluders.
-    for window in job.request.windows() {
+    // One worker completes windows in order. The optional second worker only
+    // offers first controls from the other windows; neither waits for the other.
+    // Two simultaneous bulk calls compete inside UIA and delay both windows.
+    let preview_only = matches!(job.work, ScanWork::Preview(_));
+    // Display plans check every HWND at once. Fusion validates that snapshot
+    // before publication; do not repeat its full walk every 32 cached nodes.
+    // Keep the existing per-window sampling for Window and Active requests.
+    let sample_window_context = !matches!(
+        job.request.scope,
+        crate::api::UiScanScope::Screen | crate::api::UiScanScope::All
+    );
+    for (window_index, window) in job
+        .request
+        .windows()
+        .iter()
+        .enumerate()
+        .skip(usize::from(preview_only))
+    {
         if !context_is_current(shared, job.generation, &job.request) {
             return Ok(UiScanStatus::ContextChanged);
         }
         if Instant::now() >= deadline {
             terminal_status = UiScanStatus::TimedOut;
-            break;
-        }
-        if visited_count >= MAX_VISITED_ELEMENTS {
-            terminal_status = UiScanStatus::TimedOut;
-            break;
-        }
-        if target_count >= MAX_TARGETS {
             break;
         }
 
@@ -1202,49 +1460,93 @@ fn stream_scan(
             Ok(root) => root,
             Err(error) => {
                 provider_timed_out |= is_timeout_error(&error);
+                // The complete worker reports the same window failure. An
+                // optional preview must not duplicate that warning.
+                if !preview_only {
+                    crate::report_warning!(
+                        "windows-uia",
+                        "cannot inspect popup/top-level window {:?}; continuing: {error}",
+                        window.hwnd()
+                    );
+                }
+                continue;
+            }
+        };
+        let mut publish = |element: &IUIAutomationElement| {
+            if let Some(mut target) = target_from_element(
+                element,
+                &job.request,
+                &allowed,
+                scan_bounds,
+                provider_filters_interactive,
+            ) && let Some(visible) = crate::platform::common::window_visibility::visible_part(
+                target.rect,
+                window.bounds,
+                job.request.window_occluders(window),
+                &job.request.screen_bounds,
+            ) {
+                target.rect = visible;
+                if deduper.insert(&target) {
+                    job.publish(vec![target]);
+                }
+            }
+        };
+        if preview_only || window_index == 0 {
+            // A whole-window cache can block behind hundreds of provider calls.
+            // Publish its first usable control without waiting for that cache;
+            // the normal bulk query below still delivers and validates all UI.
+            // Window/Active need this too: provisional contours wait for UIA
+            // coverage, while this confirmed semantic target can stream now.
+            // SAFETY: root, condition and cache belong to this worker's MTA and
+            // remain live through the bounded, read-only COM call.
+            let first =
+                unsafe { root.FindFirstBuildCache(TreeScope_Descendants, condition, cache) };
+            // The optional query may be unsupported or empty. The full query
+            // remains authoritative for errors as well as result completeness.
+            if !context_is_current(shared, job.generation, &job.request) {
+                return Ok(UiScanStatus::ContextChanged);
+            }
+            if Instant::now() >= deadline {
+                terminal_status = UiScanStatus::TimedOut;
+                break;
+            }
+            if let Ok(first) = first {
+                publish(&first);
+            }
+        }
+        if preview_only {
+            job.complete_region(window.bounds);
+            continue;
+        }
+        // Fetch the filtered subtree once, then stream cached descendants in
+        // preorder. This never walks the live provider one child at a time.
+        // Providers without subtree support retain the original bulk query.
+        let mut elements = match CachedDescendants::query(&root, condition, cache, subtree, || {
+            Instant::now() < deadline && context_is_current(shared, job.generation, &job.request)
+        }) {
+            Ok(elements) => elements,
+            Err(error) => {
+                provider_timed_out |= is_timeout_error(&error);
                 crate::report_warning!(
                     "windows-uia",
-                    "cannot inspect popup/top-level window {:?}; continuing: {error}",
+                    "cannot query UIA descendants for {:?}; continuing: {error}",
                     window.hwnd()
                 );
                 continue;
             }
         };
-        // A bulk descendant query is substantially more reliable for Chromium,
-        // WebView2 and other virtualized trees than walking only Control View.
-        // SAFETY: root, condition and cache are live COM interfaces from this
-        // automation instance and remain borrowed through the bulk call.
-        let elements =
-            match unsafe { root.FindAllBuildCache(TreeScope_Descendants, condition, cache) } {
-                Ok(elements) => elements,
-                Err(error) => {
-                    provider_timed_out |= is_timeout_error(&error);
-                    crate::report_warning!(
-                        "windows-uia",
-                        "cannot query UIA descendants for {:?}; continuing: {error}",
-                        window.hwnd()
-                    );
-                    continue;
-                }
-            };
         queried_window = true;
-        // SAFETY: `elements` is a live array returned by the preceding query.
-        let element_count = unsafe { elements.Length() }
-            .map_err(|error| format!("cannot read UIA descendant count: {error}"))?
-            .max(0) as usize;
-        let remaining = MAX_VISITED_ELEMENTS - visited_count;
-
-        for index in 0..element_count.min(remaining) {
-            // SAFETY: `index` is bounded by Length and the returned COM element
-            // is independently reference counted.
-            let element = unsafe { elements.GetElement(index as i32) }
-                .map_err(|error| format!("cannot read UIA descendant {index}: {error}"))?;
+        while let Some(element) = elements
+            .next()
+            .map_err(|error| format!("cannot read cached UIA descendant: {error}"))?
+        {
             visited_count += 1;
-            // The atomic generation is cheap enough for every node. Querying
-            // target HWND/PID/bounds cross into user32/DWM, so sample them every 32
-            // nodes. The fusion worker validates again before publication.
+            // Check the cheap generation on every node. Window/Active retain
+            // their native sampling; fusion validates all scopes on publish.
             if !is_current(shared, job.generation)
-                || visited_count.is_multiple_of(32) && !job.request.target_is_current()
+                || sample_window_context
+                    && visited_count.is_multiple_of(32)
+                    && !job.request.target_is_current()
             {
                 return Ok(UiScanStatus::ContextChanged);
             }
@@ -1252,40 +1554,22 @@ fn stream_scan(
                 terminal_status = UiScanStatus::TimedOut;
                 break;
             }
-            if target_count >= MAX_TARGETS {
-                break;
-            }
 
-            if let Some(target) = target_from_element(
-                &element,
-                &job.request,
-                &allowed,
-                scan_bounds,
-                provider_filters_interactive,
-            ) && window.bounds.contains(&target.rect.center())
-                && !job
-                    .request
-                    .window_occluders(window)
-                    .iter()
-                    .any(|rect| rect.contains(&target.rect.center()))
-                && deduper.insert(&target)
-            {
-                target_count += 1;
-                send_partial(job, vec![target]);
-            }
+            publish(&element);
         }
-        if element_count > remaining {
-            terminal_status = UiScanStatus::TimedOut;
-        }
-        if terminal_status == UiScanStatus::TimedOut || target_count >= MAX_TARGETS {
+        if terminal_status == UiScanStatus::TimedOut {
             break;
         }
+        job.complete_region(window.bounds);
+    }
+    if preview_only {
+        return Ok(terminal_status);
     }
     if !queried_window {
         if job.request.windows().is_empty() {
             return Ok(UiScanStatus::Success);
         }
-        if provider_timed_out {
+        if provider_timed_out || terminal_status == UiScanStatus::TimedOut {
             return Ok(UiScanStatus::TimedOut);
         }
         return Err("cannot inspect any target or popup UIA window".into());
@@ -1299,23 +1583,32 @@ fn stream_scan(
     Ok(terminal_status)
 }
 
-fn send_partial(job: &ScanJob, targets: Vec<UiTarget>) {
-    job.publish(targets, UiScanStatus::Partial);
-}
-
-fn create_cache_request(automation: &IUIAutomation) -> Result<IUIAutomationCacheRequest, String> {
+fn create_cache_request(
+    automation: &IUIAutomation,
+    provider_filters_interactive: bool,
+) -> Result<IUIAutomationCacheRequest, String> {
     // SAFETY: `automation` is live on its owning MTA and returns an owned cache
     // request interface.
     let cache = unsafe { automation.CreateCacheRequest() }
         .map_err(|error| format!("cannot create UIA cache request: {error}"))?;
+    // The interactive provider condition already guarantees enabled, onscreen
+    // and actionable. Re-reading these through the remote cache adds provider
+    // work per element; local filtering still requests the complete property set.
     for property in [
         UIA_BoundingRectanglePropertyId,
         UIA_ControlTypePropertyId,
-        UIA_IsEnabledPropertyId,
-        UIA_IsKeyboardFocusablePropertyId,
-        UIA_IsOffscreenPropertyId,
         UIA_NamePropertyId,
-    ] {
+    ]
+    .into_iter()
+    .chain(
+        [
+            UIA_IsEnabledPropertyId,
+            UIA_IsKeyboardFocusablePropertyId,
+            UIA_IsOffscreenPropertyId,
+        ]
+        .into_iter()
+        .filter(|_| !provider_filters_interactive),
+    ) {
         // SAFETY: every property id is a documented UIA property and `cache`
         // remains live on its owning MTA thread.
         unsafe { cache.AddProperty(property) }
@@ -1454,11 +1747,10 @@ fn target_from_element(
     within: Rect,
     provider_filters_interactive: bool,
 ) -> Option<UiTarget> {
-    // FindAllBuildCache already populated this element. Reading cached
-    // properties directly avoids a second provider call, which is important
-    // for WebView2/Chromium providers where BuildUpdatedCache may time out or
-    // return E_ELEMENTNOTAVAILABLE after the bulk query.
-    // SAFETY: the element came from a cache-populated array and the cached
+    // The bulk query already populated this element. Read cached properties
+    // directly: refreshing each element would repeat provider calls and could
+    // observe values from a different snapshot or an element that disappeared.
+    // SAFETY: the element came from a cache-populated snapshot and the cached
     // property call returns a value without retaining Rust data.
     let control_type = super::native::CachedElement::new(element)
         .control_type()
@@ -1474,16 +1766,18 @@ fn target_from_element(
     }
     // SAFETY: the cached element remains live for this synchronous property
     // read on the owning MTA thread.
-    let visible = super::native::CachedElement::new(element)
-        .is_offscreen()
-        .ok()
-        .is_none_or(|offscreen| !offscreen.as_bool());
+    let visible = provider_filters_interactive
+        || super::native::CachedElement::new(element)
+            .is_offscreen()
+            .ok()
+            .is_none_or(|offscreen| !offscreen.as_bool());
     // SAFETY: the cached element remains live for this synchronous property
     // read on the owning MTA thread.
-    let enabled = super::native::CachedElement::new(element)
-        .is_enabled()
-        .ok()
-        .is_none_or(|value| value.as_bool());
+    let enabled = provider_filters_interactive
+        || super::native::CachedElement::new(element)
+            .is_enabled()
+            .ok()
+            .is_none_or(|value| value.as_bool());
     if (request.visible_only && !visible)
         || (request.clickable_only && (!enabled || (!role_matches && !interactive)))
     {
@@ -1616,82 +1910,225 @@ fn rect_is_usable(rect: &Rect, within: Rect) -> bool {
         && within.intersect(rect).is_some()
 }
 
-struct DedupEntry {
-    x: f64,
-    y: f64,
-    semantic_index: usize,
-}
-
-struct SpatialDeduper {
-    cell_size: f64,
-    cells: HashMap<(i32, i32), SmallVec<[DedupEntry; 2]>>,
-    semantics: Vec<(String, SemanticRole)>,
-    semantic_buckets: HashMap<u64, SmallVec<[usize; 2]>>,
-}
-
-impl SpatialDeduper {
-    fn new(minimum_spacing: f64) -> Self {
-        Self {
-            cell_size: minimum_spacing.max(1.0),
-            cells: HashMap::new(),
-            semantics: Vec::new(),
-            semantic_buckets: HashMap::new(),
-        }
-    }
-
-    fn insert(&mut self, target: &UiTarget) -> bool {
-        let center = target.rect.center();
-        let semantic_index = self.semantic_index(target);
-        let cell = (
-            (center.x / self.cell_size).floor() as i32,
-            (center.y / self.cell_size).floor() as i32,
-        );
-        for y in cell.1.saturating_sub(1)..=cell.1.saturating_add(1) {
-            for x in cell.0.saturating_sub(1)..=cell.0.saturating_add(1) {
-                if self.cells.get(&(x, y)).is_some_and(|entries| {
-                    entries.iter().any(|entry| {
-                        (entry.x - center.x).abs() < self.cell_size
-                            && (entry.y - center.y).abs() < self.cell_size
-                            && entry.semantic_index == semantic_index
-                    })
-                }) {
-                    return false;
-                }
-            }
-        }
-        self.cells.entry(cell).or_default().push(DedupEntry {
-            x: center.x,
-            y: center.y,
-            semantic_index,
-        });
-        true
-    }
-
-    fn semantic_index(&mut self, target: &UiTarget) -> usize {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        target.name.hash(&mut hasher);
-        target.role.hash(&mut hasher);
-        let hash = hasher.finish();
-        if let Some(index) = self.semantic_buckets.get(&hash).and_then(|indices| {
-            indices.iter().copied().find(|&index| {
-                let (name, role) = &self.semantics[index];
-                name == &target.name && role == &target.role
-            })
-        }) {
-            return index;
-        }
-        let index = self.semantics.len();
-        self.semantics.push((target.name.clone(), target.role));
-        self.semantic_buckets.entry(hash).or_default().push(index);
-        index
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api::command::{UiScanStrategy, VisionOptions};
     use stats_alloc::{INSTRUMENTED_SYSTEM, Region};
+
+    #[test]
+    fn unused_worker_cancels_old_work_but_a_stale_id_does_not_cancel_current_work() {
+        use crate::platform::common::{event_queue, scan_fusion, scan_mailbox};
+
+        let worker = UiAutomationWorker {
+            shared: Arc::new(SharedQueue::default()),
+            thread_id: Arc::new(AtomicU32::new(0)),
+            worker: None,
+        };
+        worker.shared.state.lock().unwrap().active = Some((7, 11));
+        worker.shared.latest_generation.store(11, Ordering::Release);
+        worker.cancel(Some(6));
+        assert_eq!(worker.shared.latest_generation.load(Ordering::Acquire), 11);
+        worker.cancel(None);
+        assert_eq!(worker.shared.latest_generation.load(Ordering::Acquire), 0);
+
+        let output = Arc::new(scan_mailbox::ScanMailbox::default());
+        let generation = output.begin(8);
+        let mut fusion_worker = scan_fusion::Worker::default();
+        let fusion = fusion_worker.prepare(generation).unwrap();
+        let plan = test_scan_plan(UiScanRequest {
+            id: 8,
+            scope: crate::api::UiScanScope::All,
+            bounds: Some(Rect::new(0.0, 0.0, 1920.0, 1080.0)),
+            screen_bounds: Vec::new(),
+            roles: Vec::new(),
+            max_depth: 8,
+            timeout_ms: 1000,
+            visible_only: true,
+            clickable_only: true,
+            strategy: UiScanStrategy::AxTree,
+            vision: VisionOptions::default(),
+            app: None,
+        });
+        let (events, _receiver) = event_queue::channel();
+        let session = super::super::ui_scan::ScanSession::test(
+            Arc::clone(&plan),
+            generation,
+            1,
+            output,
+            super::super::EventSender::without_wake(events),
+            &fusion,
+        );
+        let source = session.source("UI Automation");
+        worker
+            .submit(plan, generation, ScanWork::Preview(source.sink()))
+            .unwrap();
+        worker.cancel(Some(7));
+        assert_eq!(
+            worker.shared.latest_generation.load(Ordering::Acquire),
+            generation,
+            "cancelling the old active job must preserve the newer queued generation"
+        );
+        assert_eq!(
+            worker
+                .shared
+                .state
+                .lock()
+                .unwrap()
+                .pending
+                .as_ref()
+                .unwrap()
+                .request
+                .id,
+            8
+        );
+        worker.cancel(Some(8));
+        assert_eq!(worker.shared.latest_generation.load(Ordering::Acquire), 0);
+        assert!(worker.shared.state.lock().unwrap().pending.is_none());
+        source.finish(UiScanStatus::Success);
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn terminal_scan_retires_pending_native_work() -> Result<(), String> {
+        use crate::api::{Backend, BackendEvent};
+
+        let mut backend = super::super::WindowsBackend::new()?;
+        backend.pending.clear();
+        let shared = Arc::new(SharedQueue::default());
+        backend.ui_automation.push(UiAutomationWorker {
+            shared: Arc::clone(&shared),
+            thread_id: Arc::new(AtomicU32::new(0)),
+            worker: None,
+        });
+        for (index, status) in [
+            UiScanStatus::Success,
+            UiScanStatus::TimedOut,
+            UiScanStatus::ContextChanged,
+            UiScanStatus::Failed("provider failed".into()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = 73 + index as u64 * 2;
+            let generation = backend.scan_mailbox.begin(id);
+            shared.state.lock().unwrap().active = Some((id, generation));
+            shared
+                .latest_generation
+                .store(generation, Ordering::Release);
+            backend.scan_mailbox.publish(
+                generation,
+                id,
+                vec![target(20.0, 20.0, "preview", SemanticRole::Button)],
+                UiScanStatus::Partial,
+            );
+            assert!(
+                matches!(backend.try_event()?, Some(BackendEvent::UiScanned(result))
+                if result.status == UiScanStatus::Partial)
+            );
+            assert_eq!(shared.latest_generation.load(Ordering::Acquire), generation);
+
+            backend
+                .scan_mailbox
+                .publish(generation, id, Vec::new(), status.clone());
+            assert!(
+                matches!(backend.try_event()?, Some(BackendEvent::UiScanned(result))
+                if result.status == status)
+            );
+            assert_eq!(shared.latest_generation.load(Ordering::Acquire), 0);
+
+            let next = backend.scan_mailbox.begin(id + 1);
+            shared.state.lock().unwrap().active = Some((id + 1, next));
+            shared.latest_generation.store(next, Ordering::Release);
+            backend.cancel_ui_scan(id)?;
+            assert_eq!(shared.latest_generation.load(Ordering::Acquire), next);
+            backend.cancel_ui_scan(id + 1)?;
+            assert_eq!(shared.latest_generation.load(Ordering::Acquire), 0);
+        }
+        backend.shutdown()
+    }
+
+    #[test]
+    fn optional_preview_neither_completes_the_scan_nor_overrides_its_terminal_status() {
+        use crate::platform::common::{event_queue, scan_fusion, scan_mailbox};
+        for complete_first in [false, true] {
+            for status in [
+                UiScanStatus::Success,
+                UiScanStatus::TimedOut,
+                UiScanStatus::Failed("provider failed".into()),
+            ] {
+                let mailbox = Arc::new(scan_mailbox::ScanMailbox::default());
+                let generation = mailbox.begin(7);
+                let plan = test_scan_plan(UiScanRequest {
+                    id: 7,
+                    scope: crate::api::UiScanScope::All,
+                    bounds: Some(Rect::new(0.0, 0.0, 1920.0, 1080.0)),
+                    screen_bounds: Vec::new(),
+                    roles: Vec::new(),
+                    max_depth: 8,
+                    timeout_ms: 1000,
+                    visible_only: true,
+                    clickable_only: true,
+                    strategy: UiScanStrategy::AxTree,
+                    vision: VisionOptions::default(),
+                    app: None,
+                });
+                let mut worker = scan_fusion::Worker::default();
+                let fusion = worker.prepare(generation).unwrap();
+                let (events, _) = event_queue::channel();
+                let session = super::super::ui_scan::ScanSession::test(
+                    Arc::clone(&plan),
+                    generation,
+                    1,
+                    Arc::clone(&mailbox),
+                    super::super::EventSender::without_wake(events),
+                    &fusion,
+                );
+                let source = session.source("complete UIA");
+                let preview = ScanJob {
+                    request: Arc::clone(&plan),
+                    generation,
+                    work: ScanWork::Preview(source.sink()),
+                };
+                let complete = ScanJob {
+                    request: plan,
+                    generation,
+                    work: ScanWork::Complete(source),
+                };
+                let item = target(20.0, 20.0, "preview", SemanticRole::Button);
+                if complete_first {
+                    complete.finish(status.clone());
+                    session.flush();
+                    assert_eq!(mailbox.take().unwrap().status, status);
+                    preview.publish(vec![item]);
+                    preview.finish(UiScanStatus::Success);
+                    session.flush();
+                    assert!(
+                        mailbox.take().is_none(),
+                        "late preview cannot reopen a finished scan"
+                    );
+                } else {
+                    preview.publish(vec![item.clone()]);
+                    session.flush();
+                    let first = mailbox.take().unwrap();
+                    assert_eq!(first.status, UiScanStatus::Partial);
+                    assert_eq!(first.targets, vec![item]);
+                    preview.finish(UiScanStatus::Success);
+                    session.flush();
+                    assert!(
+                        mailbox.take().is_none(),
+                        "a preview is not an authoritative completion"
+                    );
+                    complete.finish(status.clone());
+                    session.flush();
+                    assert_eq!(mailbox.take().unwrap().status, status);
+                }
+                worker
+                    .stop_until(Instant::now() + Duration::from_secs(5))
+                    .unwrap();
+            }
+        }
+    }
 
     #[test]
     fn visible_target_prefers_owner_and_only_queries_parent_on_fallback() {
@@ -1858,6 +2295,36 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn snapshot_fallback_is_only_for_unsupported_operations() {
+        use windows::Win32::Foundation::{
+            E_FAIL, E_NOINTERFACE, E_NOTIMPL, E_POINTER, RPC_E_CALL_CANCELED,
+        };
+        use windows::Win32::UI::Accessibility::{UIA_E_ELEMENTNOTAVAILABLE, UIA_E_NOTSUPPORTED};
+
+        for code in [
+            E_NOINTERFACE,
+            E_NOTIMPL,
+            windows::core::HRESULT(UIA_E_NOTSUPPORTED as i32),
+        ] {
+            assert!(subtree_is_unsupported(code));
+        }
+        for code in [
+            E_FAIL,
+            E_POINTER,
+            RPC_E_CALL_CANCELED,
+            windows::core::HRESULT(UIA_E_ELEMENTNOTAVAILABLE as i32),
+            windows::core::HRESULT(0x8013_1505u32 as i32),
+            windows::core::HRESULT(0x8007_05B4u32 as i32),
+            windows::core::HRESULT(0x8001_011Fu32 as i32),
+        ] {
+            assert!(
+                !subtree_is_unsupported(code),
+                "must not retry failed or cancelled provider calls"
+            );
+        }
+    }
+
     fn target(x: f64, y: f64, name: &str, role: SemanticRole) -> UiTarget {
         UiTarget {
             details: None,
@@ -1898,91 +2365,6 @@ mod tests {
     fn semantic_roles_are_case_and_whitespace_tolerant() {
         assert_eq!(control_types_for(&["  BUTTON  ".into()]), [50000]);
         assert_eq!(control_types_for(&["UIA:50042".into()]), [50042]);
-    }
-
-    #[test]
-    fn spatial_deduper_keeps_overlapping_distinct_controls() {
-        let mut deduper = SpatialDeduper::new(8.0);
-        assert!(deduper.insert(&target(10.0, 10.0, "Save", SemanticRole::Button)));
-        assert!(!deduper.insert(&target(11.0, 11.0, "Save", SemanticRole::Button)));
-        assert!(deduper.insert(&target(11.0, 11.0, "Cancel", SemanticRole::Button)));
-        assert!(deduper.insert(&target(11.0, 11.0, "Save", SemanticRole::Link)));
-    }
-
-    #[test]
-    fn spatial_deduper_handles_extreme_native_coordinates() {
-        let mut deduper = SpatialDeduper::new(8.0);
-        let coordinate = f64::from(i32::MAX) * 8.0;
-        assert!(deduper.insert(&target(coordinate, coordinate, "Max", SemanticRole::Button)));
-        let coordinate = f64::from(i32::MIN) * 8.0;
-        assert!(deduper.insert(&target(coordinate, coordinate, "Min", SemanticRole::Button)));
-    }
-
-    #[test]
-    #[ignore = "microbenchmark probe; run in release with --test-threads=1"]
-    fn deduper_inline_buckets_performance_probe() {
-        const WARMUP: usize = 2_000;
-        const SAMPLES: usize = 20_000;
-        const BUCKETS: usize = 100;
-
-        fn fill_inline() {
-            let mut cells: HashMap<usize, SmallVec<[usize; 2]>> = HashMap::new();
-            for index in 0..BUCKETS {
-                cells.entry(index).or_default().push(index);
-            }
-            std::hint::black_box(cells);
-        }
-
-        fn fill_heap() {
-            let mut cells: HashMap<usize, Vec<usize>> = HashMap::new();
-            for index in 0..BUCKETS {
-                cells.entry(index).or_default().push(index);
-            }
-            std::hint::black_box(cells);
-        }
-
-        fn percentiles(samples: &mut [u128]) -> (u128, u128, u128) {
-            samples.sort_unstable();
-            let last = samples.len() - 1;
-            (
-                samples[last * 50 / 100],
-                samples[last * 95 / 100],
-                samples[last * 99 / 100],
-            )
-        }
-
-        for _ in 0..WARMUP {
-            fill_inline();
-            fill_heap();
-        }
-        let mut inline_samples = Vec::with_capacity(SAMPLES);
-        let mut heap_samples = Vec::with_capacity(SAMPLES);
-        for sample in 0..SAMPLES {
-            let measure = |operation: fn(), samples: &mut Vec<u128>| {
-                let started = Instant::now();
-                operation();
-                samples.push(started.elapsed().as_nanos());
-            };
-            if sample % 2 == 0 {
-                measure(fill_inline, &mut inline_samples);
-                measure(fill_heap, &mut heap_samples);
-            } else {
-                measure(fill_heap, &mut heap_samples);
-                measure(fill_inline, &mut inline_samples);
-            }
-        }
-
-        let inline_region = Region::new(&INSTRUMENTED_SYSTEM);
-        fill_inline();
-        let inline_allocations = inline_region.change().allocations;
-        let heap_region = Region::new(&INSTRUMENTED_SYSTEM);
-        fill_heap();
-        let heap_allocations = heap_region.change().allocations;
-        println!(
-            "uia_deduper_bucket_probe samples={SAMPLES} buckets={BUCKETS} inline={:?} heap={:?} inline_allocations={inline_allocations} heap_allocations={heap_allocations}",
-            percentiles(&mut inline_samples),
-            percentiles(&mut heap_samples),
-        );
     }
 
     #[test]
@@ -2136,6 +2518,8 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
         let item = target(20.0, 20.0, "Save", SemanticRole::Button);
         let mut plan = test_scan_plan(UiScanRequest {
+            screen_bounds: Vec::new(),
+
             scope: crate::api::UiScanScope::Window,
             id: 1,
             timeout_ms: 1_000,
@@ -2166,7 +2550,7 @@ mod tests {
             windows.push(ScanWindow {
                 hwnd: index as isize,
                 bounds,
-                occluder_end: index as u8,
+                occluder_end: index,
             });
             occluders.push(bounds);
         }
@@ -2178,6 +2562,8 @@ mod tests {
     #[ignore = "global allocation counter requires --test-threads=1; ordinary CI checks structural invariants"]
     fn shared_scan_plan_has_one_generation_allocation() {
         let request = UiScanRequest {
+            screen_bounds: Vec::new(),
+
             scope: crate::api::UiScanScope::Window,
             id: 2,
             timeout_ms: 1_000,
@@ -2200,6 +2586,8 @@ mod tests {
     #[test]
     fn shared_scan_plan_uses_one_arc_and_inline_common_snapshots() {
         let request = UiScanRequest {
+            screen_bounds: Vec::new(),
+
             scope: crate::api::UiScanScope::Window,
             id: 2,
             timeout_ms: 1_000,

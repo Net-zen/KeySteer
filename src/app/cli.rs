@@ -90,20 +90,22 @@ pub fn run_cli() -> ExitCode {
                 && let Err(error) = restart.commit()
             {
                 crate::report_error!("reload", "{error}");
-                crate::support::logging::flush();
+                crate::support::logging::shutdown();
                 return ExitCode::FAILURE;
             }
+            crate::support::logging::shutdown();
             ExitCode::SUCCESS
         }
         Err(error) => {
             crate::report_error!("cli", "{error}");
+            // Finish queued error output before the synchronous path hint.
+            crate::support::logging::shutdown();
             if let Some(log_path) = log_path {
                 crate::support::logging::emergency_console(format_args!(
                     "diagnostic log: {}",
                     log_path.display()
                 ));
             }
-            crate::support::logging::flush();
             ExitCode::FAILURE
         }
     }

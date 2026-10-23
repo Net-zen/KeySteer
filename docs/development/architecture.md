@@ -1,40 +1,60 @@
 # 架构
 
-KeySteer 是一个单 crate Rust 桌面程序。可以把它理解为一条清晰的流水线：配置决定“按什么键”，Mode 决定“当前怎么处理”，Engine 负责调度，presentation 统一构建画面，Backend 负责调用 Windows/macOS 原生能力。这样功能可以复用、测试和扩展。
+读源码可以先抓住这条线：**配置决定按键，Mode 处理交互，Engine 调度命令，Backend 调用系统能力**。画面由 presentation 统一生成。项目使用一个 Rust crate。
 
-这页给准备读源码或贡献代码的人；只想改快捷键，请先看 [配置文件](/reference/configuration)。
+::: tip 从哪里开始
+只改键位看[配置文件](/reference/configuration)；准备加功能，先看下面的分层图，再读[扩展指南](/development/extension-guide)。
+:::
 
 ## 架构总览
 
 ```mermaid
+---
+config:
+    layout: dagre
+    look: classic
+    themeVariables:
+        fontSize: 14px
+    flowchart:
+        curve: linear
+        nodeSpacing: 24
+        rankSpacing: 24
+        minNodeWidth: 88
+        padding: 12
+---
 flowchart TB
     subgraph configuration["配置层"]
         direction LR
-        toml["TOML 配置"]
-        config["ConfigFile<br/>反序列化 · 校验 · 默认值"]
-        plan["RuntimePlan<br/>Settings · 路由 · palette · Mode catalog"]
+        toml("TOML<br/>用户配置"):::diagram-step
+        config("ConfigFile<br/>解析 · 校验 · 默认值"):::diagram-step
+        plan("RuntimePlan<br/>Settings · 路由<br/>palette · catalog"):::diagram-step
         toml --> config --> plan
     end
 
     subgraph core["平台无关核心"]
         direction LR
-        engine["Engine<br/>状态 · 归属 · 调度"]
-        mode["Mode / Plugin<br/>状态机与算法"]
-        engine -->|"ModeEvent"| mode
-        mode -->|"CommandBatch"| engine
-        mode -->|"HostContext · View"| presenter["Presenter 端口<br/>统一场景构建"]
-        presenter -->|"ShowOverlay"| engine
+        engine("Engine<br/>状态 · 归属 · 调度"):::diagram-primary
+        mode("Mode / Plugin<br/>状态机与算法"):::diagram-step
+        presenter("Presenter<br/>统一场景构建"):::diagram-step
+        engine <-->|"ModeEvent<br/>CommandBatch"| mode
+        mode -->|"HostContext<br/>View"| presenter
+        presenter -.->|"ShowOverlay"| engine
     end
 
     subgraph native["平台层"]
         direction LR
-        backend["Backend trait<br/>平台能力边界"]
-        os["Windows / macOS<br/>Hook · Overlay · 状态栏"]
+        backend("Backend trait<br/>平台能力边界"):::diagram-step
+        os("Windows / macOS<br/>Hook · Overlay<br/>状态栏"):::diagram-step
         backend <--> os
     end
 
     configuration -->|"RuntimePlan"| core
-    core <-->|"BackendEvent / 原生调用"| native
+    core <-->|"BackendEvent<br/>原生调用"| native
+    class configuration,core,native diagram-layer
+    class configuration,toml,config,plan diagram-config
+    class core,mode diagram-core
+    class native,backend,os diagram-platform
+    class presenter diagram-presentation
 ```
 
 配置和 `Command` 向平台能力流动；键盘、指针、屏幕、帧时钟及异步扫描结果以 `BackendEvent` 返回 Engine。Mode 始终位于平台无关的一侧，只通过 `ModeEvent` 与 `Command` 和宿主交互。
@@ -43,19 +63,18 @@ flowchart TB
 
 | 目录 | 负责什么 | 从哪里开始读 |
 | --- | --- | --- |
-| `src/api/` | 跨平台公共协议：按键、绑定、命令、事件、覆盖层、插件和后端 trait | `api/mod.rs`、`api/binding.rs`、`api/command.rs` |
+| `src/api/` | 项目内共用的按键、命令、事件、视图和接口 | `api/mod.rs`、`api/binding.rs`、`api/command.rs` |
 | `src/config/` | TOML 反序列化、默认值、校验、主题、继承和可提交 store | `config/mod.rs`、`config/store.rs` |
 | `src/app/` | CLI、路径、配置编译、Mode catalog、runtime 和启动组装 | `app/bootstrap.rs`、`app/configuration.rs` |
 | `src/app/runtime/` | 应用私有 Engine、RuntimePlan 与输入/调度/覆盖层协作者 | `app/runtime/mod.rs`、`app/runtime/plan.rs` |
 | `src/modes/` | `idle`、`normal`、`grid`、`recursive_grid`、`ui_hint` 状态机 | 对应的 `.rs` 文件 |
 | `src/modes/hint/` | UI Hint 标签分配、匹配和扫描状态 | `labeling.rs`、`matching.rs`、`session.rs` |
-| `src/presentation/` | 统一构建模式、帮助面板和光标装饰场景；只依赖 api | `mod.rs`、`hint/`、`key_help.rs`、`dynamic.rs` |
-| `src/plugins/` | 内置插件；也是插件的参考实现 | `builtin/screen_selector.rs` |
+| `src/presentation/` | 统一构建模式、帮助面板和光标装饰场景；只依赖 api | `mod.rs`、`hint/`、`key_help/`、`dynamic.rs` |
+| `src/plugins/` | 内置插件；也是插件的参考实现 | `screen_selector.rs` |
 | `src/platform/windows/` | Win32 Hook、SendInput、UIA、覆盖层、帧时钟和托盘 | `mod.rs` |
 | `src/platform/macos/` | CGEventTap、Core Graphics、AX、Vision、AppKit 和顶部状态项 | `mod.rs` |
 
-`src/lib.rs` 的常规公开面只保留 `app` 启动入口；其余模块为单 crate 内部边界。独立 benchmark
-通过 `benchmark-hooks` 下的 doc-hidden hook 访问同一生产实现；该 feature 只提升可见性，不启用诊断用 `perf-probe` 或改变运行策略。`src/main.rs` 只负责进入 CLI 和启动流程。平台后端由 `cfg(target_os)` 在编译期选择。
+`src/main.rs` 进入启动流程，`cfg(target_os)` 选择平台后端。`src/lib.rs` 只公开 `app`，其余模块在 crate 内共用；本地性能测试使用隔离适配，不增加生产 API 或基准 feature。
 
 ## 启动流程
 
@@ -63,22 +82,24 @@ flowchart TB
 
 1. 初始化日志和 panic hook。
 2. 解析 `--config`、`--check`、`--doctor` 等参数。
-3. 显式 `--config` 时加载该文件；否则在应用数据目录按文件名选择第一个 `keysteer.<名称>.toml` 用户配置。没有用户配置时使用内建默认值。
+3. 显式 `--config` 时加载该文件；否则在应用数据目录按文件名选择第一个 `keysteer.<名称>.toml` 用户配置。没有用户配置时读取 default 文件，再没有才用内置默认值。
 4. 把已验证的 `ConfigFile` 编译成 `RuntimePlan`。
 5. 创建目标平台的 `Backend`，并以完整计划创建 `Engine`。
 6. 启动事件循环，默认激活 `idle`。
 
 ## Engine 是调度中心
 
-`Engine` 不实现具体的网格或 UI 扫描算法，而是维护运行时状态：
+Engine 负责把输入交给正确的模式，再执行模式返回的命令。
 
-- 当前 Mode、临时 Mode 和 modal 操作栈。
-- 每个 Mode 编译后的按键表及应用覆盖。
-- `InputState` 中的按键 disposition、held gesture、长按与合成输入。
-- `Scheduler` 中的非阻塞动作序列、timer 和 frame-clock owner。
-- 屏幕、光标、前台应用、主题和覆盖层 scene。
+| 管理内容 | 相关类型 |
+| --- | --- |
+| 当前模式、临时模式、模式栈 | Mode |
+| 模式按键和应用例外 | 编译后的绑定表 |
+| 按键归属、长按、合成输入 | `InputState` |
+| 动作序列、定时器、显示帧 | `Scheduler` |
+| 屏幕、鼠标、前台应用、主题和画面 | 运行时状态 |
 
-它把 Mode 返回的 `Command` 翻译成 Backend 调用，或再发回一个 ModeEvent。Mode 不需要知道窗口句柄、线程、权限或原生 API。
+网格算法和扫描处理留在各自模块。Mode 请求能力，Engine 调用 Backend 或发送新的 ModeEvent；原生窗口句柄和权限不进入 Mode。
 
 ## Mode 与 Plugin 的统一契约
 
@@ -95,8 +116,7 @@ impl Mode for MyMode {
 }
 ```
 
-Mode 使用 `ctx.present(View)` 提交借用的交互状态，由 `HostContext` 注入的 `Presenter` 构造场景。
-内置模式不直接生成标签和形状。新增视觉组件只需增加 API 视图与对应 compositor；原生后端继续处理已有绘制原语。
+显示画面时，Mode 调用 `ctx.present(View)`，Presenter 再生成标签和形状。新增视觉组件时，添加 API 视图和对应的画面组合代码；后端继续绘制现有图形。
 
 Mode 可以请求：移动鼠标、发送按键、显示覆盖层、扫描 UI、切换或压栈模式、设置 timer、执行命令和重载配置。它不能直接调用 `Backend`、`Win32`、`AppKit`、`UIA` 或 `AX`。
 
@@ -107,10 +127,25 @@ Mode 可以请求：移动鼠标、发送按键、显示覆盖层、扫描 UI、
 UIA、AX、Vision 扫描在 worker 中执行，以 `BackendEvent::UiScanned` 分批返回；Engine 用 scan id 和 owner 丢弃过期结果。
 
 ```mermaid
-flowchart LR
-    engine["Engine"] -->|"request_ui_scan<br/>scan id + owner"| scan["UI 扫描 worker<br/>UIA / AX / Vision"]
-    scan -->|"BackendEvent::UiScanned<br/>分批结果"| engine
-    engine -.->|"切换、取消或 generation 过期"| scan
+---
+config:
+    layout: dagre
+    look: classic
+---
+sequenceDiagram
+    participant engine as Engine
+    participant scan as UI 扫描 worker
+    engine->>scan: request_ui_scan（scan id + owner）
+    activate scan
+    loop 分批返回 · 不阻塞事件循环
+        scan-->>engine: BackendEvent::UiScanned
+        Note over engine: 校验 scan id 与 owner<br/>接收有效的部分结果
+    end
+    opt 切换、取消或 generation 过期
+        engine->>scan: 取消扫描
+        Note over engine: 丢弃过期结果
+    end
+    deactivate scan
 ```
 
 ## 修改时守住的边界
@@ -125,4 +160,12 @@ flowchart LR
 
 ## 窗口模式共享会话
 
-Window、Quick、Editor、Restore、Delete 分别注册并拥有独立配置，入口与返回均使用普通模式绑定。平台无关的 WindowSession 保留库存、稳定编号、编辑事务和撤销状态。Mode 的 prepare_transition 发出异步收尾命令，确认后再切换；Engine 转移会话结果所有者，组外退出才释放会话。Restore 成功通过现有 Finish 生命周期进入配置的目标，Delete 通过 Host 的布局存储端口比较记录并原子删除。五个模式复用 presentation 的帮助面板。
+五个窗口模式各自注册、配置和绑定，共用一份 `WindowSession`：
+
+| 切换阶段 | 保留或处理什么 |
+| --- | --- |
+| Window／Quick／Editor／Restore／Tabs 之间切换 | 窗口清单、稳定编号、编辑事务和撤销记录 |
+| `prepare_transition` | 先异步完成待提交的编辑，确认后切换并转移结果归属 |
+| 离开整个窗口模式组 | 释放共享会话 |
+
+Restore 成功后按 Finish 配置切换模式；删除是 Restore 内部状态，通过宿主存储接口核对并原子删除记录。Tabs 管理分组和模板。五个模式共用 presentation 的帮助面板。

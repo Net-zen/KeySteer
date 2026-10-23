@@ -1,0 +1,1420 @@
+#![forbid(unsafe_code)]
+
+//! Non-blocking latest-frame submission for the Windows overlay.
+//!
+//! The engine/input thread only replaces one pending frame. A dedicated
+//! normal-priority thread owns every HWND and GDI resource, so a dense scene
+//! cannot delay the synchronous hook disposition or native click injection.
+
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crate::api::geometry::{Point, Rect};
+use crate::api::overlay::OverlayScene;
+use crate::support::worker::WorkerJoin;
+
+use super::super::{EventSender, native};
+use super::{gpu_overlay::GpuOverlay, overlay};
+
+const DEVICE_FAILURE_WINDOW: Duration = Duration::from_secs(60);
+const RENDER_WAKE_MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x50;
+const STOP_TIMEOUT: Duration = Duration::from_secs(2);
+
+struct Frame {
+    scene: Arc<OverlayScene>,
+    area: Rect,
+    scale: f64,
+}
+
+#[derive(Clone, Copy)]
+struct Positions {
+    cursor: Option<Point>,
+    indicator: Option<Point>,
+}
+
+enum Control {
+    BeginCapture(u64),
+    Dismiss,
+    Shutdown(SyncSender<Result<(), String>>),
+}
+
+struct CaptureGate {
+    generation: u64,
+    ready: Option<SyncSender<Result<(), String>>>,
+    deferred_frame: Option<Frame>,
+    deferred_positions: Option<Positions>,
+}
+
+struct State {
+    /// Published only after the worker has created its native message queue.
+    /// Earlier submissions stay in this mailbox for its first render pass.
+    thread_id: Option<u32>,
+    sample: Option<Option<crate::api::point_sample::Request>>,
+    latest: Option<Frame>,
+    positions: Option<Positions>,
+    control: Option<Control>,
+    capture: Option<CaptureGate>,
+    alive: bool,
+    wake_pending: bool,
+    /// Set after the renderer rejects a position-only update. The Engine
+    /// observes this on its next pointer edge and switches the current overlay
+    /// session to complete frames, so one native failure cannot become a
+    /// synchronous error-and-flush loop on every mouse move.
+    position_fast_path_failed: bool,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            thread_id: None,
+            sample: None,
+            latest: None,
+            positions: None,
+            control: None,
+            capture: None,
+            alive: true,
+            wake_pending: false,
+            position_fast_path_failed: false,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Shared {
+    state: Mutex<State>,
+}
+
+fn mark_wake_pending(state: &mut State) -> Result<Option<u32>, String> {
+    if !state.alive {
+        return Err("Windows overlay renderer has already stopped".into());
+    }
+    if state.wake_pending
+        || (state.control.is_none()
+            && state.latest.is_none()
+            && state.positions.is_none()
+            && state.sample.is_none())
+    {
+        return Ok(None);
+    }
+    state.wake_pending = true;
+    Ok(state.thread_id)
+}
+
+pub(in crate::platform::windows) struct OverlayWorker {
+    shared: Arc<Shared>,
+    worker: Option<WorkerJoin>,
+}
+
+/// A generation-scoped permit which keeps overlay frames off-screen until the
+/// vision worker has copied the desktop pixels. Dropping a stale lease can
+/// never release a newer generation.
+#[must_use = "the capture gate remains hidden until this generation lease is released"]
+pub(in crate::platform::windows) struct CaptureLease {
+    shared: Arc<Shared>,
+    generation: u64,
+    ready: Option<Receiver<Result<(), String>>>,
+    released: bool,
+}
+
+impl CaptureLease {
+    pub(in crate::platform::windows) fn wait_hidden(
+        &mut self,
+        deadline: Instant,
+        mut canceled: impl FnMut() -> bool,
+    ) -> Result<(), String> {
+        let ready = self
+            .ready
+            .take()
+            .ok_or("capture lease hidden acknowledgement was already consumed")?;
+        loop {
+            if canceled() {
+                return Err("capture lease was canceled".into());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err("timed out waiting for the overlay capture barrier".into());
+            }
+            match ready.recv_timeout((deadline - now).min(Duration::from_millis(10))) {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("overlay renderer stopped before hiding for capture".into());
+                }
+            }
+        }
+    }
+
+    /// Release the gate and display only the latest frame deferred while the
+    /// screenshot was pending.
+    pub(in crate::platform::windows) fn release(mut self) -> Result<(), String> {
+        self.release_inner(true)
+    }
+
+    fn release_inner(&mut self, show_deferred: bool) -> Result<(), String> {
+        if self.released {
+            return Ok(());
+        }
+        self.released = true;
+        let should_wake = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(gate) = state
+                .capture
+                .take_if(|gate| gate.generation == self.generation)
+            else {
+                return Ok(());
+            };
+            if matches!(state.control, Some(Control::BeginCapture(generation)) if generation == self.generation)
+            {
+                state.control = None;
+            }
+            if show_deferred && let Some(frame) = gate.deferred_frame {
+                state.latest = Some(frame);
+                state.positions = gate.deferred_positions;
+            } else {
+                // A position update cannot be rendered without the complete
+                // frame it describes. This is expected when the pointer moves
+                // while a capture gate is hidden and no provider has produced
+                // a new frame yet.
+                state.latest = None;
+                state.positions = None;
+            }
+            mark_wake_pending(&mut state)?
+        };
+        post_wake(&self.shared, should_wake)
+    }
+}
+
+impl Drop for CaptureLease {
+    fn drop(&mut self) {
+        if let Err(error) = self.release_inner(false) {
+            crate::report_error!("windows-overlay", "{error}");
+        }
+    }
+}
+
+#[cfg(test)]
+pub(in crate::platform::windows) fn deferred_capture_fixture(
+    generation: u64,
+) -> (CaptureLease, impl Fn() -> bool) {
+    let shared = Arc::new(Shared::default());
+    {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.wake_pending = true;
+        state.capture = Some(CaptureGate {
+            generation,
+            ready: None,
+            deferred_frame: Some(Frame {
+                scene: Arc::new(OverlayScene::new()),
+                area: Rect::new(0.0, 0.0, 32.0, 32.0),
+                scale: 1.0,
+            }),
+            deferred_positions: None,
+        });
+    }
+    let lease = CaptureLease {
+        shared: Arc::clone(&shared),
+        generation,
+        ready: None,
+        released: false,
+    };
+    (lease, move || {
+        let state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.capture.is_none() && state.latest.is_some()
+    })
+}
+
+impl OverlayWorker {
+    pub(in crate::platform::windows) fn sample(
+        &self,
+        request: Option<crate::api::point_sample::Request>,
+    ) -> Result<(), String> {
+        let wake = {
+            let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.sample = Some(request);
+            mark_wake_pending(&mut state)?
+        };
+        self.post_wake(wake)
+    }
+    pub(in crate::platform::windows) fn start(events: EventSender) -> Result<Self, String> {
+        let shared = Arc::new(Shared::default());
+        let thread_shared = Arc::clone(&shared);
+        let worker = WorkerJoin::spawn(
+            "Windows overlay renderer",
+            std::thread::Builder::new().name("keysteer-overlay-render".into()),
+            move || render_loop(&thread_shared, &events),
+        )?;
+        Ok(Self {
+            shared,
+            worker: Some(worker),
+        })
+    }
+
+    /// Replace the pending frame and return immediately. Superseded frames are
+    /// dropped before any native rendering work begins.
+    pub(in crate::platform::windows) fn present(
+        &self,
+        scene: Arc<OverlayScene>,
+        area: Rect,
+        scale: f64,
+    ) -> Result<(), String> {
+        let should_wake = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            ensure_renderer_alive(&state)?;
+            let frame = Frame { scene, area, scale };
+            if let Some(gate) = state.capture.as_mut() {
+                gate.deferred_frame = Some(frame);
+                gate.deferred_positions = None;
+                return Ok(());
+            }
+            state.latest = Some(frame);
+            state.positions = None;
+            mark_wake_pending(&mut state)?
+        };
+        self.post_wake(should_wake)
+    }
+
+    /// Coalesce dynamic positions independently from complete frames.
+    pub(in crate::platform::windows) fn update_positions(
+        &self,
+        cursor: Option<Point>,
+        indicator: Option<Point>,
+    ) -> Result<bool, String> {
+        let should_wake = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            ensure_renderer_alive(&state)?;
+            if state.position_fast_path_failed {
+                return Ok(false);
+            }
+            let positions = Positions { cursor, indicator };
+            if let Some(gate) = state.capture.as_mut() {
+                // The next complete frame is authoritative and already uses
+                // the Engine's current pointer. Keeping a position without a
+                // base frame would release position-only work after capture.
+                if gate.deferred_frame.is_some() {
+                    gate.deferred_positions = Some(positions);
+                }
+                return Ok(true);
+            }
+            state.positions = Some(positions);
+            mark_wake_pending(&mut state)?
+        };
+        self.post_wake(should_wake)?;
+        Ok(true)
+    }
+
+    pub(in crate::platform::windows) fn dismiss(&self) -> Result<(), String> {
+        if self.worker.is_none() {
+            self.shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .position_fast_path_failed = false;
+            return Ok(());
+        }
+        let should_wake = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            ensure_renderer_alive(&state)?;
+            state.latest = None;
+            state.positions = None;
+            state.position_fast_path_failed = false;
+            cancel_capture_locked(&mut state, "overlay was dismissed");
+            state.control = Some(Control::Dismiss);
+            mark_wake_pending(&mut state)?
+        };
+        self.post_wake(should_wake)
+    }
+
+    /// Begin hiding the overlay for a single scan generation. This method only
+    /// enqueues renderer work and never waits for DWM on the engine thread.
+    pub(in crate::platform::windows) fn begin_capture(
+        &self,
+        generation: u64,
+    ) -> Result<CaptureLease, String> {
+        if self.worker.is_none() {
+            return Err("Windows overlay renderer is not running".into());
+        }
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        crate::support::perf_probe::mark("capture_gate_started");
+        let should_wake = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if !state.alive || matches!(state.control, Some(Control::Shutdown(_))) {
+                return Err("Windows overlay renderer is stopping".into());
+            }
+            if let Some(mut previous) = state.capture.take()
+                && let Some(reply) = previous.ready.take()
+            {
+                let _ = reply.send(Err("capture generation was superseded".into()));
+            }
+            state.latest = None;
+            state.positions = None;
+            state.capture = Some(CaptureGate {
+                generation,
+                ready: Some(ready_tx),
+                deferred_frame: None,
+                deferred_positions: None,
+            });
+            state.control = Some(Control::BeginCapture(generation));
+            mark_wake_pending(&mut state)?
+        };
+        if let Err(error) = self.post_wake(should_wake) {
+            cancel_capture(&self.shared, generation, &error);
+            return Err(error);
+        }
+        Ok(CaptureLease {
+            shared: Arc::clone(&self.shared),
+            generation,
+            ready: Some(ready_rx),
+            released: false,
+        })
+    }
+
+    fn control_until(
+        &self,
+        make: impl FnOnce(SyncSender<Result<(), String>>) -> Control,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let should_wake = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            ensure_renderer_alive(&state)?;
+            state.latest = None;
+            state.positions = None;
+            cancel_capture_locked(&mut state, "overlay was dismissed");
+            let control = make(reply_tx);
+            state.control = Some(control);
+            mark_wake_pending(&mut state)?
+        };
+        self.post_wake(should_wake)?;
+        reply_rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|error| format!("Windows overlay renderer did not reply: {error}"))?
+    }
+
+    fn post_wake(&self, thread_id: Option<u32>) -> Result<(), String> {
+        post_wake(&self.shared, thread_id)
+    }
+
+    fn stop(&mut self) -> Result<(), String> {
+        let now = Instant::now();
+        let deadline = now.checked_add(STOP_TIMEOUT).unwrap_or(now);
+        self.stop_until(deadline)
+    }
+
+    fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
+        let result = if self.worker.is_some() {
+            self.control_until(Control::Shutdown, deadline)
+        } else {
+            Ok(())
+        };
+        let join_result = self
+            .worker
+            .as_mut()
+            .map_or(Ok(()), |worker| worker.join_until(deadline));
+        if join_result.is_ok() {
+            self.worker.take();
+        }
+        if result.is_err() { result } else { join_result }
+    }
+
+    pub(in crate::platform::windows) fn shutdown(&mut self) -> Result<(), String> {
+        self.stop()
+    }
+
+    pub(in crate::platform::windows) fn shutdown_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        self.stop_until(deadline)
+    }
+}
+
+impl Drop for OverlayWorker {
+    fn drop(&mut self) {
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(WorkerJoin::shutdown_failure_was_returned)
+        {
+            return;
+        }
+        if let Err(error) = self.shutdown() {
+            crate::support::logging::report_error("windows-overlay", error);
+        }
+    }
+}
+
+fn post_wake(shared: &Shared, thread_id: Option<u32>) -> Result<(), String> {
+    if let Some(thread_id) = thread_id
+        && let Err(error) = native::post_thread_wake(thread_id, RENDER_WAKE_MESSAGE)
+    {
+        let error = format!("cannot wake Windows overlay renderer: {error}");
+        fail_renderer(shared, &error);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn render_loop(shared: &Shared, events: &EventSender) {
+    let thread_id = native::prepare_thread_message_queue();
+    let shutdown = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !state.alive {
+            return;
+        }
+        let shutdown = state
+            .control
+            .take_if(|control| matches!(control, Control::Shutdown(_)));
+        if shutdown.is_some() {
+            // Reject new submissions while the common stop path clears the
+            // mailbox. No renderer resource exists to dismiss yet.
+            state.alive = false;
+        } else {
+            state.thread_id = Some(thread_id);
+        }
+        shutdown
+    };
+    if let Some(Control::Shutdown(reply)) = shutdown {
+        mark_renderer_stopped(shared, "overlay renderer shut down before initialization");
+        let _ = reply.send(Ok(()));
+        return;
+    }
+    // The first pass consumes requests queued before the native queue existed.
+    // Publishing its id under the same lock means later requests can wake it;
+    // neither startup nor the first submission needs a readiness handshake.
+    let (mut renderer, startup_notice) = AdaptiveRenderer::new();
+    crate::support::perf_probe::mark("renderer_ready");
+    let mut dpi_cache = overlay::DpiSceneCache::default();
+    if let Some(notice) = startup_notice {
+        warn(events, notice);
+    }
+    let mut scale = 1.0;
+    let mut pixel: Option<native::PreparedCapture> = None;
+    loop {
+        if overlay::take_deferred_callback_error() {
+            crate::support::logging::report_error(
+                "windows-overlay",
+                "ValidateRect failed for an overlay window",
+            );
+        }
+        let (control, frame, positions, sample) = {
+            let mut state = shared
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.wake_pending = false;
+            (
+                state.control.take(),
+                state.latest.take(),
+                state.positions.take(),
+                state.sample.take(),
+            )
+        };
+
+        if control.is_none() && frame.is_none() && positions.is_none() && sample.is_none() {
+            match native::wait_and_dispatch_window_message() {
+                Ok(true) => continue,
+                Ok(false) => {
+                    mark_renderer_stopped(shared, "overlay renderer message loop stopped");
+                    return;
+                }
+                Err(error) => {
+                    crate::report_error!(
+                        "windows-overlay",
+                        "Windows overlay message loop failed: {error}"
+                    );
+                    mark_renderer_stopped(shared, "overlay renderer message loop failed");
+                    return;
+                }
+            }
+        }
+
+        if let Some(control) = control {
+            let capture_generation = match control {
+                Control::BeginCapture(generation) => Some(generation),
+                Control::Dismiss | Control::Shutdown(_) => None,
+            };
+            let result = if capture_generation.is_some() {
+                renderer.dismiss_for_capture()
+            } else {
+                renderer.dismiss()
+            };
+            // Drop both the source and scaled copies of a potentially large
+            // grid as soon as the overlay leaves the screen.
+            dpi_cache.clear();
+            let shutdown = matches!(control, Control::Shutdown(_));
+            match control {
+                Control::BeginCapture(generation) => {
+                    acknowledge_capture(shared, generation, result);
+                }
+                Control::Dismiss => {
+                    if let Err(error) = result {
+                        crate::report_error!(
+                            "windows-overlay",
+                            "Windows overlay dismiss failed: {error}"
+                        );
+                    }
+                }
+                Control::Shutdown(reply) => {
+                    let _ = reply.send(result);
+                }
+            }
+            if shutdown {
+                mark_renderer_stopped(shared, "overlay renderer shut down");
+                return;
+            }
+        }
+
+        if let Some(frame) = frame {
+            scale = frame.scale;
+            let scene = match dpi_cache.scene_for_dpi(frame.scene.as_ref(), frame.scale) {
+                std::borrow::Cow::Borrowed(_) => Arc::clone(&frame.scene),
+                std::borrow::Cow::Owned(scene) => Arc::new(scene),
+            };
+            match renderer.present(scene, frame.area) {
+                Ok(Some(notice)) => {
+                    crate::support::perf_probe::mark("native_presented");
+                    warn(events, notice);
+                }
+                Ok(None) => crate::support::perf_probe::mark("native_presented"),
+                Err(error) => crate::report_error!(
+                    "windows-overlay",
+                    "Windows overlay render failed; the next frame will retry: {error}"
+                ),
+            }
+        }
+        if let Some(mut positions) = positions {
+            if scale.is_finite()
+                && scale.max(1.0) != 1.0
+                && let Some(indicator) = positions.indicator.as_mut()
+            {
+                indicator.x = indicator.x.round();
+                indicator.y = indicator.y.round();
+            }
+            match renderer.update_positions(positions.cursor, positions.indicator) {
+                Ok(Some(notice)) => {
+                    crate::support::perf_probe::mark("native_presented");
+                    warn(events, notice);
+                }
+                Ok(None) => crate::support::perf_probe::mark("native_presented"),
+                Err(error) => {
+                    let first_failure = {
+                        let mut state = shared
+                            .state
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner());
+                        let first_failure = !state.position_fast_path_failed;
+                        state.position_fast_path_failed = true;
+                        state.positions = None;
+                        first_failure
+                    };
+                    if first_failure {
+                        crate::report_error!(
+                            "windows-overlay",
+                            "Windows overlay position update failed; complete frames will be used for this session: {error}"
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(sample) = sample {
+            let color = (|| -> Result<Option<crate::api::Color>, String> {
+                renderer.sample_aperture(sample.map(|s| s.point))?;
+                let Some(request) = sample else {
+                    pixel = None;
+                    return Ok(None);
+                };
+                native::wait_for_dwm_frame().map_err(|e| e.to_string())?;
+                if pixel.is_none() {
+                    pixel = Some(native::PreparedCapture::new(1, 1)?);
+                }
+                let Some(pixel) = pixel.as_mut() else {
+                    return Err("cannot prepare pixel sampler".into());
+                };
+                pixel.capture_with(
+                    request.point.x.round() as i32,
+                    request.point.y.round() as i32,
+                    1,
+                    1,
+                    |data, _, _| {
+                        Ok(data
+                            .get(..4)
+                            .map(|b| crate::api::Color::rgb(b[2], b[1], b[0])))
+                    },
+                )
+            })()
+            .ok()
+            .flatten();
+            if let Some(request) = sample {
+                let _ = events.send(crate::api::BackendEvent::PointSampled(
+                    crate::api::point_sample::Sample { request, color },
+                ));
+            }
+        }
+        // Window messages (especially WM_NCHITTEST) must be serviced between
+        // frames. Leaving the full-screen HWND on a Condvar makes Windows mark
+        // it hung and blocks every click beneath it while normal mode is idle.
+        if !native::pump_window_messages() {
+            mark_renderer_stopped(shared, "overlay renderer window was destroyed");
+            return;
+        }
+    }
+}
+
+enum Renderer {
+    Gpu(GpuOverlay),
+    Cpu(overlay::Overlay),
+}
+
+struct AdaptiveRenderer {
+    renderer: Renderer,
+    last_gpu_rebuild: Option<Instant>,
+    last_scene: Option<Arc<OverlayScene>>,
+    last_area: Option<Rect>,
+    /// True only when DWM has confirmed that no KeySteer pixels can be part of
+    /// the desktop frame. An ordinary dismiss is intentionally asynchronous,
+    /// so it cannot make the renderer capture-clean by itself.
+    capture_state: CaptureState,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CaptureState {
+    clean: bool,
+}
+
+impl CaptureState {
+    const fn new() -> Self {
+        Self { clean: true }
+    }
+
+    fn presented(&mut self, has_visible_pixels: bool) {
+        if has_visible_pixels {
+            self.clean = false;
+        }
+    }
+
+    fn dismissed_asynchronously(&mut self, had_visible_pixels: bool, failed: bool) {
+        if had_visible_pixels || failed {
+            self.clean = false;
+        }
+    }
+
+    const fn needs_barrier(self) -> bool {
+        !self.clean
+    }
+
+    fn confirm_hidden(&mut self) {
+        self.clean = true;
+    }
+}
+
+impl AdaptiveRenderer {
+    fn sample_aperture(&self, point: Option<Point>) -> Result<(), String> {
+        match &self.renderer {
+            Renderer::Gpu(renderer) => renderer.sample_aperture(point),
+            Renderer::Cpu(renderer) => renderer.sample_aperture(point),
+        }
+    }
+    fn new() -> (Self, Option<String>) {
+        match GpuOverlay::new() {
+            Ok(gpu) => (
+                Self {
+                    renderer: Renderer::Gpu(gpu),
+                    last_gpu_rebuild: None,
+                    last_scene: None,
+                    last_area: None,
+                    capture_state: CaptureState::new(),
+                },
+                None,
+            ),
+            Err(error) => (
+                Self {
+                    renderer: Renderer::Cpu(overlay::Overlay::new()),
+                    last_gpu_rebuild: None,
+                    last_scene: None,
+                    last_area: None,
+                    capture_state: CaptureState::new(),
+                },
+                Some(format!(
+                    "DirectComposition is unavailable; using the DIB renderer: {error}"
+                )),
+            ),
+        }
+    }
+
+    fn present(&mut self, scene: Arc<OverlayScene>, area: Rect) -> Result<Option<String>, String> {
+        let has_visible_pixels = scene_has_visible_pixels(scene.as_ref());
+        let gpu_error = match &mut self.renderer {
+            Renderer::Gpu(gpu) => match gpu.present(Arc::clone(&scene), area) {
+                Ok(()) => {
+                    self.last_scene = Some(scene);
+                    self.last_area = Some(area);
+                    self.capture_state.presented(has_visible_pixels);
+                    return Ok(None);
+                }
+                Err(error) => error,
+            },
+            Renderer::Cpu(cpu) => {
+                cpu.present(Arc::clone(&scene), area)?;
+                self.last_scene = Some(scene);
+                self.last_area = Some(area);
+                self.capture_state.presented(has_visible_pixels);
+                return Ok(None);
+            }
+        };
+
+        let now = Instant::now();
+        if gpu_rebuild_allowed(self.last_gpu_rebuild, now) {
+            self.last_gpu_rebuild = Some(now);
+            if let Ok(mut replacement) = GpuOverlay::new()
+                && replacement.present(Arc::clone(&scene), area).is_ok()
+            {
+                self.renderer = Renderer::Gpu(replacement);
+                self.last_scene = Some(scene);
+                self.last_area = Some(area);
+                self.capture_state.presented(has_visible_pixels);
+                return Ok(Some(format!(
+                    "DirectComposition device was rebuilt after a render failure: {gpu_error}"
+                )));
+            }
+        }
+
+        let mut cpu = overlay::Overlay::new();
+        cpu.present(Arc::clone(&scene), area)?;
+        self.renderer = Renderer::Cpu(cpu);
+        self.last_scene = Some(scene);
+        self.last_area = Some(area);
+        self.capture_state.presented(has_visible_pixels);
+        Ok(Some(format!(
+            "DirectComposition failed repeatedly; using the DIB renderer for this session: {gpu_error}"
+        )))
+    }
+
+    fn update_positions(
+        &mut self,
+        cursor: Option<Point>,
+        indicator: Option<Point>,
+    ) -> Result<Option<String>, String> {
+        if let Renderer::Gpu(gpu) = &mut self.renderer {
+            // A failed DirectComposition offset update is operational, not an
+            // indication that the renderer should silently redraw the whole
+            // scene on every pointer event. The render loop records the first
+            // failure and exposes a sticky session flag; the Engine observes
+            // it on the next pointer edge and submits one complete frame.
+            gpu.update_positions(cursor, indicator)?;
+            return Ok(None);
+        }
+
+        let area = self
+            .last_area
+            .ok_or("overlay position update arrived before the first complete frame")?;
+        let mut scene = self
+            .last_scene
+            .as_deref()
+            .cloned()
+            .ok_or("overlay position update arrived before the first complete frame")?;
+        if let (Some(position), Some(marker)) = (cursor, scene.cursor_marker.as_mut()) {
+            marker.center = position;
+        }
+        if let (Some(position), Some(item)) = (indicator, scene.indicator.as_mut()) {
+            item.position = position;
+        }
+        self.present(Arc::new(scene), area)
+    }
+
+    fn dismiss(&mut self) -> Result<(), String> {
+        let had_visible_scene = self
+            .last_scene
+            .as_deref()
+            .is_some_and(scene_has_visible_pixels);
+        let result = match &mut self.renderer {
+            Renderer::Gpu(gpu) => gpu.dismiss(),
+            Renderer::Cpu(cpu) => cpu.dismiss(),
+        };
+        self.last_scene = None;
+        self.last_area = None;
+        self.capture_state
+            .dismissed_asynchronously(had_visible_scene, result.is_err());
+        result
+    }
+
+    fn dismiss_for_capture(&mut self) -> Result<(), String> {
+        // GPU dismiss only queues the tree removal. DwmFlush is the one
+        // compositor barrier for capture and confirms that the removed tree is
+        // no longer part of the desktop frame. CPU dismiss destroys its HWND
+        // synchronously, then uses the same barrier for a common ACK contract.
+        self.dismiss()?;
+        if !self.capture_state.needs_barrier() {
+            crate::support::perf_probe::mark("capture_barrier_skipped");
+            return Ok(());
+        }
+        crate::support::perf_probe::mark("capture_barrier_started");
+        native::wait_for_dwm_frame()
+            .map_err(|error| format!("DWM did not confirm the hidden overlay frame: {error}"))?;
+        self.capture_state.confirm_hidden();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod point_sample_tests {
+    use super::*;
+    use crate::api::{Color, OverlayShape};
+
+    #[test]
+    #[ignore = "native pixel probe; briefly creates two disposable overlay patches"]
+    fn sampling_aperture_reads_underlying_pixels_and_restores_the_overlay() {
+        super::super::enable_dpi_awareness().unwrap();
+        let screen = super::super::list_screens().unwrap().remove(0);
+        let area = Rect::new(screen.bounds.x + 20.0, screen.bounds.y + 20.0, 64.0, 64.0);
+        let point = area.center();
+        let scene = |color| {
+            let mut scene = OverlayScene::new();
+            scene.push_shape(OverlayShape::fill(area, color));
+            Arc::new(scene)
+        };
+        let mut background = overlay::Overlay::new();
+        background
+            .present(scene(Color::rgb(0, 255, 0)), area)
+            .unwrap();
+        native::wait_for_dwm_frame().unwrap();
+        let mut pixel = native::PreparedCapture::new(1, 1).unwrap();
+        let mut read = || {
+            pixel
+                .capture_with(point.x as i32, point.y as i32, 1, 1, |bytes, _, _| {
+                    Ok(Color::rgb(bytes[2], bytes[1], bytes[0]))
+                })
+                .unwrap()
+        };
+        let baseline = read();
+        for gpu in [false, true] {
+            let mut foreground = if gpu {
+                AdaptiveRenderer::new().0
+            } else {
+                AdaptiveRenderer {
+                    renderer: Renderer::Cpu(overlay::Overlay::new()),
+                    last_gpu_rebuild: None,
+                    last_scene: None,
+                    last_area: None,
+                    capture_state: CaptureState::new(),
+                }
+            };
+            foreground
+                .present(scene(Color::rgb(255, 0, 0)), area)
+                .unwrap();
+            native::wait_for_dwm_frame().unwrap();
+            let covered = read();
+            assert_ne!(covered, baseline, "test patch must cover the baseline");
+            foreground.sample_aperture(Some(point)).unwrap();
+            native::wait_for_dwm_frame().unwrap();
+            assert_eq!(
+                read(),
+                baseline,
+                "gpu={gpu}: sample must exclude our overlay"
+            );
+            foreground.sample_aperture(None).unwrap();
+            native::wait_for_dwm_frame().unwrap();
+            assert_eq!(
+                read(),
+                covered,
+                "gpu={gpu}: cancellation restores the region"
+            );
+            foreground.dismiss_for_capture().unwrap();
+            assert_eq!(read(), baseline, "gpu={gpu}: capture must hide the overlay");
+            foreground
+                .present(scene(Color::rgb(255, 0, 0)), area)
+                .unwrap();
+            native::wait_for_dwm_frame().unwrap();
+            assert_eq!(
+                read(),
+                covered,
+                "gpu={gpu}: capture completion restores the overlay"
+            );
+            foreground.dismiss().unwrap();
+        }
+        background.dismiss().unwrap();
+    }
+}
+
+fn scene_has_visible_pixels(scene: &OverlayScene) -> bool {
+    !scene.is_empty() || scene.backdrop.is_some()
+}
+
+fn acknowledge_capture(shared: &Shared, generation: u64, result: Result<(), String>) {
+    let reply = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state
+            .capture
+            .as_mut()
+            .filter(|gate| gate.generation == generation)
+            .and_then(|gate| gate.ready.take())
+    };
+    if let Some(reply) = reply {
+        let _ = reply.send(result);
+    }
+}
+
+fn cancel_capture(shared: &Shared, generation: u64, reason: &str) {
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if state
+        .capture
+        .as_ref()
+        .is_some_and(|gate| gate.generation == generation)
+    {
+        cancel_capture_locked(&mut state, reason);
+    }
+}
+
+fn cancel_capture_locked(state: &mut State, reason: &str) {
+    if let Some(mut gate) = state.capture.take()
+        && let Some(reply) = gate.ready.take()
+    {
+        let _ = reply.send(Err(reason.into()));
+    }
+}
+
+fn ensure_renderer_alive(state: &State) -> Result<(), String> {
+    if state.alive {
+        Ok(())
+    } else {
+        Err("Windows overlay renderer has already stopped".into())
+    }
+}
+
+fn mark_renderer_stopped(shared: &Shared, reason: &str) {
+    fail_renderer(shared, reason);
+}
+
+fn fail_renderer(shared: &Shared, reason: &str) {
+    let (capture_reply, control_reply) = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.alive = false;
+        state.thread_id = None;
+        state.wake_pending = false;
+        state.latest = None;
+        state.positions = None;
+        state.sample = None;
+        let capture_reply = state.capture.take().and_then(|mut gate| gate.ready.take());
+        let control_reply = state.control.take().and_then(|control| match control {
+            Control::Dismiss | Control::BeginCapture(_) => None,
+            Control::Shutdown(reply) => Some(reply),
+        });
+        (capture_reply, control_reply)
+    };
+    if let Some(reply) = capture_reply {
+        let _ = reply.send(Err(reason.into()));
+    }
+    if let Some(reply) = control_reply {
+        let _ = reply.send(Err(reason.into()));
+    }
+}
+
+fn warn(events: &EventSender, message: String) {
+    let _ = events.send(crate::api::backend::BackendEvent::Warning(message));
+}
+
+fn gpu_rebuild_allowed(last_rebuild: Option<Instant>, now: Instant) -> bool {
+    last_rebuild.is_none_or(|previous| now.duration_since(previous) >= DEVICE_FAILURE_WINDOW)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::overlay::Color;
+    use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::UI::WindowsAndMessaging::HTTRANSPARENT;
+
+    fn delayed_worker() -> Result<(OverlayWorker, SyncSender<()>), String> {
+        let (event_tx, _event_rx) = crate::platform::common::event_queue::channel();
+        let events = EventSender::without_wake(event_tx);
+        let shared = Arc::new(Shared::default());
+        let thread_shared = Arc::clone(&shared);
+        let (start_tx, start_rx) = mpsc::sync_channel(1);
+        let render_thread = WorkerJoin::spawn(
+            "delayed Windows overlay fixture",
+            std::thread::Builder::new(),
+            move || {
+                if start_rx.recv().is_ok() {
+                    render_loop(&thread_shared, &events);
+                } else {
+                    mark_renderer_stopped(&thread_shared, "fixture startup canceled");
+                }
+            },
+        )?;
+        Ok((
+            OverlayWorker {
+                shared,
+                worker: Some(render_thread),
+            },
+            start_tx,
+        ))
+    }
+
+    #[test]
+    fn second_device_failure_inside_window_disables_rebuild() {
+        let now = Instant::now();
+        assert!(gpu_rebuild_allowed(None, now));
+        assert!(!gpu_rebuild_allowed(
+            Some(now - Duration::from_secs(59)),
+            now
+        ));
+        assert!(gpu_rebuild_allowed(
+            Some(now - Duration::from_secs(60)),
+            now
+        ));
+    }
+
+    #[test]
+    fn capture_state_skips_only_confirmed_clean_frames() {
+        let mut state = CaptureState::new();
+        assert!(!state.needs_barrier());
+
+        state.presented(false);
+        assert!(!state.needs_barrier());
+
+        state.presented(true);
+        assert!(state.needs_barrier());
+        state.dismissed_asynchronously(true, false);
+        assert!(state.needs_barrier());
+
+        state.confirm_hidden();
+        assert!(!state.needs_barrier());
+        state.dismissed_asynchronously(false, false);
+        assert!(!state.needs_barrier());
+    }
+
+    #[test]
+    fn stale_capture_lease_never_releases_new_generation() {
+        let shared = Arc::new(Shared::default());
+        {
+            let mut state = shared.state.lock().expect("capture state");
+            state.alive = false;
+            state.capture = Some(CaptureGate {
+                generation: 2,
+                ready: None,
+                deferred_frame: None,
+                deferred_positions: None,
+            });
+        }
+        let mut stale = CaptureLease {
+            shared: Arc::clone(&shared),
+            generation: 1,
+            ready: None,
+            released: false,
+        };
+        stale.release_inner(true).expect("stale release");
+        let state = shared.state.lock().expect("capture state");
+        assert_eq!(state.capture.as_ref().map(|gate| gate.generation), Some(2));
+    }
+
+    #[test]
+    fn capture_gate_keeps_only_latest_deferred_frame() {
+        let shared = Arc::new(Shared::default());
+        let area = Rect::new(0.0, 0.0, 32.0, 32.0);
+        {
+            let mut state = shared.state.lock().expect("capture state");
+            state.wake_pending = true;
+            state.capture = Some(CaptureGate {
+                generation: 7,
+                ready: None,
+                deferred_frame: Some(Frame {
+                    scene: Arc::new(OverlayScene::new()),
+                    area,
+                    scale: 2.0,
+                }),
+                deferred_positions: Some(Positions {
+                    cursor: Some(Point::new(9.0, 10.0)),
+                    indicator: None,
+                }),
+            });
+        }
+        let mut lease = CaptureLease {
+            shared: Arc::clone(&shared),
+            generation: 7,
+            ready: None,
+            released: false,
+        };
+        lease.release_inner(true).expect("capture release");
+        let state = shared.state.lock().expect("capture state");
+        assert_eq!(state.latest.as_ref().map(|frame| frame.scale), Some(2.0));
+        assert_eq!(
+            state.positions.and_then(|positions| positions.cursor),
+            Some(Point::new(9.0, 10.0))
+        );
+        assert!(state.capture.is_none());
+    }
+
+    #[test]
+    fn capture_gate_drops_positions_until_a_complete_frame_exists() {
+        let shared = Arc::new(Shared::default());
+        {
+            let mut state = shared.state.lock().expect("capture state");
+            state.capture = Some(CaptureGate {
+                generation: 11,
+                ready: None,
+                deferred_frame: None,
+                deferred_positions: None,
+            });
+        }
+        let worker = OverlayWorker {
+            shared: Arc::clone(&shared),
+            worker: None,
+        };
+        worker
+            .update_positions(Some(Point::new(9.0, 1.0)), None)
+            .expect("capture position update");
+        {
+            let state = shared.state.lock().expect("capture state");
+            assert!(
+                state
+                    .capture
+                    .as_ref()
+                    .is_some_and(|gate| gate.deferred_positions.is_none())
+            );
+            assert!(!state.wake_pending);
+        }
+        let mut lease = CaptureLease {
+            shared: Arc::clone(&shared),
+            generation: 11,
+            ready: None,
+            released: false,
+        };
+        lease.release_inner(true).expect("capture release");
+        let state = shared.state.lock().expect("capture state");
+        assert!(state.latest.is_none());
+        assert!(state.positions.is_none());
+        assert!(!state.wake_pending);
+        assert!(state.capture.is_none());
+    }
+
+    #[test]
+    fn renderer_position_failure_disables_only_the_current_session_fast_path() {
+        let shared = Arc::new(Shared::default());
+        shared
+            .state
+            .lock()
+            .expect("overlay state")
+            .position_fast_path_failed = true;
+        let worker = OverlayWorker {
+            shared: Arc::clone(&shared),
+            worker: None,
+        };
+
+        assert!(
+            !worker
+                .update_positions(Some(Point::new(10.0, 20.0)), None)
+                .expect("disabled position fast path")
+        );
+        {
+            let state = shared.state.lock().expect("overlay state");
+            assert!(state.positions.is_none());
+            assert!(!state.wake_pending);
+        }
+
+        worker.dismiss().expect("dismiss resets session state");
+        assert!(
+            !shared
+                .state
+                .lock()
+                .expect("overlay state")
+                .position_fast_path_failed
+        );
+    }
+
+    #[test]
+    fn stopped_renderer_drops_pending_state_and_notifies_waiters() {
+        let shared = Shared::default();
+        let (capture_tx, capture_rx) = mpsc::sync_channel(1);
+        let (control_tx, control_rx) = mpsc::sync_channel(1);
+        {
+            let mut state = shared.state.lock().expect("renderer state");
+            state.thread_id = Some(17);
+            state.latest = Some(Frame {
+                scene: Arc::new(OverlayScene::new()),
+                area: Rect::new(0.0, 0.0, 32.0, 32.0),
+                scale: 1.0,
+            });
+            state.positions = Some(Positions {
+                cursor: Some(Point::new(4.0, 5.0)),
+                indicator: None,
+            });
+            state.sample = Some(Some(crate::api::point_sample::Request {
+                id: 2,
+                point: Point::new(4.0, 5.0),
+            }));
+            state.capture = Some(CaptureGate {
+                generation: 13,
+                ready: Some(capture_tx),
+                deferred_frame: None,
+                deferred_positions: None,
+            });
+            state.control = Some(Control::Shutdown(control_tx));
+            state.wake_pending = true;
+        }
+        fail_renderer(&shared, "renderer failed");
+        assert_eq!(
+            capture_rx.recv().expect("capture reply"),
+            Err("renderer failed".into())
+        );
+        assert_eq!(
+            control_rx.recv().expect("control reply"),
+            Err("renderer failed".into())
+        );
+        let state = shared.state.lock().expect("renderer state");
+        assert!(!state.alive);
+        assert!(state.thread_id.is_none());
+        assert!(!state.wake_pending);
+        assert!(state.latest.is_none());
+        assert!(state.positions.is_none());
+        assert!(state.sample.is_none());
+        assert!(state.capture.is_none());
+        assert!(state.control.is_none());
+    }
+
+    #[test]
+    fn position_burst_requires_one_wake_and_keeps_only_the_last_value() {
+        let mut state = State {
+            thread_id: Some(17),
+            ..State::default()
+        };
+        let mut wakes = 0;
+        for index in 0..3 {
+            state.positions = Some(Positions {
+                cursor: Some(Point::new(index as f64, 1.0)),
+                indicator: None,
+            });
+            wakes += usize::from(
+                mark_wake_pending(&mut state)
+                    .expect("live renderer")
+                    .is_some(),
+            );
+        }
+        assert_eq!(wakes, 1);
+        assert_eq!(
+            state.positions.and_then(|positions| positions.cursor),
+            Some(Point::new(2.0, 1.0))
+        );
+    }
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop"]
+    fn idle_overlay_worker_remains_responsive_and_click_through() -> Result<(), String> {
+        let (mut worker, start_tx) = delayed_worker()?;
+        let area = Rect::new(0.0, 0.0, 64.0, 64.0);
+        let mut scene = OverlayScene::new();
+        scene.clip = Some(area);
+        scene.backdrop = Some(Color::rgba(0, 0, 0, 1));
+        // Force the first capture, frame and release to precede native queue
+        // creation. Releasing this lease must not lose its deferred scene or
+        // try to post to a nonexistent thread queue.
+        let capture = worker.begin_capture(7)?;
+        worker.present(Arc::new(scene), area, 1.0)?;
+        capture.release()?;
+        assert!(worker.shared.state.lock().unwrap().thread_id.is_none());
+        start_tx.send(()).map_err(|error| error.to_string())?;
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match native::probe_overlay_hit_test(
+                &[
+                    super::super::gpu_overlay::GpuOverlay::CLASS_NAME,
+                    super::super::overlay::Overlay::CLASS_NAME,
+                ],
+                250,
+            ) {
+                Ok(Some(probe)) => {
+                    assert_eq!(probe.hit_test, LRESULT(HTTRANSPARENT as isize));
+                    let required = (windows::Win32::UI::WindowsAndMessaging::WS_EX_LAYERED
+                        | windows::Win32::UI::WindowsAndMessaging::WS_EX_TRANSPARENT)
+                        .0;
+                    assert_eq!(probe.ex_style & required, required);
+                    break;
+                }
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) => return Err("overlay HWND was not created".into()),
+                Err(error) => return Err(format!("overlay HWND stopped responding: {error}")),
+            }
+        }
+
+        // A lease created after startup must still wake the same worker.
+        let mut capture = worker.begin_capture(8)?;
+        capture.wait_hidden(Instant::now() + Duration::from_secs(2), || false)?;
+        capture.release()?;
+        worker.dismiss()?;
+        worker.stop()
+    }
+
+    #[test]
+    fn shutdown_before_native_queue_creation_is_acknowledged() -> Result<(), String> {
+        let (mut worker, start_tx) = delayed_worker()?;
+        let mut capture = worker.begin_capture(7)?;
+        let scene = Arc::new(OverlayScene::new());
+        worker.present(Arc::clone(&scene), Rect::new(0.0, 0.0, 32.0, 32.0), 1.0)?;
+        let deadline = Instant::now() + STOP_TIMEOUT;
+        worker.control_until(
+            |reply| {
+                // control_until holds the mailbox lock. The render thread can
+                // create its queue now, but cannot read it until Shutdown is
+                // stored. No wake message can be sent before queue creation.
+                start_tx.send(()).expect("start delayed render thread");
+                Control::Shutdown(reply)
+            },
+            deadline,
+        )?;
+        worker.worker.as_mut().unwrap().join_until(deadline)?;
+        worker.worker.take();
+        assert_eq!(
+            capture.wait_hidden(deadline, || false),
+            Err("overlay was dismissed".into())
+        );
+        assert_eq!(Arc::strong_count(&scene), 1);
+        let state = worker.shared.state.lock().unwrap();
+        assert!(!state.alive);
+        assert!(state.thread_id.is_none());
+        Ok(())
+    }
+}

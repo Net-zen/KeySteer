@@ -109,17 +109,26 @@ export async function fetchLatestRelease(
   return release
 }
 
+function isDevelopmentCommand(command: unknown): boolean {
+  if (command === 'serve' || command === 'dev') return true
+  // VitePress can forward its development CLI options as the command.
+  if (!command || typeof command !== 'object') return false
+  const args = (command as { _?: unknown })._
+  return Array.isArray(args) && (args.length === 0 || args[0] === 'dev')
+}
+
 /** Development can run offline; publishing must use verified release metadata. */
-export async function loadLatestRelease(command: string, token?: string, tag?: string): Promise<LatestRelease> {
+export async function loadLatestRelease(command: unknown, token?: string, tag?: string): Promise<LatestRelease> {
+  const development = isDevelopmentCommand(command)
   try {
     return await fetchLatestRelease(
       DOWNLOAD_TARGETS,
-      AbortSignal.timeout(command === 'serve' ? 3_000 : 15_000),
+      AbortSignal.timeout(development ? 3_000 : 15_000),
       token,
       tag,
     )
   } catch (error) {
-    if (command !== 'serve') throw error
+    if (!development) throw error
     console.warn('[docs] 无法获取所选 Release，本地预览继续启动；下载入口将指向 GitHub Releases。')
     const requestedTag = selectedTag(tag)
     return { tag: 'Release unavailable · 本地预览', url: requestedTag ? releaseUrl(requestedTag) : LATEST_RELEASE_URL, assets: {} }

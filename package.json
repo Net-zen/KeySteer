@@ -2,30 +2,23 @@
   "name": "keysteer-docs",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.11.2",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "docs:sync": "node scripts/sync-doc-assets.mjs",
-    "docs:dev": "pnpm docs:sync && vitepress dev docs",
-    "docs:check": "pnpm docs:sync && tsc --noEmit",
-    "docs:build": "pnpm docs:sync && vitepress build docs",
+    "docs:dev": "node scripts/docs.mjs dev",
+    "docs:check": "node scripts/docs.mjs check",
+    "docs:build": "node scripts/docs.mjs build",
     "docs:preview": "vitepress preview docs",
     "docs:test": "node --test docs/.vitepress/simulator/*.test.ts"
   },
   "devDependencies": {
-    "@braintree/sanitize-url": "^7.1.2",
     "@vitejs/plugin-vue-jsx": "5.1.6",
-    "cytoscape": "^3.34.3",
-    "cytoscape-cose-bilkent": "^4.1.0",
-    "dayjs": "^1.11.23",
-    "debug": "^4.4.3",
     "mermaid": "^12.2.0",
     "smol-toml": "1.9.1",
     "typescript": "7.0.2",
-    "vitepress": "1.6.4",
-    "vitepress-plugin-mermaid": "^2.0.17",
+    "vitepress": "2.0.0-alpha.20",
     "vue": "3.5.44"
   }
 }

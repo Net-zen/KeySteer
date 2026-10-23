@@ -49,18 +49,17 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
 
-      - name: Identify pnpm version
+      - name: Resolve latest stable pnpm
         id: pnpm-version
         run: |
           python3 - <<'PYTHON'
-          import json, os, re
-          with open('package.json') as source:
-              manager = json.load(source)['packageManager']
-          match = re.fullmatch(r'pnpm@([0-9]+\.[0-9]+\.[0-9]+)(?:\+.*)?', manager)
-          if not match:
-              raise SystemExit('Expected an exact pnpm version in package.json')
+          import json, os, re, urllib.request
+          with urllib.request.urlopen('https://registry.npmjs.org/pnpm/latest', timeout=30) as response:
+              version = json.load(response)['version']
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+              raise SystemExit('Expected a stable pnpm version from the npm registry')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'version={match[1]}\n')
+              output.write(f'version={version}\n')
           PYTHON
 
       - name: Restore pnpm tool
@@ -75,6 +74,7 @@ jobs:
         if: steps.pnpm-tool.outputs.cache-hit != 'true'
         uses: pnpm/action-setup@v6
         with:
+          version: ${{ steps.pnpm-version.outputs.version }}
           dest: ~/.cache/keysteer-pnpm
 
       - name: Activate pnpm tool

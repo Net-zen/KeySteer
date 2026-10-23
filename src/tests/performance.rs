@@ -2,13 +2,13 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 
+use keysteer::api::hint::assign_compact_into;
 use keysteer::api::{
     Appearance, Binding, Command, CommandBatch, Direction, HostContext, KeyState, LabelDirection,
     Mode, Rect, Screen, SemanticRole, UiScanResult, UiScanStatus, UiTarget,
 };
 use keysteer::api::{Key, ModeEvent, Point};
 use keysteer::config::Config;
-use keysteer::modes::hint::labeling::assign_compact_into;
 use stats_alloc::Region;
 
 #[test]

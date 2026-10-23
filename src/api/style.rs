@@ -607,12 +607,10 @@ impl Anchor {
 
 /// `[ui_hint.search_input_ui]`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SearchInputUi {
     pub position: PanelPosition,
     pub position_mode: PanelPositionMode,
-    pub x_offset: i32,
-    pub y_offset: i32,
     pub width: i32,
     #[serde(flatten)]
     pub label: LabelUi,
@@ -621,10 +619,8 @@ pub struct SearchInputUi {
 impl Default for SearchInputUi {
     fn default() -> Self {
         Self {
-            position: PanelPosition::Percentages(["100%", "50%", "0%", "50%"].map(String::from)),
+            position: PanelPosition::Percentages(["95%", "50%", "5%", "50%"].map(String::from)),
             position_mode: PanelPositionMode::Screen,
-            x_offset: 0,
-            y_offset: 24,
             width: 280,
             label: LabelUi::default(),
         }
@@ -664,8 +660,6 @@ pub struct CompiledSearchPanel {
     pub position: CompiledPanelPosition,
     pub position_mode: PanelPositionMode,
     pub width: f64,
-    pub x_offset: f64,
-    pub y_offset: f64,
     light: QuickSwitchStyles,
     dark: QuickSwitchStyles,
     input_light: SharedLabelStyle,
@@ -675,6 +669,54 @@ pub struct CompiledSearchPanel {
 }
 
 impl CompiledSearchPanel {
+    /// Place either panel using only compiled numeric settings and current geometry.
+    pub fn place(
+        &self,
+        screen: crate::api::Rect,
+        window: Option<crate::api::Rect>,
+        input: Option<crate::api::Rect>,
+        height: f64,
+        scale: f64,
+    ) -> crate::api::Rect {
+        let area = if self.position_mode == PanelPositionMode::Window {
+            window.unwrap_or(screen)
+        } else {
+            screen
+        };
+        let width = (self.width * scale).min(area.width);
+        let followed = input.filter(|_| self.position_mode == PanelPositionMode::SearchInput);
+        let mut panel = if let Some(input) = followed {
+            let anchor = self
+                .position
+                .anchor(crate::api::Rect::new(0.0, 0.0, 1.0, 1.0));
+            let input_center = input.center();
+            let vertical = anchor.y - 0.5;
+            let direction = if vertical <= 0.0 { -1.0 } else { 1.0 };
+            // Use centers throughout: half the combined height clears both
+            // edges; distance from the midline adds a percentage of that height.
+            let center = crate::api::Point::new(
+                input_center.x + (anchor.x - 0.5) * input.width,
+                input_center.y + direction * (0.5 + vertical.abs()) * (input.height + height),
+            );
+            crate::api::Rect::new(
+                center.x - width / 2.0,
+                center.y - height / 2.0,
+                width,
+                height,
+            )
+        } else {
+            self.position.place(area, width, height)
+        };
+        if input.is_some() {
+            panel = clamp_position(panel, screen);
+        }
+        if followed.is_none() && matches!(self.position, CompiledPanelPosition::Percentages(_)) {
+            panel.width = panel.width.min(area.width);
+            panel.height = panel.height.min(area.height);
+        }
+        panel
+    }
+
     pub fn with_point_input_colors(
         mut self,
         background: Option<&ThemedColor>,
@@ -747,8 +789,6 @@ impl CompiledSearchPanel {
             },
             position_mode: ui.position_mode,
             width: ui.width.max(1) as f64,
-            x_offset: ui.x_offset as f64,
-            y_offset: ui.y_offset as f64,
             point_light: point_style(&input_light, Color::rgb(107, 114, 128)),
             point_dark: point_style(&input_dark, Color::rgb(156, 163, 175)),
             input_light,
@@ -848,19 +888,107 @@ background_color = { light = "#FFFFFFFF", dark = "#000000FF" }
             Color::rgb(255, 255, 255)
         );
         assert_eq!(panel.for_appearance(Appearance::Dark).panel.font_size, 23.0);
+        let info = CompiledSearchPanel::new(
+            &config.ui_hint.search_info_ui,
+            &config.palette(Appearance::Light),
+            &config.palette(Appearance::Dark),
+        );
+        let screen = crate::api::Rect::new(-900.0, 100.0, 800.0, 600.0);
+        let window = Some(crate::api::Rect::new(-800.0, 200.0, 600.0, 400.0));
         let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
         for _ in 0..1000 {
             std::hint::black_box(panel.for_appearance(Appearance::Dark).panel.clone());
-            std::hint::black_box(panel.position.place(
-                crate::api::Rect::new(100.0, 100.0, 800.0, 600.0),
-                320.0,
-                40.0,
-                0.0,
-                0.0,
-            ));
+            let input = std::hint::black_box(panel.place(screen, window, None, 40.0, 1.0));
+            std::hint::black_box(info.for_appearance(Appearance::Light).panel.clone());
+            std::hint::black_box(info.place(screen, window, Some(input), 158.0, 1.0));
         }
         assert_eq!(region.change().allocations, 0);
         assert_eq!(region.change().reallocations, 0);
+    }
+
+    #[test]
+    fn native_and_browser_share_search_panel_layout_cases() {
+        use crate::api::Rect;
+
+        #[derive(Deserialize)]
+        struct Case {
+            name: String,
+            config: String,
+            screen: [f64; 4],
+            window: Option<[f64; 4]>,
+            scale: f64,
+            input: [f64; 4],
+            info: [f64; 4],
+        }
+        let rect = |[x, y, width, height]: [f64; 4]| Rect::new(x, y, width, height);
+        let cases: Vec<Case> = serde_json::from_str(include_str!(
+            "../../tests/fixtures/search-panel-layout.json"
+        ))
+        .unwrap();
+        for case in cases {
+            let config = crate::config::Config::parse(&case.config).unwrap();
+            config.validate().unwrap();
+            let settings = crate::app::mode_catalog::hint_settings(&config);
+            let screen = rect(case.screen);
+            let window = case.window.map(rect);
+            for appearance in [Appearance::Light, Appearance::Dark] {
+                let input_style = &settings.search_input_ui.for_appearance(appearance).panel;
+                let input_height =
+                    (input_style.font_size * 1.8 + input_style.padding_y * 2.0) * case.scale;
+                let input =
+                    settings
+                        .search_input_ui
+                        .place(screen, window, None, input_height, case.scale);
+                let info_style = &settings.search_info_ui.for_appearance(appearance).panel;
+                let info_height =
+                    (info_style.font_size * 9.0 + info_style.padding_y * 2.0) * case.scale;
+                let info = settings.search_info_ui.place(
+                    screen,
+                    window,
+                    Some(input),
+                    info_height,
+                    case.scale,
+                );
+                for (actual, expected) in [(input, rect(case.input)), (info, rect(case.info))] {
+                    for (actual, expected) in [
+                        (actual.x, expected.x),
+                        (actual.y, expected.y),
+                        (actual.width, expected.width),
+                        (actual.height, expected.height),
+                    ] {
+                        assert!(
+                            (actual - expected).abs() < 1e-9,
+                            "{}: {actual} != {expected}",
+                            case.name
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn search_panels_ignore_legacy_pixel_offsets_without_exporting_them() {
+        let defaults = crate::config::Config::default();
+        for panel in ["search_input_ui", "search_info_ui"] {
+            for field in ["x_offset", "y_offset"] {
+                for value in ["0", "-9000", "9000", "'ignored'"] {
+                    let text = format!("[ui_hint.{panel}]\n{field} = {value}");
+                    let parsed = crate::config::Config::parse(&text).unwrap();
+                    parsed.validate().unwrap();
+                    assert_eq!(
+                        parsed.ui_hint.search_input_ui,
+                        defaults.ui_hint.search_input_ui
+                    );
+                    assert_eq!(
+                        parsed.ui_hint.search_info_ui,
+                        defaults.ui_hint.search_info_ui
+                    );
+                    let exported: toml::Value = toml::from_str(&parsed.to_toml().unwrap()).unwrap();
+                    assert!(exported["ui_hint"][panel].get(field).is_none());
+                }
+            }
+        }
     }
 
     #[test]
@@ -899,27 +1027,17 @@ pub enum CompiledPanelPosition {
 }
 
 impl CompiledPanelPosition {
-    pub fn place(
-        &self,
-        area: crate::api::Rect,
-        width: f64,
-        height: f64,
-        x: f64,
-        y: f64,
-    ) -> crate::api::Rect {
+    fn anchor(&self, area: crate::api::Rect) -> crate::api::Point {
         match self {
-            Self::Anchor(anchor) => anchor.place(area, width, height, x, y),
-            Self::Percentages(value) => {
-                let region = percentage_region(area, *value);
-                crate::api::Rect::new(
-                    (region.center().x - width / 2.0 + x)
-                        .clamp(area.x, (area.right() - width).max(area.x)),
-                    (region.center().y - height / 2.0 - y)
-                        .clamp(area.y, (area.bottom() - height).max(area.y)),
-                    width.min(area.width),
-                    height.min(area.height),
-                )
-            }
+            Self::Percentages(value) => percentage_region(area, *value).center(),
+            Self::Anchor(anchor) => anchor.place(area, 0.0, 0.0, 0.0, 0.0).center(),
+        }
+    }
+
+    fn place(&self, area: crate::api::Rect, width: f64, height: f64) -> crate::api::Rect {
+        match self {
+            Self::Anchor(anchor) => anchor.place(area, width, height, 0.0, 0.0),
+            Self::Percentages(_) => centered_rect(area, self.anchor(area), width, height),
         }
     }
 }
@@ -928,11 +1046,52 @@ pub fn percentage_region(
     area: crate::api::Rect,
     [top, right, bottom, left]: [f64; 4],
 ) -> crate::api::Rect {
+    let origin = relative_point(area, crate::api::Point::new(left, top));
     crate::api::Rect::new(
-        area.x + area.width * left,
-        area.y + area.height * top,
+        origin.x,
+        origin.y,
         area.width * (1.0 - left - right).max(0.0),
         area.height * (1.0 - top - bottom).max(0.0),
+    )
+}
+
+/// Resolve a precompiled normalized anchor without reparsing percentages.
+#[inline]
+pub fn relative_point(area: crate::api::Rect, anchor: crate::api::Point) -> crate::api::Point {
+    crate::api::Point::new(
+        area.x + area.width * anchor.x,
+        area.y + area.height * anchor.y,
+    )
+}
+
+/// Constrain the origin while preserving the measured size, including oversized panels.
+#[inline]
+pub fn clamp_position(rect: crate::api::Rect, area: crate::api::Rect) -> crate::api::Rect {
+    crate::api::Rect::new(
+        rect.x
+            .clamp(area.x, (area.right() - rect.width).max(area.x)),
+        rect.y
+            .clamp(area.y, (area.bottom() - rect.height).max(area.y)),
+        rect.width,
+        rect.height,
+    )
+}
+
+#[inline]
+pub fn centered_rect(
+    area: crate::api::Rect,
+    center: crate::api::Point,
+    width: f64,
+    height: f64,
+) -> crate::api::Rect {
+    clamp_position(
+        crate::api::Rect::new(
+            center.x - width / 2.0,
+            center.y - height / 2.0,
+            width,
+            height,
+        ),
+        area,
     )
 }
 
@@ -1281,10 +1440,7 @@ impl WindowStyles {
                 number_min_width: card.number_min_width,
             },
             position,
-            anchor: crate::api::Point::new(
-                position[3] + (1.0 - position[3] - position[1]).max(0.0) / 2.0,
-                position[0] + (1.0 - position[0] - position[2]).max(0.0) / 2.0,
-            ),
+            anchor: percentage_region(crate::api::Rect::new(0.0, 0.0, 1.0, 1.0), position).center(),
             light: ResolvedWindowStyle::new(ui, card, light),
             dark: ResolvedWindowStyle::new(ui, card, dark),
         }

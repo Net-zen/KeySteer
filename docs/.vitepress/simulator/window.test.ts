@@ -233,7 +233,7 @@ test('tree splits, moves into empty slots, swaps, and exits without reverting', 
   chooseWindowNumber(state, state.window.numbers[source])
   assert.equal(state.window.swapSource, source)
   if (state.mode !== 'window_editor') applyWindowAction(state, 'window_editor')
-  windowSelectionKey(state, '`', {})
+  applyWindowAction(state, 'window_area_number')
   windowSelectionKey(state, String(empty.id), {})
   assert.equal(treeSlots(state.window.tree!).find(s => s.id === empty.id)!.window, source)
   assert.equal(state.window.swapSource, null)
@@ -266,7 +266,7 @@ test('tree minimum sizes constrain the divider and infeasible splits leave geome
   assert.equal(JSON.stringify(state.window.windows), before)
 })
 
-test('leaving tree editing is one ordinary undo, and closing windows preserves empty slots and numbering', () => {
+test('leaving tree editing is one ordinary undo, and closing windows preserves empty slots and number order', () => {
   const state = createSimulatorState(); enterWindow(state)
   const before = JSON.stringify(state.window.windows)
   applyWindowAction(state, 'window_quick'); applyWindowAction(state, 'window_editor')
@@ -282,7 +282,8 @@ test('leaving tree editing is one ordinary undo, and closing windows preserves e
   assert.equal(treeSlots(state.window.tree!).length, count)
   assert.ok(treeSlots(state.window.tree!).some(s => s.window === null))
   delete numbers[closing.id]
-  assert.deepEqual(state.window.numbers, numbers)
+  const survivors = Object.entries(numbers).sort((a, b) => a[1] - b[1])
+  assert.deepEqual(state.window.numbers, Object.fromEntries(survivors.map(([id], index) => [id, index + 1])))
   applyWindowAction(state, 'window')
   assert.ok(!state.window.windows.some(w => w.id === closing.id))
 })
@@ -300,7 +301,7 @@ test('backtick in Editor selects a region and region selection activates its win
   enterWindow(state)
   const before = structuredClone(state.window.windows)
   if (state.mode !== 'window_editor') applyWindowAction(state, 'window_editor')
-  windowSelectionKey(state, '`', {})
+  applyWindowAction(state, 'window_area_number')
   assert.equal(state.window.panel, 'tree')
   assert.notDeepEqual(state.window.windows, before)
   const slot = treeSlots(state.window.tree!).find(s => s.window !== state.window.target)!
@@ -315,7 +316,7 @@ test('continuous divider motion is one undo and X removes a region with stable I
   state.window.windows = [{ id: 1, title: 'One', app: 'Demo', screen: 0, x: 100, y: 100, width: 600, height: 400 }]
   enterWindow(state)
   if (state.mode !== 'window_editor') applyWindowAction(state, 'window_editor')
-  windowSelectionKey(state, '`', {})
+  applyWindowAction(state, 'window_area_number')
   applyWindowAction(state, 'window_split_right')
   const before = structuredClone(state.window.tree)
   applyWindowAction(state, 'window_ratio_right')
@@ -333,18 +334,20 @@ test('continuous divider motion is one undo and X removes a region with stable I
 })
 
 
-test('all window modes launch directly from Idle and share session numbers', () => {
-  for (const mode of ['window', 'window_quick', 'window_editor', 'window_restore']) {
-    const state = createSimulatorState(); state.mode = 'idle'
-    applyWindowAction(state, mode)
-    assert.equal(state.mode, mode)
-    const target = state.window.target, numbers = { ...state.window.numbers }
-    applyWindowAction(state, mode === 'window_restore' ? 'window_delete' : 'window_restore')
-    assert.equal(state.window.target, target)
-    assert.deepEqual(state.window.numbers, numbers)
-    applyModeAction(state, 'grid')
-    assert.equal(state.mode, 'grid')
-    assert.equal(state.window.library, false)
+test('all window modes launch directly from Idle and share session numbers within the same scope', () => {
+  for (const screens of ['current', 'all']) {
+    for (const mode of ['window', 'window_quick', 'window_editor', 'window_restore']) {
+      const state = createSimulatorState(); state.mode = 'idle'
+      applyWindowAction(state, mode, { screens })
+      assert.equal(state.mode, mode)
+      const target = state.window.target, numbers = { ...state.window.numbers }
+      applyWindowAction(state, mode === 'window_restore' ? 'window_delete' : 'window_restore', { screens })
+      assert.equal(state.window.target, target)
+      assert.deepEqual(state.window.numbers, numbers)
+      applyModeAction(state, 'grid')
+      assert.equal(state.mode, 'grid')
+      assert.equal(state.window.library, false)
+    }
   }
 })
 

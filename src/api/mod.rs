@@ -24,6 +24,7 @@ pub mod presentation;
 pub mod scroll;
 pub mod style;
 pub mod text_edit;
+pub mod text_select;
 pub mod theme;
 pub mod window;
 pub mod window_layout;
@@ -41,7 +42,7 @@ pub use command::{
     ButtonAction, Command, CommandBatch, FinishCause, FocusedApp, HostContext, Mode, ModeEvent,
     MouseButton, UiScanRequest, UiScanScope, UiScanStrategy, VisionOptions,
 };
-pub use geometry::{Point, Rect, Screen, SemanticRole, UiTarget};
+pub use geometry::{OcrTextSpan, Point, Rect, Screen, SemanticRole, UiTarget};
 pub use hint::LabelDirection;
 pub use input::{Key, KeyChord, KeyState, ModeId};
 pub use lifecycle::{LifecycleAction, TargetingLifecycle};
@@ -52,11 +53,9 @@ pub use plugin::Plugin;
 pub use style::{BoundaryHighlight, HintPlacement, LabelUi, SearchInputUi};
 pub use theme::{Palette, ThemedColor};
 
-#[cfg(feature = "benchmark-hooks")]
-pub use backend::KeyDisposition;
-#[cfg(any(test, feature = "benchmark-hooks"))]
+#[cfg(test)]
 pub use command::UiScanResult;
-#[cfg(any(target_os = "windows", test, feature = "benchmark-hooks"))]
+#[cfg(any(target_os = "windows", test))]
 pub use command::UiScanStatus;
-#[cfg(any(test, feature = "benchmark-hooks"))]
+#[cfg(test)]
 pub use input::InputEvent;

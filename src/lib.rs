@@ -36,12 +36,6 @@ pub(crate) mod plugins;
 pub(crate) mod presentation;
 pub(crate) mod support;
 
-/// Doc-hidden access for the repository's standalone release-profile benchmark.
-#[cfg(feature = "benchmark-hooks")]
-#[doc(hidden)]
-#[path = "../tools/perf/support/benchmark.rs"]
-pub mod benchmark;
-
 #[cfg(test)]
 extern crate self as keysteer;
 

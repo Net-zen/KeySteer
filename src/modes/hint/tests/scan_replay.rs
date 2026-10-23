@@ -6,6 +6,115 @@ use std::sync::Arc;
 use std::time::Instant;
 
 #[test]
+fn page_semantics_stream_without_provisional_text_labels() {
+    let env = Env::new();
+    let mut mode = crate::app::mode_catalog::hint(&env.config);
+    activate(&mut mode, &env);
+    let id = mode.session.scan_id;
+    let output = Arc::new(scan_mailbox::ScanMailbox::default());
+    let generation = output.begin(id);
+    let mut worker = scan_fusion::Worker::default();
+    let sink = worker
+        .prepare(generation)
+        .unwrap()
+        .begin(scan_fusion::Options {
+            id,
+            generation,
+            threshold: 0.5,
+            defer_visual: true,
+            progress_sources: Vec::new(),
+            output: Arc::clone(&output),
+            wake: Arc::new(|| {}),
+            accepts: Arc::new(|_| true),
+            current: Arc::new(|| true),
+        });
+    let link = UiTarget {
+        rect: Rect::new(100., 200., 100., 24.),
+        role: SemanticRole::Link,
+        name: "中文链接".into(),
+        details: None,
+    };
+    let image = UiTarget {
+        rect: Rect::new(400., 200., 80., 24.),
+        role: SemanticRole::Image,
+        name: String::new(),
+        details: None,
+    };
+    // Confirmed controls and images remain immediate while OCR is pending.
+    for (source, target) in [
+        (TargetSource::Accessibility, link.clone()),
+        (TargetSource::Contour, image),
+    ] {
+        sink.submit(source, vec![target.clone()]);
+        sink.flush();
+        let result = output.take().unwrap();
+        assert_eq!(result.status, UiScanStatus::Partial);
+        let out = mode.handle_owned(ModeEvent::UiScanned(result), &env.ctx());
+        assert_fresh_scene(&mode, &env, &out);
+        assert!(mode.session.scanning);
+        assert!(mode.session.scanned.iter().any(|t| t.rect == target.rect));
+    }
+    let labels: Vec<_> = mode.session.hints.iter().map(|h| h.label.clone()).collect();
+    let fragments: Vec<_> = [600., 625., 800.]
+        .into_iter()
+        .map(|x| UiTarget {
+            rect: Rect::new(x, 200., 20., 20.),
+            role: SemanticRole::Control,
+            name: String::new(),
+            details: None,
+        })
+        .collect();
+    sink.submit(TargetSource::Contour, fragments.clone());
+    sink.flush();
+    assert!(output.take().is_none(), "provisional glyphs must not flash");
+    sink.submit(
+        TargetSource::SystemOcr,
+        vec![
+            UiTarget::recognized_text(link.rect, "中文链接".into()),
+            UiTarget::recognized_text(Rect::new(600., 200., 60., 20.), "文章的一行".into()),
+        ],
+    );
+    sink.flush();
+    mode.handle_owned(ModeEvent::UiScanned(output.take().unwrap()), &env.ctx());
+    assert_eq!(mode.session.scanned.len(), 3);
+    assert_eq!(
+        mode.session
+            .hints
+            .iter()
+            .take(2)
+            .map(|h| h.label.clone())
+            .collect::<Vec<_>>(),
+        labels
+    );
+    assert!(
+        mode.session
+            .scanned
+            .iter()
+            .any(|t| t.role == SemanticRole::Link && t.ocr_text() == "中文链接")
+    );
+    sink.finish(UiScanStatus::Success);
+    sink.flush();
+    mode.handle_owned(ModeEvent::UiScanned(output.take().unwrap()), &env.ctx());
+    assert!(!mode.session.scanning);
+    assert_eq!(mode.session.scanned.len(), 4);
+    assert!(
+        mode.session
+            .scanned
+            .iter()
+            .any(|t| t.rect == fragments[2].rect)
+    );
+    assert!(
+        mode.session
+            .scanned
+            .iter()
+            .all(|t| t.rect != fragments[0].rect && t.rect != fragments[1].rect)
+    );
+    worker
+        .stop_until(Instant::now() + Duration::from_secs(5))
+        .unwrap();
+}
+
+#[test]
 fn metadata_refresh_keeps_plain_scene_and_updates_search() {
     for searching in [false, true] {
         let env = Env::new();
@@ -132,6 +241,8 @@ fn complete_scan_preserves_fields_and_labels_across_orders_chunks_and_mailbox_co
                             id,
                             generation,
                             threshold: 0.5,
+                            defer_visual: true,
+                            progress_sources: Vec::new(),
                             output: Arc::clone(&output),
                             wake: Arc::new(|| {}),
                             accepts: Arc::new(|_| true),
@@ -263,7 +374,7 @@ fn visual_only_scan_keeps_the_same_regions_without_native_evidence() {
                 mode.handle_owned(
                     ModeEvent::UiScanned(UiScanResult {
                         id: mode.session.scan_id,
-                        targets: update.batches.into_iter().flatten().collect(),
+                        targets: update.targets,
                         retired: update.retired,
                         status: UiScanStatus::Partial,
                     }),

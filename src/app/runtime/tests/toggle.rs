@@ -624,18 +624,20 @@ fn activation_key_then_modifier_upgrades_bare_toggle_without_mouse_fallback() {
 
 #[test]
 fn parameterless_toggle_captures_three_keyboard_partners_in_either_order() {
+    // Cmd+E is the macOS launcher; use an unbound partner so this test only
+    // exercises toggle capture rather than the global mode shortcut.
     for events in [
         vec![
             key_down("left_win"),
             key_down("left_shift"),
-            key_down("e"),
+            key_down("f8"),
             key_down("n"),
         ],
         vec![
             key_down("n"),
             key_down("left_win"),
             key_down("left_shift"),
-            key_down("e"),
+            key_down("f8"),
         ],
     ] {
         let mut engine = engine_with_normal_binding("n", "toggle");
@@ -649,7 +651,7 @@ fn parameterless_toggle_captures_three_keyboard_partners_in_either_order() {
         let expected = BTreeSet::from([
             InputTarget::Key(Key::new("left_win").unwrap()),
             InputTarget::Key(Key::new("left_shift").unwrap()),
-            InputTarget::Key(Key::new("e").unwrap()),
+            InputTarget::Key(Key::new("f8").unwrap()),
         ]);
         assert_eq!(engine.input.latched, expected);
         assert!(
@@ -666,7 +668,7 @@ fn parameterless_toggle_captures_three_keyboard_partners_in_either_order() {
             .collect();
         assert_eq!(
             sent_down,
-            BTreeSet::from(["left_win".into(), "left_shift".into(), "e".into()])
+            BTreeSet::from(["left_win".into(), "left_shift".into(), "f8".into()])
         );
     }
 }

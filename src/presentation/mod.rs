@@ -8,8 +8,8 @@ pub(crate) mod hint;
 pub(crate) mod key_help;
 pub(crate) mod label_placement;
 pub(crate) mod quick_switch;
-pub(crate) mod recursive_grid;
 pub(crate) mod screen_selector;
+mod text_select;
 pub(crate) mod window;
 
 use crate::api::presentation::{Presenter, View};
@@ -63,6 +63,8 @@ impl Presenter for Composer {
             View::Window(view) => view.scene(context),
             View::ScreenSelector(view) => view.scene(context),
             View::Hints(view) => view.scene(context),
+            View::TextSelect(view) => view.scene(context),
+            View::QuickSwitch(view) => view.scene(context),
             View::HintSelection(view) => view.scene(context),
             View::Status(view) => view.scene(context),
         }

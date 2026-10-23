@@ -1,10 +1,15 @@
+#[path = "build/compatibility.rs"]
+mod compatibility;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
+    compatibility::generate()?;
     println!("cargo:rerun-if-changed=assets/icons/keysteer.ico");
     println!("cargo:rerun-if-changed=assets/windows/keysteer.manifest");
-    println!("cargo:rerun-if-changed=src/platform/windows/compositor_clock.c");
-    println!("cargo:rerun-if-changed=src/platform/macos/vision_bridge.m");
-    println!("cargo:rerun-if-changed=src/platform/macos/point_capture.h");
+    println!("cargo:rerun-if-changed=src/platform/windows/display/compositor_clock.c");
+    println!("cargo:rerun-if-changed=src/platform/macos/vision/vision_bridge.m");
+    println!("cargo:rerun-if-changed=src/platform/macos/vision/vision_ocr_process.h");
+    println!("cargo:rerun-if-changed=src/platform/macos/vision/point_capture.h");
     println!("cargo:rerun-if-changed=src/platform/macos/autostart_bridge.m");
     println!("cargo:rerun-if-changed=src/platform/macos/audio_bridge.m");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
@@ -63,7 +68,7 @@ fn compile_windows_resources() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     cc::Build::new()
-        .file("src/platform/windows/compositor_clock.c")
+        .file("src/platform/windows/display/compositor_clock.c")
         .warnings(true)
         .compile("keysteer_windows");
 
@@ -96,7 +101,7 @@ fn compile_macos_bridge() {
 
     const MIN_MACOS: &str = "14.0";
     cc::Build::new()
-        .file("src/platform/macos/vision_bridge.m")
+        .file("src/platform/macos/vision/vision_bridge.m")
         .file("src/platform/macos/autostart_bridge.m")
         .file("src/platform/macos/audio_bridge.m")
         .flag("-fobjc-arc")

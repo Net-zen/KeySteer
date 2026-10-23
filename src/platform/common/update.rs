@@ -91,8 +91,8 @@ impl UpdateCheckGuard {
     fn acquire() -> Option<Self> {
         CHECK_IN_PROGRESS
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-            .then_some(Self)
+            .ok()?;
+        Some(Self)
     }
 }
 
@@ -258,6 +258,12 @@ fn check_latest_release(
         current: current.to_string(),
         latest: latest.version.to_string(),
         path,
+        // Ad-hoc macOS builds have no publisher certificate to compare. Mirror
+        // metadata checks download integrity but cannot establish that identity.
+        sha256: match latest.source {
+            ReleaseSource::GitHub => latest.asset.sha256,
+            ReleaseSource::GhProxy => None,
+        },
     })
 }
 
@@ -815,7 +821,9 @@ mod tests {
     #[test]
     fn update_checks_are_single_flight_and_release_the_guard() {
         let first = UpdateCheckGuard::acquire().expect("first check should acquire the guard");
-        assert!(UpdateCheckGuard::acquire().is_none());
+        for _ in 0..3 {
+            assert!(UpdateCheckGuard::acquire().is_none());
+        }
 
         drop(first);
         assert!(UpdateCheckGuard::acquire().is_some());

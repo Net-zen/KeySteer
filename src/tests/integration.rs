@@ -79,7 +79,7 @@ fn the_shipped_targeting_lifecycles_are_explicit() {
 
 #[test]
 fn the_macos_bridge_does_not_require_clang_availability_runtime() {
-    let bridge = include_str!("../../src/platform/macos/vision_bridge.m");
+    let bridge = include_str!("../../src/platform/macos/vision/vision_bridge.m");
     assert!(
         !bridge.contains("if (@available"),
         "@available introduces __isPlatformVersionAtLeast, which Rust's -nodefaultlibs link omits"
@@ -179,7 +179,13 @@ fn macos_shutdown_releases_input_before_waiting_for_workers() {
         .and_then(|body| body.split_once("impl Drop for MacOsBackend"))
         .map(|(body, _)| body)
         .expect("macOS shutdown must remain inspectable");
-    let release_input = shutdown.find("hook.request_stop()").unwrap();
+    let release_input = shutdown.find("self.stop_input_capture()").unwrap();
+    let stop_input = backend
+        .split_once("fn stop_input_capture(&mut self)")
+        .and_then(|(_, body)| body.split_once("fn shutdown(&mut self)"))
+        .map(|(body, _)| body)
+        .expect("macOS input shutdown must remain inspectable");
+    assert!(stop_input.contains("hook.request_stop()"));
     let remove_status_item = shutdown.find("self.status_item.take()").unwrap();
     let stop_scan = shutdown.find("self.scan_worker.request_stop()").unwrap();
     let join_hook = shutdown.find("hook.stop_until(deadline)").unwrap();
@@ -196,11 +202,11 @@ fn macos_shutdown_releases_input_before_waiting_for_workers() {
 
 #[test]
 fn macos_tcc_fail_open_adds_no_per_event_stop_poll() {
-    let hook = include_str!("../../src/platform/macos/hook.rs");
+    let hook = include_str!("../../src/platform/macos/input/hook.rs");
     let callback = hook
         .split_once("fn handle_event(")
         .map(|(_, tail)| tail)
-        .and_then(|tail| tail.split_once("fn store_latest_pointer"))
+        .and_then(|tail| tail.split_once("fn mouse_button_input"))
         .map(|(body, _)| body)
         .expect("the macOS event-tap callback must remain inspectable");
     assert!(!callback.contains("stop.load"));
@@ -280,7 +286,12 @@ fn the_shipped_config_validates_without_platform_warnings() {
         .validate()
         .expect("keysteer.default.toml should validate");
     assert!(config.platform_warnings().is_empty());
-    assert!(config.deprecation_warnings().is_empty());
+    assert!(
+        Config::parse_with_warnings(include_str!("../../keysteer.default.toml"))
+            .unwrap()
+            .1
+            .is_empty()
+    );
     for chord in config.hotkeys.keys().chain(config.normal.bindings.keys()) {
         let parsed = KeyChord::parse(chord).expect("shipped chords must parse");
         assert!(
@@ -444,8 +455,12 @@ fn every_targeting_mode_returns_to_idle_on_escape() {
     let palette = config.palette(Appearance::Dark);
 
     for mut mode in keysteer::app::mode_catalog::built_in(&config) {
-        // Idle has nowhere to go; Normal/Text Input exits use engine bindings.
-        if matches!(mode.id().as_str(), "idle" | "normal" | "text_input") || mode.id().is_window() {
+        // Quick Switch returns to its previous mode; it does not finish targeting.
+        if matches!(
+            mode.id().as_str(),
+            "idle" | "normal" | "text_input" | "quick_switch"
+        ) || mode.id().is_window()
+        {
             continue;
         }
         let ctx = HostContext {
@@ -458,10 +473,10 @@ fn every_targeting_mode_returns_to_idle_on_escape() {
 
         mode.handle(&ModeEvent::Activated { previous: None }, &ctx);
         let out = mode.handle(
-            &ModeEvent::Key {
+            &ModeEvent::Binding {
                 key: "esc".parse().unwrap(),
                 state: keysteer::api::KeyState::Down,
-                repeat: false,
+                binding: Binding::SelectionCancel.into(),
             },
             &ctx,
         );
@@ -547,8 +562,8 @@ fn every_mode_has_a_binding_table_including_plugins() {
 
 #[test]
 fn windows_visual_capture_keeps_one_barrier_and_an_unscaled_copy_path() {
-    let gpu = include_str!("../../src/platform/windows/gpu_overlay.rs");
-    let worker = include_str!("../../src/platform/windows/overlay_worker.rs");
+    let gpu = include_str!("../../src/platform/windows/display/gpu_overlay.rs");
+    let worker = include_str!("../../src/platform/windows/display/overlay_worker.rs");
     let native = include_str!("../../src/platform/windows/native/gdi.rs");
 
     assert!(

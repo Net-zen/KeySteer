@@ -370,6 +370,7 @@ jobs:
         env:
           MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
           MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
+          KEYSTEER_REQUIRE_MACOS_SIGNING: ${{ inputs.publish && '1' || '0' }}
           MACOS_NOTARY_KEY_JSON_BASE64: ${{ secrets.MACOS_NOTARY_KEY_JSON_BASE64 }}
         run: python3 packaging/macos/package-cross.py ${{ matrix.target }}
 
@@ -481,9 +482,17 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      - name: Set up macOS signing tool
+        uses: ./.github/actions/setup-rcodesign
+
       - name: Package macOS ${{ matrix.arch }}
         shell: bash
         timeout-minutes: 30
+        env:
+          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          MACOS_SIGNING_PASSWORD: ${{ secrets.MACOS_SIGNING_PASSWORD }}
+          KEYSTEER_REQUIRE_MACOS_SIGNING: ${{ inputs.publish && '1' || '0' }}
+          KEYSTEER_TRUST_SIGNING_CERTIFICATE: '1'
         run: bash packaging/macos/package.sh ${{ matrix.target }}
 
       - name: Upload macOS ${{ matrix.arch }} package

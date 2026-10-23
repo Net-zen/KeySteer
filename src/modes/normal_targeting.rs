@@ -68,6 +68,23 @@ impl Mode for NormalTargeting {
                 binding,
                 state: KeyState::Down,
                 ..
+            } if matches!(
+                binding.as_ref(),
+                Binding::SelectionReset | Binding::SelectionParent
+            ) =>
+            {
+                let bounds = self.prepare(ctx);
+                if matches!(binding.as_ref(), Binding::SelectionReset) {
+                    self.grid.reset_selection(bounds);
+                } else {
+                    self.grid.parent();
+                }
+                return CommandBatch::new();
+            }
+            ModeEvent::Binding {
+                binding,
+                state: KeyState::Down,
+                ..
             } if matches!(binding.as_ref(), Binding::TargetingKey(_)) => {
                 let Binding::TargetingKey(key) = binding.as_ref() else {
                     unreachable!()

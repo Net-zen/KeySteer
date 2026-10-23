@@ -1,6 +1,6 @@
 # macOS
 
-KeySteer 支持 macOS 14 及以上。将 `KeySteer.app` 移动到程序目录即可。
+KeySteer 支持 macOS 14 及以上。安装后先授予键盘与鼠标控制权限（旧称“辅助功能”），再回到[快速上手](/guide/getting-started)试一次点击。
 
 ## Homebrew 安装与升级
 
@@ -16,7 +16,7 @@ brew update
 brew upgrade --cask dccif/keysteer/keysteer
 ```
 
-用户配置保存在下方的数据目录中，升级时保留。安装后仍需完成辅助功能与屏幕录制授权。
+用户配置保存在下方的数据目录中，升级时保留。安装后仍需完成下方的权限授权。
 
 ## GitHub Release 手动安装
 
@@ -28,14 +28,22 @@ sudo xattr -cr /Applications/KeySteer.app
 
 ## 首次授权（推荐）
 
-1. 打开 `KeySteer.app` 之前。
-2. 前往“系统设置 → 隐私与安全性 → 辅助功能”。
+1. 打开 `/Applications/KeySteer.app`。
+2. 前往“系统设置 → 隐私与安全”（部分版本显示为“隐私与安全性”），按版本打开对应权限：
+
+   - **macOS 27**：设备控制和数据访问（Device Control and Data Access）。
+   - **macOS 14–26**：辅助功能（Accessibility）。
+
 3. 允许 KeySteer 控制电脑。
-4. 重新启动 KeySteer，并按 `Primary+E` 测试。
+4. 重新启动 KeySteer，并按 `Command+E` 测试。
 
-`UI Hint` 的 Vision 检测还需要“屏幕录制”权限。只使用 `Grid` 或 `Recursive Grid` 时不依赖屏幕内容识别，但键盘捕获仍需要辅助功能权限。
+找不到权限项时，可在系统设置中搜索“设备控制”或“辅助功能”，打开应用授权列表；没有 KeySteer 时，点 `+` 添加 `/Applications/KeySteer.app`。应用或旧提示中提到的“辅助功能权限”，在 macOS 27 对应上述新名称。
 
-建议一次性就两个授权都完成，避免后续权限问题。
+`UI Hint` 的视觉识别还需要同一隐私页面内的**录屏与系统录音**权限（旧版称“屏幕录制”；英文 Screen & System Audio Recording）。只使用 Grid 或 Recursive Grid 时不需要读取屏幕内容，但仍需上述键盘与鼠标控制权限。
+
+::: tip 找不到视觉标签？
+先检查“录屏与系统录音”权限，授权后重启 KeySteer。
+:::
 
 ## 文件位置
 
@@ -65,13 +73,15 @@ invert_vertical = true
 
 如果顶部状态图标正常，但按键没有反应：
 
-1. 确认辅助功能列表中授权的是 `KeySteer.app`。
+1. 确认“设备控制和数据访问”（旧版为“辅助功能”）列表中授权的是 `KeySteer.app`。
 2. 关闭并重新打开 `KeySteer`。
 3. 运行 `keysteer --doctor` 查看键盘是否可用。
 4. 仍有问题时查看数据目录中的 `keysteer.log`。
 
-因为没开发者签名，未来的升级可能都需要 **重新授权**。
+::: tip 升级后按键失效
+可在权限列表中移除旧的 KeySteer，重新添加 `/Applications/KeySteer.app`，再重启程序。
+:::
 
 ## 顶部状态栏图标
 
-直接启动和开机启动都会在 AppKit 完成启动后，在屏幕顶部右侧创建一个 KeySteer 状态图标。点击该图标即可打开暂停、重载配置、检查更新和退出等控制菜单；它不创建普通应用的主菜单栏或 Dock 图标。
+KeySteer 运行后，屏幕顶部右侧会出现状态图标。点击可暂停控制、重载配置、检查更新或退出。平时从这里管理程序，Dock 中没有单独图标。

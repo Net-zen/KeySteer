@@ -54,6 +54,7 @@ fn usage_threshold_and_quick_switch_export_and_validate() {
 save_after_entries = 37
 [quick_switch]
 position = "mouse"
+hint_characters = "ASDF"
 blacklist = ["idle", "window_tab"]
 [quick_switch.ui]
 text_color = { light = "#123456FF", dark = "#FFEEDDFF" }
@@ -63,10 +64,19 @@ text_color = { light = "#123456FF", dark = "#FFEEDDFF" }
     let restored = Config::parse(&config.to_toml().unwrap()).unwrap();
     assert_eq!(restored.mode_usage.save_after_entries, 37);
     assert_eq!(restored.quick_switch, config.quick_switch);
+    assert_eq!(Config::default().quick_switch.hint_characters, "wertyuiop");
+    let plan = crate::app::configuration::compile(&config).unwrap();
+    assert_eq!(plan.settings.quick_switch.alphabet, ['a', 's', 'd', 'f']);
     for invalid in [
         "[mode_usage]\nsave_after_entries = 0",
+        "[quick_switch.bindings]\nw = 'cancel_selection'",
         "[quick_switch]\nhold_ms = 0",
         "[quick_switch]\nkey = 'shift'",
+        "[quick_switch]\nhint_characters = ''",
+        "[quick_switch]\nhint_characters = 'w'",
+        "[quick_switch]\nhint_characters = 'wW'",
+        "[quick_switch]\nhint_characters = 'qwe'",
+        "[quick_switch]\nhint_characters = 'we '",
         "[quick_switch]\nposition = 'desktop'",
         "[quick_switch.ui]\ntext_color = '#bad'",
     ] {
@@ -540,7 +550,7 @@ fn pointer_smooth_acceleration_defaults_on_and_can_be_disabled() {
 #[test]
 fn macos_scroll_axes_have_independent_defaults() {
     assert_eq!(Config::default().macos_scroll_invert(), (false, true));
-    let config = Config::parse(
+    let (config, warnings) = Config::parse_with_warnings(
         r#"
             [platform.macos.scroll]
             invert_horizontal = true
@@ -549,7 +559,7 @@ fn macos_scroll_axes_have_independent_defaults() {
     )
     .unwrap();
     assert_eq!(config.macos_scroll_invert(), (true, false));
-    assert!(config.deprecation_warnings().is_empty());
+    assert!(warnings.is_empty());
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -599,7 +609,7 @@ fn all_macos_scroll_axis_combinations_are_preserved() {
 
 #[test]
 fn explicit_axis_settings_override_legacy_values() {
-    let config = Config::parse(
+    let (config, warnings) = Config::parse_with_warnings(
         r#"
             [scroll]
             invert_scroll = true
@@ -611,7 +621,7 @@ fn explicit_axis_settings_override_legacy_values() {
     )
     .unwrap();
     assert_eq!(config.macos_scroll_invert(), (false, true));
-    assert_eq!(config.deprecation_warnings().len(), 1);
+    assert_eq!(warnings.len(), 1);
 }
 
 #[test]
@@ -652,15 +662,18 @@ fn idle_binds_only_mode_launchers() {
 
 #[test]
 fn idle_launchers_resolve_the_platform_neutral_primary_modifier() {
-    // The source default uses `primary`; runtime tables contain its
-    // concrete key so matching never needs to resolve aliases again.
+    // Built-ins need not appear in the user alias map. Compile them through
+    // the same parser as runtime keymaps, including the Windows override.
     let config = Config::default();
+    let aliases = config.resolved_key_aliases();
+    let primary = KeyChord::parse_with_aliases("primary", aliases).unwrap();
     for chord in config.hotkeys.keys() {
-        assert!(
-            !chord.starts_with("primary+"),
-            "unresolved launcher {chord:?}"
-        );
-        assert_eq!(KeyChord::parse(chord).unwrap().keys().len(), 2);
+        let compiled = KeyChord::parse_with_aliases(chord, aliases).unwrap();
+        assert!(!compiled.canonical().contains("primary"), "{chord:?}");
+        assert_eq!(compiled.keys().len(), 2);
+        if compiled.activation_key().as_str() == "e" {
+            assert!(compiled.keys().contains(&primary.keys()[0]));
+        }
     }
 }
 
@@ -893,7 +906,7 @@ fn grid_like_modes_do_not_steal_label_keys_with_exit_bindings() {
         &config.ui_hint.bindings,
     ] {
         assert!(!table.contains_key("q"));
-        assert!(!table.contains_key("esc"));
+        assert_eq!(table.get("esc"), Some(&Binding::SelectionCancel));
         let exit = table
             .iter()
             .find(|(_, binding)| binding == &&Binding::Mode(ModeId::normal()))
@@ -1344,10 +1357,7 @@ fn scan_strategy_defaults_to_hybrid_and_allows_per_app_overrides() {
     assert_eq!(vision.request_timeout_ms, 5_000);
     assert_eq!(vision.minimum_confidence, 0.0);
     assert_eq!(vision.merge_iou_threshold, 0.5);
-    assert_eq!(
-        vision.rectangle_max_candidates,
-        crate::api::command::MAX_UI_SCAN_TARGETS
-    );
+    assert_eq!(vision.rectangle_max_candidates, 0);
     assert_eq!(vision.rectangle_min_size, 0.01);
     assert_eq!(vision.button_icon_max_size, 48.0);
     assert_eq!(vision.checkbox_max_size, 32.0);
@@ -1694,7 +1704,17 @@ fn ui_hint_scan_scope_defaults_and_round_trips() {
             .scan_scope,
         crate::api::UiScanScope::Active
     );
-    assert!(Config::parse("[ui_hint]\nscan_scope = 'all'\n").is_err());
+    let all = Config::parse("[ui_hint]\nscan_scope = 'all'\n").unwrap();
+    all.validate().unwrap();
+    assert_eq!(all.ui_hint.scan_scope, crate::api::UiScanScope::All);
+    assert_eq!(
+        Config::parse(&all.to_toml().unwrap())
+            .unwrap()
+            .ui_hint
+            .scan_scope,
+        crate::api::UiScanScope::All
+    );
+    assert!(Config::parse("[ui_hint]\nscreens = 'all'\n").is_err());
 }
 
 #[test]
@@ -1784,8 +1804,9 @@ fn temporary_passthrough_chords_round_trip_and_resolve_aliases() {
 }
 
 #[test]
-fn visual_candidate_limit_accepts_ten_thousand_but_remains_bounded() {
-    for count in [1, 2000, 10_000] {
+fn visual_candidate_limit_defaults_to_unlimited_and_accepts_explicit_limits() {
+    assert_eq!(Config::default().ui_hint.vision.rectangle_max_candidates, 0);
+    for count in [0, 1, 2000, 10_000, 100_025] {
         assert!(
             Config::parse(&format!(
                 "[ui_hint.vision]\nrectangle_max_candidates = {count}"
@@ -1794,20 +1815,7 @@ fn visual_candidate_limit_accepts_ten_thousand_but_remains_bounded() {
             .is_ok()
         );
     }
-    for count in [0, 10_001] {
-        assert!(
-            Config::parse(&format!(
-                "[ui_hint.vision]\nrectangle_max_candidates = {count}"
-            ))
-            .and_then(|config| config.validate())
-            .is_err()
-        );
-    }
-    let native = include_str!("../../platform/macos/vision_bridge.m");
-    assert!(native.contains(&format!(
-        "NMK_MAX_VISION_REGIONS = {}",
-        crate::api::command::MAX_UI_SCAN_TARGETS
-    )));
+    assert!(Config::parse("[ui_hint.vision]\nrectangle_max_candidates = -1").is_err());
 }
 
 #[test]
@@ -2159,6 +2167,98 @@ fn search_match_priority_defaults_compiles_and_round_trips_with_strict_validatio
                 .and_then(|config| config.validate())
                 .is_err(),
             "{values}"
+        );
+    }
+}
+
+#[test]
+fn formerly_fixed_controls_keep_defaults_in_sparse_configs_and_allow_none() {
+    let config = Config::parse(
+        r#"
+[grid.bindings]
+f8 = "first_level"
+space = "none"
+[ui_hint.bindings]
+[window.multi_select.bindings]
+f2 = "window_multi_confirm"
+[window_editor.bindings]
+[window_restore.bindings]
+[plugin_modes."plugin:screen-selector".settings]
+preserve = false
+"#,
+    )
+    .unwrap();
+    assert_eq!(config.grid.bindings["space"], Binding::Disabled);
+    assert_eq!(config.grid.bindings["backspace"], Binding::SelectionParent);
+    assert!(!config.grid.bindings.contains_key("ctrl+backspace"));
+    assert_eq!(config.ui_hint.bindings["tab"], Binding::SelectionReopen);
+    assert_eq!(
+        config.window_editor.bindings["`"],
+        Binding::parse("window_area_number").unwrap()
+    );
+    assert_eq!(
+        config.window_restore.bindings["page_up"],
+        Binding::parse("window_previous_page").unwrap()
+    );
+    assert_eq!(
+        config.window.multi_select.bindings["backspace"],
+        Binding::parse("send backspace").unwrap()
+    );
+    assert_eq!(
+        config.plugin_modes["plugin:screen-selector"].bindings["esc"],
+        Binding::SelectionCancel
+    );
+}
+
+#[test]
+fn older_configs_enable_text_modes_and_supply_unoccupied_default_entrances() {
+    let config = Config::parse("[normal.bindings]\nh = 'move_left'").unwrap();
+    assert!(config.text_select.enabled);
+    assert_eq!(
+        config.text_select.bindings,
+        crate::config::settings::TextSelect::default().bindings
+    );
+    assert_eq!(
+        config.text_input.bindings,
+        crate::config::settings::TextInput::default().bindings
+    );
+    assert_eq!(
+        config.normal.bindings.get("c"),
+        Some(&Binding::Mode(ModeId::text_select()))
+    );
+    assert_eq!(
+        config.normal.bindings.get("\\"),
+        Some(&Binding::Mode(ModeId::text_input()))
+    );
+    assert!(
+        config
+            .text_select
+            .bindings
+            .values()
+            .any(|b| *b == Binding::TextSelect(crate::api::text_select::Action::Refine))
+    );
+}
+
+#[test]
+fn upgrade_keeps_explicit_text_mode_disabling_and_remapped_or_occupied_entries() {
+    for source in [
+        "[normal.bindings]\nc = 'none'\n'\\' = 'none'",
+        "[normal.bindings]\nc = 'grid'\n'\\' = 'grid'",
+        "[normal.bindings]\nf8 = 'text_select'\nf9 = 'text_input'",
+        "[normal.bindings]\n[hotkeys]\nc = 'none'\n'\\' = 'none'",
+        "[normal.bindings]\n'c+h' = 'arrow_left'\n'\\+h' = 'arrow_right'",
+        "[normal.bindings]\n[ text_select ]\nenabled = false\n[text_input]",
+    ] {
+        let config = Config::parse(source).unwrap();
+        assert_ne!(
+            config.normal.bindings.get("c"),
+            Some(&Binding::Mode(ModeId::text_select())),
+            "{source}"
+        );
+        assert_ne!(
+            config.normal.bindings.get("\\"),
+            Some(&Binding::Mode(ModeId::text_input())),
+            "{source}"
         );
     }
 }

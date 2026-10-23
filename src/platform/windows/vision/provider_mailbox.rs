@@ -74,6 +74,17 @@ struct ContourProviderSlot {
 }
 
 impl ProviderMailbox {
+    pub(super) fn progress(
+        &self,
+        source: TargetSource,
+        progress: crate::platform::common::scan_progress::Progress,
+    ) {
+        if let Some(output) = &self.output
+            && !self.closed.load(Ordering::Acquire)
+        {
+            output.progress(source, progress);
+        }
+    }
     pub(super) fn with_output(output: Sink) -> Self {
         Self::create(Some(output))
     }
@@ -205,8 +216,7 @@ impl ProviderMailboxState {
                 slot.finish(provider, elapsed, result)?;
                 self.ready |= ready;
             }
-            ProviderEvent::ContourBatch(mut targets) => {
-                targets.truncate(MAX_OCR_TARGETS.saturating_sub(self.contour.published_targets));
+            ProviderEvent::ContourBatch(targets) => {
                 if targets.is_empty() {
                     return Ok(());
                 }
@@ -313,9 +323,8 @@ impl OcrProviderSlot {
         &mut self,
         _provider: &'static str,
         elapsed: Duration,
-        mut targets: Vec<UiTarget>,
+        targets: Vec<UiTarget>,
     ) -> Result<(), VisionError> {
-        targets.truncate(MAX_OCR_TARGETS.saturating_sub(self.published_targets));
         if targets.is_empty() {
             return Ok(());
         }
@@ -394,7 +403,7 @@ pub(super) fn send_ocr_batches(
     started: Instant,
     targets: Vec<UiTarget>,
 ) -> Result<usize, VisionError> {
-    let count = targets.len().min(MAX_OCR_TARGETS);
+    let count = targets.len();
     mailbox.publish(ProviderEvent::OcrBatch {
         provider,
         elapsed: started.elapsed(),
@@ -407,10 +416,18 @@ pub(super) fn send_contour_batches(
     mailbox: &ProviderMailbox,
     targets: Vec<UiTarget>,
 ) -> Result<(), VisionError> {
+    send_contour_batch(mailbox, targets)?;
+    mailbox.publish(ProviderEvent::ContourDone)
+}
+
+pub(super) fn send_contour_batch(
+    mailbox: &ProviderMailbox,
+    targets: Vec<UiTarget>,
+) -> Result<(), VisionError> {
     // Move the provider buffer once; the fusion inbox bounds storage and the
     // consumer controls its own processing quanta.
     if !targets.is_empty() {
         mailbox.publish(ProviderEvent::ContourBatch(targets))?;
     }
-    mailbox.publish(ProviderEvent::ContourDone)
+    Ok(())
 }

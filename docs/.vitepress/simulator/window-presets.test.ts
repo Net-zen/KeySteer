@@ -51,14 +51,15 @@ test('saved layouts restore MRU first and retain empty regions', () => {
   assert.deepEqual(treeSlots(instantiateLayout(preset(4), windows)).map(s => s.window), [9, 8, 7, 6])
   assert.deepEqual(treeSlots(instantiateLayout(preset(9), windows.slice(0, 4))).map(s => s.window), [9, 8, 7, 6, null, null, null, null, null])
 })
-test('R then 1 restores a saved layout and extra windows stay put', () => {
+test('current-screen Restore leaves other displays and extra windows unchanged', () => {
   const state = createSimulatorState()
-  state.pointer = { x: 25, y: 25 }; enterWindow(state)
+  const settings = { screens: 'current' }
+  state.pointer = { x: 25, y: 25 }; enterWindow(state, settings)
   state.window.presets = [preset(1)]
   const before = state.window.windows.map(w => ({ ...w }))
-  applyWindowAction(state, 'window_restore')
+  applyWindowAction(state, 'window_restore', settings)
   assert.equal(state.window.library, true)
-  assert.equal(windowSelectionKey(state, '1', {}), true)
+  assert.equal(windowSelectionKey(state, '1', settings), true)
   assert.equal(state.window.library, false)
   const placed = treeSlots(state.window.tree!)[0].window
   assert.ok(placed !== null)
@@ -136,7 +137,7 @@ test('delete is internal to Restore and toggling preserves its page while cancel
   assert.equal(state.mode, 'window')
   assert.equal(state.window.deletingPresets, false)
   applyWindowAction(state, 'window_restore')
-  windowSelectionKey(state, 'page_down', {})
+  applyWindowAction(state, 'window_next_page')
   for (const action of ['window_delete', 'window_delete', 'window_delete']) {
     applyWindowAction(state, action)
     assert.equal(state.mode, 'window_restore')

@@ -7,43 +7,75 @@ use crate::api::geometry::Rect;
 pub(crate) const INLINE_LABELS: usize = 512;
 pub(crate) const COMPACT_UNSTACKED: u16 = u16::MAX;
 pub(crate) const WIDE_UNSTACKED: u32 = u32::MAX;
-pub(crate) const UNCOLORED: u16 = u16::MAX;
+pub(crate) const DEEP_UNSTACKED: u64 = u64::MAX;
 
-/// Nonempty word interval in a dynamic conflict row. The scan ceiling fits
-/// u16 word offsets; only initialized edge words need visiting during coloring.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct GraphRowInfo {
-    pub(crate) degree: u16,
-    pub(crate) first_word: u16,
-    pub(crate) end_word: u16,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LayerInfo {
+    pub(crate) layer: usize,
+    pub(crate) depth: usize,
 }
+
+impl LayerInfo {
+    pub(crate) fn pack_deep(self) -> u64 {
+        debug_assert!(self.depth <= u32::MAX as usize && self.layer < self.depth);
+        ((self.depth as u64) << u32::BITS) | self.layer as u64
+    }
+
+    #[inline]
+    pub(crate) fn from_deep(packed: u64) -> Self {
+        if packed == DEEP_UNSTACKED {
+            Self::default()
+        } else {
+            Self {
+                layer: (packed & u64::from(u32::MAX)) as usize,
+                depth: (packed >> u32::BITS) as usize,
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn from_packed(packed: u32) -> Self {
+        if packed == WIDE_UNSTACKED {
+            Self::default()
+        } else {
+            Self {
+                layer: (packed & u32::from(u16::MAX)) as usize,
+                depth: (packed >> u16::BITS) as usize,
+            }
+        }
+    }
+}
+pub(crate) const UNCOLORED: u32 = u32::MAX;
 
 #[derive(Debug, Default)]
 pub(crate) struct WideVisualLayerWorkspace {
-    pub(crate) graph_rows: Vec<u64>,
-    pub(crate) degrees: Vec<GraphRowInfo>,
+    pub(crate) graph_edges: Vec<(usize, usize)>,
+    pub(crate) graph_offsets: Vec<usize>,
+    pub(crate) graph_neighbors: Vec<usize>,
+    pub(crate) graph_dense: Vec<u128>,
     pub(crate) visited: Vec<bool>,
-    pub(crate) packed: Vec<u32>,
+    pub(crate) packed: Vec<u64>,
     pub(crate) component: Vec<usize>,
     pub(crate) pending: Vec<usize>,
-    pub(crate) best: Vec<u16>,
-    pub(crate) colors: Vec<u16>,
+    pub(crate) best: Vec<u32>,
+    pub(crate) colors: Vec<u32>,
     pub(crate) order: Vec<usize>,
     pub(crate) occupied: Vec<u64>,
     pub(crate) frontmost: Vec<usize>,
-    pub(crate) classes: Vec<(u16, usize)>,
-    pub(crate) remap: Vec<u16>,
+    pub(crate) classes: Vec<(u32, usize)>,
+    pub(crate) remap: Vec<u32>,
     pub(crate) sweep_order: Vec<usize>,
     pub(crate) sweep_active: Vec<usize>,
 }
 
 #[derive(Debug)]
 // Keeping the common <=512-Hint plan inline avoids a heap allocation on every
-// rebuild; boxing the rare wide variant would only add another allocation.
+// rebuild; deep components use 32 bits for each layer and component depth.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum LayerStorage {
     Compact(SmallVec<[u16; INLINE_LABELS]>),
-    Wide(SmallVec<[u32; INLINE_LABELS]>),
+    Wide(Vec<u32>),
+    Deep(Vec<u64>),
 }
 
 impl Default for LayerStorage {
@@ -71,6 +103,7 @@ impl VisualLayerPlan {
         match &mut self.layers {
             LayerStorage::Compact(layers) => layers.clear(),
             LayerStorage::Wide(layers) => layers.clear(),
+            LayerStorage::Deep(layers) => layers.clear(),
         }
         self.layer_count = 0;
         self.ready = false;
@@ -95,6 +128,7 @@ impl VisualLayerPlan {
         match &self.layers {
             LayerStorage::Compact(layers) => layers.len(),
             LayerStorage::Wide(layers) => layers.len(),
+            LayerStorage::Deep(layers) => layers.len(),
         }
     }
 
@@ -103,19 +137,23 @@ impl VisualLayerPlan {
         let layers = match &self.layers {
             LayerStorage::Compact(layers) => layers.capacity(),
             LayerStorage::Wide(layers) => layers.capacity(),
+            LayerStorage::Deep(layers) => layers.capacity(),
         };
         layers.max(
             self.wide
                 .as_ref()
-                .map_or(0, |wide| wide.graph_rows.capacity()),
+                .map_or(0, |wide| wide.graph_offsets.capacity()),
         )
     }
 
     #[cfg(test)]
-    pub(crate) fn retained_graph_words(&self) -> usize {
-        self.wide
-            .as_ref()
-            .map_or(0, |wide| wide.graph_rows.capacity())
+    pub(crate) fn retained_graph_capacity(&self) -> usize {
+        self.wide.as_ref().map_or(0, |wide| {
+            wide.graph_edges.capacity()
+                + wide.graph_offsets.capacity()
+                + wide.graph_neighbors.capacity()
+                + wide.graph_dense.capacity()
+        })
     }
 
     pub(crate) fn release_retained(&mut self) {
@@ -131,6 +169,7 @@ impl VisualLayerPlan {
         match &mut self.layers {
             LayerStorage::Compact(layers) => layers.reserve(additional),
             LayerStorage::Wide(layers) => layers.reserve(additional),
+            LayerStorage::Deep(layers) => layers.reserve(additional),
         }
     }
 
@@ -165,10 +204,16 @@ impl VisualLayerPlan {
                 .copied()
                 .filter(|packed| *packed != WIDE_UNSTACKED)
                 .map(|packed| {
-                    (
-                        (packed & u32::from(u16::MAX)) as usize,
-                        (packed >> u16::BITS) as usize,
-                    )
+                    let info = LayerInfo::from_packed(packed);
+                    (info.layer, info.depth)
+                }),
+            LayerStorage::Deep(layers) => layers
+                .get(hint_index)
+                .copied()
+                .filter(|packed| *packed != DEEP_UNSTACKED)
+                .map(|packed| {
+                    let info = LayerInfo::from_deep(packed);
+                    (info.layer, info.depth)
                 }),
         }
     }
@@ -227,9 +272,30 @@ impl VisualLayerPlan {
         self.ready = true;
     }
 
-    /// A single complete overlap component in canonical front-to-back order.
-    /// Write final storage directly, without a graph or a temporary packed array.
+    /// A verified clique can write source-order layers without a graph.
     pub(crate) fn finish_stacked(&mut self, placements: &[(usize, Rect)], hint_count: usize) {
+        if placements.len() >= usize::from(u16::MAX) {
+            let count = placements.len();
+            self.finish_layers(
+                hint_count,
+                count,
+                placements
+                    .iter()
+                    .rev()
+                    .enumerate()
+                    .map(|(layer, (index, _))| {
+                        (
+                            *index,
+                            LayerInfo {
+                                layer,
+                                depth: count,
+                            },
+                        )
+                    }),
+            );
+            self.canonical_stack = true;
+            return;
+        }
         let count = placements.len();
         self.canonical_stack = true;
         self.layer_count = count;
@@ -248,7 +314,7 @@ impl VisualLayerPlan {
             }
         } else {
             if !matches!(self.layers, LayerStorage::Wide(_)) {
-                self.layers = LayerStorage::Wide(SmallVec::new());
+                self.layers = LayerStorage::Wide(Vec::new());
             }
             let LayerStorage::Wide(layers) = &mut self.layers else {
                 return;
@@ -261,14 +327,37 @@ impl VisualLayerPlan {
         }
     }
 
-    /// Disjoint identical-rectangle runs have independent canonical layer
-    /// orders. Their verified depth selects storage, never a target-count gate.
     pub(crate) fn finish_separated_stacks(
         &mut self,
         placements: &[(usize, Rect)],
         hint_count: usize,
         depth: usize,
     ) {
+        if depth >= usize::from(u16::MAX) {
+            self.finish_layers(
+                hint_count,
+                depth,
+                placements
+                    .chunk_by(|left, right| left.1 == right.1)
+                    .filter(|group| group.len() > 1)
+                    .flat_map(|group| {
+                        group
+                            .iter()
+                            .rev()
+                            .enumerate()
+                            .map(move |(layer, (index, _))| {
+                                (
+                                    *index,
+                                    LayerInfo {
+                                        layer,
+                                        depth: group.len(),
+                                    },
+                                )
+                            })
+                    }),
+            );
+            return;
+        }
         self.canonical_stack = false;
         if depth == 0 {
             self.finish_unstacked();
@@ -293,7 +382,7 @@ impl VisualLayerPlan {
             }
         } else {
             if !matches!(self.layers, LayerStorage::Wide(_)) {
-                self.layers = LayerStorage::Wide(SmallVec::new());
+                self.layers = LayerStorage::Wide(Vec::new());
             }
             let LayerStorage::Wide(layers) = &mut self.layers else {
                 return;
@@ -312,8 +401,24 @@ impl VisualLayerPlan {
         &mut self,
         placements: &[(usize, Rect)],
         hint_count: usize,
-        packed_component_layers: &[u32],
+        component_layers: impl IntoIterator<Item = LayerInfo>,
         layer_count: usize,
+    ) {
+        self.finish_layers(
+            hint_count,
+            layer_count,
+            placements
+                .iter()
+                .zip(component_layers)
+                .map(|((index, _), info)| (*index, info)),
+        );
+    }
+
+    fn finish_layers(
+        &mut self,
+        hint_count: usize,
+        layer_count: usize,
+        entries: impl Iterator<Item = (usize, LayerInfo)>,
     ) {
         self.canonical_stack = false;
         self.layer_count = layer_count;
@@ -327,26 +432,33 @@ impl VisualLayerPlan {
             };
             layers.resize(hint_count, COMPACT_UNSTACKED);
             layers.fill(COMPACT_UNSTACKED);
-            for ((hint_index, _), packed) in placements.iter().zip(packed_component_layers) {
-                if *packed != WIDE_UNSTACKED {
-                    let layer = (*packed & u32::from(u16::MAX)) as u16;
-                    let component_layer_count = (*packed >> u16::BITS) as u16;
-                    layers[*hint_index] = (component_layer_count << u8::BITS) | layer;
-                }
+            for (index, info) in entries.filter(|(_, info)| info.depth != 0) {
+                layers[index] = ((info.depth as u16) << u8::BITS) | info.layer as u16;
             }
-        } else {
+        } else if layer_count < usize::from(u16::MAX) {
             if !matches!(self.layers, LayerStorage::Wide(_)) {
-                self.layers = LayerStorage::Wide(SmallVec::new());
+                self.layers = LayerStorage::Wide(Vec::new());
             }
             let LayerStorage::Wide(layers) = &mut self.layers else {
                 return;
             };
             layers.resize(hint_count, WIDE_UNSTACKED);
             layers.fill(WIDE_UNSTACKED);
-            for ((hint_index, _), packed) in placements.iter().zip(packed_component_layers) {
-                if *packed != WIDE_UNSTACKED {
-                    layers[*hint_index] = *packed;
-                }
+            for (index, info) in entries.filter(|(_, info)| info.depth != 0) {
+                layers[index] = ((info.depth as u32) << u16::BITS) | info.layer as u32;
+            }
+        } else {
+            // Keep both fields at full u32 width only for deeply stacked groups.
+            if !matches!(self.layers, LayerStorage::Deep(_)) {
+                self.layers = LayerStorage::Deep(Vec::new());
+            }
+            let LayerStorage::Deep(layers) = &mut self.layers else {
+                return;
+            };
+            layers.resize(hint_count, DEEP_UNSTACKED);
+            layers.fill(DEEP_UNSTACKED);
+            for (index, info) in entries.filter(|(_, info)| info.depth != 0) {
+                layers[index] = info.pack_deep();
             }
         }
     }

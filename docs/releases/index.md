@@ -1,9 +1,72 @@
 ---
 releaseHistory: true
-outline: false
+outline: 2
 ---
 
 # 更新日志 / Release Notes
+
+## 0.12.5
+
+- 优化 Windows 和 macOS 的网格与 UIHint 绘制和标签切换，修复部分覆盖层刷新异常。
+- 改善 UIHint 连续扫描的响应与资源回收，减少临时内存占用。
+- 修复退出或重载配置时可能出现的短暂输入卡顿。
+- 修复重复触发更新检查或打开“关于”窗口时的状态异常。
+
+- Improved grid and UIHint rendering and label switching on Windows and macOS, and fixed overlay refresh issues.
+- Improved responsiveness and resource cleanup during repeated UIHint scans, reducing temporary memory use.
+- Fixed brief input stalls that could occur when quitting or reloading configuration.
+- Fixed state handling when repeatedly checking for updates or opening the About window.
+
+## 0.12.3
+
+- 修复 macOS UIHint 中文识别错误。
+- 优化 UIHint 结果融合、文字补全、搜索索引和重叠层规划，减少重复处理和临时内存分配，并修复识别过程中标签闪烁的问题。
+- 优化配置保存，连续修改时处理耗时减少约 8%，内存分配量减少约 26%。
+- 改进 UIHint 轮廓识别，补全浅色空心控件并减少不必要的像素处理和临时内存分配。
+- 鼠标左右键、中键和两个侧键均支持改绑，也能通过可配置按键模拟鼠标点击。
+- **支持改绑左键，但不建议。** 给左键安排新动作后，它就不再负责普通点击了。小心“赛博灯泡”：改配置时很潇洒，想点“改回去”才发现左键已经下班 😵。尝试前请先为模拟左键点击配置一个备用按键；模拟点击不会再次触发鼠标绑定，不会套娃。
+- ⚠️ 误绑后，可在 Normal 模式使用可配置按键进入临时输入模式（Text Input），临时恢复普通点击，再修改绑定；若无法进入，可用键盘打开任务管理器（macOS 为活动监视器），结束 KeySteer 后修正配置。
+
+- Fixed Chinese text recognition in macOS UIHint.
+- Optimized UIHint fusion, text completion, search indexing, and overlap planning to reduce repeated work and temporary allocations. Fixed label flickering during recognition.
+- Optimized configuration saves, reducing processing time by about 8% and allocated bytes by about 26% during repeated edits.
+- Improved UIHint contour detection for faint outlined controls while reducing redundant pixel processing and temporary allocations.
+- All five mouse buttons can now be remapped, and configurable keybindings can simulate mouse clicks.
+- **Left-click remapping is supported, but not recommended.** Once remapped, left-click performs its new action instead of clicking. A classic “Congratulations, you played yourself” moment: you finish the clever setup, then realize you need left-click to change it back 😵. Before experimenting, configure a backup keybinding for left-click; simulated clicks do not retrigger mouse bindings, so there is no loop.
+- ⚠️ If you lose left-click, use your configured keybinding in Normal mode to enter Text Input and temporarily restore normal clicking, then fix the binding. If that is unavailable, use the keyboard to open Task Manager (Activity Monitor on macOS), stop KeySteer, and correct the configuration.
+
+## 0.12.2
+
+- UIHint 新增多屏识别：**双 4K、800 控件，约 0.28 秒显示首批标签**（Windows / Hybrid，本机实测中位数）。
+
+- UIHint adds multi-display scanning: **first labels in about 0.28 s with 800 controls on two 4K displays** (Windows / Hybrid, local median).
+
+```toml
+[ui_hint]
+# window（默认/default）：优先鼠标下窗口 / pointer window first
+# active：优先激活窗口 / active window first
+# screen：鼠标所在屏幕 / pointer's display
+# all（新增/new）：全部显示器 / all displays
+scan_scope = "all"
+```
+
+## 0.12.1
+
+- 优化 Windows 和 macOS 的鼠标移动与滚动响应。
+
+- Improved pointer movement and scrolling responsiveness on Windows and macOS 
+
+## 0.12.0
+
+- **闲时更安静，操作更跟手。** 核心循环改为事件驱动，告别常规空闲轮询，输入和任务到来时按需唤醒。
+- UIHint 搜索分批预热、输入优先，目标更新只重建变化部分，让复杂界面下的搜索更流畅。
+- 日志改为异步写入，减少磁盘操作对交互的干扰。
+- ⚠️ **配置变更提醒：** `[ui_hint.search_input_ui]` 搜索框略微上移，`[ui_hint.search_info_ui]` 信息面板默认跟随其上方并留出间距，可在[网页模拟器](https://dccif.github.io/KeySteer/simulator)调整位置、间距和样式。这两个配置段的旧 `x_offset` / `y_offset` 仍兼容读取，但不再生效，不影响启动。
+
+- **Quieter at idle, quicker to respond.** The core loop now wakes for events and scheduled work, eliminating routine idle polling.
+- UIHint search prepares work in small batches with input taking priority, rebuilding only changed entries for smoother searches on complex screens.
+- Logging now runs asynchronously, reducing disk I/O on the interaction thread.
+- ⚠️ **Configuration changes:** The search input in `[ui_hint.search_input_ui]` sits slightly higher, with the information panel in `[ui_hint.search_info_ui]` following above it with a gap. Adjust positions, spacing and appearance in the [web simulator](https://dccif.github.io/KeySteer/simulator). Legacy `x_offset` / `y_offset` fields in these two sections remain accepted but have no effect and do not prevent startup.
 
 ## 0.11.9
 

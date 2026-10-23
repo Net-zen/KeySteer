@@ -135,11 +135,6 @@ impl WindowSession {
                             repeating: false,
                         });
                     }
-                } else if key.as_str() == "page_down" {
-                    self.library_page = (self.library_page + 1)
-                        .min(self.saved_presets.len().saturating_sub(1) / PAGE_SIZE);
-                } else if key.as_str() == "page_up" {
-                    self.library_page = self.library_page.saturating_sub(1);
                 }
             }
             ModeEvent::Timer { id, .. } if id == NUMBER_TIMER => {
@@ -153,7 +148,12 @@ impl WindowSession {
                 state: KeyState::Down,
                 ..
             } => {
-                if let Binding::Window(W::DeletePreset) = binding.as_ref() {
+                if let Binding::Window(W::NextPage) = binding.as_ref() {
+                    self.library_page = (self.library_page + 1)
+                        .min(self.saved_presets.len().saturating_sub(1) / PAGE_SIZE);
+                } else if let Binding::Window(W::PreviousPage) = binding.as_ref() {
+                    self.library_page = self.library_page.saturating_sub(1);
+                } else if let Binding::Window(W::DeletePreset) = binding.as_ref() {
                     if !self.restore_pending {
                         self.deleting_presets = !self.deleting_presets;
                         self.delete_selection = None;

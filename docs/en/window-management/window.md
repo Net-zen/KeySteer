@@ -25,17 +25,23 @@ Entering Window activates and locks the window under the pointer. Moving the poi
 | `Z / Shift+Z` | Undo / redo window adjustments |
 | `Shift+C` | Restore positions, sizes, and window states from the start of this window session |
 
-By default, candidates are **non-minimized windows on the current display**. Existing numbers stay stable where possible: closing a window does not renumber the others, although re-entering may reclaim gaps. Only a prefix that could form a longer number waits, for 250 ms by default.
+By default, numbers cover non-minimized windows on all displays. Closing a window does not renumber the others; re-entering clears gaps. When both 1 and 12 exist, typing 1 briefly waits for more digits (250 ms by default).
 
-Need to click something? Hold `Primary` to temporarily use Normal's pointer movement, scrolling, and click bindings. Release it to resume the same target. Each window mode has independent direction bindings; remapping Normal does not automatically remap these modes.
+Use `screens = "current"` to show only the current display. See [Window configuration](/en/reference/configuration#window-configuration) for more options.
+
+::: tip Use the pointer while arranging windows
+Hold `Primary` for Normal movement, scrolling, and clicks. Release it to resume the same window. Each window mode has its own bindings; remapping Normal does not remap them.
+:::
 
 ## Move with grid targeting
 
-While Window is in Move state, Grid and Recursive Grid can run above the same locked window session. Defaults are `G` or `Primary+G` for Grid and `Primary+F` for Recursive Grid; bare `F` still maximizes.
+Want to move a window farther in fewer keystrokes? Press `G` for Grid or `Primary+F` for Recursive Grid. As you select cells, the window center follows the target point within the display's work area.
 
-Entrances come from Normal's effective bindings. Compilation borrows unoccupied Grid/Recursive Grid entrances after aliases and application overrides, preserving existing Window bindings, including `none`. The temporary Normal layer keeps its configured entrances as well; no physical G/F keys are hardcoded.
+Backtracking, restarting, and display switching use the targeting mode's usual controls. Finishing returns to Window; `keep` lets you continue selecting. One `Z` undoes the targeting session.
 
-The actual modes retain their configuration, Tab/Backspace navigation, Space reset, cross-display path preservation, and completion behavior. Whenever the picker moves the pointer, the window center follows within the destination work area. Leaving for Normal/Idle resumes Window; `keep` continues targeting. One targeting session creates one window undo step.
+::: info Remap grid entries in Window
+These entries belong to `[window.bindings]`. Remapping Normal does not change them. Bare `F` still maximizes/restores. Add the entries yourself if you already use a custom Window binding table.
+:::
 
 ## Audio controls
 
@@ -55,13 +61,17 @@ Volume changes by 1% per step. Raising application volume does not automatically
 
 ## Select multiple windows
 
-Press `Ctrl` to start selecting. The current window is already selected. Type `123` to select windows 1, 2 and 3. For numbers such as 12 or 23, type a space first, as in `123 12 23`. Type a number again to deselect it. Selected windows show a border and a `✓`.
+1. Tap `Ctrl` to start selecting. The current window is selected first.
+2. Type `123` for windows 1, 2, and 3. Separate multi-digit numbers with spaces, as in `123 12 23`. Repeat a number to deselect it.
+3. Press `Ctrl` or `Enter` to confirm, or move/resize directly to adjust them together. `E` arranges only these windows; `T` combines them into a tab group.
 
-Press `Ctrl` or `Enter` to finish selecting, or go straight to a move or resize key. These actions apply to all selected windows. `E` arranges just those windows, and `T` combines them into a tab group.
+Selected windows show a border and `✓`. Use Backspace to fix input or `Esc` to undo this input edit and return to the original window.
 
-Use Backspace to fix a mistake, or `Esc` to undo this input edit and return to the original window. `Ctrl+X` clears the selection. Entering `A` Quick, `R` Restore or exiting also clears the selection and first returns to the original window.
+::: tip Clear the selection
+`Ctrl+X` clears multi-selection. Entering Quick, Restore, or exiting also clears it and first returns to the original window. On macOS, `Ctrl` means Control.
+:::
 
-To change these keys, edit the configuration below. On macOS, `ctrl` means Control:
+Merge these entries into your existing tables to customize the keys:
 
 ```toml
 [window.bindings]

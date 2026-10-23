@@ -1,0 +1,114 @@
+.ks-perf-highlights {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 24px 0 12px;
+}
+.ks-perf-highlight {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px 16px;
+  border: 1px solid var(--ks-border);
+  border-radius: 16px;
+  background: var(--vp-c-bg-soft);
+}
+.ks-perf-highlight > span { font-size: 13px; font-weight: 600; }
+.ks-perf-highlight > strong {
+  color: var(--vp-c-brand-1);
+  font-size: clamp(24px, 2.6vw, 34px);
+  line-height: 1.2;
+  letter-spacing: -1px;
+  white-space: nowrap;
+}
+.ks-perf-highlight > small { color: var(--vp-c-text-2); font-size: 11px; line-height: 1.6; }
+.ks-perf-switch {
+  display: flex;
+  flex-wrap: wrap;
+  width: fit-content;
+  padding: 4px;
+  gap: 4px;
+  margin: 20px 0 16px;
+  border: 1px solid var(--ks-border);
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+}
+.ks-perf-switch > button {
+  padding: 6px 12px;
+  border-radius: 8px;
+  color: var(--vp-c-text-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ks-perf-switch > button[aria-pressed="true"] {
+  background: var(--vp-c-brand-1);
+  color: var(--vp-c-white);
+}
+.ks-perf-switch > button:focus-visible { outline: 2px solid var(--vp-c-brand-1); outline-offset: 3px; }
+.ks-perf-chart {
+  margin: 16px 0;
+  padding: 20px;
+  border: 1px solid var(--ks-border);
+  border-radius: 16px;
+  background: var(--vp-c-bg-soft);
+}
+.ks-perf-chart-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
+.ks-perf-chart-heading > strong { font-size: 15px; }
+.ks-perf-chart-heading > span,
+.ks-perf-legend { color: var(--vp-c-text-2); font-size: 11px; }
+.ks-perf-bars { --label: 128px; --value: 48px; margin-top: 18px; }
+.ks-perf-row {
+  display: grid;
+  grid-template-columns: var(--label) minmax(0, 1fr) var(--value);
+  align-items: center;
+  column-gap: 12px;
+  min-height: 38px;
+}
+.ks-perf-name { font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.ks-perf-track { height: 10px; border-radius: 4px; background: var(--vp-c-divider); }
+.ks-perf-bar { display: block; height: 100%; border-radius: inherit; background: var(--vp-c-brand-1); }
+.ks-perf-value { text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; }
+.ks-perf-axis { display: flex; justify-content: space-between; margin: 8px calc(var(--value) + 12px) 0 calc(var(--label) + 12px); color: var(--vp-c-text-2); font-size: 10px; }
+.vp-doc .ks-perf-note { margin: 16px 0 0; color: var(--vp-c-text-2); font-size: 12px; line-height: 1.7; }
+.ks-perf-legend { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 10px; }
+.ks-perf-legend > span { display: flex; align-items: center; gap: 6px; }
+.ks-perf-dot { width: 9px; height: 9px; border-radius: 3px; background: var(--vp-c-brand-1); }
+.ks-perf-dot.peak,
+.ks-perf-bar.peak { background: var(--ks-diagram-platform); }
+.ks-perf-memory-tracks { display: grid; gap: 5px; }
+.ks-perf-memory-tracks .ks-perf-track { height: 7px; }
+.ks-perf-bars.memory .ks-perf-row { min-height: 45px; }
+.ks-perf-value > strong,
+.ks-perf-value > small { display: block; line-height: 1.5; }
+.ks-perf-value > small { color: var(--vp-c-text-2); font-size: inherit; }
+.ks-perf-table { border: 1px solid var(--ks-border); border-radius: 12px; margin: 20px 0; }
+.vp-doc .ks-perf-table table { display: table; table-layout: fixed; width: 100%; min-width: 0; margin: 0; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.ks-perf-scenario-column { width: 26%; }
+.vp-doc .ks-perf-table :is(th, td) { padding: 10px 8px; font-size: inherit; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; border-color: var(--ks-border); }
+.vp-doc .ks-perf-table thead th { text-align: center; background: var(--vp-c-bg-soft); }
+.vp-doc .ks-perf-table tbody tr:nth-child(odd) { background: var(--vp-c-bg); }
+.vp-doc .ks-perf-table tbody tr:nth-child(even) { background: color-mix(in srgb, var(--vp-c-brand-1) 5%, var(--vp-c-bg)); }
+.vp-doc .ks-perf-table tbody th,
+.vp-doc .ks-perf-table th[rowspan] { text-align: left; }
+.vp-doc .ks-perf-table tbody th { font-weight: 500; }
+.vp-doc .ks-perf-table tbody :is(th, td) { background: transparent; }
+.vp-doc .ks-perf-table td { white-space: nowrap; text-align: right; }
+.ks-perf-recognition { overflow-x: auto; }
+.vp-doc .ks-perf-recognition table { min-width: 620px; }
+@media (max-width: 639px) {
+  .ks-perf-highlights { grid-template-columns: 1fr; }
+  .ks-perf-highlight { gap: 6px; padding: 16px 20px; }
+  .ks-perf-highlight > strong { font-size: 32px; }
+  .ks-perf-chart { padding: 16px 12px; }
+  .ks-perf-bars { --label: 105px; --value: 42px; }
+  .ks-perf-row { column-gap: 8px; }
+  .ks-perf-axis { margin-right: calc(var(--value) + 8px); margin-left: calc(var(--label) + 8px); }
+  .vp-doc .ks-perf-table table { font-size: 12px; }
+  .vp-doc .ks-perf-table :is(th, td) { padding: 8px 2px; }
+  .ks-perf-scenario-column { width: 24%; }
+}
+@media (max-width: 359px) {
+  .vp-doc .ks-perf-table table { font-size: 11px; }
+  .ks-perf-scenario-column { width: 20%; }
+}

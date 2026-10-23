@@ -1,6 +1,6 @@
 import type { ConfigDocument } from '../config-studio/document.ts'
 
-const names: Record<string, string> = { normal: 'Normal', text_input: 'Text Input', grid: 'Grid', recursive_grid: 'Recursive Grid', ui_hint: 'UI Hint', window: 'Window', window_quick: 'Quick', window_editor: 'Edit', window_restore: 'Restore', window_tab: 'Tabs', idle: 'Idle' }
+const names: Record<string, string> = { normal: 'Normal', text_input: 'Text Input', quick_switch: 'Quick Switch', text_select: 'Text Select', grid: 'Grid', recursive_grid: 'Recursive Grid', ui_hint: 'UI Hint', window: 'Window', window_quick: 'Quick', window_editor: 'Edit', window_restore: 'Restore', window_tab: 'Tabs', idle: 'Idle' }
 const palettes = {
   light: { surface: '#EEF2FFFF', accent: '#465FBCFF', accent_alt: '#0B2377FF', on_accent_alt: '#F8FAFFFF', text: '#17327AFF' },
   dark: { surface: '#0A1338FF', accent: '#6E82D6FF', accent_alt: '#8FA2F0FF', on_accent_alt: '#081022FF', text: '#E8EEFFFF' },

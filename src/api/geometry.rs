@@ -285,8 +285,17 @@ pub struct UiTarget {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UiTargetDetails {
     pub ocr: String,
+    /// Original OCR runs with desktop geometry, when requested by text selection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ocr_spans: Vec<OcrTextSpan>,
     pub accessibility: String,
     pub color: Option<super::overlay::Color>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OcrTextSpan {
+    pub text: String,
+    pub rect: Rect,
 }
 
 impl UiTarget {
@@ -303,6 +312,16 @@ impl UiTarget {
 
     pub fn ocr_text(&self) -> &str {
         self.details.as_ref().map_or("", |d| d.ocr.as_str())
+    }
+    pub fn with_ocr_spans(mut self, spans: Vec<OcrTextSpan>) -> Self {
+        if !spans.is_empty() {
+            self.details = Some(Box::new(UiTargetDetails {
+                ocr: self.name.clone(),
+                ocr_spans: spans,
+                ..Default::default()
+            }));
+        }
+        self
     }
     pub fn accessibility_text(&self) -> &str {
         self.details

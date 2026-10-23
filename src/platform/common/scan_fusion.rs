@@ -3,10 +3,7 @@
 use super::{
     scan_accumulator::ScanAccumulator, scan_mailbox::ScanMailbox, spatial_index::TargetSource,
 };
-use crate::api::{
-    UiTarget,
-    command::{MAX_UI_SCAN_TARGETS, UiScanStatus},
-};
+use crate::api::{UiTarget, command::UiScanStatus};
 use crate::support::worker::WorkerJoin;
 use smallvec::SmallVec;
 use std::collections::VecDeque;
@@ -19,14 +16,52 @@ const FIRST_FUSION_BATCH: usize = 16;
 // Feedback for the next ready-work quantity, never a wait or publication timer.
 const FUSION_CPU_TARGET: Duration = Duration::from_micros(500);
 const STOP_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Backend-independent terminal precedence for independently published sources.
+pub(crate) fn combined_status(statuses: &[UiScanStatus]) -> UiScanStatus {
+    if statuses
+        .iter()
+        .any(|status| status == &UiScanStatus::ContextChanged)
+    {
+        return UiScanStatus::ContextChanged;
+    }
+    if statuses
+        .iter()
+        .any(|status| status == &UiScanStatus::Success)
+    {
+        return UiScanStatus::Success;
+    }
+    if statuses
+        .iter()
+        .any(|status| status == &UiScanStatus::TimedOut)
+    {
+        return UiScanStatus::TimedOut;
+    }
+    statuses
+        .iter()
+        .find_map(|status| match status {
+            UiScanStatus::PermissionDenied(message) => {
+                Some(UiScanStatus::PermissionDenied(message.clone()))
+            }
+            UiScanStatus::Unsupported(message) => Some(UiScanStatus::Unsupported(message.clone())),
+            UiScanStatus::Failed(message) => Some(UiScanStatus::Failed(message.clone())),
+            _ => None,
+        })
+        .unwrap_or(UiScanStatus::Success)
+}
 type Wake = Arc<dyn Fn() + Send + Sync>;
 type Accept = Arc<dyn Fn(&UiTarget) -> bool + Send + Sync>;
 type Current = Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub(crate) struct Options {
     pub(crate) id: u64,
+
     pub(crate) generation: u64,
     pub(crate) threshold: f64,
+    pub(crate) defer_visual: bool,
+    // Publication is independent of scan scope. Backends select native roots;
+    // confirmed semantic targets stream while regional visual work continues.
+    pub(crate) progress_sources: Vec<TargetSource>,
     pub(crate) output: Arc<ScanMailbox>,
     pub(crate) wake: Wake,
     pub(crate) accepts: Accept,
@@ -34,8 +69,11 @@ pub(crate) struct Options {
 }
 struct Lane {
     source: TargetSource,
-    batches: VecDeque<std::vec::IntoIter<UiTarget>>,
-    submitted: usize,
+    batches: VecDeque<Input>,
+}
+enum Input {
+    Targets(std::vec::IntoIter<UiTarget>),
+    Progress(super::scan_progress::Progress),
 }
 #[derive(Default)]
 struct InboxState {
@@ -43,12 +81,15 @@ struct InboxState {
     ready: VecDeque<usize>,
     terminal: Option<UiScanStatus>,
     finished: bool,
+    #[cfg(test)]
     version: u64,
     #[cfg(test)]
     settled: u64,
 }
 struct Inbox {
     id: u64,
+    progress_enabled: bool,
+
     cancelled: AtomicBool,
     state: Mutex<InboxState>,
     #[cfg(test)]
@@ -60,54 +101,51 @@ pub(crate) struct Sink {
     wake: mpsc::SyncSender<()>,
 }
 impl Sink {
-    /// Reserve bounded storage, move the ready buffer, and wake once. No fusion,
+    /// Move the complete ready buffer and wake once. No fusion,
     /// native query, capacity wait, or dependency on another source occurs here.
-    pub(crate) fn submit(&self, source: TargetSource, mut targets: Vec<UiTarget>) -> usize {
+    pub(crate) fn submit(&self, source: TargetSource, targets: Vec<UiTarget>) -> usize {
         if targets.is_empty() || self.inbox.cancelled.load(Ordering::Acquire) {
             return 0;
         }
-        let (index, accepted) = {
-            let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.finished || self.inbox.cancelled.load(Ordering::Acquire) {
-                return 0;
-            }
-            let index = state
-                .lanes
-                .iter()
-                .position(|l| l.source == source)
-                .unwrap_or_else(|| {
-                    state.lanes.push(Lane {
-                        source,
-                        batches: VecDeque::new(),
-                        submitted: 0,
-                    });
-                    state.lanes.len() - 1
-                });
-            let lane = &mut state.lanes[index];
-            let accepted = targets
-                .len()
-                .min(MAX_UI_SCAN_TARGETS.saturating_sub(lane.submitted));
-            lane.submitted += accepted;
-            (index, accepted)
-        };
-        // Drop an oversized provider's excess outside the shared submission lock.
-        targets.truncate(accepted);
-        if accepted == 0 {
-            return 0;
+        let accepted = targets.len();
+        if self.enqueue(source, Input::Targets(targets.into_iter())) {
+            accepted
+        } else {
+            0
         }
+    }
+    pub(crate) fn progress(&self, source: TargetSource, progress: super::scan_progress::Progress) {
+        if self.inbox.progress_enabled {
+            self.enqueue(source, Input::Progress(progress));
+        }
+    }
+    fn enqueue(&self, source: TargetSource, input: Input) -> bool {
+        let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.finished || self.inbox.cancelled.load(Ordering::Acquire) {
+            return false;
+        }
+        let index = state
+            .lanes
+            .iter()
+            .position(|lane| lane.source == source)
+            .unwrap_or_else(|| {
+                state.lanes.push(Lane {
+                    source,
+                    batches: VecDeque::new(),
+                });
+                state.lanes.len() - 1
+            });
+        if state.lanes[index].batches.is_empty() {
+            state.ready.push_back(index);
+        }
+        state.lanes[index].batches.push_back(input);
+        #[cfg(test)]
         {
-            let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.finished || self.inbox.cancelled.load(Ordering::Acquire) {
-                return 0;
-            }
-            if state.lanes[index].batches.is_empty() {
-                state.ready.push_back(index);
-            }
-            state.lanes[index].batches.push_back(targets.into_iter());
             state.version += 1;
         }
+        drop(state);
         let _ = self.wake.try_send(());
-        accepted
+        true
     }
     pub(crate) fn finish(&self, status: UiScanStatus) {
         let mut state = self.inbox.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -116,7 +154,10 @@ impl Sink {
         }
         state.finished = true;
         state.terminal = Some(status);
-        state.version += 1;
+        #[cfg(test)]
+        {
+            state.version += 1;
+        }
         drop(state);
         let _ = self.wake.try_send(());
     }
@@ -142,6 +183,7 @@ impl Sink {
 }
 enum Step {
     Targets(TargetSource, Vec<UiTarget>),
+    Progress(TargetSource, super::scan_progress::Progress),
     Terminal(UiScanStatus),
     Idle,
 }
@@ -154,9 +196,35 @@ impl Inbox {
         }
         if let Some(index) = state.ready.pop_front() {
             let lane = &mut state.lanes[index];
-            let mut targets = Vec::with_capacity(limit);
+            let source = lane.source;
+            let Some(input) = lane.batches.pop_front() else {
+                unreachable!("ready lane has input")
+            };
+            let mut targets = match input {
+                Input::Targets(mut front) => {
+                    if front.len() <= limit {
+                        // Consuming a complete provider buffer can transfer its
+                        // allocation directly to fusion instead of moving every
+                        // target through another temporary Vec.
+                        front.collect()
+                    } else {
+                        let targets: Vec<_> = front.by_ref().take(limit).collect();
+                        lane.batches.push_front(Input::Targets(front));
+                        targets
+                    }
+                }
+                Input::Progress(progress) => {
+                    if !lane.batches.is_empty() {
+                        state.ready.push_back(index);
+                    }
+                    return Step::Progress(source, progress);
+                }
+            };
+            if targets.len() < limit && matches!(lane.batches.front(), Some(Input::Targets(_))) {
+                targets.reserve(limit - targets.len());
+            }
             while targets.len() < limit {
-                let Some(front) = lane.batches.front_mut() else {
+                let Some(Input::Targets(front)) = lane.batches.front_mut() else {
                     break;
                 };
                 targets.extend(front.by_ref().take(limit - targets.len()));
@@ -164,7 +232,6 @@ impl Inbox {
                     lane.batches.pop_front();
                 }
             }
-            let source = lane.source;
             if !lane.batches.is_empty() {
                 state.ready.push_back(index);
             }
@@ -213,7 +280,6 @@ struct QueueState {
     active: Option<Weak<Inbox>>,
 }
 struct Shared {
-    maximum: usize,
     state: Mutex<QueueState>,
     wake: mpsc::SyncSender<()>,
 }
@@ -226,6 +292,8 @@ impl Handle {
     pub(crate) fn begin(&self, options: Options) -> Sink {
         let inbox = Arc::new(Inbox {
             id: options.id,
+            progress_enabled: options.defer_visual && !options.progress_sources.is_empty(),
+
             cancelled: AtomicBool::new(false),
             state: Mutex::new(InboxState::default()),
             #[cfg(test)]
@@ -271,7 +339,6 @@ impl Worker {
         let (wake, receiver) = mpsc::sync_channel(1);
         Self {
             shared: Arc::new(Shared {
-                maximum: MAX_FUSION_BATCH,
                 state: Mutex::new(QueueState::default()),
                 wake,
             }),
@@ -279,14 +346,6 @@ impl Worker {
             thread: None,
             setup: Arc::new(setup),
         }
-    }
-    #[cfg(feature = "benchmark-hooks")]
-    pub(crate) fn benchmark(maximum: usize) -> Self {
-        let mut worker = Self::default();
-        Arc::get_mut(&mut worker.shared)
-            .unwrap_or_else(|| panic!("fresh benchmark worker must be exclusively owned"))
-            .maximum = maximum.clamp(8, 512);
-        worker
     }
     pub(crate) fn prepare(&mut self, generation: u64) -> Result<Handle, String> {
         if self.thread.is_none() {
@@ -376,13 +435,11 @@ impl Drop for Worker {
 }
 struct Budget {
     next: usize,
-    maximum: usize,
 }
 impl Budget {
-    fn new(maximum: usize) -> Self {
+    fn new() -> Self {
         Self {
-            maximum,
-            next: FIRST_FUSION_BATCH.min(maximum),
+            next: FIRST_FUSION_BATCH,
         }
     }
     fn observe(&mut self, count: usize, elapsed: Duration) {
@@ -391,7 +448,7 @@ impl Budget {
         }
         // This is a soft CPU budget, not a timer: never wait to fill a quantum.
         let target = count as u128 * FUSION_CPU_TARGET.as_nanos() / elapsed.as_nanos().max(1);
-        self.next = (target as usize).clamp(8, self.maximum);
+        self.next = (target as usize).clamp(8, MAX_FUSION_BATCH);
     }
 }
 fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
@@ -405,7 +462,10 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
             if let Some((old, _, _)) = current.take() {
                 old.inbox.discard();
             }
-            current = Some((job, ScanAccumulator::new(), Budget::new(shared.maximum)));
+            let accumulator = ScanAccumulator::new()
+                .defer_visual(job.options.defer_visual)
+                .progress_sources(&job.options.progress_sources);
+            current = Some((job, accumulator, Budget::new()));
         }
         if stopping {
             if let Some((job, _, _)) = current.take() {
@@ -420,19 +480,12 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                 continue;
             }
             match job.inbox.take(budget.next) {
-                Step::Targets(source, mut targets) => {
-                    let started = Instant::now();
-                    let count = targets.len();
-                    targets.retain(|t| (job.options.accepts)(t));
-                    let mut update = accumulator.push(source, targets, job.options.threshold);
-                    if source != TargetSource::Accessibility && update.accepted != 0 {
-                        crate::support::perf_probe::mark("vision_targets_accepted");
-                    }
-                    // Adapt to fusion CPU cost, not a slow native context query
-                    // or a busy output mailbox. Otherwise slower publication
-                    // would shrink quanta and multiply those same native calls.
-                    budget.observe(count, started.elapsed());
+                Step::Progress(source, progress) => {
+                    let targets = accumulator.progress(source, progress);
                     if job.inbox.cancelled.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    if targets.is_empty() {
                         continue;
                     }
                     if !(job.options.current)() {
@@ -448,16 +501,57 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                         current = None;
                         continue;
                     }
-                    for batch in update.batches {
-                        if job.options.output.publish_update(
+                    if job.options.output.publish(
+                        job.options.generation,
+                        job.options.id,
+                        targets,
+                        UiScanStatus::Partial,
+                    ) {
+                        (job.options.wake)();
+                    }
+                    continue;
+                }
+                Step::Targets(source, mut targets) => {
+                    let started = Instant::now();
+                    let count = targets.len();
+                    targets.retain(|t| (job.options.accepts)(t));
+                    let update = accumulator.push(source, targets, job.options.threshold);
+                    if source != TargetSource::Accessibility && update.accepted != 0 {
+                        crate::support::perf_probe::mark("vision_targets_accepted");
+                    }
+                    // Adapt to fusion CPU cost, not a slow native context query
+                    // or a busy output mailbox. Otherwise slower publication
+                    // would shrink quanta and multiply those same native calls.
+                    budget.observe(count, started.elapsed());
+                    if job.inbox.cancelled.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    // Empty deltas have no publication to validate. Actual deltas
+                    // and every terminal result still check the native context.
+                    if update.targets.is_empty() && update.retired.is_empty() {
+                        continue;
+                    }
+                    if !(job.options.current)() {
+                        if job.options.output.publish(
                             job.options.generation,
                             job.options.id,
-                            batch,
-                            std::mem::take(&mut update.retired),
-                            UiScanStatus::Partial,
+                            Vec::new(),
+                            UiScanStatus::ContextChanged,
                         ) {
                             (job.options.wake)();
                         }
+                        job.inbox.discard();
+                        current = None;
+                        continue;
+                    }
+                    if job.options.output.publish_update(
+                        job.options.generation,
+                        job.options.id,
+                        update.targets,
+                        update.retired,
+                        UiScanStatus::Partial,
+                    ) {
+                        (job.options.wake)();
                     }
                     continue;
                 }
@@ -467,16 +561,25 @@ fn run(shared: Arc<Shared>, receiver: mpsc::Receiver<()>) {
                     } else {
                         UiScanStatus::ContextChanged
                     };
-                    drop(accumulator.finish());
+                    let targets = if status == UiScanStatus::ContextChanged {
+                        Vec::new()
+                    } else {
+                        accumulator.take_deferred()
+                    };
+                    if job.inbox.cancelled.load(Ordering::Acquire) {
+                        continue;
+                    }
                     if job.options.output.publish(
                         job.options.generation,
                         job.options.id,
-                        Vec::new(),
+                        targets,
                         status,
                     ) {
                         (job.options.wake)();
                     }
                     job.inbox.discard();
+                    // Release scan evidence with its task, immediately after
+                    // publication; do not rebuild an empty accumulator first.
                     current = None;
                     continue;
                 }
@@ -510,6 +613,8 @@ mod tests {
             id,
             generation,
             threshold: 0.5,
+            defer_visual: false,
+            progress_sources: Vec::new(),
             output: Arc::clone(output),
             wake: Arc::new(|| {}),
             accepts: Arc::new(|_| true),
@@ -522,6 +627,7 @@ mod tests {
             Sink {
                 inbox: Arc::new(Inbox {
                     id: 1,
+                    progress_enabled: true,
                     cancelled: AtomicBool::new(false),
                     state: Mutex::new(InboxState::default()),
                     settled: std::sync::Condvar::new(),
@@ -532,6 +638,35 @@ mod tests {
         )
     }
     #[test]
+    fn source_completion_preserves_success_and_prioritizes_cancellation_on_both_backends() {
+        for (first, second, expected) in [
+            (
+                UiScanStatus::Success,
+                UiScanStatus::Failed("OCR failed".into()),
+                UiScanStatus::Success,
+            ),
+            (
+                UiScanStatus::Success,
+                UiScanStatus::TimedOut,
+                UiScanStatus::Success,
+            ),
+            (
+                UiScanStatus::Success,
+                UiScanStatus::ContextChanged,
+                UiScanStatus::ContextChanged,
+            ),
+            (
+                UiScanStatus::TimedOut,
+                UiScanStatus::Unsupported("unavailable".into()),
+                UiScanStatus::TimedOut,
+            ),
+        ] {
+            assert_eq!(combined_status(&[first.clone(), second.clone()]), expected);
+            assert_eq!(combined_status(&[second, first]), expected);
+        }
+    }
+
+    #[test]
     fn idle_acknowledgment_does_not_overtake_a_racing_submission() {
         let (sink, _receiver) = detached();
         assert!(matches!(sink.inbox.take(16), Step::Idle));
@@ -540,6 +675,105 @@ mod tests {
         let state = sink.inbox.state.lock().unwrap();
         assert_eq!(state.settled, 0);
         assert_eq!(state.version, 1);
+    }
+
+    #[test]
+    fn region_completion_cannot_overtake_queued_targets() {
+        use super::super::scan_progress::Progress;
+        let (sink, _) = detached();
+        let region = Rect::new(0.0, 0.0, 1000.0, 1000.0);
+        sink.progress(TargetSource::SystemOcr, Progress::Plan(vec![region]));
+        sink.submit(TargetSource::SystemOcr, targets(0, 259));
+        sink.progress(TargetSource::SystemOcr, Progress::Complete(region));
+        sink.submit(TargetSource::SystemOcr, targets(300, 1));
+        assert!(matches!(
+            sink.inbox.take(128),
+            Step::Progress(_, Progress::Plan(_))
+        ));
+        for count in [128, 128, 3] {
+            let Step::Targets(_, batch) = sink.inbox.take(128) else {
+                panic!("completion overtook results")
+            };
+            assert_eq!(batch.len(), count);
+        }
+        assert!(matches!(
+            sink.inbox.take(128),
+            Step::Progress(_, Progress::Complete(_))
+        ));
+        let Step::Targets(_, batch) = sink.inbox.take(128) else {
+            panic!("missing tail")
+        };
+        assert_eq!(batch.len(), 1);
+    }
+
+    #[test]
+    fn complete_provider_buffers_move_into_fusion_and_keep_batch_boundaries() {
+        let (sink, _) = detached();
+        for count in [1, 16, 128] {
+            let input = targets(0, count);
+            let storage = input.as_ptr();
+            sink.submit(TargetSource::Accessibility, input);
+            let Step::Targets(TargetSource::Accessibility, batch) = sink.inbox.take(128) else {
+                panic!("missing provider buffer")
+            };
+            assert_eq!(batch.as_ptr(), storage);
+            assert_eq!(batch, targets(0, count));
+        }
+        sink.submit(TargetSource::Accessibility, targets(0, 4));
+        sink.submit(TargetSource::Accessibility, targets(4, 20));
+        sink.submit(TargetSource::SystemOcr, targets(99, 1));
+        for (source, start, count) in [
+            (TargetSource::Accessibility, 0, 16),
+            (TargetSource::SystemOcr, 99, 1),
+            (TargetSource::Accessibility, 16, 8),
+        ] {
+            let Step::Targets(actual_source, batch) = sink.inbox.take(16) else {
+                panic!("missing bounded batch")
+            };
+            assert_eq!(actual_source, source);
+            assert_eq!(batch, targets(start, count));
+        }
+        assert!(matches!(sink.inbox.take(16), Step::Idle));
+    }
+
+    #[test]
+    fn completed_region_streams_before_terminal_and_stale_progress_is_discarded() {
+        use super::super::scan_progress::Progress;
+        let output = Arc::new(ScanMailbox::default());
+        let generation = output.begin(1);
+        let mut worker = Worker::default();
+        let mut config = options(&output, 1, generation);
+        config.defer_visual = true;
+        config.progress_sources = vec![TargetSource::Contour, TargetSource::SystemOcr];
+        let sink = worker.prepare(generation).unwrap().begin(config);
+        let left = Rect::new(-100.0, -100.0, 200.0, 200.0);
+        let right = Rect::new(500.0, -100.0, 200.0, 200.0);
+        sink.progress(TargetSource::Contour, Progress::Plan(vec![left]));
+        sink.progress(TargetSource::SystemOcr, Progress::Plan(vec![left, right]));
+        sink.submit(TargetSource::Contour, targets(0, 1));
+        sink.progress(TargetSource::Contour, Progress::Complete(left));
+        sink.flush();
+        assert!(output.take().is_none());
+        sink.progress(TargetSource::SystemOcr, Progress::Complete(left));
+        sink.flush();
+        let result = output.take().unwrap();
+        assert_eq!(result.status, UiScanStatus::Partial);
+        assert_eq!(result.targets.len(), 1);
+        worker.cancel(1);
+        let generation = output.begin(2);
+        let latest = worker
+            .prepare(generation)
+            .unwrap()
+            .begin(options(&output, 2, generation));
+        sink.progress(TargetSource::SystemOcr, Progress::Complete(right));
+        sink.finish(UiScanStatus::Success);
+        latest.submit(TargetSource::Accessibility, targets(2, 1));
+        latest.finish(UiScanStatus::Success);
+        latest.flush();
+        let result = output.take().unwrap();
+        assert_eq!(result.id, 2);
+        assert_eq!(result.targets.len(), 1);
+        assert_eq!(result.targets[0].name, "2");
     }
 
     #[test]
@@ -567,23 +801,150 @@ mod tests {
         assert!(terminal.targets.is_empty());
         assert!(output.take().is_none());
     }
+
     #[test]
-    fn empty_and_oversized_submissions_do_not_starve_other_sources() {
+    fn semantic_preview_streams_while_regions_are_pending_and_full_results_stay_complete() {
+        use super::super::scan_progress::Progress;
+
+        let output = Arc::new(ScanMailbox::default());
+        let generation = output.begin(1);
+        let mut worker = Worker::default();
+        let mut config = options(&output, 1, generation);
+        config.defer_visual = true;
+        config.progress_sources = vec![
+            TargetSource::Accessibility,
+            TargetSource::Contour,
+            TargetSource::SystemOcr,
+        ];
+        let sink = worker.prepare(generation).unwrap().begin(config);
+        let region = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        for source in [
+            TargetSource::Accessibility,
+            TargetSource::Contour,
+            TargetSource::SystemOcr,
+        ] {
+            sink.progress(source, Progress::Plan(vec![region]));
+        }
+        // This shared path has no window/screen or platform-specific policy.
+        // The overlapping fragment stays hidden even before native work starts.
+        let fragment = |start| {
+            targets(start, 1)
+                .into_iter()
+                .map(|mut target| {
+                    target.role = SemanticRole::Control;
+                    target.name.clear();
+                    target
+                })
+                .collect()
+        };
+        sink.submit(TargetSource::Contour, fragment(0));
+        sink.submit(TargetSource::Contour, fragment(2));
+        sink.progress(TargetSource::Contour, Progress::Complete(region));
+        sink.flush();
+        assert!(output.take().is_none());
+
+        sink.submit(TargetSource::Accessibility, targets(0, 1));
+        sink.flush();
+        let preview = output.take().unwrap();
+        assert_eq!(preview.status, UiScanStatus::Partial);
+        assert_eq!(preview.targets, targets(0, 1));
+        assert!(preview.retired.is_empty());
+
+        sink.submit(TargetSource::Accessibility, targets(0, 2));
+        sink.progress(TargetSource::Accessibility, Progress::Complete(region));
+        sink.flush();
+        let bulk = output.take().unwrap();
+        assert_eq!(bulk.status, UiScanStatus::Partial);
+        assert_eq!(bulk.targets, targets(1, 1));
+        assert!(bulk.retired.is_empty());
+
+        sink.progress(TargetSource::SystemOcr, Progress::Complete(region));
+        sink.flush();
+        let visual = output.take().unwrap();
+        assert_eq!(visual.status, UiScanStatus::Partial);
+        let mut expected_visual = fragment(2);
+        expected_visual[0].details = Some(Default::default());
+        assert_eq!(visual.targets, expected_visual);
+        assert!(visual.retired.is_empty());
+
+        sink.finish(UiScanStatus::Success);
+        sink.flush();
+        let terminal = output.take().unwrap();
+        assert_eq!(terminal.status, UiScanStatus::Success);
+        assert!(terminal.targets.is_empty());
+        assert!(terminal.retired.is_empty());
+    }
+    #[test]
+    fn deferred_candidates_flush_on_completion_but_never_after_cancellation() {
+        for status in [
+            UiScanStatus::Success,
+            UiScanStatus::TimedOut,
+            UiScanStatus::Failed("OCR failed".into()),
+            UiScanStatus::ContextChanged,
+        ] {
+            let output = Arc::new(ScanMailbox::default());
+            let generation = output.begin(1);
+            let mut worker = Worker::default();
+            let mut config = options(&output, 1, generation);
+            config.defer_visual = true;
+            let sink = worker.prepare(generation).unwrap().begin(config);
+            sink.submit(TargetSource::Contour, targets(0, 4));
+            sink.flush();
+            assert!(output.take().is_none());
+            sink.finish(status.clone());
+            sink.flush();
+            let result = output.take().unwrap();
+            assert_eq!(result.status, status);
+            assert_eq!(
+                result.targets.len(),
+                if status == UiScanStatus::ContextChanged {
+                    0
+                } else {
+                    4
+                }
+            );
+            assert!(result.retired.is_empty());
+        }
+
+        let output = Arc::new(ScanMailbox::default());
+        let generation = output.begin(1);
+        let mut worker = Worker::default();
+        let mut config = options(&output, 1, generation);
+        config.defer_visual = true;
+        let old = worker.prepare(generation).unwrap().begin(config);
+        old.submit(TargetSource::Contour, targets(0, 4));
+        old.flush();
+        worker.cancel(1);
+        let generation = output.begin(2);
+        let latest = worker
+            .prepare(generation)
+            .unwrap()
+            .begin(options(&output, 2, generation));
+        latest.submit(TargetSource::Contour, targets(4, 1));
+        latest.flush();
+        assert_eq!(
+            output.take().unwrap().targets.len(),
+            1,
+            "contour-only remains immediate"
+        );
+        old.finish(UiScanStatus::Success);
+        latest.finish(UiScanStatus::Success);
+        latest.flush();
+        let result = output.take().unwrap();
+        assert_eq!(result.id, 2);
+        assert!(result.targets.is_empty());
+    }
+    #[test]
+    fn empty_and_large_submissions_do_not_starve_other_sources() {
         let (sink, receiver) = detached();
         assert_eq!(sink.submit(TargetSource::Contour, Vec::new()), 0);
         assert!(receiver.try_recv().is_err());
         assert_eq!(
-            sink.submit(
-                TargetSource::Accessibility,
-                targets(0, MAX_UI_SCAN_TARGETS + 5)
-            ),
-            MAX_UI_SCAN_TARGETS
+            sink.submit(TargetSource::Accessibility, targets(0, 10_025)),
+            10_025
         );
-        assert_eq!(sink.submit(TargetSource::Accessibility, targets(0, 1)), 0);
-        assert_eq!(
-            sink.submit(TargetSource::SystemOcr, targets(MAX_UI_SCAN_TARGETS, 1)),
-            1
-        );
+        assert_eq!(sink.submit(TargetSource::Accessibility, targets(0, 1)), 1);
+        assert_eq!(sink.submit(TargetSource::SystemOcr, targets(10_025, 1)), 1);
         let Step::Targets(source, first) = sink.inbox.take(MAX_FUSION_BATCH) else {
             panic!("missing first quantum")
         };
@@ -740,8 +1101,50 @@ mod tests {
         assert!(result.targets.is_empty());
     }
     #[test]
+    fn silent_updates_skip_context_queries_but_terminal_still_validates() {
+        for (source, deferred, filtered) in [
+            (TargetSource::Accessibility, false, false),
+            (TargetSource::Accessibility, false, true),
+            (TargetSource::Contour, true, false),
+        ] {
+            let output = Arc::new(ScanMailbox::default());
+            let generation = output.begin(1);
+            let mut worker = Worker::default();
+            let queries = Arc::new(AtomicUsize::new(0));
+            let seen = Arc::clone(&queries);
+            let valid = Arc::new(AtomicBool::new(true));
+            let current = Arc::clone(&valid);
+            let mut config = options(&output, 1, generation);
+            config.defer_visual = deferred;
+            config.accepts = Arc::new(move |_| !filtered);
+            config.current = Arc::new(move || {
+                seen.fetch_add(1, Ordering::Relaxed);
+                current.load(Ordering::Acquire)
+            });
+            let sink = worker.prepare(generation).unwrap().begin(config);
+            sink.submit(source, targets(0, 1));
+            sink.flush();
+            let visible = !deferred && !filtered;
+            assert_eq!(output.take().is_some(), visible);
+            assert_eq!(queries.load(Ordering::Relaxed), usize::from(visible));
+            sink.submit(source, targets(0, 1));
+            sink.flush();
+            assert!(output.take().is_none());
+            assert_eq!(queries.load(Ordering::Relaxed), usize::from(visible));
+
+            valid.store(false, Ordering::Release);
+            sink.finish(UiScanStatus::Success);
+            sink.flush();
+            let terminal = output.take().unwrap();
+            assert_eq!(terminal.status, UiScanStatus::ContextChanged);
+            assert!(terminal.targets.is_empty());
+            assert_eq!(queries.load(Ordering::Relaxed), usize::from(visible) + 1);
+        }
+    }
+
+    #[test]
     fn quantum_adapts_to_cpu_cost_and_never_to_inline_label_capacity() {
-        let mut budget = Budget::new(MAX_FUSION_BATCH);
+        let mut budget = Budget::new();
         assert_eq!(budget.next, 16);
         budget.observe(16, Duration::from_micros(10));
         assert_eq!(budget.next, MAX_FUSION_BATCH);

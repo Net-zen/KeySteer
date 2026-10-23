@@ -1500,7 +1500,7 @@ mod tests {
             }
         }
         let _restore = RestoreForeground(super::super::native::foreground_window());
-        let screens = super::super::screens::list_screens().unwrap();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let first = Probe::create(area.inset(200.0, 170.0), Default::default(), true);
         let second = Probe::create(area.inset(260.0, 210.0), Default::default(), true);
@@ -1534,8 +1534,8 @@ mod tests {
                 }
             }
         }
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let mut original = Windows::default();
         let original_id = original
             .retain(super::super::native::foreground_window(), &screens)
@@ -1581,8 +1581,8 @@ mod tests {
     fn native_window_initial_restore_and_redo() {
         use crate::api::window::{WindowChange, WindowOperation};
         use crate::platform::common::window_session::WindowSessionProbe;
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let owned = Probe::start(area.inset(70.0, 70.0));
         let mut access = Windows::default();
@@ -1645,8 +1645,8 @@ mod tests {
     fn native_window_three_state_cycle_and_undo() {
         use crate::api::window::{WindowChange, WindowOperation};
         use crate::platform::common::window_session::WindowSessionProbe;
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let owned = Probe::start(area.inset(60.0, 60.0));
         let mut access = Windows::default();
@@ -1698,13 +1698,13 @@ mod tests {
     #[test]
     #[ignore = "temporarily resizes KEYSTEER_PROBE_HWND, then restores its original placement"]
     fn native_window_minimum_tile_and_restore_probe() {
-        let _ = super::super::screens::enable_dpi_awareness();
+        let _ = super::super::display::enable_dpi_awareness();
         let raw: usize = std::env::var("KEYSTEER_PROBE_HWND")
             .unwrap()
             .parse()
             .unwrap();
         let hwnd = HWND(raw as *mut _);
-        let screens = super::super::screens::list_screens().unwrap();
+        let screens = super::super::display::list_screens().unwrap();
         let mut access = Windows::default();
         let info = access.retain(hwnd, &screens).unwrap();
         let before = access.snapshot(info.id, &screens).unwrap();
@@ -1739,13 +1739,13 @@ mod tests {
     #[test]
     #[ignore = "read-only inventory of KEYSTEER_PROBE_HWND on the interactive desktop"]
     fn native_window_inventory_probe() {
-        let _ = super::super::screens::enable_dpi_awareness();
+        let _ = super::super::display::enable_dpi_awareness();
         let raw: usize = std::env::var("KEYSTEER_PROBE_HWND")
             .unwrap()
             .parse()
             .unwrap();
         let hwnd = HWND(raw as *mut _);
-        let screens = super::super::screens::list_screens().unwrap();
+        let screens = super::super::display::list_screens().unwrap();
         crate::log_info!(
             "window_probe",
             "eligible={} visible={} iconic={} style={:x} ex={:x} root={:?} bounds={:?}",
@@ -1788,8 +1788,8 @@ mod tests {
     fn native_maximized_window_can_tile_and_undo() {
         use crate::api::window::{WindowEditResult, WindowOperation as O};
         use crate::platform::common::window_session::WindowSessionProbe;
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let first_probe = Probe::start(Rect::new(area.x + 40.0, area.y + 40.0, 480.0, 320.0));
         let second_probe = Probe::start(Rect::new(area.x + 100.0, area.y + 100.0, 480.0, 320.0));
@@ -1870,8 +1870,8 @@ mod tests {
         use crate::api::window::{WindowEditResult, WindowOperation as O};
         use crate::api::window_layout::LayoutTree;
         use crate::platform::common::window_session::WindowSessionProbe;
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let owned = Probe::start(Rect::new(area.x + 30.0, area.y + 30.0, 500.0, 400.0));
         let companion = Probe::start(Rect::new(area.x + 70.0, area.y + 70.0, 320.0, 240.0));
@@ -2038,8 +2038,8 @@ mod tests {
     #[test]
     #[ignore = "activates two owned disposable native windows; run explicitly on Windows"]
     fn native_tab_activation_visits_two_windows() {
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let first = Probe::create(area.inset(70.0, 70.0), Default::default(), true);
         let second = Probe::create(area.inset(100.0, 100.0), Default::default(), true);
@@ -2216,8 +2216,8 @@ mod tests {
         use crate::api::window::{WindowEditResult, WindowOperation as O};
         use crate::api::window_tabs::{TabOperation, WindowTarget};
         use crate::platform::common::{WindowGroupsProbe, window_session::WindowSessionProbe};
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let index = screens.iter().position(|s| s.is_primary).unwrap();
         let area = screens[index].work_area;
         let first = Probe::create(area.inset(160.0, 140.0), Default::default(), true);
@@ -2376,8 +2376,8 @@ mod tests {
     #[test]
     #[ignore = "toggles only disposable test-owned windows"]
     fn native_separate_maximize_and_minimize_toggles() {
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let screen = screens.iter().find(|s| s.is_primary).unwrap();
         let probe = Probe::observable(screen.work_area.inset(160.0, 140.0));
         let mut native = Windows::default();
@@ -2400,8 +2400,8 @@ mod tests {
     #[test]
     #[ignore = "reserves a tab header on a disposable maximized window"]
     fn native_maximized_tab_header_keeps_state_and_restore() {
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let screen = screens.iter().find(|s| s.is_primary).unwrap();
         let probe = Probe::observable(screen.work_area.inset(160.0, 140.0));
         let mut native = Windows::default();
@@ -2435,11 +2435,11 @@ mod tests {
     #[test]
     #[ignore = "sends drag messages only to disposable test-owned tab strips"]
     fn native_tab_drag_drop_and_cancel() {
-        let _ = super::super::screens::enable_dpi_awareness();
+        let _ = super::super::display::enable_dpi_awareness();
         use super::super::window_tabs::NativeTabs;
         use crate::api::window_tabs::{TabBar, TabDrop, TabGroupId, TabNativeEvent, WindowTarget};
         use windows::Win32::UI::WindowsAndMessaging::*;
-        let screens = super::super::screens::list_screens().unwrap();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let left = Rect {
             x: area.x + 40.0,
@@ -2646,7 +2646,7 @@ mod tests {
             assert!(Instant::now() < deadline, "child windows were not ready");
             std::thread::sleep(Duration::from_millis(2));
         };
-        let screens = super::super::screens::list_screens().unwrap();
+        let screens = super::super::display::list_screens().unwrap();
         let mut native = Windows::default();
         native.tab_screens = screens.clone();
         let ids: Vec<_> = handles
@@ -2722,8 +2722,8 @@ mod tests {
         let Ok(path) = std::env::var("KEYSTEER_TABS_TEST_HANDLES") else {
             return;
         };
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let first = Probe::with_style(area.inset(70.0, 70.0), Default::default());
         let second = Probe::with_style(area.inset(100.0, 100.0), Default::default());
@@ -2751,8 +2751,8 @@ mod tests {
     #[test]
     #[ignore = "creates an owned disposable native window; run explicitly on Windows"]
     fn native_close_request_only_closes_owned_target() {
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let first = Probe::start(Rect::new(area.x + 40.0, area.y + 40.0, 480.0, 320.0));
         let second = Probe::start(Rect::new(area.x + 80.0, area.y + 80.0, 480.0, 320.0));
@@ -2778,8 +2778,8 @@ mod tests {
         use crate::api::window_tabs::{TabOperation, WindowTarget};
         use crate::platform::common::WindowGroupsProbe as Grouped;
         use crate::platform::common::window_session::WindowSessionProbe;
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens
             .iter()
             .find(|screen| screen.is_primary)
@@ -2889,8 +2889,8 @@ mod tests {
     #[test]
     #[ignore = "creates only a disposable owned window; measures native submission and readback"]
     fn native_deferred_geometry_submission_and_readback() {
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let probe = Probe::start(Rect::new(area.x + 80.0, area.y + 80.0, 480.0, 320.0));
         let mut access = Windows::default();
@@ -2951,8 +2951,8 @@ mod tests {
     #[test]
     #[ignore = "creates an owned disposable native window; run explicitly on Windows"]
     fn native_window_adjust_restore_and_closed_identity() {
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let probe = Probe::start(Rect::new(area.x + 40.0, area.y + 40.0, 480.0, 320.0));
         let mut access = Windows::default();
@@ -3121,8 +3121,8 @@ mod tests {
                 self.native.reset();
             }
         }
-        let _ = super::super::screens::enable_dpi_awareness();
-        let screens = super::super::screens::list_screens().unwrap();
+        let _ = super::super::display::enable_dpi_awareness();
+        let screens = super::super::display::list_screens().unwrap();
         let area = screens.iter().find(|s| s.is_primary).unwrap().work_area;
         let first = Probe::observable(area.inset(50.0, 60.0));
         let second = Probe::observable(area.inset(140.0, 120.0));

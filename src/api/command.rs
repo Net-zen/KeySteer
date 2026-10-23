@@ -5,9 +5,6 @@
 //! [`Command`]s. It never touches a platform API, which is what makes the
 //! built-in modes and third-party plugins interchangeable.
 
-/// Shared per-source and merged UI scan ceiling. Buffers grow with actual results.
-pub const MAX_UI_SCAN_TARGETS: usize = 10_000;
-
 use std::iter::FusedIterator;
 use std::ops::Index;
 use std::sync::Arc;
@@ -55,6 +52,8 @@ pub enum FinishCause {
 /// including drawing its own grid or full-screen overlay.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    /// Snapshot of registered modes, ordered by usage, then stable mode id.
+    RequestModeList,
     RequestPanelWindowBounds(u64),
     OpenTextPrompt(Box<super::window_presets::TextPrompt>),
     CloseTextPrompt,
@@ -64,6 +63,8 @@ pub enum Command {
     },
     SamplePoint(super::point_sample::Request),
     CancelPointSample,
+    SegmentText(super::text_select::Request),
+    CancelTextSegmentation,
     ReleaseTextPrompt,
     CopyText(String),
     ReadClipboard,
@@ -493,6 +494,7 @@ impl<'a> IntoIterator for &'a CommandBatch {
 /// Everything the host tells a mode.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModeEvent {
+    ModeList(Vec<ModeId>),
     PanelWindowBounds {
         id: u64,
         bounds: Option<Rect>,
@@ -508,6 +510,7 @@ pub enum ModeEvent {
     CyclePointColor,
     PointSampled(super::point_sample::Sample),
     TextCopied,
+    TextSegmented(super::text_select::Segmented),
     AudioResult(Box<super::audio::AudioResult>),
     WindowResult(Box<super::window::WindowResult>),
     WindowPresets(Box<super::window_presets::PresetLibraryResult>),
@@ -652,6 +655,9 @@ pub enum UiScanStrategy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct VisionOptions {
+    /// Internal request detail; ordinary UIHint scans retain the cheaper line-only path.
+    #[serde(skip)]
+    pub text_positions: bool,
     /// Vision-only source switch; Hybrid always runs every available source.
     pub detect_text: bool,
     /// Vision-only source switch; Hybrid and Contour always detect contours.
@@ -659,7 +665,7 @@ pub struct VisionOptions {
     pub request_timeout_ms: u64,
     pub minimum_confidence: f64,
     pub merge_iou_threshold: f64,
-    /// Vision/Contour candidate cap; Hybrid uses MAX_UI_SCAN_TARGETS.
+    /// Optional Vision/Contour candidate limit; zero is unlimited. Hybrid ignores it.
     pub rectangle_max_candidates: usize,
     pub rectangle_min_size: f64,
     pub rectangle_min_aspect: f64,
@@ -679,12 +685,13 @@ pub struct VisionOptions {
 impl Default for VisionOptions {
     fn default() -> Self {
         Self {
+            text_positions: false,
             detect_text: true,
             detect_rectangles: true,
             request_timeout_ms: 5_000,
             minimum_confidence: 0.0,
             merge_iou_threshold: 0.5,
-            rectangle_max_candidates: MAX_UI_SCAN_TARGETS,
+            rectangle_max_candidates: 0,
             rectangle_min_size: 0.01,
             rectangle_min_aspect: 0.3,
             rectangle_max_aspect: 10.0,
@@ -710,11 +717,12 @@ pub enum UiScanScope {
     Window,
     Active,
     Screen,
+    All,
 }
 
 impl UiScanScope {
     /// Only metadata lookup falls back; provider failure or empty results never
-    /// select another scope. None means the caller should use the pointer display.
+    /// select another scope. None uses the requested display area.
     pub(crate) fn resolve_window<T>(
         self,
         mut lookup: impl FnMut(Self) -> Option<T>,
@@ -722,7 +730,7 @@ impl UiScanScope {
         let order = match self {
             Self::Window => [Self::Window, Self::Active],
             Self::Active => [Self::Active, Self::Window],
-            Self::Screen => return None,
+            Self::Screen | Self::All => return None,
         };
         order.into_iter().find_map(|source| {
             lookup(source).map(|window| ResolvedScanWindow {
@@ -763,16 +771,20 @@ mod scan_scope_tests {
                 }
             }
         }
-        assert_eq!(
-            Screen.resolve_window::<()>(|_| panic!("screen must not query windows")),
-            None
-        );
+        for scope in [Screen, All] {
+            assert_eq!(
+                scope.resolve_window::<()>(|_| panic!("display scope must not query windows")),
+                None
+            );
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiScanRequest {
     pub scope: UiScanScope,
+    /// Selected displays; empty means the single `bounds` rectangle.
+    pub screen_bounds: Vec<Rect>,
     pub id: u64,
     /// Soft accessibility traversal budget. Platform providers may spend up
     /// to this long in one native transaction before returning control.
@@ -785,6 +797,23 @@ pub struct UiScanRequest {
     pub strategy: UiScanStrategy,
     pub vision: VisionOptions,
     pub app: Option<FocusedApp>,
+}
+
+impl UiScanRequest {
+    /// Iterate physical display intersections, preserving the one-region path.
+    pub(crate) fn capture_regions(&self) -> impl Iterator<Item = Rect> + '_ {
+        let fallback = self
+            .screen_bounds
+            .is_empty()
+            .then_some(self.bounds)
+            .flatten();
+        fallback
+            .into_iter()
+            .chain(self.screen_bounds.iter().filter_map(|screen| {
+                self.bounds
+                    .map_or(Some(*screen), |bounds| screen.intersect(&bounds))
+            }))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -805,6 +834,8 @@ pub struct UiScanResult {
     /// refine earlier visual candidates without waiting for the full scan.
     pub retired: Vec<Rect>,
     pub id: u64,
+    /// Complete target metadata, including inherited text for refinements.
+    /// Consumers apply removals and additions without reconstructing evidence.
     pub targets: Vec<UiTarget>,
     pub status: UiScanStatus,
 }
@@ -889,8 +920,8 @@ pub trait Mode: Send {
     /// Handle an event whose payload can be consumed by the mode.
     ///
     /// The default preserves the borrowed API used by existing modes and
-    /// plugins. The engine reserves this route for [`ModeEvent::UiScanned`],
-    /// whose target buffers and strings can be moved instead of cloned.
+    /// plugins. Scan results and mode lists use this route so their owned
+    /// buffers and strings can be moved instead of cloned.
     fn handle_owned(&mut self, event: ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
         self.handle(&event, ctx)
     }
@@ -1008,69 +1039,6 @@ pub trait Mode: Send {
     }
 }
 
-/// Preserve searchable text when overlapping runs or visual fragments are
-/// replaced by a refined target.
-pub(crate) fn enrich_replacements(
-    targets: &mut [UiTarget],
-    previous: &[UiTarget],
-    retired: &[Rect],
-) {
-    let needs_description = |target: &UiTarget| {
-        matches!(
-            target.role,
-            crate::api::SemanticRole::ListItem
-                | crate::api::SemanticRole::Image
-                | crate::api::SemanticRole::StaticText
-        ) && !(target.role == crate::api::SemanticRole::StaticText
-            && target.details.as_ref().is_some_and(|d| {
-                !d.ocr.is_empty() && d.accessibility.is_empty() && d.ocr == target.name
-            }))
-    };
-    if retired.is_empty() || !targets.iter().any(needs_description) {
-        return;
-    }
-    // Filter once per delta, not once per replacement. Large refinements used
-    // to repeat a linear retired lookup for every target/previous pair.
-    let key =
-        |r: Rect| [r.x, r.y, r.width, r.height].map(|v| if v == 0.0 { 0 } else { v.to_bits() });
-    let keys = (retired.len() > 8).then(|| {
-        retired
-            .iter()
-            .map(|&r| key(r))
-            .collect::<rustc_hash::FxHashSet<_>>()
-    });
-    let descriptions: smallvec::SmallVec<[&UiTarget; 8]> = previous
-        .iter()
-        .filter(|old| {
-            !old.name.is_empty()
-                && keys.as_ref().map_or_else(
-                    || retired.contains(&old.rect),
-                    |keys| keys.contains(&key(old.rect)),
-                )
-        })
-        .collect();
-    if descriptions.is_empty() {
-        return;
-    }
-    for target in targets.iter_mut().filter(|t| needs_description(t)) {
-        // Scan evidence already supplied authoritative OCR seam reconstruction.
-        let inherit_descriptions =
-            target.name.is_empty() || target.role == crate::api::SemanticRole::StaticText;
-        for old in &descriptions {
-            if (!inherit_descriptions && old.rect != target.rect)
-                || !target.rect.contains(&old.rect.center())
-                || target.name.contains(&old.name)
-            {
-                continue;
-            }
-            if !target.name.is_empty() {
-                target.name.push(' ');
-            }
-            target.name.push_str(&old.name);
-        }
-    }
-}
-
 /// Apply the removal half of a scan delta. Exact geometry identifies an earlier
 /// published candidate; no fuzzy matching or source policy belongs in a mode.
 pub(crate) fn remove_retired_targets(targets: &mut Vec<UiTarget>, retired: &[Rect]) {
@@ -1090,37 +1058,6 @@ pub(crate) fn remove_retired_targets(targets: &mut Vec<UiTarget>, retired: &[Rec
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn region_replacements_inherit_only_retired_descriptions_and_keep_native_names() {
-        let text = UiTarget {
-            details: None,
-            rect: Rect::new(20.0, 10.0, 40.0, 20.0),
-            name: "member".into(),
-            role: crate::api::SemanticRole::StaticText,
-        };
-        let mut independent = text.clone();
-        independent.rect.x = 80.0;
-        independent.name = "independent action".into();
-        let previous = [text.clone(), independent];
-        let mut row = [UiTarget {
-            details: None,
-            rect: Rect::new(0.0, 0.0, 150.0, 40.0),
-            name: String::new(),
-            role: crate::api::SemanticRole::ListItem,
-        }];
-        enrich_replacements(&mut row, &previous, &[text.rect]);
-        assert_eq!(row[0].name, "member");
-        let mut refinement = row.clone();
-        refinement[0].name = "description".into();
-        enrich_replacements(&mut refinement, &row, &[row[0].rect]);
-        assert_eq!(refinement[0].name, "description member");
-        enrich_replacements(&mut refinement, &row, &[row[0].rect]);
-        assert_eq!(refinement[0].name, "description member");
-        row[0].name = "native name".into();
-        enrich_replacements(&mut row, &previous, &[text.rect]);
-        assert_eq!(row[0].name, "native name");
-    }
 
     #[test]
     fn dismiss_hides_before_switching() {

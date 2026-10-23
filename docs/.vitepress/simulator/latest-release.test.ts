@@ -11,20 +11,26 @@ test('local preview survives forbidden, offline, timeout and invalid release res
   context.mock.method(console, 'warn', () => {})
   const request = context.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 403 }))
   const fallback = { tag: 'Release unavailable · 本地预览', url: LATEST_RELEASE_URL, assets: {} }
-  assert.deepEqual(await loadLatestRelease('serve'), fallback)
-  request.mock.mockImplementation(async () => { throw new TypeError('offline') })
-  assert.deepEqual(await loadLatestRelease('serve'), fallback)
-  request.mock.mockImplementation(async () => { throw new DOMException('timed out', 'TimeoutError') })
-  assert.deepEqual(await loadLatestRelease('serve'), fallback)
-  request.mock.mockImplementation(async () => Response.json({ assets: [] }))
-  assert.deepEqual(await loadLatestRelease('serve'), fallback)
+  for (const command of ['serve', 'dev', { _: ['dev', 'docs'], port: 4174 }, { _: [] }]) {
+    request.mock.mockImplementation(async () => new Response(null, { status: 403 }))
+    assert.deepEqual(await loadLatestRelease(command), fallback)
+    request.mock.mockImplementation(async () => { throw new TypeError('offline') })
+    assert.deepEqual(await loadLatestRelease(command), fallback)
+    request.mock.mockImplementation(async () => { throw new DOMException('timed out', 'TimeoutError') })
+    assert.deepEqual(await loadLatestRelease(command), fallback)
+    request.mock.mockImplementation(async () => Response.json({ assets: [] }))
+    assert.deepEqual(await loadLatestRelease(command), fallback)
+  }
 })
 
 test('production remains strict while development uses fresh metadata when available', async (context) => {
   const request = context.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 403 }))
   await assert.rejects(loadLatestRelease('build'), /HTTP 403/)
+  await assert.rejects(loadLatestRelease({ _: ['build', 'docs'] }), /HTTP 403/)
+  await assert.rejects(loadLatestRelease({}), /HTTP 403/)
   request.mock.mockImplementation(async () => Response.json({ tag_name: 'v9.8.7', assets: [] }))
   assert.equal((await loadLatestRelease('serve')).tag, 'v9.8.7')
+  assert.equal((await loadLatestRelease('dev')).tag, 'v9.8.7')
   assert.equal((await loadLatestRelease('build')).tag, 'v9.8.7')
 })
 

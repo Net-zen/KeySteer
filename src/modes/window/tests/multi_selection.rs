@@ -75,11 +75,15 @@ fn multi_selection_caret_edits_activate_the_preceding_number_without_changing_th
             ("right", "124", 1),
         ] {
             let out = mode.handle(
-                &ModeEvent::Key {
+                &crate::api::text_edit::navigation_action(
+                    &crate::api::KeyChord::parse(key).unwrap(),
+                )
+                .map(ModeEvent::TextEdit)
+                .unwrap_or_else(|| ModeEvent::Key {
                     key: Key::new(key).unwrap(),
                     state: KeyState::Down,
                     repeat: false,
-                },
+                }),
                 ctx,
             );
             activated.extend(out.iter().filter_map(|command| match command {
@@ -143,10 +147,10 @@ fn multi_help_uses_current_bindings_and_counts_tab_groups_once() {
     mode.multi = (1..=8).map(WindowId).collect();
     let detail = mode.detail();
     assert!(detail.starts_with("Multi-select · 7 selected\nInput: ▏\n"));
-    assert_eq!(
-        detail.lines().last(),
-        Some("F2: Confirm · F3: Confirm · ARROW LEFT: ←")
-    );
+    let help = detail.lines().last().unwrap();
+    assert!(help.contains("F2: Confirm") && help.contains("F3: Confirm"));
+    assert!(help.contains("ESC: Cancel") && help.contains("BACKSPACE: Backspace"));
+    assert_eq!(help.matches("ARROW LEFT: ←").count(), 1);
     mode.finish_multi();
     assert!(mode.multi_input.is_none());
 }
@@ -330,8 +334,8 @@ fn multi_selection_input_is_immediate_and_uses_spaces_for_complete_labels() {
     assert_eq!(mode.multi, (1..=7).map(WindowId).collect::<Vec<_>>());
     type_input(&mut mode, " 12 23 123 ");
     assert_eq!(mode.multi, [1, 2, 3, 4, 5, 6, 7, 12, 23, 123].map(WindowId));
-    mode.multi_input_key(&Key::new("backspace").unwrap(), false, &mut out);
-    mode.multi_input_key(&Key::new("backspace").unwrap(), false, &mut out);
+    mode.edit_multi_input(crate::api::text_edit::EditAction::Backspace);
+    mode.edit_multi_input(crate::api::text_edit::EditAction::Backspace);
     type_input(&mut mode, " ");
     assert_eq!(
         mode.multi,
@@ -344,7 +348,7 @@ fn multi_selection_input_is_immediate_and_uses_spaces_for_complete_labels() {
     type_input(&mut mode, "3 23 ");
     assert_eq!(mode.multi, [1, 2, 4, 5, 6, 7].map(WindowId));
     out = CommandBatch::new();
-    mode.multi_input_key(&Key::new("esc").unwrap(), false, &mut out);
+    mode.cancel_multi_input(&mut out);
     assert_eq!(mode.multi, [1, 2, 3, 4, 5, 6, 7, 23].map(WindowId));
     assert!(out.iter().any(|command| matches!(command,
         Command::WindowRequest(request) if request.operation == WindowOperation::Activate(WindowId(1)))));

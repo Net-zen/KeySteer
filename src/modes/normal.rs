@@ -338,9 +338,9 @@ pub struct NormalMode {
     scroll: ScrollSettings,
     passthrough_unbound_keys: bool,
 
-    /// Directions currently held, keyed by the key holding them so releasing
-    /// the right key stops the right direction.
-    moving: SmallKeyMap<Direction>,
+    /// Each action retains its key and direction, including several movement
+    /// directions bound to one physical key by a sequence.
+    moving: SmallVec<[(Key, Direction); 4]>,
     /// Scroll gestures currently held. A sequence can bind several scroll
     /// directions/amounts to one key, so each action retains its own identity.
     scrolling: SmallVec<[(Key, Direction, ScrollAmount); 4]>,
@@ -373,7 +373,7 @@ impl NormalMode {
             profile: settings.pointer.into(),
             scroll: settings.scroll,
             passthrough_unbound_keys: settings.passthrough_unbound_keys,
-            moving: SmallKeyMap::default(),
+            moving: SmallVec::new(),
             scrolling: SmallVec::new(),
             speeds: SmallKeyMap::default(),
             toggled_speed: None,
@@ -422,7 +422,11 @@ impl NormalMode {
     }
 
     fn refresh_directions(&mut self) {
-        self.directions = self.moving.values().copied().collect();
+        self.directions = self
+            .moving
+            .iter()
+            .map(|(_, direction)| *direction)
+            .collect();
     }
 
     fn refresh_scroll_velocity(&mut self) {
@@ -469,10 +473,16 @@ impl NormalMode {
 
         match binding {
             Binding::Move(direction) => {
+                let index = self.moving.iter().position(|(held_key, held_direction)| {
+                    held_key == key && held_direction == direction
+                });
                 if pressed {
                     let was_still = !self.is_animating();
-                    let is_first_press = self.moving.insert(key.clone(), *direction).is_none();
-                    self.refresh_directions();
+                    let is_first_press = index.is_none();
+                    if is_first_press {
+                        self.moving.push((key.clone(), *direction));
+                        self.refresh_directions();
+                    }
                     if !is_first_press && self.frame_driven {
                         // Native display updates own held movement. Keyboard
                         // autorepeat is only a fallback when no update arrives.
@@ -504,7 +514,8 @@ impl NormalMode {
                         (false, true) => Command::SetFrameClock(true).into(),
                         (false, false) => CommandBatch::new(),
                     };
-                } else if self.moving.remove(key).is_some() {
+                } else if let Some(index) = index {
+                    self.moving.swap_remove(index);
                     self.refresh_directions();
                     if self.moving.is_empty() {
                         self.motion.reset();
@@ -1089,38 +1100,21 @@ mod tests {
     }
 
     #[test]
-    fn scrolling_falls_back_to_os_repeat_without_display_frames() {
+    fn scrolling_before_display_frames_uses_os_repeat_and_stops_on_release() {
         let env = Env::new();
         let mut mode = crate::app::mode_catalog::normal(&env.config);
-        let out = down(
-            &mut mode,
-            &env,
-            Binding::Scroll(Direction::Down, ScrollAmount::Step),
-            "e",
-        );
+        let binding = Binding::Scroll(Direction::Down, ScrollAmount::Step);
+        let out = down(&mut mode, &env, binding.clone(), "e");
         assert!(
             out.iter()
                 .any(|c| matches!(c, Command::Scroll { dy, .. } if *dy > 0.0)),
             "{out:?}"
         );
         assert!(
-            down(
-                &mut mode,
-                &env,
-                Binding::Scroll(Direction::Down, ScrollAmount::Step),
-                "e",
-            )
-            .iter()
-            .any(|c| matches!(c, Command::Scroll { dy, .. } if *dy > 0.0))
+            down(&mut mode, &env, binding.clone(), "e")
+                .iter()
+                .any(|c| matches!(c, Command::Scroll { dy, .. } if *dy > 0.0))
         );
-    }
-
-    #[test]
-    fn releasing_a_scroll_key_stops_scrolling() {
-        let env = Env::new();
-        let mut mode = crate::app::mode_catalog::normal(&env.config);
-        let binding = Binding::Scroll(Direction::Down, ScrollAmount::Step);
-        down(&mut mode, &env, binding.clone(), "e");
         let out = up(&mut mode, &env, binding, "e");
         assert_eq!(out, vec![Command::SetFrameClock(false)]);
         assert!(mode.scrolling.is_empty());
@@ -1347,6 +1341,104 @@ mod tests {
     }
 
     #[test]
+    fn diagonal_movement_and_diagonal_scroll_keep_each_action_until_its_release() {
+        let env = Env::new();
+        for (shared_key, release_before_frame) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let mut mode = crate::app::mode_catalog::normal(&env.config);
+            let horizontal = Binding::Move(Direction::Left);
+            let vertical = Binding::Move(Direction::Up);
+            let vertical_key = if shared_key { "a" } else { "b" };
+            let scroll_key = if shared_key { "a" } else { "c" };
+            down(&mut mode, &env, horizontal.clone(), "a");
+            if !release_before_frame {
+                mode.frame(Duration::from_millis(20));
+            }
+            assert!(
+                down(&mut mode, &env, vertical.clone(), vertical_key)
+                    .iter()
+                    .any(|c| matches!(c, Command::MovePointer { .. }))
+            );
+            let scroll_x = Binding::Scroll(Direction::Right, ScrollAmount::Step);
+            let scroll_y = Binding::Scroll(Direction::Down, ScrollAmount::Step);
+            down(&mut mode, &env, scroll_x.clone(), scroll_key);
+            assert!(
+                down(&mut mode, &env, scroll_y.clone(), scroll_key)
+                    .iter()
+                    .any(|c| matches!(c, Command::Scroll { dy, .. } if *dy > 0.0))
+            );
+            // Cover a release while the native clock is still preparing.
+            let elapsed = if release_before_frame {
+                assert!(up(&mut mode, &env, horizontal.clone(), "a").is_empty());
+                200
+            } else {
+                20
+            };
+            let frame = mode.frame(Duration::from_millis(elapsed));
+            assert!(
+                frame
+                    .iter()
+                    .any(|c| matches!(c, Command::MovePointer { dx, dy }
+                        if *dx <= 0.0 && (*dx == 0.0) == release_before_frame && *dy < 0.0))
+            );
+            let pending = frame
+                .iter()
+                .find_map(|c| match c {
+                    Command::ScrollFrame(frame) => Some(frame),
+                    _ => None,
+                })
+                .unwrap();
+            let distance = elapsed as f64 * 0.5;
+            assert_eq!((pending.dx, pending.dy), (distance, distance));
+            if !release_before_frame {
+                assert!(up(&mut mode, &env, horizontal, "a").is_empty());
+            }
+            assert!(
+                pending.is_current(),
+                "releasing movement cannot cancel scrolling"
+            );
+            let frame = mode.frame(Duration::from_millis(20));
+            assert!(
+                frame.iter().any(
+                    |c| matches!(c, Command::MovePointer { dx, dy } if *dx == 0.0 && *dy < 0.0)
+                )
+            );
+            assert!(frame.iter().any(
+                |c| matches!(c, Command::ScrollFrame(frame) if frame.dx == 10.0 && frame.dy == 10.0)
+            ));
+            assert!(up(&mut mode, &env, scroll_x, scroll_key).is_empty());
+            assert!(!pending.is_current());
+            let frame = mode.frame(Duration::from_millis(20));
+            assert!(
+                frame.iter().any(
+                    |c| matches!(c, Command::MovePointer { dx, dy } if *dx == 0.0 && *dy < 0.0)
+                )
+            );
+            assert!(frame.iter().any(
+                |c| matches!(c, Command::ScrollFrame(frame) if frame.dx == 0.0 && frame.dy == 10.0)
+            ));
+            let pending = frame
+                .iter()
+                .find_map(|command| match command {
+                    Command::ScrollFrame(frame) => Some(frame),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(up(&mut mode, &env, vertical, vertical_key).is_empty());
+            assert!(pending.is_current());
+            assert_eq!(
+                mode.frame(Duration::from_millis(20)),
+                vec![Command::ScrollFrame(mode.scroll_session.frame(0.0, 10.0))]
+            );
+            assert_eq!(
+                up(&mut mode, &env, scroll_y, scroll_key),
+                vec![Command::SetFrameClock(false)]
+            );
+        }
+    }
+
+    #[test]
     fn scroll_speed_is_compiled_and_independent_of_tap_distance() {
         for tap in [20, 50, 200] {
             let mut config = Config::default();
@@ -1455,24 +1547,6 @@ mod tests {
         assert_eq!(
             mode.frame(Duration::from_millis(200)),
             vec![Command::SetFrameClock(false)]
-        );
-    }
-
-    #[test]
-    fn scroll_amounts_use_their_configured_distance() {
-        let env = Env::new();
-        let mut mode = crate::app::mode_catalog::normal(&env.config);
-        let out = down(
-            &mut mode,
-            &env,
-            Binding::Scroll(Direction::Down, ScrollAmount::Half),
-            "alt+e",
-        );
-        let expected = env.config.scroll.scroll_step_half as f64;
-        assert!(
-            out.iter()
-                .any(|c| matches!(c, Command::Scroll { dy, .. } if *dy == expected)),
-            "{out:?}, expected dy {expected}"
         );
     }
 
@@ -1590,6 +1664,8 @@ mod tests {
         let slow = travel_right(&env, Some(Speed::Slow), 8);
         let fast = travel_right(&env, Some(Speed::Fast), 8);
 
+        // Sub-pixel speeds must accumulate rather than round away to nothing.
+        assert!(slow > 0.0);
         assert!(
             slow < normal,
             "slow ({slow}) should trail normal ({normal})"
@@ -1649,13 +1725,6 @@ mod tests {
         )));
         assert_eq!(mode.multiplier(), 1.0);
         assert!(mode.handle(&ModeEvent::Deactivated, &env.ctx()).is_empty());
-    }
-
-    #[test]
-    fn slow_modifier_still_moves_the_pointer() {
-        // Sub-pixel speeds must accumulate rather than round away to nothing.
-        let env = Env::new();
-        assert!(travel_right(&env, Some(Speed::Slow), 8) > 0.0);
     }
 
     #[test]

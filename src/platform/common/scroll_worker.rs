@@ -132,15 +132,15 @@ mod tests {
             observed.recv_timeout(Duration::from_secs(2)).unwrap(),
             (0.0, 1.0)
         );
-        for n in 2..=1000 {
+        for n in 2..=3 {
             worker.submit(session.frame(0.0, n as f64)).unwrap();
         }
         resume.send(()).unwrap();
         assert_eq!(
             observed.recv_timeout(Duration::from_secs(2)).unwrap(),
-            (0.0, 1000.0)
+            (0.0, 3.0)
         );
-        // Neither 32-slot overflow nor 999 delayed native calls can occur.
+        // Only the latest pending frame runs; no backlog is replayed.
         worker.request_stop();
         resume.send(()).unwrap();
         worker

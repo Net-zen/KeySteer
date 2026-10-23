@@ -29,6 +29,8 @@ pub(super) struct PendingSequence {
 
 #[derive(Debug, Default)]
 pub(super) struct Scheduler {
+    pub(super) text_segmentation: Option<(ModeId, u64, u64)>,
+    pub(super) text_segmentation_serial: u64,
     pub(super) point_input: PointInput,
     pub(super) point_sample: Option<(ModeId, u64, crate::api::point_sample::Request)>,
     /// Never reset on plan replacement: old native results cannot alias a new mode.
@@ -37,7 +39,8 @@ pub(super) struct Scheduler {
     pub(super) text_prompt_serial: u64,
     pub(super) scan_activation: Option<u32>,
     pub(super) text_prompt_returning_focus: bool,
-    pub(super) panel_geometry: BTreeMap<u64, ModeId>,
+    pub(super) panel_geometry: BTreeMap<u64, (ModeId, u64, u32)>,
+    pub(super) panel_geometry_serial: u64,
     pub(super) audio_sessions: BTreeMap<u64, ModeId>,
     pub(super) window_sessions: BTreeMap<u64, ModeId>,
     pub(super) sequences: Vec<PendingSequence>,
@@ -47,6 +50,7 @@ pub(super) struct Scheduler {
 
 impl Scheduler {
     pub(super) fn reset(&mut self) {
+        self.text_segmentation = None;
         self.point_input = PointInput::default();
         self.point_sample = None;
         self.panel_geometry.clear();
@@ -62,7 +66,7 @@ impl Scheduler {
 
     pub(super) fn cancel_owner(&mut self, owner: &ModeId) {
         self.panel_geometry
-            .retain(|_, candidate| candidate != owner);
+            .retain(|_, (candidate, _, _)| candidate != owner);
         self.sequences.retain(|sequence| &sequence.owner != owner);
         self.timers.retain(|_, timer| &timer.owner != owner);
     }
@@ -74,12 +78,14 @@ impl Scheduler {
 
 impl Engine {
     pub(super) fn next_timeout(&self) -> Duration {
-        const MAX: Duration = Duration::from_millis(50);
+        // No heartbeat: native input/results wake the backend. Only real work
+        // supplies a deadline; backends own any degraded-notification fallback.
+        const MAX: Duration = Duration::MAX;
         if self.scheduler.timers.is_empty()
             && self.scheduler.sequences.is_empty()
             && self.input.pending_long_press_toggles.is_empty()
             && self.input.drag_auto_release.fires_at.is_none()
-            && self.quick_switch.pending.as_ref().is_none_or(|p| p.visible)
+            && self.quick_switch.pending.is_none()
         {
             return MAX;
         }
@@ -101,17 +107,10 @@ impl Engine {
                     .map(|pending| pending.fires_at),
             )
             .chain(self.input.drag_auto_release.fires_at)
-            .chain(
-                self.quick_switch
-                    .pending
-                    .as_ref()
-                    .filter(|p| !p.visible)
-                    .map(|p| p.deadline),
-            )
+            .chain(self.quick_switch.pending.as_ref().map(|p| p.deadline))
             .map(|fires_at| fires_at.saturating_duration_since(now))
             .min()
             .unwrap_or(MAX)
-            .min(MAX)
     }
 
     pub(super) fn fire_due_sequences(&mut self, backend: &mut dyn Backend) -> Result<(), String> {
@@ -145,42 +144,27 @@ impl Engine {
             return Ok(());
         }
         let now = Instant::now();
-        let mut due: Vec<String> = self
+        let mut due: SmallVec<[String; 4]> = self
             .scheduler
             .timers
             .iter()
             .filter(|(_, t)| t.fires_at <= now)
             .map(|(id, _)| id.clone())
             .collect();
-        due.sort();
+        due.sort_unstable();
 
         for id in due {
-            let Some(owner) = self
-                .scheduler
-                .timers
-                .get(&id)
-                .map(|timer| timer.owner.clone())
-            else {
+            let Some(timer) = self.scheduler.timers.get_mut(&id) else {
                 continue;
             };
-            let elapsed = self
-                .scheduler
-                .timers
-                .get(&id)
-                .map(|timer| now.saturating_duration_since(timer.last_fired))
-                .unwrap_or_default();
-            match self.scheduler.timers.get_mut(&id) {
-                Some(timer) => match timer.interval {
-                    // Re-arm from now to avoid drift storms after a stall.
-                    Some(interval) => {
-                        timer.last_fired = now;
-                        timer.fires_at = now + interval;
-                    }
-                    None => {
-                        self.scheduler.timers.remove(&id);
-                    }
-                },
-                None => continue,
+            let owner = timer.owner.clone();
+            let elapsed = now.saturating_duration_since(timer.last_fired);
+            if let Some(interval) = timer.interval {
+                // Re-arm from now to avoid drift storms after a stall.
+                timer.last_fired = now;
+                timer.fires_at = now + interval;
+            } else {
+                self.scheduler.timers.remove(&id);
             }
             self.trace_lazy(self.settings.debug.timers, "timer", || {
                 format!("fire id={id:?} owner={} elapsed={elapsed:?}", owner)

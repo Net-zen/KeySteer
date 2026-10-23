@@ -40,19 +40,8 @@ pub(super) fn input_panel(
 ) -> (Rect, crate::api::overlay::SharedLabelStyle) {
     let style = cfg.for_appearance(ctx.palette.appearance).panel.clone();
     let scale = super::label_scale(ctx.scale());
-    let area = if cfg.position_mode == crate::api::style::PanelPositionMode::Window {
-        window.unwrap_or_else(|| ctx.active_bounds())
-    } else {
-        ctx.active_bounds()
-    };
     let height = (style.font_size * 1.8 + style.padding_y * 2.0) * scale;
-    let rect = cfg.position.place(
-        area,
-        (cfg.width * scale).min(area.width),
-        height,
-        cfg.x_offset * scale,
-        cfg.y_offset * scale,
-    );
+    let rect = cfg.place(ctx.active_bounds(), window, None, height, scale);
     (rect, style)
 }
 const AUTO_HINT_PADDING_X_RATIO: f64 = 2.0 / 17.0;
@@ -731,7 +720,6 @@ impl HintView<'_> {
     // Keep panel layout and its larger temporaries out of ordinary label frames.
     #[inline(never)]
     fn append_search(&self, scene: &mut OverlayScene, ctx: &HostContext<'_>) {
-        scene.clip = Some(ctx.active_bounds());
         let cfg = &self.content.style.search_input_ui;
         let (rect, style) = input_panel(cfg, *self.window_bounds, ctx);
         if let Some(info) = &self.info {
@@ -836,48 +824,20 @@ impl HintView<'_> {
         ctx: &HostContext<'_>,
     ) {
         let scale = super::label_scale(ctx.scale());
-        let (mut panel, base) = input_panel(info.ui, *self.window_bounds, ctx);
+        let styles = info.ui.for_appearance(ctx.palette.appearance);
+        let base = &styles.panel;
         let line = base.font_size * 1.8 * scale;
         let gap = base.font_size * 0.8 * scale;
         let padding = (base.padding_x.max(10.0) * scale, base.padding_y * scale);
         let text_gap = base.font_size * 0.5 * scale;
         let height = line * 4.0 + text_gap * 2.0 + gap + padding.1 * 2.0;
-        panel.height = height;
-        if info.ui.position_mode == crate::api::style::PanelPositionMode::SearchInput {
-            let anchor = match &info.ui.position {
-                crate::api::style::CompiledPanelPosition::Percentages(value) => {
-                    crate::api::style::percentage_region(rect, *value).center()
-                }
-                crate::api::style::CompiledPanelPosition::Anchor(anchor) => {
-                    anchor.place(rect, 0.0, 0.0, 0.0, 0.0).center()
-                }
-            };
-            panel.x = anchor.x - panel.width / 2.0 + info.ui.x_offset * scale;
-            panel.y = if anchor.y <= rect.center().y {
-                anchor.y - height - info.ui.y_offset * scale
-            } else {
-                anchor.y + info.ui.y_offset * scale
-            };
-        } else {
-            let area = if info.ui.position_mode == crate::api::style::PanelPositionMode::Window {
-                self.window_bounds.unwrap_or(ctx.active_bounds())
-            } else {
-                ctx.active_bounds()
-            };
-            panel = info.ui.position.place(
-                area,
-                panel.width,
-                height,
-                info.ui.x_offset * scale,
-                info.ui.y_offset * scale,
-            );
-        }
-        let area = ctx.active_bounds();
-        panel.x = panel
-            .x
-            .clamp(area.x, (area.right() - panel.width).max(area.x));
-        panel.y = panel.y.clamp(area.y, (area.bottom() - height).max(area.y));
-        let styles = info.ui.for_appearance(ctx.palette.appearance);
+        let panel = info.ui.place(
+            ctx.active_bounds(),
+            *self.window_bounds,
+            Some(rect),
+            height,
+            scale,
+        );
         // Detach each shared buffer once for the complete information panel.
         let labels: &mut Vec<OverlayLabel> = &mut scene.labels;
         // The search input is appended after this panel. Reserve it too.

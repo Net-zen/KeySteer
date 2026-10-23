@@ -16,15 +16,12 @@ pub mod macos;
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) mod common;
 
-#[cfg(target_os = "macos")]
-pub(crate) use macos::{latest_point_mailbox, multi_click};
-
 // Keep portable unit coverage for macOS-only state machines on non-macOS CI.
 #[cfg(all(test, not(target_os = "macos")))]
-#[path = "macos/latest_point_mailbox.rs"]
+#[path = "macos/input/latest_point_mailbox.rs"]
 mod latest_point_mailbox_tests;
 #[cfg(all(test, not(target_os = "macos")))]
-#[path = "macos/multi_click.rs"]
+#[path = "macos/input/multi_click.rs"]
 mod multi_click_tests;
 #[cfg(all(test, not(target_os = "macos")))]
 #[path = "macos/window_move.rs"]
@@ -37,6 +34,14 @@ pub mod windows;
 pub mod unsupported;
 
 use crate::api::{Backend, UiScanStrategy};
+
+#[cfg(target_os = "macos")]
+pub(crate) use macos::run;
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn run(application: impl FnOnce() -> std::process::ExitCode) -> std::process::ExitCode {
+    application()
+}
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) const fn redundant_button_action(

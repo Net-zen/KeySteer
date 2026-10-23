@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn faint_downsampled_frames_survive_pixel_phase_and_desktop_scaling() {
+    let (w, h, stride) = (3840, 2160, 3840 * 4 + 16);
+    let mut pixels = vec![255; stride * h];
+    let frames = [(101, 101), (200, 101), (301, 200), (400, 200)];
+    for &(left, top) in &frames {
+        for y in top..top + 48 {
+            for x in left..left + 48 {
+                if x == left || x == left + 47 || y == top || y == top + 47 {
+                    pixels[y * stride + x * 4..][..3].fill(215);
+                }
+            }
+        }
+    }
+    let mut input = input::from_bgra(
+        &pixels,
+        (w, h, stride),
+        Rect::new(0., 0., w as f64, h as f64),
+        || Ok(false),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(input.frame_gray.is_some());
+    for scale in [1., 1.5, 2.] {
+        input.desktop_bounds = Rect::new(-300., 50., w as f64 / scale, h as f64 / scale);
+        let serial = detect_input(&input, usize::MAX, &|| false, false);
+        let parallel = detect_input(&input, usize::MAX, &|| false, true);
+        assert_eq!(serial, parallel);
+        for &(x, y) in &frames {
+            let centre = crate::api::Point::new(
+                -300. + (x + 24) as f64 / scale,
+                50. + (y + 24) as f64 / scale,
+            );
+            assert_eq!(
+                serial.iter().filter(|t| t.rect.contains(&centre)).count(),
+                1
+            );
+        }
+        assert_eq!(detect_input(&input, 1, &|| false, true), serial[..1]);
+        assert!(detect_input(&input, 0, &|| false, true).is_empty());
+    }
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = AtomicUsize::new(0);
+    assert!(
+        detect_input(
+            &input,
+            usize::MAX,
+            &|| { calls.fetch_add(1, Ordering::Relaxed) >= 40 },
+            true
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn hybrid_always_combines_sources_and_ignores_legacy_visual_caps() {
     use crate::api::{UiScanStrategy, VisionOptions};
     for detect_text in [false, true] {
@@ -14,7 +68,7 @@ fn hybrid_always_combines_sources_and_ignores_legacy_visual_caps() {
             assert_eq!(sources(UiScanStrategy::Hybrid, &options), (true, true));
             assert_eq!(
                 candidate_limit(UiScanStrategy::Hybrid, &options),
-                MAX_UI_SCAN_TARGETS
+                usize::MAX
             );
             assert_eq!(
                 sources(UiScanStrategy::Vision, &options),
@@ -319,15 +373,61 @@ pub(crate) fn reference_detect(
     bounds: Rect,
 ) -> (Vec<UiTarget>, usize) {
     let edges = tiled_edges(gray, w, h, &|| false).unwrap();
-    let dilated = dilate(&edges, w, h, bounds, &|| false).unwrap();
-    drop(edges);
-    let mut c = components(dilated, w, h, &|| false).unwrap();
+    let dilated = dilate(edges, w, h, bounds, &|| false).unwrap();
+    let mut c = components(dilated, w, h, &|| false, |_| true).unwrap();
     assert!(reference_hierarchy(&mut c, &|| false));
     (filter(&c, w, h, bounds, 2000, &|| false), c.len())
 }
 
 #[test]
-fn ten_thousand_candidates_survive_component_and_output_budgets() {
+fn dilation_preserves_identity_axes_and_clipped_even_kernels() {
+    for (w, h) in [(3usize, 3usize), (7, 5), (17, 37)] {
+        for (kw, kh) in [(1, 1), (1, 2), (2, 1), (2, 3), (3, 2), (32, 32)] {
+            let bounds = Rect::new(
+                0.0,
+                0.0,
+                3.5 * w as f64 / kw as f64,
+                2.5 * h as f64 / kh as f64,
+            );
+            for marked in [
+                vec![],
+                vec![0],
+                vec![w * h - 1],
+                vec![w / 2, w + 1, w * h / 2, w * h - 2],
+            ] {
+                let mut pixels = vec![0; w * h];
+                for &i in &marked {
+                    pixels[i] = 255;
+                }
+                // Direct rectangular neighborhoods independently check both axes,
+                // including asymmetric even kernels clipped at image boundaries.
+                let expected: Vec<_> = (0..w * h)
+                    .map(|i| {
+                        let (x, y) = (i % w, i / w);
+                        let xs = x.saturating_sub(kw / 2)..=(x + kw - 1 - kw / 2).min(w - 1);
+                        let ys = y.saturating_sub(kh / 2)..=(y + kh - 1 - kh / 2).min(h - 1);
+                        if marked
+                            .iter()
+                            .any(|&j| xs.contains(&(j % w)) && ys.contains(&(j / w)))
+                        {
+                            255
+                        } else {
+                            0
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    dilate(pixels.clone(), w, h, bounds, &|| false),
+                    Some(expected)
+                );
+                assert!(dilate(pixels, w, h, bounds, &|| true).is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn more_than_ten_thousand_candidates_survive_without_truncation() {
     // Separate connected components exercise the old 8192 cutoff as well as
     // filtering above 2000, without making normal tests run full-image Sobel.
     let side = 303;
@@ -335,7 +435,7 @@ fn ten_thousand_candidates_survive_component_and_output_budgets() {
     for i in 0..10_001 {
         pixels[(i / 101 * 3) * side + i % 101 * 3] = 255;
     }
-    let mut found = components(pixels, side, side, &|| false).unwrap();
+    let mut found = components(pixels, side, side, &|| false, |_| true).unwrap();
     assert_eq!(found.len(), 10_001);
     for c in &mut found {
         c.right = c.left + 9;
@@ -346,10 +446,10 @@ fn ten_thousand_candidates_survive_component_and_output_budgets() {
         side,
         side,
         Rect::new(0.0, 0.0, side as f64, side as f64),
-        MAX_UI_SCAN_TARGETS,
+        usize::MAX,
         &|| false,
     );
-    assert_eq!(targets.len(), 10_000);
+    assert_eq!(targets.len(), 10_001);
 }
 
 fn reference_threshold_edges(
@@ -470,5 +570,121 @@ fn row_kernels_match_original_pixels_including_small_frames_and_tile_halos() {
         assert_eq!(actual.blurred, expected.blurred);
         assert_eq!(actual.magnitude, expected.magnitude);
         assert_eq!(actual.state, expected.state);
+    }
+}
+
+#[test]
+fn division_free_nearest_offsets_match_reference_mapping() {
+    for (source, destination) in [
+        (3usize, 2usize),
+        (17, 7),
+        (100, 100),
+        (3_840, 2_560),
+        (2_160, 1_440),
+    ] {
+        assert_eq!(
+            input::nearest_offsets(source, destination),
+            (0..destination)
+                .map(|output| output * source / destination)
+                .collect::<Vec<_>>()
+        );
+    }
+    for (width, height, padding) in [(7usize, 5usize, 12usize), (3840, 2160, 16), (4096, 2048, 0)] {
+        let stride = width * 4 + padding;
+        let pixels: Vec<_> = (0..stride * height)
+            .map(|index| (index.wrapping_mul(37) >> 3) as u8)
+            .collect();
+        let bounds = Rect::new(-1920.0, -1080.0, 1920.0, 1080.0);
+        let image = input::from_bgra(&pixels, (width, height, stride), bounds, || Ok(false))
+            .unwrap()
+            .unwrap();
+        assert!(image.gray.len() <= MAX_PIXELS);
+        assert_eq!(image.desktop_bounds, bounds);
+        for y in [0, image.height / 2, image.height - 1] {
+            for x in [0, image.width / 2, image.width - 1] {
+                let source = (y * height / image.height) * stride + (x * width / image.width) * 4;
+                let pixel = &pixels[source..source + 4];
+                let expected = ((u16::from(pixel[2]) * 77
+                    + u16::from(pixel[1]) * 150
+                    + u16::from(pixel[0]) * 29)
+                    >> 8) as u8;
+                assert_eq!(image.gray[y * image.width + x], expected);
+            }
+        }
+        assert!(
+            input::from_bgra(&pixels, (width, height, stride), bounds, || Ok(true))
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert!(input::from_bgra(&[0; 4], (2, 1, 4), Rect::default(), || Ok(false)).is_err());
+}
+
+fn reference_components(
+    mut pixels: Vec<u8>,
+    w: usize,
+    h: usize,
+    stop: &impl Fn() -> bool,
+) -> Option<Vec<Component>> {
+    let mut result = Vec::new();
+    let mut stack = Vec::<u32>::new();
+    for i in 0..pixels.len() {
+        if i.is_multiple_of(1024) && stop() {
+            return None;
+        }
+        if pixels[i] == 0 {
+            continue;
+        }
+        let mut c = Component {
+            left: i % w,
+            right: i % w,
+            top: i / w,
+            bottom: i / w,
+            parent: None,
+        };
+        pixels[i] = 0;
+        stack.push(i as u32);
+        let mut visited = 0usize;
+        while let Some(index) = stack.pop() {
+            visited += 1;
+            if visited.is_multiple_of(1024) && stop() {
+                return None;
+            }
+            let index = index as usize;
+            let (x, y) = (index % w, index / w);
+            c.left = c.left.min(x);
+            c.right = c.right.max(x);
+            c.top = c.top.min(y);
+            c.bottom = c.bottom.max(y);
+            neighbors(index, w, h, |next| {
+                if pixels[next] != 0 {
+                    pixels[next] = 0;
+                    stack.push(next as u32);
+                }
+            });
+        }
+        result.push(c);
+    }
+    Some(result)
+}
+
+#[test]
+fn run_components_match_pixel_connectivity_and_cancellation() {
+    for (w, h) in [(3, 3), (17, 21), (128, 97)] {
+        for density in [0, 1, 3, 7, 16, 17] {
+            let pixels: Vec<_> = (0..w * h)
+                .map(|i| u8::from((i * 71 + i * i * 13) % 17 < density))
+                .collect();
+            let expected = reference_components(pixels.clone(), w, h, &|| false).unwrap();
+            let actual = components(pixels.clone(), w, h, &|| false, |_| true).unwrap();
+            let boxes = |parts: Vec<Component>| {
+                parts
+                    .into_iter()
+                    .map(|c| (c.left, c.top, c.right, c.bottom))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(boxes(actual), boxes(expected));
+            assert!(components(pixels, w, h, &|| true, |_| true).is_none());
+        }
     }
 }
