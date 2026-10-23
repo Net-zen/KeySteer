@@ -605,7 +605,7 @@ impl WindowContent {
             } else if let Some(index) = previous
                 .and_then(|old| old.retained.as_ref())
                 .and_then(|old| old.omitted_label)
-                && let Some(label) = self.labels.get(index)
+                && let Some(label) = self.labels.get(index).filter(|label| label.configured)
             {
                 label.base.setHidden(false);
             }
@@ -892,6 +892,22 @@ impl WindowContent {
         area: Rect,
         rebuild_text: bool,
     ) {
+        if let LabelSlot::Static(index) = slot
+            && spec
+                .rect
+                .inset(
+                    -spec.style.border_width.max(0.0) - 2.0,
+                    -spec.style.border_width.max(0.0) - 2.0,
+                )
+                .intersect(&area)
+                .is_none()
+        {
+            let layer = &mut self.labels[index];
+            layer.base.setHidden(true);
+            // Keep native sibling order, but rebuild text if this slot returns.
+            layer.configured = false;
+            return;
+        }
         let configured = match slot {
             LabelSlot::Static(index) => self.labels[index].configured,
             LabelSlot::Foreground(index) => self.foreground_labels[index].configured,
