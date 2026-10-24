@@ -799,6 +799,31 @@ fn refined_search_prepares_large_levels_cooperatively() {
 }
 
 #[test]
+fn summary_counts_ascii_line_breaks_and_unicode_graphemes() {
+    let mut mode = mode();
+    for text in [
+        "abc",
+        "\r",
+        "\r\n",
+        "\n\r",
+        "\r\r\n\n",
+        "e\u{301}中👨‍👩‍👧‍👦",
+        "🇨🇳\r\n🇺🇸",
+    ] {
+        mode.frame.text = text.into();
+        mode.frame.units.clear();
+        mode.frame.units.push(0..text.len());
+        mode.frame.selected = vec![true];
+        mode.update_summary();
+        assert_eq!(mode.output, text);
+        assert_eq!(
+            mode.summary,
+            format!("1 regions · {} chars", text.graphemes(true).count())
+        );
+    }
+}
+
+#[test]
 fn editing_numbers_in_search_text_waits_for_explicit_commit() {
     let env = Env::new();
     let mut mode = mode();
@@ -822,6 +847,23 @@ fn editing_numbers_in_search_text_waits_for_explicit_commit() {
     assert_eq!(mode.search.search_selection, Selection::default());
     mode.insert("0 1-4 1- ", &env.ctx());
     assert_eq!(mode.output, "one");
+
+    mode.action(Action::ClearInput, &env.ctx());
+    mode.action(Action::ClearSelection, &env.ctx());
+    mode.insert(&format!(" one{}", "界".repeat(4090)), &env.ctx());
+    mode.handle(&ModeEvent::TextEdit(EditAction::Home), &env.ctx());
+    mode.insert("1", &env.ctx());
+    mode.insert("2 ", &env.ctx());
+    assert_eq!(mode.search.search_query.chars().count(), 4096);
+    assert!(mode.search.search_query.starts_with("12 one"));
+    assert!(
+        mode.output.is_empty(),
+        "discarded whitespace must not commit numbers"
+    );
+    mode.handle(&ModeEvent::TextEdit(EditAction::SelectAll), &env.ctx());
+    mode.insert("2 ", &env.ctx());
+    assert_eq!(mode.output, "two");
+    assert!(mode.search.search_query.is_empty());
 }
 
 #[test]
@@ -1147,7 +1189,12 @@ fn late_batches_coalesce_and_deactivation_cancels_maintenance() {
     );
     settle(&mut mode, &env);
     assert_eq!(mode.frame.units.len(), 2);
+    mode.action(Action::SelectAll, &env.ctx());
+    assert!(!mode.output.is_empty());
     let commands = mode.handle(&ModeEvent::Deactivated, &env.ctx());
+    assert_eq!(mode.output.capacity(), 0);
+    assert_eq!(mode.summary.capacity(), 0);
+    assert_eq!(mode.base_selected.capacity(), 0);
     assert!(
         commands
             .iter()
@@ -1219,7 +1266,10 @@ fn wider_panel_separates_the_summary_and_keeps_card_text_compact() {
     let mut env = Env::new();
     for scale in [1., 1.5] {
         env.screens[0].scale = scale;
-        let mut mode = mode();
+        let config =
+            crate::config::Config::parse("[ui_hint.search_highlight]\ntext_color = '#FF1122FF'")
+                .unwrap();
+        let mut mode = crate::app::mode_catalog::text_select(&config);
         words(
             &mut mode,
             &env,
@@ -1291,6 +1341,43 @@ fn wider_panel_separates_the_summary_and_keeps_card_text_compact() {
                     && rect.bottom() <= panel.bottom(),
             _ => true,
         }));
+        mode.frame.toggle(1);
+        mode.update_summary();
+        let Command::ShowOverlay(mixed) = mode.render(&env.ctx()) else {
+            panic!()
+        };
+        let plain = mode
+            .config
+            .hint
+            .search_info_ui
+            .input_style(env.palette.appearance);
+        for text in ["2", "Omitted"] {
+            let label = mixed
+                .labels
+                .iter()
+                .find(|label| label.text.as_str() == text)
+                .unwrap();
+            assert_eq!(label.style.text_color, plain.text_color);
+            assert_eq!(label.style.background, Color::TRANSPARENT);
+        }
+        let checked = mixed
+            .labels
+            .iter()
+            .find(|label| label.text.as_str() == "KeySteer")
+            .unwrap();
+        assert_eq!(checked.style.text_color, Color::rgb(255, 17, 34));
+        assert_eq!(checked.style, word.style);
+        mode.frame.toggle(1);
+        mode.update_summary();
+        let Command::ShowOverlay(restored) = mode.render(&env.ctx()) else {
+            panic!()
+        };
+        let restored = restored
+            .labels
+            .iter()
+            .find(|label| label.text.as_str() == "Omitted")
+            .unwrap();
+        assert_eq!(restored.style, word.style);
     }
     let mut config = crate::config::Config::default();
     config.text_select.ui.panel_width = 960;

@@ -5,6 +5,28 @@ outline: 2
 
 # Release notes
 
+## 0.12.6
+
+Added **Text Select mode** to select and copy on-screen text, with refinement into words and characters.
+
+```toml
+[normal.bindings]
+c = "text_select"                  # 进入文字选择 / Enter Text Select
+
+[text_select.bindings]
+"alt+c" = "text_refine"            # 细分为词语、字符 / Refine into words, then characters
+"alt+backspace" = "previous_level" # 返回上层 / Previous level
+"ctrl+backspace" = "first_level"   # 重新识别 / Rescan
+tab = "text_cycle_page"            # 循环翻页 / Cycle pages
+"ctrl+a" = "text_select_all"       # 空输入时全选 / Select all when input is empty
+backspace = "text_clear_selection" # 空输入时清空勾选 / Clear selection when input is empty
+"ctrl+x" = "text_clear_input"      # 清空输入 / Clear input
+"mod+c enter" = "text_copy"        # Ctrl+C（macOS 为 Cmd+C）或 Enter 复制 / Ctrl+C (Cmd+C on macOS) or Enter to copy
+"primary+q" = "normal"             # 返回 Normal / Return to Normal
+esc = "cancel_selection"           # 返回来源模式 / Return to previous mode
+"?" = "key_help"                   # 按键帮助 / Key help
+```
+
 ## 0.12.5
 
 - Improved grid and UIHint rendering and label switching on Windows and macOS, and fixed overlay refresh issues.

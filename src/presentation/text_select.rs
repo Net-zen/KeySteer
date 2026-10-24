@@ -1,8 +1,16 @@
 //! Text preview uses UIHint's input, panel positioning and compiled appearance.
-use crate::api::overlay::{Color, OverlayLabel};
+use crate::api::overlay::{Color, OverlayLabel, OverlayText, SharedLabelStyle};
 use crate::api::presentation::TextSelectView;
 use crate::api::{HostContext, OverlayScene, OverlayShape, Point, Rect};
 use unicode_segmentation::UnicodeSegmentation;
+
+struct ChipStyles {
+    background: Color,
+    border_color: Color,
+    border_width: f64,
+    code: SharedLabelStyle,
+    text: SharedLabelStyle,
+}
 
 impl TextSelectView<'_> {
     pub(crate) fn scene(self, ctx: &HostContext<'_>) -> OverlayScene {
@@ -37,7 +45,7 @@ impl TextSelectView<'_> {
         let width = (preliminary.width - padding.0 * 2.0).max(1.0);
         // Reserve a bounded preview area; only native typography decides where
         // the prose wraps. Estimated character widths must not insert line breaks.
-        let preview_height = line * preview_lines(preview, width / font, 4).len() as f64;
+        let preview_height = line * preview_lines(preview, width / font).take(4).count() as f64;
         let code_height = font;
         let word_height = font * 1.9;
         let chip_height = code_height + word_height + 8.0 * scale;
@@ -162,6 +170,8 @@ impl TextSelectView<'_> {
             y += divider_height;
         }
         // Each word takes its own width; one long word never widens the whole grid.
+        // Share styles only within this scene, creating each checked state on demand.
+        let mut chip_styles = [None, None];
         for (chip, cell) in self.chips.iter().zip(cells) {
             let rect = Rect::new(
                 x + cell.x,
@@ -169,56 +179,74 @@ impl TextSelectView<'_> {
                 cell.width - 4.0 * scale,
                 chip_height - 4.0 * scale,
             );
-            let mut style = (*text_style).clone();
-            style.background = base.background;
-            if chip.selected {
-                highlight.apply(&mut style, ctx.palette);
-            }
+            let styles = chip_styles[usize::from(chip.selected)].get_or_insert_with(|| {
+                let mut style = (*text_style).clone();
+                style.background = base.background;
+                if chip.selected {
+                    highlight.apply(&mut style, ctx.palette);
+                }
+                let background = style.background;
+                let border_color = style.border_color;
+                let border_width = style.border_width.max(1.0) * scale;
+                style.padding_x = 0.0;
+                style.padding_y = 0.0;
+                style.background = Color::TRANSPARENT;
+                style.border_width = 0.0;
+                let mut code = style.clone();
+                code.font_size *= 0.7;
+                style.font_size *= 1.35;
+                ChipStyles {
+                    background,
+                    border_color,
+                    border_width,
+                    code: code.into(),
+                    text: style.into(),
+                }
+            });
             scene.push_shape(OverlayShape::Rect {
                 rect,
-                fill: style.background,
-                stroke: style.border_color,
-                stroke_width: style.border_width.max(1.0) * scale,
+                fill: styles.background,
+                stroke: styles.border_color,
+                stroke_width: styles.border_width,
                 corner_radius: 3.0 * scale,
                 z_index: 10_001,
             });
-            style.padding_x = 0.0;
-            style.padding_y = 0.0;
-            style.background = Color::TRANSPARENT;
-            style.border_width = 0.0;
-            let mut code_style = style.clone();
-            code_style.font_size *= 0.7;
+            let mut code = OverlayText::from(if chip.selected { "✓ " } else { "" });
+            for ch in chip.code.chars().flat_map(char::to_uppercase) {
+                code.push(ch);
+            }
             scene.push_label(
                 OverlayLabel::new(
-                    if chip.selected {
-                        format!("✓ {}", chip.code.to_uppercase())
-                    } else {
-                        chip.code.to_uppercase()
-                    },
+                    code,
                     Rect::new(
                         rect.x + 4.0 * scale,
                         rect.y + 2.0 * scale,
                         rect.width - 8.0 * scale,
                         code_height,
                     ),
-                    code_style,
+                    styles.code.clone(),
                 )
                 .with_fixed_bounds()
                 .with_z_index(10_002),
             );
-            style.font_size *= 1.35;
+            let (first, more) =
+                preview_lines(chip.text, (rect.width - 8.0 * scale) / (font * 1.35))
+                    .next()
+                    .unwrap_or_default();
+            let mut text = OverlayText::from(first);
+            if more {
+                text.push('…');
+            }
             scene.push_label(
                 OverlayLabel::new(
-                    preview_lines(chip.text, (rect.width - 8.0 * scale) / (font * 1.35), 1)
-                        .pop()
-                        .unwrap_or_default(),
+                    text,
                     Rect::new(
                         rect.x + 4.0 * scale,
                         rect.y + 2.0 * scale + code_height,
                         rect.width - 8.0 * scale,
                         word_height,
                     ),
-                    style,
+                    styles.text.clone(),
                 )
                 .with_fixed_bounds()
                 .with_z_index(10_002),
@@ -247,6 +275,16 @@ impl TextSelectView<'_> {
 }
 
 fn bounded_preview(text: &str) -> &str {
+    // Bytes bound the grapheme count, so short text needs no segmentation.
+    if text.len() <= 4096 {
+        return text;
+    }
+    // Include the following byte to prove a boundary: a combining mark must
+    // not be cut from an ASCII base. CR may instead form a CRLF cluster.
+    let prefix = &text.as_bytes()[..=4096];
+    if prefix.is_ascii() && !prefix[..4096].contains(&b'\r') {
+        return &text[..4096];
+    }
     text.grapheme_indices(true)
         .nth(4096)
         .map_or(text, |(end, _)| &text[..end])
@@ -268,76 +306,69 @@ fn chip_layout(
             .map(|g| if g.is_ascii() { 0.75 } else { 1.0 })
             .sum::<f64>()
     };
-    let widths: Vec<_> = chips
+    let mut cells: Vec<_> = chips
         .iter()
         .map(|chip| {
             // Reserve the checkmark even for unchecked cells, so toggling is stable.
-            ((advance(chip.text) * font * 1.35).max((advance(chip.code) + 1.5) * font * 0.7)
+            let natural = ((advance(chip.text) * font * 1.35)
+                .max((advance(chip.code) + 1.5) * font * 0.7)
                 + 16.0 * scale)
                 .max(min_width * scale)
-                .min(width)
+                .min(width);
+            Rect::new(0.0, 0.0, natural, height)
         })
         .collect();
-    let pack = |cap: f64| {
+    let pack = |cells: &mut [Rect], cap: f64| {
         let mut x = 0.0;
         let mut y = 0.0;
-        widths
-            .iter()
-            .map(|&natural| {
-                let cell_width = natural.min(cap);
-                if x > 0.0 && x + cell_width > width + 0.001 {
-                    x = 0.0;
-                    y += height;
-                }
-                let rect = Rect::new(x, y, cell_width, height);
-                x += cell_width;
-                rect
-            })
-            .collect::<Vec<_>>()
+        for cell in cells {
+            cell.width = cell.width.min(cap);
+            if x > 0.0 && x + cell.width > width + 0.001 {
+                x = 0.0;
+                y += height;
+            }
+            cell.x = x;
+            cell.y = y;
+            x += cell.width;
+        }
     };
-    let cells = pack(width);
+    pack(&mut cells, width);
     if cells
         .last()
         .is_some_and(|rect| rect.bottom() > height * max_rows as f64 + 0.001)
     {
-        pack(width / chips.len().div_ceil(max_rows.max(1)).max(1) as f64)
-    } else {
-        cells
+        pack(
+            &mut cells,
+            width / chips.len().div_ceil(max_rows.max(1)).max(1) as f64,
+        );
     }
+    cells
 }
 
-/// Bounded preview with real paragraph breaks and intact grapheme clusters.
-/// The mode retains the full buffer for copying.
-fn preview_lines(text: &str, capacity: f64, max_lines: usize) -> Vec<String> {
-    let mut lines = vec![String::new()];
-    let mut width = 0.0;
-    for g in text.graphemes(true) {
-        let newline = g.contains('\n') || g == "\r";
-        let advance = if g == "\t" {
-            3.0
-        } else if g.is_ascii() {
-            0.75
-        } else {
-            1.0
-        };
-        if newline || width + advance > capacity && lines.last().is_some_and(|s| !s.is_empty()) {
-            if lines.len() == max_lines {
-                if let Some(last) = lines.last_mut() {
-                    last.push('…');
-                }
-                break;
-            }
-            lines.push(String::new());
-            width = 0.0;
-        }
-        if !newline {
-            if let Some(last) = lines.last_mut() {
-                last.push_str(g);
+/// Borrow estimated lines without allocating text just to count them. The bool
+/// marks a following line, including an empty paragraph after a trailing break.
+fn preview_lines(text: &str, capacity: f64) -> impl Iterator<Item = (&str, bool)> {
+    let mut remaining = Some(text);
+    std::iter::from_fn(move || {
+        let text = remaining.take()?;
+        let mut width = 0.0;
+        for (index, g) in text.grapheme_indices(true) {
+            let newline = g.contains('\n') || g == "\r";
+            let advance = if g == "\t" {
+                3.0
+            } else if g.is_ascii() {
+                0.75
+            } else {
+                1.0
+            };
+            if newline || width + advance > capacity && index != 0 {
+                remaining = Some(&text[index + if newline { g.len() } else { 0 }..]);
+                return Some((&text[..index], true));
             }
             width += advance;
         }
-    }
-    lines
+        Some((text, false))
+    })
 }
 
 #[cfg(test)]
@@ -401,11 +432,45 @@ mod tests {
         );
     }
     #[test]
+    fn preview_limit_keeps_combining_marks_and_crlf_at_the_cut() {
+        for text in [
+            String::new(),
+            "a".repeat(4096),
+            "a".repeat(4097),
+            "中".repeat(2000),
+            "e\u{301}".repeat(4097),
+            format!("{}\r\nz", "a".repeat(4095)),
+            format!("{}\rX", "a".repeat(4095)),
+            format!("{}\u{301}z", "a".repeat(4096)),
+            format!("{}b\u{301}", "a".repeat(4096)),
+            format!("{}👨‍👩‍👧‍👦z", "a".repeat(4095)),
+        ] {
+            let end = text
+                .grapheme_indices(true)
+                .nth(4096)
+                .map_or(text.len(), |(end, _)| end);
+            assert_eq!(bounded_preview(&text), &text[..end]);
+        }
+    }
+
+    #[test]
     fn preview_keeps_paragraph_breaks_and_does_not_split_graphemes() {
         assert_eq!(
-            preview_lines("first\n\nsecond", 50., 4),
-            ["first", "", "second"]
+            preview_lines("first\n\nsecond", 50.).collect::<Vec<_>>(),
+            [("first", true), ("", true), ("second", false)]
         );
-        assert_eq!(preview_lines("e\u{301}👨‍👩‍👧‍👦a", 1., 2), ["e\u{301}", "👨‍👩‍👧‍👦…"]);
+        assert_eq!(
+            preview_lines("e\u{301}👨‍👩‍👧‍👦a", 1.).take(2).collect::<Vec<_>>(),
+            [("e\u{301}", true), ("👨‍👩‍👧‍👦", true)]
+        );
+        assert_eq!(preview_lines("", 0.).collect::<Vec<_>>(), [("", false)]);
+        assert_eq!(
+            preview_lines("a\r\n", 1.).collect::<Vec<_>>(),
+            [("a", true), ("", false)]
+        );
+        assert_eq!(
+            preview_lines("\t中", 0.).collect::<Vec<_>>(),
+            [("\t", true), ("中", false)]
+        );
     }
 }

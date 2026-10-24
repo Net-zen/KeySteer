@@ -178,15 +178,24 @@ impl Frame {
     }
 
     pub fn selected_text(&self) -> String {
+        let mut text = String::new();
+        self.write_selected_text(&mut text);
+        text
+    }
+
+    pub fn write_selected_text(&self, text: &mut String) {
+        text.clear();
         if self.level == Level::Regions {
-            self.text_in_order((0..self.units.len()).filter(|&index| self.selected[index]))
+            self.text_in_order(
+                text,
+                (0..self.units.len()).filter(|&index| self.selected[index]),
+            );
         } else {
-            self.text_in_order(self.selection_order.iter().copied())
+            self.text_in_order(text, self.selection_order.iter().copied());
         }
     }
 
-    fn text_in_order(&self, indices: impl Iterator<Item = usize>) -> String {
-        let mut text = String::new();
+    fn text_in_order(&self, text: &mut String, indices: impl Iterator<Item = usize>) {
         let mut previous: Option<&Range<usize>> = None;
         let mut previous_index = None;
         for index in indices {
@@ -207,7 +216,6 @@ impl Frame {
             previous = Some(unit);
             previous_index = Some(index);
         }
-        text
     }
 
     pub fn selected_bounds(&self) -> Vec<Rect> {

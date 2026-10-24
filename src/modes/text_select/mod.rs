@@ -18,7 +18,7 @@ use crate::api::{
     window_presets::TextPrompt,
 };
 use document::{Frame, Level};
-use std::{sync::Arc, time::Duration};
+use std::{fmt::Write, sync::Arc, time::Duration};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub struct Settings {
@@ -245,21 +245,29 @@ impl TextSelectMode {
     }
 
     fn update_summary(&mut self) {
-        self.output = self.frame.selected_text();
+        self.frame.write_selected_text(&mut self.output);
         let selected = self.frame.selected.iter().filter(|&&s| s).count();
-        self.summary = if selected == 0 {
-            String::new()
-        } else {
+        self.summary.clear();
+        if selected != 0 {
             let unit = match self.frame.level {
                 Level::Regions => "regions",
                 Level::Words => "words",
                 Level::Characters => "characters",
             };
-            format!(
-                "{selected} {unit} · {} chars",
+            let characters = if self.output.is_ascii() {
+                // CRLF is the only multi-byte grapheme in ASCII text.
+                self.output.len()
+                    - self
+                        .output
+                        .as_bytes()
+                        .windows(2)
+                        .filter(|pair| *pair == b"\r\n")
+                        .count()
+            } else {
                 self.output.graphemes(true).count()
-            )
-        };
+            };
+            let _ = write!(self.summary, "{selected} {unit} · {characters} chars");
+        }
         self.page = self
             .page
             .min(self.search.hints.len().saturating_sub(1) / PAGE_SIZE);
@@ -306,8 +314,9 @@ impl TextSelectMode {
         if self.frame.level != Level::Regions {
             return if self.search.search_pending {
                 self.filter_refined(1024);
-                self.consume_unambiguous_selection();
-                self.update_summary();
+                if self.consume_unambiguous_selection() {
+                    self.update_summary();
+                }
                 self.finish(ctx, CommandBatch::new())
             } else {
                 CommandBatch::new()
@@ -487,9 +496,11 @@ impl TextSelectMode {
         self.reindex();
         self.search.search_query = query;
         self.search.search_selection = edit;
-        self.consume_selection_numbers(false);
+        if self.consume_selection_numbers(false) {
+            self.update_summary();
+        }
         self.status.clear();
-        self.query_changed(None, ctx)
+        self.query_changed(false, ctx)
     }
 
     fn action(&mut self, action: Action, ctx: &HostContext<'_>) -> CommandBatch {
@@ -501,7 +512,7 @@ impl TextSelectMode {
                 }
                 self.search.search_query.clear();
                 self.search.search_selection = Selection::default();
-                return self.query_changed(None, ctx);
+                return self.query_changed(false, ctx);
             }
             Action::SelectAll | Action::ClearSelection => {
                 if !self.search.search_query.is_empty() || self.pending_segment {
@@ -524,8 +535,9 @@ impl TextSelectMode {
                     return CommandBatch::new();
                 }
                 self.page = (self.page + 1) % self.search.hints.len().div_ceil(PAGE_SIZE).max(1);
-                self.consume_unambiguous_selection();
-                self.update_summary();
+                if self.consume_unambiguous_selection() {
+                    self.update_summary();
+                }
             }
             Action::Refine => return self.refine(ctx),
             Action::Copy => {
@@ -570,7 +582,7 @@ impl TextSelectMode {
         self.finish(ctx, CommandBatch::one(Command::CancelTextSegmentation))
     }
 
-    fn query_changed(&mut self, inserted: Option<&str>, ctx: &HostContext<'_>) -> CommandBatch {
+    fn query_changed(&mut self, inserted_separator: bool, ctx: &HostContext<'_>) -> CommandBatch {
         self.copying = false;
         self.search.search_focus = None;
         if !self.pending_segment {
@@ -579,11 +591,10 @@ impl TextSelectMode {
                 self.filter(0);
             } else {
                 self.filter_refined(256);
-                if inserted.is_some_and(|value| value.chars().any(char::is_whitespace)) {
-                    self.consume_selection_numbers(false);
+                let committed = inserted_separator && self.consume_selection_numbers(false);
+                if self.consume_unambiguous_selection() || committed {
+                    self.update_summary();
                 }
-                self.consume_unambiguous_selection();
-                self.update_summary();
             }
         }
         self.finish(ctx, self.selection_pointer())
@@ -629,9 +640,9 @@ impl TextSelectMode {
         }
     }
 
-    fn consume_unambiguous_selection(&mut self) {
+    fn consume_unambiguous_selection(&mut self) -> bool {
         if self.frame.level == Level::Regions || self.pending_segment {
-            return;
+            return false;
         }
         if let Some(number) = selection_input::consume_unambiguous(
             &mut self.search.search_query,
@@ -647,7 +658,9 @@ impl TextSelectMode {
                 self.automatic_selection = Some(self.frame.toggle_with_undo(number.first));
                 self.show_selected_page(number.first);
             }
+            return true;
         }
+        false
     }
 
     fn filter_refined(&mut self, budget: usize) {
@@ -657,7 +670,11 @@ impl TextSelectMode {
             .filter(|term| !selection_input::numeric_term(term))
             .collect();
         if terms.is_empty() {
-            self.search.hints.clone_from(&self.search.search_hints);
+            // Refined hints are an ordered subset of fixed labels until reindex.
+            // Equal lengths therefore already mean the complete, unchanged list.
+            if self.search.hints.len() != self.search.search_hints.len() {
+                self.search.hints.clone_from(&self.search.search_hints);
+            }
             self.search.search_pending = false;
         } else {
             let prepared = self.search.search_text.len();
@@ -713,24 +730,20 @@ impl TextSelectMode {
         {
             let number = (undo.index + 1).to_string();
             self.frame.undo_toggle(undo);
+            self.update_summary();
             self.search
                 .search_selection
                 .insert(&mut self.search.search_query, &number);
         }
-        let remaining = 4096usize.saturating_sub(
-            self.search.search_query.chars().count()
-                - self.search.search_query[self.search.search_selection.range()]
-                    .chars()
-                    .count(),
-        );
-        let end = value
-            .char_indices()
-            .nth(remaining)
-            .map_or(value.len(), |(i, _)| i);
+        let start = self.search.search_selection.range().start;
         self.search
             .search_selection
-            .insert(&mut self.search.search_query, &value[..end]);
-        self.query_changed(Some(&value[..end]), ctx)
+            .insert(&mut self.search.search_query, value);
+        let inserted_separator = self.search.search_query
+            [start..self.search.search_selection.cursor]
+            .chars()
+            .any(char::is_whitespace);
+        self.query_changed(inserted_separator, ctx)
     }
 
     fn prepare_overlap(&mut self, ctx: &HostContext<'_>) {
@@ -1006,7 +1019,9 @@ impl Mode for TextSelectMode {
                 self.search.clear_results();
                 self.history.clear();
                 self.frame = Frame::default();
-                self.output.clear();
+                self.output = String::new();
+                self.summary = String::new();
+                self.base_selected = Vec::new();
                 CommandBatch::from_iter([
                     Command::CancelTimer {
                         id: MAINTENANCE.into(),
@@ -1073,7 +1088,7 @@ impl Mode for TextSelectMode {
                     .search_selection
                     .edit(&mut self.search.search_query, *action);
                 if changed {
-                    self.query_changed(None, ctx)
+                    self.query_changed(false, ctx)
                 } else {
                     self.finish(ctx, CommandBatch::new())
                 }
