@@ -642,7 +642,7 @@ The input center defaults to 95% of display height. Click, drag a range, or adju
 
 ## Temporary input layers
 
-All modes share `inherits`, `temporary_mode`, `temporary_mode_keys`, and `temporary_mode_passthrough_keys`, including Normal, Quick Switch, Text Input, Text Select, UI Hint, grids, windows, and plugins. Omitting `temporary_mode_keys` from a user configuration or setting it to `[]` disables the layer at load time, so input skips temporary matching. UI Hint and Text Select disable it by default; the default Text Select section omits these optional fields.
+All modes share `inherits`, `temporary_mode`, `temporary_mode_keys`, and `temporary_mode_passthrough_keys`, including Normal, Quick Switch, Text Input, Text Select, UI Hint, grids, windows, and plugins. Omitting `temporary_mode_keys` from a user configuration or setting it to `[]` disables the layer at load time, so input skips temporary matching. The shipped UI Hint configuration explicitly sets `temporary_mode_keys = ["primary"]`: hold Primary to borrow Normal. Text Select disables the layer by default and omits these optional fields.
 
 While `temporary_mode_keys` are held, matching proceeds through:
 

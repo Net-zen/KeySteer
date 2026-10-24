@@ -93,11 +93,14 @@ test('text selection inheritance and temporary settings survive editing and expo
   assert.equal(defaults.text_select.inherits, undefined)
   assert.equal(defaults.text_select.temporary_mode, undefined)
   assert.equal(defaults.text_select.temporary_mode_keys, undefined)
-  assert.deepEqual(defaults.ui_hint.temporary_mode_keys, [])
+  assert.deepEqual(defaults.ui_hint.temporary_mode_keys, ['primary'])
+  const restoredDefaults = parseConfigDocument(stringify(defaults)).document
+  assert.deepEqual(resolveConfigDocument(defaults, restoredDefaults).ui_hint.temporary_mode_keys, ['primary'])
   const overrides = parseConfigDocument('[key_aliases]\nBorrow = "right_alt"\n[text_select]\ninherits = ["normal"]\ntemporary_mode = "normal"\ntemporary_mode_keys = ["Borrow"]\ntemporary_mode_passthrough_keys = ["Borrow+f8"]').document
   const exported = parseConfigDocument(stringify(overrides)).document
   assert.deepEqual(exported.text_select, overrides.text_select)
   const effective = resolveConfigDocument(defaults, exported)
+  assert.deepEqual(effective.ui_hint.temporary_mode_keys, [])
   assert.equal(effectiveBindings(effective, 'text_select').get('h')?.source, 'normal')
   for (const isMac of [false, true]) {
     assert.equal(resolveLayeredPhysicalBinding(effective, 'text_select', ['right_alt', 'h'], 'h', isMac)?.value, 'move_left')

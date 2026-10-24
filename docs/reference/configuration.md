@@ -647,7 +647,7 @@ position = ["44%", "50%", "56%", "50%"]
 
 ## 临时模式按键优先级
 
-所有模式共用 `inherits`、`temporary_mode`、`temporary_mode_keys` 和 `temporary_mode_passthrough_keys`，包括 Normal、Quick Switch、Text Input、Text Select、UI Hint、网格、窗口与插件。用户配置未写 `temporary_mode_keys` 或设为 `[]` 时关闭临时层；加载时即确定，输入时跳过临时匹配。UI Hint 和文字选择默认关闭，文字选择默认段不添加这些可选字段。
+所有模式共用 `inherits`、`temporary_mode`、`temporary_mode_keys` 和 `temporary_mode_passthrough_keys`，包括 Normal、Quick Switch、Text Input、Text Select、UI Hint、网格、窗口与插件。用户配置未写 `temporary_mode_keys` 或设为 `[]` 时关闭临时层；加载时即确定，输入时跳过临时匹配。发布配置中 UI Hint 显式设置 `temporary_mode_keys = ["primary"]`，按住 Primary 可临时借用 Normal；文字选择默认关闭临时层，默认段不添加这些可选字段。
 
 按住 `temporary_mode_keys` 时，依次查找：
 
