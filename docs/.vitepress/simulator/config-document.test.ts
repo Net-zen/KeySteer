@@ -86,11 +86,68 @@ panel_width = 960`
   }
 })
 
+test('text selection inheritance and temporary settings survive editing and export', async () => {
+  const { stringify } = await import('smol-toml')
+  const { effectiveBindings, resolveLayeredPhysicalBinding } = await import('./bindings.ts')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  assert.equal(defaults.text_select.inherits, undefined)
+  assert.equal(defaults.text_select.temporary_mode, undefined)
+  assert.equal(defaults.text_select.temporary_mode_keys, undefined)
+  assert.deepEqual(defaults.ui_hint.temporary_mode_keys, [])
+  const overrides = parseConfigDocument('[key_aliases]\nBorrow = "right_alt"\n[text_select]\ninherits = ["normal"]\ntemporary_mode = "normal"\ntemporary_mode_keys = ["Borrow"]\ntemporary_mode_passthrough_keys = ["Borrow+f8"]').document
+  const exported = parseConfigDocument(stringify(overrides)).document
+  assert.deepEqual(exported.text_select, overrides.text_select)
+  const effective = resolveConfigDocument(defaults, exported)
+  assert.equal(effectiveBindings(effective, 'text_select').get('h')?.source, 'normal')
+  for (const isMac of [false, true]) {
+    assert.equal(resolveLayeredPhysicalBinding(effective, 'text_select', ['right_alt', 'h'], 'h', isMac)?.value, 'move_left')
+  }
+  const disabled = resolveConfigDocument(defaults, parseConfigDocument('[text_select]\ninherits = []\ntemporary_mode_keys = []').document)
+  assert.equal(effectiveBindings(disabled, 'text_select').has('h'), false)
+  assert.equal(resolveLayeredPhysicalBinding(disabled, 'text_select', ['right_alt', 'h'], 'h', false), undefined)
+  for (const field of ['inherits = "normal"', 'temporary_mode = true', 'temporary_mode_keys = "primary"', 'temporary_mode_passthrough_keys = [1]']) {
+    assert.throws(() => parseConfigDocument(`[text_select]\n${field}`), /text_select/)
+  }
+})
+
+test('text selection scan scope is independent, editable and resets to all displays', async () => {
+  const { stringify } = await import('smol-toml')
+  const { fields } = await import('../config-studio/fields.ts')
+  const { fieldLocation } = await import('../config-studio/navigation.ts')
+  const { setConfigPath, deleteConfigPath } = await import('../config-studio/document.ts')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  const field = fields.text_select.layout.find(field => field.path === 'text_select.scan_scope')
+  assert.ok(field)
+  assert.deepEqual(field?.options, ['window', 'active', 'screen', 'all'])
+  assert.equal(field.default, 'all')
+  assert.deepEqual(fieldLocation('text_select.scan_scope'), { page: 'text_select', tab: 'behavior' })
+  assert.equal(defaults.text_select.scan_scope, 'all')
+  assert.equal(defaults.ui_hint.scan_scope, 'all')
+  for (const source of ['[ui_hint]\nscan_scope = "screen"', '[ui_hint]\nscan_scope = "screen"\n[text_select]']) {
+    const document = parseConfigDocument(source).document
+    assert.equal(resolveConfigDocument(defaults, document).text_select.scan_scope, 'all')
+    for (const scope of field.options) {
+      setConfigPath(document, 'text_select.scan_scope', scope)
+      const exported = parseConfigDocument(stringify(document)).document
+      const effective = resolveConfigDocument(defaults, exported)
+      assert.equal(effective.text_select.scan_scope, scope)
+      assert.equal(effective.ui_hint.scan_scope, 'screen')
+    }
+    deleteConfigPath(document, 'text_select.scan_scope')
+    const reset = resolveConfigDocument(defaults, parseConfigDocument(stringify(document)).document)
+    assert.equal(reset.text_select.scan_scope, 'all')
+    assert.equal(reset.ui_hint.scan_scope, 'screen')
+  }
+  for (const value of ['"invalid"', '"inherit"', 'true', '1', '[]']) {
+    assert.throws(() => parseConfigDocument(`[text_select]\nscan_scope = ${value}`), /text_select.scan_scope/)
+  }
+})
+
 test('UI Hint display scopes use scan_scope without a second screens setting', async () => {
   const { stringify } = await import('smol-toml')
   const { frequentFields } = await import('../config-studio/fields.ts')
   const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
-  assert.equal(defaults.ui_hint.scan_scope, 'window')
+  assert.equal(defaults.ui_hint.scan_scope, 'all')
   const scopes = frequentFields.find(field => field.path === 'ui_hint.scan_scope')?.options?.map(option => option.value)
   assert.deepEqual(scopes, ['window', 'active', 'screen', 'all'])
   for (const scope of scopes) {

@@ -1,4 +1,4 @@
-//! Only borrows a bounded luma frame; no native APIs or retained screen pixels.
+//! Borrows bounded fresh luma frames; reusable scratch has no native owners.
 
 use crate::api::{Rect, SemanticRole, UiTarget};
 
@@ -62,6 +62,7 @@ impl Component {
 
 /// Cancellation includes the caller's generation and deadline. An interrupted
 /// pass returns no boxes; already published targets from other sources survive.
+#[cfg(test)]
 pub(crate) fn detect_fragments(
     gray: &[u8],
     width: usize,
@@ -70,35 +71,167 @@ pub(crate) fn detect_fragments(
     limit: usize,
     cancelled: impl Fn() -> bool,
 ) -> Vec<UiTarget> {
-    if width < 3
-        || height < 3
-        || width.checked_mul(height) != Some(gray.len())
-        || gray.len() > MAX_PIXELS
-        || limit == 0
-        || bounds.is_empty()
-        || ![bounds.x, bounds.y, bounds.width, bounds.height]
-            .iter()
-            .all(|v| v.is_finite())
-        || cancelled()
-    {
-        return Vec::new();
-    }
-    let Some(edges) = tiled_edges(gray, width, height, &cancelled) else {
-        return Vec::new();
-    };
-    let Some(dilated) = dilate(edges, width, height, bounds, &cancelled) else {
-        return Vec::new();
-    };
-    let Some(mut components) = components(dilated, width, height, &cancelled, |_| true) else {
-        return Vec::new();
-    };
-    if !hierarchy(&mut components, &cancelled) {
-        return Vec::new();
-    }
-    filter(&components, width, height, bounds, limit, &cancelled)
+    Workspace::default().fragments(gray, width, height, bounds, limit, cancelled)
 }
 
-#[cfg(any(test, target_os = "macos"))]
+/// One bounded workspace per contour provider, reused across displays and scans.
+/// Every active range is overwritten before it is read for a new frame.
+#[derive(Default)]
+pub(crate) struct Workspace {
+    states: Vec<u8>,
+    edges: EdgeScratch,
+    rows: Vec<u8>,
+}
+
+impl Workspace {
+    fn fragments(
+        &mut self,
+        gray: &[u8],
+        width: usize,
+        height: usize,
+        bounds: Rect,
+        limit: usize,
+        cancelled: impl Fn() -> bool,
+    ) -> Vec<UiTarget> {
+        if width < 3
+            || height < 3
+            || width.checked_mul(height) != Some(gray.len())
+            || gray.len() > MAX_PIXELS
+            || limit == 0
+            || bounds.is_empty()
+            || ![bounds.x, bounds.y, bounds.width, bounds.height]
+                .iter()
+                .all(|v| v.is_finite())
+            || cancelled()
+        {
+            return Vec::new();
+        }
+        let Some(()) = tiled_edges_into(
+            gray,
+            width,
+            height,
+            &cancelled,
+            &mut self.states,
+            &mut self.edges,
+        ) else {
+            return Vec::new();
+        };
+        let Some(()) = dilate_into(
+            &mut self.states,
+            width,
+            height,
+            bounds,
+            &cancelled,
+            &mut self.rows,
+        ) else {
+            return Vec::new();
+        };
+        let Some(mut components) =
+            components_in_place(&mut self.states, width, height, &cancelled, |_| true)
+        else {
+            return Vec::new();
+        };
+        if !hierarchy(&mut components, &cancelled) {
+            return Vec::new();
+        }
+        filter(&components, width, height, bounds, limit, &cancelled)
+    }
+
+    #[cfg(any(test, target_os = "macos"))]
+    pub(crate) fn detect(
+        &mut self,
+        gray: &[u8],
+        width: usize,
+        height: usize,
+        bounds: Rect,
+        limit: usize,
+        cancelled: impl Fn() -> bool,
+    ) -> Vec<UiTarget> {
+        let fragments = self.fragments(gray, width, height, bounds, limit, &cancelled);
+        if cancelled() {
+            return Vec::new();
+        }
+        let owners = regions::detect(gray, width, height, bounds, &cancelled);
+        let frames = frames::detect(gray, width, height, bounds, &cancelled);
+        if cancelled() {
+            return Vec::new();
+        }
+        assemble(fragments, owners, frames, limit)
+    }
+
+    /// Only pure Rust luma and cancellation state enter the scoped helper. Each
+    /// provider processes one frame at a time, so this adds at most one worker;
+    /// cancellation joins it before the provider can release its input or restart.
+    pub(crate) fn detect_prepared(
+        &mut self,
+        input: &input::Input,
+        limit: usize,
+        cancelled: impl Fn() -> bool + Sync,
+    ) -> Vec<UiTarget> {
+        static PARALLEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let parallel = input.gray.len() >= 512 * 512
+            && *PARALLEL.get_or_init(|| {
+                std::thread::available_parallelism().is_ok_and(|cpus| cpus.get() > 1)
+            });
+        self.detect_input(input, limit, &cancelled, parallel)
+    }
+
+    fn detect_input(
+        &mut self,
+        input: &input::Input,
+        limit: usize,
+        stop: &(impl Fn() -> bool + Sync),
+        parallel: bool,
+    ) -> Vec<UiTarget> {
+        if limit == 0 || stop() {
+            return Vec::new();
+        }
+        let input::Input {
+            gray,
+            frame_gray,
+            width,
+            height,
+            desktop_bounds: bounds,
+        } = input;
+        let mut fragments = || self.fragments(gray, *width, *height, *bounds, limit, stop);
+        let secondary = || {
+            let owners = regions::detect(gray, *width, *height, *bounds, stop);
+            let frames = frames::detect(
+                frame_gray.as_deref().unwrap_or(gray),
+                *width,
+                *height,
+                *bounds,
+                stop,
+            );
+            (owners, frames)
+        };
+        let (fragments, (owners, frames)) = if parallel {
+            std::thread::scope(|scope| {
+                match std::thread::Builder::new()
+                    .name("keysteer-contour-frames".into())
+                    .spawn_scoped(scope, secondary)
+                {
+                    Ok(worker) => {
+                        let fragments = fragments();
+                        let secondary = worker
+                            .join()
+                            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                        (fragments, secondary)
+                    }
+                    Err(_) => (fragments(), secondary()),
+                }
+            })
+        } else {
+            (fragments(), secondary())
+        };
+        if stop() {
+            return Vec::new();
+        }
+        assemble(fragments, owners, frames, limit)
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn detect(
     gray: &[u8],
     width: usize,
@@ -107,84 +240,26 @@ pub(crate) fn detect(
     limit: usize,
     cancelled: impl Fn() -> bool,
 ) -> Vec<UiTarget> {
-    let fragments = detect_fragments(gray, width, height, bounds, limit, &cancelled);
-    if cancelled() {
-        return Vec::new();
-    }
-    let owners = regions::detect(gray, width, height, bounds, &cancelled);
-    let frames = frames::detect(gray, width, height, bounds, &cancelled);
-    if cancelled() {
-        return Vec::new();
-    }
-    assemble(fragments, owners, frames, limit)
+    Workspace::default().detect(gray, width, height, bounds, limit, cancelled)
 }
 
-/// Only pure Rust luma and cancellation state enter the scoped helper. Each
-/// provider processes one frame at a time, so this adds at most one worker;
-/// cancellation joins it before the provider can release its input or restart.
-pub(crate) fn detect_prepared(
-    input: &input::Input,
-    limit: usize,
-    cancelled: impl Fn() -> bool + Sync,
-) -> Vec<UiTarget> {
-    static PARALLEL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let parallel = input.gray.len() >= 512 * 512
-        && *PARALLEL
-            .get_or_init(|| std::thread::available_parallelism().is_ok_and(|cpus| cpus.get() > 1));
-    detect_input(input, limit, &cancelled, parallel)
-}
-
+#[cfg(test)]
 fn detect_input(
     input: &input::Input,
     limit: usize,
     stop: &(impl Fn() -> bool + Sync),
     parallel: bool,
 ) -> Vec<UiTarget> {
-    if limit == 0 || stop() {
-        return Vec::new();
-    }
-    let input::Input {
-        gray,
-        frame_gray,
-        width,
-        height,
-        desktop_bounds: bounds,
-    } = input;
-    let fragments = || detect_fragments(gray, *width, *height, *bounds, limit, stop);
-    let secondary = || {
-        let owners = regions::detect(gray, *width, *height, *bounds, stop);
-        let frames = frames::detect(
-            frame_gray.as_deref().unwrap_or(gray),
-            *width,
-            *height,
-            *bounds,
-            stop,
-        );
-        (owners, frames)
-    };
-    let (fragments, (owners, frames)) = if parallel {
-        std::thread::scope(|scope| {
-            match std::thread::Builder::new()
-                .name("keysteer-contour-frames".into())
-                .spawn_scoped(scope, secondary)
-            {
-                Ok(worker) => {
-                    let fragments = fragments();
-                    let secondary = worker
-                        .join()
-                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-                    (fragments, secondary)
-                }
-                Err(_) => (fragments(), secondary()),
-            }
-        })
-    } else {
-        (fragments(), secondary())
-    };
-    if stop() {
-        return Vec::new();
-    }
-    assemble(fragments, owners, frames, limit)
+    Workspace::default().detect_input(input, limit, stop, parallel)
+}
+
+#[cfg(test)]
+pub(crate) fn detect_prepared(
+    input: &input::Input,
+    limit: usize,
+    stop: impl Fn() -> bool + Sync,
+) -> Vec<UiTarget> {
+    Workspace::default().detect_prepared(input, limit, stop)
 }
 
 fn assemble(
@@ -236,9 +311,22 @@ struct EdgeScratch {
     state: Vec<u8>,
 }
 
+#[cfg(test)]
 fn tiled_edges(gray: &[u8], w: usize, h: usize, stop: &impl Fn() -> bool) -> Option<Vec<u8>> {
-    let mut states = vec![0u8; gray.len()];
-    let mut scratch = EdgeScratch::default();
+    let mut states = Vec::new();
+    tiled_edges_into(gray, w, h, stop, &mut states, &mut EdgeScratch::default())?;
+    Some(states)
+}
+
+fn tiled_edges_into(
+    gray: &[u8],
+    w: usize,
+    h: usize,
+    stop: &impl Fn() -> bool,
+    states: &mut Vec<u8>,
+    scratch: &mut EdgeScratch,
+) -> Option<()> {
+    states.resize(gray.len(), 0);
     for tile in super::image_tiles::tiles(w, h, TILE_SIDE, TILE_HALO) {
         if stop() {
             return None;
@@ -251,16 +339,14 @@ fn tiled_edges(gray: &[u8], w: usize, h: usize, stop: &impl Fn() -> bool) -> Opt
                 .gray
                 .extend_from_slice(&gray[y * w + tile.left_halo..y * w + tile.right_halo]);
         }
-        threshold_edges(&mut scratch, tw, th, stop)?;
+        threshold_edges(scratch, tw, th, stop)?;
         for y in tile.y..tile.bottom {
             let offset = (y - tile.top_halo) * tw + tile.x - tile.left_halo;
             states[y * w + tile.x..y * w + tile.right]
                 .copy_from_slice(&scratch.state[offset..offset + tile.right - tile.x]);
         }
     }
-    drop(scratch);
-    hysteresis(&mut states, w, h, stop)?;
-    Some(states)
+    hysteresis(states, w, h, stop)
 }
 
 fn threshold_edges(
@@ -436,6 +522,7 @@ fn neighbors(i: usize, w: usize, h: usize, mut visit: impl FnMut(usize)) {
     }
 }
 
+#[cfg(test)]
 fn dilate(
     mut edges: Vec<u8>,
     w: usize,
@@ -443,6 +530,18 @@ fn dilate(
     bounds: Rect,
     stop: &impl Fn() -> bool,
 ) -> Option<Vec<u8>> {
+    dilate_into(&mut edges, w, h, bounds, stop, &mut Vec::new())?;
+    Some(edges)
+}
+
+fn dilate_into(
+    edges: &mut [u8],
+    w: usize,
+    h: usize,
+    bounds: Rect,
+    stop: &impl Fn() -> bool,
+    scratch: &mut Vec<u8>,
+) -> Option<()> {
     let kw = (3.5 * w as f64 / bounds.width).round().clamp(1.0, 32.0) as usize;
     let kh = (2.5 * h as f64 / bounds.height).round().clamp(1.0, 32.0) as usize;
     if stop() {
@@ -451,16 +550,16 @@ fn dilate(
     // Keep the binary plane in place. One source row is enough for horizontal
     // runs; the vertical pass retains only the rows that can still be read.
     // Identity axes need neither scratch storage nor a pixel traversal.
-    let mut scratch = vec![
-        0u8;
+    scratch.resize(
         if kh > 1 {
             kh.min(h) * w
         } else if kw > 1 {
             w
         } else {
             0
-        }
-    ];
+        },
+        0,
+    );
     if kw > 1 {
         for row in edges.chunks_exact_mut(w) {
             if stop() {
@@ -483,7 +582,7 @@ fn dilate(
         }
     }
     if kh == 1 {
-        return Some(edges);
+        return Some(());
     }
     let rows = kh.min(h);
     let mut loaded = 0;
@@ -504,13 +603,23 @@ fn dilate(
             }
         }
     }
-    Some(edges)
+    Some(())
 }
 
 // Visit horizontal runs, not eight neighbors for every edge pixel. This keeps
 // dense text/photo inputs cheap while preserving eight-connected components.
 fn components(
     mut pixels: Vec<u8>,
+    w: usize,
+    h: usize,
+    stop: &impl Fn() -> bool,
+    keep: impl Fn(&Component) -> bool,
+) -> Option<Vec<Component>> {
+    components_in_place(&mut pixels, w, h, stop, keep)
+}
+
+fn components_in_place(
+    pixels: &mut [u8],
     w: usize,
     h: usize,
     stop: &impl Fn() -> bool,

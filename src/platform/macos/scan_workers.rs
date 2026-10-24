@@ -3,6 +3,7 @@
 
 use crate::api::command::UiScanStatus;
 use crate::platform::common::image_tiles::MAX_OCR_IN_FLIGHT;
+use crate::platform::common::scan_reuse::IdleCache;
 use crate::platform::common::spatial_index::TargetSource;
 use crate::support::worker::WorkerJoin;
 use smallvec::SmallVec;
@@ -12,7 +13,6 @@ use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 const STOP_TIMEOUT: Duration = Duration::from_millis(500);
-const OCR_IDLE_TIMEOUT: Duration = Duration::from_secs(6);
 const SOURCES: [TargetSource; 4] = [
     TargetSource::Accessibility,
     TargetSource::SystemOcr,
@@ -35,7 +35,14 @@ pub(super) fn interrupt_status(deadline: Instant, cancelled: bool) -> Option<UiS
         None
     }
 }
-type Work = Arc<dyn Fn(TargetSource, &Signal) -> UiScanStatus + Send + Sync>;
+type Work = Arc<dyn Fn(TargetSource, &Signal, &mut SourceResources) -> UiScanStatus + Send + Sync>;
+
+#[derive(Default)]
+pub(crate) struct SourceResources {
+    #[cfg(target_os = "macos")]
+    pub(super) ax: Option<super::accessibility::QueryPlan>,
+    pub(super) contour: crate::platform::common::contour::Workspace,
+}
 
 enum Event {
     Completed(TargetSource, UiScanStatus),
@@ -48,16 +55,11 @@ pub(crate) struct Signal {
     idle: Arc<Mutex<IdleProcesses>>,
 }
 
-#[derive(Default)]
-struct IdleProcesses {
-    children: Vec<IdleProcess>,
-    limit: usize,
-}
+type IdleProcesses = IdleCache<IdleProcess>;
 struct IdleProcess {
     child: Option<Child>,
     input: Option<ChildStdin>,
     output: Option<ChildStdout>,
-    until: Instant,
 }
 impl Drop for IdleProcess {
     fn drop(&mut self) {
@@ -70,31 +72,12 @@ impl Drop for IdleProcess {
         }
     }
 }
-impl IdleProcesses {
-    fn expired(&mut self, all: bool) -> Vec<IdleProcess> {
-        let now = Instant::now();
-        let mut expired = Vec::new();
-        let mut index = 0;
-        while index < self.children.len() {
-            if all || self.children[index].until <= now || index >= self.limit {
-                expired.push(self.children.swap_remove(index));
-            } else {
-                index += 1;
-            }
-        }
-        expired
-    }
-}
 // This guard belongs to the OCR source thread, including during unwinding.
 // Neither idle expiry nor shutdown reaps children on the engine thread.
 struct IdleCleanup<'a>(&'a Mutex<IdleProcesses>);
 impl Drop for IdleCleanup<'_> {
     fn drop(&mut self) {
-        let children = self
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .expired(true);
+        let children = self.0.lock().unwrap_or_else(|e| e.into_inner()).drain();
         drop(children);
     }
 }
@@ -128,25 +111,24 @@ impl Drop for Process<'_> {
                 .unwrap_or_else(|e| e.into_inner());
             slots[self.slot].child.take()
         };
-        let mut owner = Some(IdleProcess {
+        let owner = IdleProcess {
             child,
             input: self.input.take(),
             output: self.output.take(),
-            until: Instant::now() + OCR_IDLE_TIMEOUT,
-        });
-        if self.reusable
-            && owner
-                .as_ref()
-                .is_some_and(|owner| owner.input.is_some() && owner.output.is_some())
+        };
+        let owner = if self.reusable
+            && owner.input.is_some()
+            && owner.output.is_some()
             && !self.signal.load(Ordering::Acquire)
         {
-            let mut idle = self.signal.idle.lock().unwrap_or_else(|e| e.into_inner());
-            if idle.children.len() < idle.limit
-                && let Some(owner) = owner.take()
-            {
-                idle.children.push(owner);
-            }
-        }
+            self.signal
+                .idle
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(owner, Instant::now())
+        } else {
+            Some(owner)
+        };
         // Incomplete, cancelled and excess owners are killed and reaped here,
         // outside both locks, before returning their process reservation.
         drop(owner);
@@ -164,8 +146,7 @@ impl Signal {
     pub(super) fn reuse_processes(&self, limit: usize) {
         let expired = {
             let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
-            idle.limit = limit.min(MAX_OCR_IN_FLIGHT);
-            idle.expired(false)
+            idle.set_limit(limit.min(MAX_OCR_IN_FLIGHT), Instant::now())
         };
         drop(expired);
     }
@@ -199,15 +180,14 @@ impl Signal {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000); // Host regression: no console window.
         }
-        let mut cached = self
+        let (mut cached, expired) = self
             .idle
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .children
-            .pop();
+            .take(Instant::now());
+        drop(expired);
         if cached.as_mut().is_some_and(|owner| {
-            owner.until <= Instant::now()
-                || !matches!(owner.child.as_mut().map(Child::try_wait), Some(Ok(None)))
+            !matches!(owner.child.as_mut().map(Child::try_wait), Some(Ok(None)))
         }) {
             drop(cached.take());
         }
@@ -293,45 +273,39 @@ impl Shared {
     fn run(&self, index: usize) {
         let ocr = SOURCES[index] == TargetSource::SystemOcr;
         let _cleanup = ocr.then(|| IdleCleanup(self.idle.as_ref()));
+        // Native query objects are created, used and dropped on this source thread.
+        let mut resources = IdleCache::<SourceResources>::default();
+        resources.set_limit(1, Instant::now());
         loop {
+            drop(resources.take_expired(Instant::now()));
             if ocr {
                 let expired = self
                     .idle
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .expired(false);
+                    .take_expired(Instant::now());
                 drop(expired);
             }
             let Task { signal, work } = {
                 let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 if state.pending[index].is_none() && !state.stopping {
-                    let until = ocr
+                    let ocr_until = ocr
                         .then(|| {
                             self.idle
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
-                                .children
-                                .iter()
-                                .map(|owner| owner.until)
-                                .min()
+                                .next_expiration()
                         })
                         .flatten();
-                    if let Some(until) = until {
-                        drop(
-                            self.ready[index]
-                                .wait_timeout(
-                                    state,
-                                    until.saturating_duration_since(Instant::now()),
-                                )
-                                .unwrap_or_else(|e| e.into_inner()),
-                        );
-                    } else {
-                        drop(
-                            self.ready[index]
-                                .wait(state)
-                                .unwrap_or_else(|e| e.into_inner()),
-                        );
-                    }
+                    let until = ocr_until
+                        .into_iter()
+                        .chain(resources.next_expiration())
+                        .min();
+                    drop(crate::platform::common::scan_reuse::wait_until(
+                        &self.ready[index],
+                        state,
+                        until,
+                    ));
                     continue;
                 }
                 if state.stopping {
@@ -343,11 +317,14 @@ impl Shared {
                 state.active[index] = Some(Arc::downgrade(&task.signal));
                 task
             };
+            let (cached, expired) = resources.take(Instant::now());
+            drop(expired);
+            let mut current_resources = cached.unwrap_or_default();
             let run = || {
                 let status = if signal.cancelled.load(Ordering::Acquire) {
                     UiScanStatus::ContextChanged
                 } else {
-                    work(SOURCES[index], &signal)
+                    work(SOURCES[index], &signal, &mut current_resources)
                 };
                 // Pixel conversion may create autoreleased framework objects
                 // too. Drain them per job on these persistent worker threads,
@@ -359,6 +336,14 @@ impl Shared {
             let status = objc2::rc::autoreleasepool(|_| run());
             #[cfg(not(target_os = "macos"))]
             let status = run();
+            if matches!(
+                SOURCES[index],
+                TargetSource::Accessibility | TargetSource::Contour
+            ) && status == UiScanStatus::Success
+                && !signal.load(Ordering::Acquire)
+            {
+                drop(resources.retain(current_resources, Instant::now()));
+            }
             let _ = signal.events.send(Event::Completed(SOURCES[index], status));
             self.state.lock().unwrap_or_else(|e| e.into_inner()).active[index] = None;
         }
@@ -401,8 +386,8 @@ impl Shared {
 }
 
 /// One executing task and one replaceable latest task for each fixed source.
-/// Idle threads retain no screenshot or native request; completed OCR helpers
-/// can retain model state for a short, bounded reuse window.
+/// Idle threads retain no screenshot or active native request. AX query keys,
+/// contour scratch and completed OCR helpers have a bounded reuse window.
 #[derive(Default)]
 pub(crate) struct Workers {
     shared: Arc<Shared>,
@@ -422,10 +407,22 @@ fn name(source: TargetSource) -> &'static str {
         .map_or("scan provider", |index| NAMES[index])
 }
 impl Workers {
+    #[cfg(test)]
     pub(crate) fn start(
         &self,
         sources: &[TargetSource],
         work: impl Fn(TargetSource, &Signal) -> UiScanStatus + Send + Sync + 'static,
+    ) -> Batch {
+        self.start_with_resources(sources, move |source, signal, _| work(source, signal))
+    }
+
+    pub(crate) fn start_with_resources(
+        &self,
+        sources: &[TargetSource],
+        work: impl Fn(TargetSource, &Signal, &mut SourceResources) -> UiScanStatus
+        + Send
+        + Sync
+        + 'static,
     ) -> Batch {
         let (sender, events) = mpsc::channel();
         let signal = Arc::new(Signal {
@@ -688,7 +685,14 @@ mod tests {
         // Keep the old Batch alive until the next generation owns its helper.
         // Wait for completed ownership transfer without consuming that Batch.
         let transfer_deadline = Instant::now() + Duration::from_secs(5);
-        while workers.shared.idle.lock().unwrap().children.is_empty() {
+        while workers
+            .shared
+            .idle
+            .lock()
+            .unwrap()
+            .next_expiration()
+            .is_none()
+        {
             assert!(
                 Instant::now() < transfer_deadline,
                 "helper was not returned"
@@ -704,8 +708,17 @@ mod tests {
         );
         {
             let mut idle = workers.shared.idle.lock().unwrap();
-            assert_eq!(idle.children.len(), 1);
-            idle.children[0].until = Instant::now();
+            let now = Instant::now();
+            let (owner, expired) = idle.take(now);
+            assert!(expired.is_empty());
+            assert!(idle.next_expiration().is_none());
+            assert!(
+                idle.retain(
+                    owner.unwrap(),
+                    now - crate::platform::common::scan_reuse::IDLE_TIMEOUT
+                )
+                .is_none()
+            );
         }
         workers.shared.ready[1].notify_one();
         let third = workers.start(&[TargetSource::SystemOcr], frame(sent));
@@ -717,7 +730,15 @@ mod tests {
         workers
             .stop_until(Instant::now() + Duration::from_secs(2))
             .unwrap();
-        assert!(workers.shared.idle.lock().unwrap().children.is_empty());
+        assert!(
+            workers
+                .shared
+                .idle
+                .lock()
+                .unwrap()
+                .next_expiration()
+                .is_none()
+        );
     }
 
     #[test]

@@ -198,6 +198,7 @@ impl Engine {
         if let Some((owner, prompt)) = &self.scheduler.text_prompt
             && owner == &ModeId::text_select()
             && prompt.live_style.is_some()
+            && !self.temporary_mode_is_active(owner)
             && let Some(mode) = self.registry.keyboard_prompt_mode(owner)
         {
             let mut entries = std::collections::BTreeSet::new();
@@ -255,7 +256,9 @@ impl Engine {
                 .text_prompt
                 .as_ref()
                 .is_some_and(|(owner, prompt)| {
-                    owner != &ModeId::text_select() || prompt.live_style.is_none()
+                    prompt.live_style.is_none()
+                        || (owner != &ModeId::text_select()
+                            && !self.temporary_mode_is_active(owner))
                 })
         {
             self.overlay.key_help_cache = None;

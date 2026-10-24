@@ -32,6 +32,9 @@ export const fields = {
     { path: 'text_select.ui.border_color', label: '选中区域包围框颜色', kind: 'color' },
   ], layout: [
     { path: 'text_select.enabled', label: '启用文字选择', kind: 'boolean' },
+    { path: 'text_select.scan_scope', label: '扫描范围', kind: 'select', default: 'all', options: ['window', 'active', 'screen', 'all'], optionLabels: {
+      window: '鼠标下窗口优先', active: '当前激活窗口优先', screen: '当前整屏', all: '全部显示器（默认）',
+    } },
     { path: 'text_select.hint_characters', label: '区域层标签字符', kind: 'text' },
     { path: 'text_select.ui.panel_width', label: '文字选择面板宽度', kind: 'number', min: 320, max: 2400, step: 10, default: 800 },
     { path: 'text_select.ui.pointer_offset', label: '鼠标距区域右下角偏移 [X, Y]', kind: 'offset', default: [12, 12] },
@@ -306,10 +309,10 @@ export const frequentFields: ConfigField[] = [
   { path: 'grid.max_depth', label: 'Grid 层数', description: '确认目标前需要输入的网格层数', kind: 'number', min: 1, max: 20, step: 1 },
   { path: 'recursive_grid.max_depth', label: '递归上限', description: 'Recursive Grid 最大递归次数', kind: 'number', min: 1, max: 20, step: 1 },
   { path: 'ui_hint.scan_scope', label: '扫描范围', description: '窗口不可用时按优先级选择范围，只扫描选定范围；鼠标窗口优先时尝试激活', kind: 'select', options: [
-    { value: 'window', label: '鼠标下窗口（默认）' },
+    { value: 'window', label: '鼠标下窗口优先' },
     { value: 'active', label: '当前激活窗口优先' },
     { value: 'screen', label: '当前整屏' },
-    { value: 'all', label: '全部显示器' },
+    { value: 'all', label: '全部显示器（默认）' },
   ] },
   { path: 'ui_hint.strategy', label: 'UI 扫描', description: '辅助功能、OCR、轮廓检测，或全部并行合并', kind: 'select', options: [
     { value: 'vision', label: 'Vision' },

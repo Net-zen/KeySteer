@@ -647,6 +647,8 @@ position = ["44%", "50%", "56%", "50%"]
 
 ## 临时模式按键优先级
 
+所有模式共用 `inherits`、`temporary_mode`、`temporary_mode_keys` 和 `temporary_mode_passthrough_keys`，包括 Normal、Quick Switch、Text Input、Text Select、UI Hint、网格、窗口与插件。用户配置未写 `temporary_mode_keys` 或设为 `[]` 时关闭临时层；加载时即确定，输入时跳过临时匹配。UI Hint 和文字选择默认关闭，文字选择默认段不添加这些可选字段。
+
 按住 `temporary_mode_keys` 时，依次查找：
 
 1. 临时模式的完整组合键。
@@ -670,9 +672,7 @@ q = "normal"
 
 穿透键只跳过临时模式，不向系统发送按键。默认 `[]`，支持组合键、别名和左右修饰键；同样适用于其他定位模式、窗口模式和插件。
 
-::: info Window 的临时键有不同规则
-Window 先保留自身显式组合键，再去掉激活键查找 Normal 和当前模式。例如临时 S 可切屏，临时 F 默认进入 Recursive Grid。窗口面板显示窗口操作，不会列出整张 Normal 按键表。
-:::
+窗口和文字编辑面板使用相同优先级。临时层激活期间全部按键先经过公共路由，移动、滚动和模式切换都可用；松开激活键停止借用的保持动作，保留原模式和选择。需要保留当前模式操作时使用穿透键；UI Hint／文字选择的重叠换层键仍优先用于换层。
 
 ## Normal 盲操定位
 
@@ -689,11 +689,12 @@ Normal 也能直接输入网格键定位，但默认关闭。启用步骤和安�
 
 ## 文字选择配置
 
-`text_select` 复用 UIHint 的识别与外观，单独配置入口、标签和操作键。Normal 默认用 `c` 进入。以下是默认绑定；显式填写该绑定表会替换文字选择的默认表。
+`text_select` 复用 UIHint 的 OCR 选项与外观，扫描范围由自己的 `scan_scope` 独立控制，默认 `all`；可在网页“文字选择 → 行为”中选择 `window`／`active`／`screen`／`all`。Normal 默认用 `c` 进入。以下是默认绑定；显式填写该绑定表会替换文字选择的默认表。
 
 ```toml
 [text_select]
 enabled = true
+scan_scope = "all"
 hint_characters = "asdfghjklqwertyuiopzvbnm"
 
 [text_select.lifecycle]

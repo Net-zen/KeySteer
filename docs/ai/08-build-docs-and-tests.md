@@ -48,6 +48,7 @@ GPU 设备就绪、首次场景提交完成和输入执行分别记时，不能�
 - macOS 取色回归夹具：`clang -std=c11 -Wall -Wextra -Werror tests/fixtures/macos-point-capture.c -framework CoreGraphics -o /tmp/keysteer-point-capture && /tmp/keysteer-point-capture`；验证 Retina／副屏坐标、固定像素不混入变化的邻域颜色，以及错误尺寸拒绝。非 macOS 可省略 framework，仅运行坐标测试。
 - macOS OCR 回归：`cargo test --test macos_ocr -- --nocapture` 在内存生成普通／Retina 网页小字，检查逐块识别、原生请求弱引用、带行填充的只读 BGRA／灰度回退及子图共享像素最终单次释放。夹具直接编译当前桥接；正常重新识别还通过 Cargo 构建的真实应用二进制及其平台入口执行，避免只测夹具、遗漏启动分派。另用同一私有工作入口提交 16 块永久挂起故障注入（GCD 实际调度数可能少于请求并发），验证强制结束／父管道 EOF 后子进程退出，并反复启动新进程识别中文及英文小字。纯 Rust worker 回归在各宿主启动真正不返回的子进程，覆盖取消、替换、超时和丢弃旧会话后同一执行槽恢复，不使用放行通道模拟旧 OCR 结束。回归打印真实取消、重新识别的首个非空结果及完成耗时；并发 A/B、双屏来源时间线和进程内存曲线通过隔离副本保留在本地。首次模型编译长尾与预热后数据分开记录，原始默认设备／CPU／GPU 对照不互相替代。这些是 OCR 诊断样本，未包含截图、AX、融合与系统上屏，不能代替实际交互和进程启动／传输成本测量。
 - 常规回归将同一契约的配置变体合并到已有测试，各种取消路径各检查一次；大轮数重入、压力及性能 A/B 留在本地诊断，不扩大日常测试矩阵。失败先区分本轮回退和已有基线问题；忽略测试不等于验收通过。
+- 扫描复用回归：公共 `scan_reuse` 测试覆盖期限刷新、容量收缩、到期唤醒、非 Send owner 的同线程销毁及关闭中的有界待办；原有 Windows provider 隔离测试通过同一任务票据验证恢复。Windows 可用 OCR 语言包时，运行 `cargo test --lib native_ocr_reuses_engine -- --ignored --nocapture --test-threads=1`，检查同一引擎重复识别内存文字、随后空白图没有旧结果、失败后丢弃资源；它不需要截图权限，打印的单图耗时不等于端到端提速或正式 A/B。
 
 ## 网页与发布
 

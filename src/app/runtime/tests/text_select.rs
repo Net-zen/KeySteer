@@ -1,4 +1,56 @@
 #[test]
+fn text_select_borrows_normal_without_rebuilding_routes_or_losing_selection() {
+    for primary in ["left_alt", "left_ctrl", "left_win"] {
+        let mut config = Config::parse(&format!(
+            "[key_aliases]\nPrimary = '{primary}'\n[key_aliases.windows]\nPrimary = '{primary}'\n[key_aliases.macos]\nPrimary = '{primary}'\n[key_aliases.linux]\nPrimary = '{primary}'\n[hotkeys]\nf8 = 'grid'\n[text_select]\ninherits = ['hotkeys', 'normal']\ntemporary_mode = 'normal'\ntemporary_mode_keys = ['primary']\n[text_select.lifecycle]\nafter_copy = 'keep'"
+        )).unwrap();
+        config.normal.long_press_toggle_ms = 0;
+        let mut engine = text_input_engine(config);
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.activate(ModeId::text_select(), Some(ModeId::normal()), &mut backend).unwrap();
+        let request = log.lock().unwrap().scan_requests.last().unwrap().clone();
+        assert_eq!(request.scope, crate::api::UiScanScope::All);
+        engine.handle_backend_event(BackendEvent::UiScanned(crate::api::UiScanResult {
+            id: request.id,
+            status: UiScanStatus::Success,
+            retired: Vec::new(),
+            targets: vec![crate::api::UiTarget::recognized_text(Rect::new(10., 10., 200., 20.), "hello world".into())],
+        }), &mut backend).unwrap();
+        // Plain H stays in the search input despite inherited Normal movement.
+        point_keys(&mut engine, &mut backend, &["h"]);
+        assert!(log.lock().unwrap().moves.is_empty());
+        point_keys(&mut engine, &mut backend, &["left_ctrl", "x"]);
+        point_keys(&mut engine, &mut backend, &["a"]);
+        let prompt_id = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+        let rebuilds = engine.registry.table_rebuild_count;
+        for event in [key_down(primary), key_down("h")] {
+            engine.handle_backend_event(event, &mut backend).unwrap();
+        }
+        assert_eq!(engine.active_mode(), &ModeId::text_select());
+        assert_eq!(engine.display_mode(), ModeId::normal());
+        assert_eq!(engine.input.active_gestures.get(&Key::new("h").unwrap()).unwrap().owner, ModeId::normal());
+        // Releasing the modifier first must stop the borrowed held action.
+        engine.handle_backend_event(key_up(primary), &mut backend).unwrap();
+        assert!(engine.input.active_gestures.is_empty());
+        assert_eq!(engine.display_mode(), ModeId::text_select());
+        engine.handle_backend_event(key_up("h"), &mut backend).unwrap();
+        assert_eq!(engine.scheduler.text_prompt.as_ref().unwrap().1.id, prompt_id);
+        assert!(log.lock().unwrap().text_capture);
+        assert_eq!(log.lock().unwrap().scan_requests.len(), 1);
+        assert_eq!(engine.registry.table_rebuild_count, rebuilds);
+        point_keys(&mut engine, &mut backend, &["enter"]);
+        assert_eq!(log.lock().unwrap().copied_text.last().map(String::as_str), Some("hello world"));
+        assert_eq!(engine.active_mode(), &ModeId::text_select());
+        // A non-text inherited hotkey still leaves the mode through normal cleanup.
+        point_keys(&mut engine, &mut backend, &["f8"]);
+        assert_eq!(engine.active_mode(), &ModeId::grid());
+        assert!(engine.scheduler.text_prompt.is_none());
+        assert!(!log.lock().unwrap().text_capture);
+    }
+}
+
+#[test]
 fn text_select_unambiguous_digits_need_no_separator_in_words_or_characters() {
     let mut config = Config::default();
     config.text_select.lifecycle.after_copy = crate::api::LifecycleAction::Keep;

@@ -23,6 +23,12 @@ use super::{AppOverride, Bindings, UiHintAppOverride, app_override_matches, buil
 #[serde(default, deny_unknown_fields)]
 pub struct Normal {
     pub inherits: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporary_mode: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub temporary_mode_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub temporary_mode_passthrough_keys: Vec<String>,
     /// Opt-in blind positioning. Absence keeps the ordinary Normal runtime.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub targeting: Option<Box<NormalTargeting>>,
@@ -43,6 +49,9 @@ impl Default for Normal {
     fn default() -> Self {
         Self {
             inherits: vec!["hotkeys".into()],
+            temporary_mode: None,
+            temporary_mode_keys: Vec::new(),
+            temporary_mode_passthrough_keys: Vec::new(),
             targeting: None,
             passthrough_unbound_keys: true,
             long_press_toggle_ms: 500,
@@ -234,11 +243,20 @@ fn default_text_input_bindings() -> Bindings {
     builtin_bindings(&[("enter", "normal"), ("\\", "normal"), ("esc", "normal")])
 }
 
-/// OCR-only text selection shares UIHint's scan scope, OCR options and styles.
+/// OCR-only text selection has its own scope and shares UIHint's OCR options and styles.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TextSelect {
     pub enabled: bool,
+    pub scan_scope: crate::api::UiScanScope,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inherits: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporary_mode: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub temporary_mode_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub temporary_mode_passthrough_keys: Vec<String>,
     pub hint_characters: String,
     pub ui: crate::api::text_select::Ui,
     pub lifecycle: crate::api::text_select::Lifecycle,
@@ -249,6 +267,11 @@ impl Default for TextSelect {
     fn default() -> Self {
         Self {
             enabled: true,
+            scan_scope: crate::api::UiScanScope::All,
+            inherits: Vec::new(),
+            temporary_mode: None,
+            temporary_mode_keys: Vec::new(),
+            temporary_mode_passthrough_keys: Vec::new(),
             hint_characters: "asdfghjklqwertyuiopzvbnm".into(),
             ui: crate::api::text_select::Ui::default(),
             lifecycle: crate::api::text_select::Lifecycle::default(),
@@ -412,7 +435,7 @@ impl Default for UiHint {
         Self {
             enabled: true,
             strategy: UiScanStrategy::Hybrid,
-            scan_scope: crate::api::UiScanScope::Window,
+            scan_scope: crate::api::UiScanScope::All,
             vision: VisionOptions::default(),
             hint_characters: "asdfghjkl".into(),
             label_direction: LabelDirection::Normal,
@@ -458,7 +481,7 @@ impl Default for UiHint {
             ]),
             inherits: vec!["hotkeys".into(), "normal".into()],
             temporary_mode: Some("normal".into()),
-            temporary_mode_keys: vec!["primary".into()],
+            temporary_mode_keys: Vec::new(),
             temporary_mode_passthrough_keys: Vec::new(),
             lifecycle: TargetingLifecycle {
                 after_finish: LifecycleAction::Mode(ModeId::normal()),

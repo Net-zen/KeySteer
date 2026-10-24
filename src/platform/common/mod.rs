@@ -25,6 +25,7 @@ pub(crate) mod scan_accumulator;
 pub(crate) mod scan_fusion;
 pub(crate) mod scan_mailbox;
 pub(crate) mod scan_progress;
+pub(crate) mod scan_reuse;
 // Run the safe macOS source-lifecycle regressions on every host.
 #[cfg(all(test, not(target_os = "macos")))]
 #[path = "../macos/scan_workers.rs"]

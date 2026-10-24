@@ -642,6 +642,8 @@ The input center defaults to 95% of display height. Click, drag a range, or adju
 
 ## Temporary input layers
 
+All modes share `inherits`, `temporary_mode`, `temporary_mode_keys`, and `temporary_mode_passthrough_keys`, including Normal, Quick Switch, Text Input, Text Select, UI Hint, grids, windows, and plugins. Omitting `temporary_mode_keys` from a user configuration or setting it to `[]` disables the layer at load time, so input skips temporary matching. UI Hint and Text Select disable it by default; the default Text Select section omits these optional fields.
+
 While `temporary_mode_keys` are held, matching proceeds through:
 
 1. Full chords in the temporary mode.
@@ -665,9 +667,7 @@ q = "normal"
 
 Passthrough keys skip only the temporary mode; they do not send keys to the OS. The default is `[]`. Chords, aliases, and side-specific modifiers are supported in targeting modes, window modes, and plugins.
 
-::: info Window handles temporary activation differently
-Window preserves its explicit full chords first, then removes the activation key before checking Normal and the current mode. For example, temporary S switches displays, and temporary F enters Recursive Grid by default. The window panel shows window controls rather than every Normal binding.
-:::
+Windows and text editors use the same precedence. While a temporary layer is active, all keys pass through the shared route before editing, including movement, scrolling, and mode changes. Releasing its trigger stops borrowed held actions and retains the original mode and selection. Use passthrough keys to retain current-mode controls. UI Hint and Text Select reserve their overlap-cycling modifier for cycling.
 
 ## Normal blind positioning
 
@@ -684,11 +684,12 @@ Omitted fields inherit from the chosen grid. UI styling is not accepted here. Ke
 
 ## Text selection configuration
 
-`text_select` shares UIHint OCR scope, recognition options and panel appearance. Configure its label alphabet and controls separately:
+`text_select` shares UIHint OCR options and appearance but has an independent `scan_scope`, defaulting to `all`. Choose `window`, `active`, `screen`, or `all` under **Text Select → Behavior** in the web editor. Configure its label alphabet and controls separately:
 
 ```toml
 [text_select]
 enabled = true
+scan_scope = "all"
 hint_characters = "asdfghjklqwertyuiopzvbnm"
 
 [text_select.lifecycle]

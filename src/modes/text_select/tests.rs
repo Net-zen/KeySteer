@@ -278,6 +278,56 @@ fn word_and_character_selection_stays_in_the_panel_and_restores_region_geometry(
 }
 
 #[test]
+fn scan_scope_uses_text_selection_setting_and_its_display_bounds() {
+    use crate::api::UiScanScope;
+    let mut env = Env::new();
+    env.screens.push(Screen {
+        bounds: Rect::new(-1400., -100., 1200., 900.),
+        work_area: Rect::new(-1400., -100., 1200., 900.),
+        is_primary: false,
+        scale: 2.,
+        name: None,
+    });
+    for scope in [
+        UiScanScope::Window,
+        UiScanScope::Active,
+        UiScanScope::Screen,
+        UiScanScope::All,
+    ] {
+        let mut config = crate::config::Config::default();
+        config.text_select.scan_scope = scope;
+        config.ui_hint.scan_scope = if scope == UiScanScope::All {
+            UiScanScope::Screen
+        } else {
+            UiScanScope::All
+        };
+        let mut mode = crate::app::mode_catalog::text_select(&config);
+        let commands = mode.start(&env.ctx());
+        let request = commands
+            .iter()
+            .find_map(|command| match command {
+                Command::ScanUi(request) => Some(request),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(request.scope, scope);
+        let screens = if scope == UiScanScope::All {
+            &env.screens[..]
+        } else {
+            &env.screens[..1]
+        };
+        assert_eq!(request.bounds, Some(Screen::virtual_bounds(screens)));
+        assert_eq!(
+            request.capture_regions().collect::<Vec<_>>(),
+            screens.iter().map(|s| s.bounds).collect::<Vec<_>>()
+        );
+        assert_eq!(request.strategy, UiScanStrategy::Vision);
+        assert!(request.vision.detect_text);
+        assert!(!request.vision.detect_rectangles);
+    }
+}
+
+#[test]
 fn ocr_only_entry_uses_english_indicator_and_text_only_panel_without_clicking() {
     let env = Env::new();
     let mut mode = mode();

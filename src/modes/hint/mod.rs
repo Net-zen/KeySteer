@@ -4615,6 +4615,7 @@ mod tests {
     #[test]
     fn crossing_displays_restarts_scan_with_the_cursor_screen_bounds() {
         let mut env = Env::new();
+        env.config.ui_hint.scan_scope = crate::api::UiScanScope::Screen;
         env.screens.push(Screen {
             bounds: Rect::new(1000.0, 0.0, 1200.0, 900.0),
             work_area: Rect::new(1000.0, 0.0, 1200.0, 900.0),

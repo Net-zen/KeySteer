@@ -364,6 +364,27 @@ fn cancellation_does_not_start_an_idle_coordinator() {
 }
 
 #[test]
+fn idle_coordinator_shutdown_wakes_without_waiting_for_the_reuse_deadline() {
+    let mut worker = VisionWorker::start();
+    worker.shared.state.lock().unwrap().running = true;
+    let shared = Arc::clone(&worker.shared);
+    let discovery = worker.discovery.handle();
+    worker.workers.push(
+        WorkerJoin::spawn(
+            "idle vision regression",
+            std::thread::Builder::new(),
+            move || worker_main(shared, discovery),
+        )
+        .unwrap(),
+    );
+    worker
+        .stop_until(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+    assert!(!worker.shared.state.lock().unwrap().running);
+    assert!(worker.workers.is_empty());
+}
+
+#[test]
 fn completed_discovery_snapshot_is_reused() {
     let shared = Arc::new(DiscoveryShared::default());
     let snapshot = Arc::new(OcrDiscoverySnapshot::default());
@@ -397,7 +418,7 @@ fn provider_group_cancels_and_joins_every_thread() {
     let stopped = Arc::new(AtomicBool::new(false));
     let provider_stopped = Arc::clone(&stopped);
     let mut providers = ProviderThreads::new(cancellation, &shared);
-    providers.spawn("keysteer-cancellation-test", move || {
+    providers.spawn_reused(&shared.contour, "keysteer-cancellation-test", move |_| {
         while !provider_cancellation.is_cancelled() {
             std::thread::yield_now();
         }
@@ -412,9 +433,13 @@ fn quarantine_blocked_provider(worker: &VisionWorker) -> mpsc::Sender<()> {
     let cancellation = ScanCancellation::new(&worker.shared, 1, &mailbox, Weak::new());
     let (release, wait) = mpsc::channel();
     let mut providers = ProviderThreads::new(cancellation, &worker.shared);
-    assert!(providers.spawn("keysteer-quarantine-test", move || {
-        let _ = wait.recv_timeout(Duration::from_secs(5));
-    }));
+    assert!(providers.spawn_reused(
+        &worker.shared.contour,
+        "keysteer-quarantine-test",
+        move |_| {
+            let _ = wait.recv_timeout(Duration::from_secs(5));
+        }
+    ));
     assert!(providers.join_all(Instant::now()).is_err());
     assert!(
         worker
@@ -531,6 +556,7 @@ fn scan_queued_before_quarantine_finishes_without_starting_native_work() {
         },
         &worker.shared,
         &worker.discovery.handle(),
+        &mut CaptureResources::default(),
     );
     session.flush();
     let result = output.take().expect("queued scan must publish a terminal");

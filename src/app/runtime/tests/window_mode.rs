@@ -1734,6 +1734,11 @@ fn window_targeting_uses_real_grid_lifecycle_and_keeps_window_session() {
     use crate::api::window::{WindowOperation as O, WindowChange, WindowId};
     for (recursive, temporary) in [(false, false), (false, true), (true, true)] {
         let mut config = Config::default();
+        // Isolate stripped F -> Recursive Grid. Full Primary+F normally wins
+        // in the shared temporary route and opens UI Hint.
+        let full_hint_key = config.normal.bindings.iter().find_map(|(key, binding)|
+            (binding == &Binding::Mode(ModeId::ui_hint())).then(|| key.clone())).unwrap();
+        config.normal.bindings.remove(&full_hint_key);
         config.grid.cursor_follow_selection = true;
         config.grid.lifecycle.after_finish = crate::api::LifecycleAction::Keep;
         config.recursive_grid.cursor_follow_selection = true;
@@ -2357,10 +2362,42 @@ fn quick_and_restore_clear_multi_selection_without_changing_target_preferences()
 }
 
 #[test]
+fn window_selection_editor_uses_the_common_temporary_route_and_explicit_passthrough() {
+    for passthrough in [false, true] {
+        let mut config = Config::default();
+        config.window.temporary_mode_keys = vec!["right_alt".into()];
+        config.window.multi_select.bindings.insert("right_alt+h".into(), Binding::parse("arrow_left").unwrap());
+        if passthrough {
+            config.window.temporary_mode_passthrough_keys.push("right_alt+h".into());
+        }
+        let (mut engine, mut backend, log) = window_test_engine(&config);
+        enter_window(&mut engine, &mut backend, &log);
+        point_keys(&mut engine, &mut backend, &["left_ctrl"]);
+        point_keys(&mut engine, &mut backend, &["1"]);
+        assert!(engine.registry.get(&ModeId::window()).unwrap().keyboard_prompt_active());
+        let detail = engine.registry.get(&ModeId::window()).unwrap().indicator_detail().unwrap();
+        engine.handle_backend_event(key_down("right_alt"), &mut backend).unwrap();
+        engine.handle_backend_event(key_down("h"), &mut backend).unwrap();
+        if passthrough {
+            assert!(engine.input.active_gestures.iter().all(|(_, gesture)| gesture.owner == ModeId::window()));
+            assert!(engine.registry.get(&ModeId::window()).unwrap().indicator_detail().unwrap().contains("Input: ▏1"));
+        } else {
+            assert_eq!(engine.input.active_gestures.get(&Key::new("h").unwrap()).unwrap().owner, ModeId::normal());
+            assert_eq!(engine.registry.get(&ModeId::window()).unwrap().indicator_detail().unwrap(), detail);
+        }
+        engine.handle_backend_event(key_up("right_alt"), &mut backend).unwrap();
+        engine.handle_backend_event(key_up("h"), &mut backend).unwrap();
+        assert!(engine.input.active_gestures.is_empty());
+        assert_eq!(engine.active_mode(), &ModeId::window());
+    }
+}
+
+#[test]
 fn window_multi_selection_routes_configured_cursor_keys_and_physical_arrows_to_the_input() {
     use crate::api::window::{WindowId, WindowInfo, WindowOperation as O, WindowResult};
     for custom in [false, true] {
         let mut config = Config::default();
+        config.window.temporary_mode_keys.clear();
         if custom {
             config.window.multi_select.bindings = crate::config::Bindings::from([
                 ("ctrl enter".into(), Binding::parse("window_multi_confirm").unwrap()),

@@ -1,4 +1,4 @@
-//! Generation-scoped system OCR and contour execution.
+//! Generation-scoped system OCR and contour execution with reusable native owners.
 
 use super::*;
 use crate::platform::common::contour::input::Input as ContourInput;
@@ -9,6 +9,26 @@ pub(super) struct CapturedFrame {
     pub(super) capture: crate::platform::windows::native::PreparedCapture,
     pub(super) layout: SystemOcrLayout,
     _ledger: crate::support::perf_probe::ResourceGuard,
+}
+
+#[derive(Default)]
+pub(super) struct CaptureResources {
+    frames: SmallVec<[CapturedFrame; 2]>,
+    bitmap: Option<BitmapResources>,
+}
+struct BitmapResources {
+    factory: crate::platform::windows::native::SoftwareBitmapFactory,
+    _apartment: crate::platform::windows::native::ComApartment,
+}
+impl BitmapResources {
+    fn new() -> Result<Self, String> {
+        let apartment = crate::platform::windows::native::ComApartment::initialise()?;
+        let factory = crate::platform::windows::native::SoftwareBitmapFactory::load()?;
+        Ok(Self {
+            factory,
+            _apartment: apartment,
+        })
+    }
 }
 
 pub(super) struct SystemOcrTile {
@@ -105,16 +125,24 @@ impl Drop for SharedSoftwareBitmap {
     }
 }
 
-pub(super) fn run_scan(mut job: ScanJob, shared: &Arc<SharedQueue>, discovery: &DiscoveryHandle) {
-    let status = run_scan_inner(&mut job, shared, discovery);
+pub(super) fn run_scan(
+    mut job: ScanJob,
+    shared: &Arc<SharedQueue>,
+    discovery: &DiscoveryHandle,
+    resources: &mut CaptureResources,
+) -> bool {
+    let status = run_scan_inner(&mut job, shared, discovery, resources);
     crate::support::perf_probe::mark("vision_terminal_cleanup");
+    let completed = status == UiScanStatus::Success;
     job.source.finish(status);
+    completed
 }
 
 fn run_scan_inner(
     job: &mut ScanJob,
     shared: &Arc<SharedQueue>,
     discovery: &DiscoveryHandle,
+    resources: &mut CaptureResources,
 ) -> UiScanStatus {
     if !generation_is_current(shared, job.generation) {
         return UiScanStatus::ContextChanged;
@@ -264,7 +292,7 @@ fn run_scan_inner(
         cancellation.register_credit_wake(&credit_tx);
         let result_mailbox = Arc::clone(&provider_mailbox);
         let provider_cancellation = cancellation.clone();
-        if providers.spawn("keysteer-system-ocr", move || {
+        if providers.spawn_reused(&shared.system_ocr, "keysteer-system-ocr", move |idle| {
             let _provider_ledger = crate::support::perf_probe::ResourceGuard::new(
                 crate::support::perf_probe::ResourceKind::Provider,
             );
@@ -279,6 +307,8 @@ fn run_scan_inner(
                 &provider_cancellation,
                 &result_mailbox,
                 started,
+                idle,
+                max_in_flight,
             );
             let _ = result_mailbox.publish(ProviderEvent::OcrDone {
                 elapsed: started.elapsed(),
@@ -305,7 +335,21 @@ fn run_scan_inner(
     // while the renderer is independently hiding its tree. No desktop pixels
     // are read before the hidden ACK.
     let mut frames = SmallVec::<[CapturedFrame; 2]>::new();
+    resources.frames.retain(|old| {
+        geometries.iter().any(|geometry| {
+            old.geometry.width == geometry.width && old.geometry.height == geometry.height
+        })
+    });
     for (geometry, layout) in geometries.into_iter().zip(layouts) {
+        if let Some(index) = resources.frames.iter().position(|old| {
+            old.geometry.width == geometry.width && old.geometry.height == geometry.height
+        }) {
+            let mut frame = resources.frames.swap_remove(index);
+            frame.geometry = geometry;
+            frame.layout = layout;
+            frames.push(frame);
+            continue;
+        }
         let capture =
             match crate::platform::windows::native::PreparedCapture::new(
                 geometry.width,
@@ -330,28 +374,16 @@ fn run_scan_inner(
             ),
         });
     }
+    resources.frames.clear();
     crate::support::perf_probe::mark("capture_dib_prepared");
     let mut bitmap_factory_error = None;
-    let bitmap_apartment = if system_input.is_none() {
-        None
-    } else {
-        match crate::platform::windows::native::ComApartment::initialise() {
-            Ok(apartment) => Some(apartment),
-            Err(error) => {
-                bitmap_factory_error = Some(error);
-                None
-            }
+    if system_input.is_some() && resources.bitmap.is_none() {
+        match BitmapResources::new() {
+            Ok(bitmap) => resources.bitmap = Some(bitmap),
+            Err(error) => bitmap_factory_error = Some(error),
         }
-    };
-    let bitmap_factory = bitmap_apartment.as_ref().and_then(|_| {
-        match crate::platform::windows::native::SoftwareBitmapFactory::load() {
-            Ok(factory) => Some(factory),
-            Err(error) => {
-                bitmap_factory_error = Some(error);
-                None
-            }
-        }
-    });
+    }
+    let bitmap_factory = resources.bitmap.as_ref().map(|bitmap| &bitmap.factory);
     if let Err(error) =
         capture_lease.wait_hidden(deadline, || !generation_is_current(shared, job.generation))
     {
@@ -437,29 +469,40 @@ fn run_scan_inner(
                     job.request.strategy,
                     &job.request.vision,
                 );
-                contour_pending = providers.spawn("keysteer-contour", move || {
-                    let _ledger = crate::support::perf_probe::ResourceGuard::new(
-                        crate::support::perf_probe::ResourceKind::Provider,
-                    );
-                    for image in images {
-                        if provider_cancellation.is_cancelled() || Instant::now() >= deadline {
-                            break;
-                        }
-                        let targets = crate::platform::common::contour::detect_prepared(
-                            &image,
-                            limit,
-                            || provider_cancellation.is_cancelled() || Instant::now() >= deadline,
+                contour_pending =
+                    providers.spawn_reused(&shared.contour, "keysteer-contour", move |idle| {
+                        let _ledger = crate::support::perf_probe::ResourceGuard::new(
+                            crate::support::perf_probe::ResourceKind::Provider,
                         );
-                        if send_contour_batch(&result_mailbox, targets).is_err() {
-                            break;
+                        let (cached, expired) = idle.take(Instant::now());
+                        drop(expired);
+                        let mut workspace = cached.unwrap_or_default();
+                        let mut completed = true;
+                        for image in images {
+                            if provider_cancellation.is_cancelled() || Instant::now() >= deadline {
+                                completed = false;
+                                break;
+                            }
+                            let targets = workspace.detect_prepared(&image, limit, || {
+                                provider_cancellation.is_cancelled() || Instant::now() >= deadline
+                            });
+                            if send_contour_batch(&result_mailbox, targets).is_err() {
+                                completed = false;
+                                break;
+                            }
+                            result_mailbox.progress(
+                                TargetSource::Contour,
+                                Progress::Complete(image.desktop_bounds),
+                            );
                         }
-                        result_mailbox.progress(
-                            TargetSource::Contour,
-                            Progress::Complete(image.desktop_bounds),
-                        );
-                    }
-                    let _ = result_mailbox.publish(ProviderEvent::ContourDone);
-                });
+                        if completed
+                            && !provider_cancellation.is_cancelled()
+                            && Instant::now() < deadline
+                        {
+                            drop(idle.retain(workspace, Instant::now()));
+                        }
+                        let _ = result_mailbox.publish(ProviderEvent::ContourDone);
+                    });
                 if !contour_pending {
                     return Err("cannot start contour provider".into());
                 }
@@ -510,7 +553,7 @@ fn run_scan_inner(
         }
         Ok(())
     })();
-    drop(frames);
+    resources.frames = frames;
     if let Some(lease) = capture_lease.take()
         && let Err(error) = lease.release()
     {
@@ -633,7 +676,6 @@ fn run_scan_inner(
         "provider join",
         providers.join_all(Instant::now() + PROVIDER_STOP_TIMEOUT),
     );
-    drop(bitmap_apartment);
     let cleanup_result = cleanup_errors.into_result();
     if context_changed || !context_is_current(shared, job.generation, &job.request) {
         if let Err(error) = cleanup_result {
@@ -662,14 +704,74 @@ fn recognize_system_provider(
     cancellation: &ScanCancellation,
     result_mailbox: &ProviderMailbox,
     started: Instant,
+    idle: &mut crate::platform::common::scan_reuse::IdleCache<SystemOcrResources>,
+    max_in_flight: usize,
 ) -> Result<usize, VisionError> {
-    let _apartment = crate::platform::windows::native::ComApartment::initialise()
-        .map_err(VisionError::Operational)?;
-    let factory = crate::platform::windows::native::SystemOcrFactory::load()
-        .map_err(VisionError::Unavailable)?;
+    if cancellation.is_cancelled() {
+        return Err(VisionError::Cancelled);
+    }
+    let (cached, expired) = idle.take(Instant::now());
+    drop(expired);
+    let mut resources = match cached {
+        Some(resources) => resources,
+        None => SystemOcrResources::new()?,
+    };
+    resources
+        .engines
+        .truncate(max_in_flight.clamp(1, MAX_SYSTEM_OCR_IN_FLIGHT));
+    let result = recognize_system_provider_inner(
+        descriptor,
+        receiver,
+        completion_sender,
+        credit_sender,
+        deadline,
+        cancellation,
+        result_mailbox,
+        started,
+        &mut resources,
+    );
+    if result.is_ok() && !cancellation.is_cancelled() && Instant::now() < deadline {
+        drop(idle.retain(resources, Instant::now()));
+    }
+    result
+}
+
+pub(super) struct SystemOcrResources {
+    engines: Vec<OcrEngine>,
+    factory: crate::platform::windows::native::SystemOcrFactory,
+    // Drop engines/factory before releasing this thread's apartment.
+    _apartment: crate::platform::windows::native::ComApartment,
+}
+
+impl SystemOcrResources {
+    fn new() -> Result<Self, VisionError> {
+        let apartment = crate::platform::windows::native::ComApartment::initialise()
+            .map_err(VisionError::Operational)?;
+        let factory = crate::platform::windows::native::SystemOcrFactory::load()
+            .map_err(VisionError::Unavailable)?;
+        let engine = factory.create_engine().map_err(VisionError::Unavailable)?;
+        Ok(Self {
+            engines: vec![engine],
+            factory,
+            _apartment: apartment,
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn recognize_system_provider_inner(
+    descriptor: Arc<SystemOcrDescriptor>,
+    receiver: mpsc::Receiver<SystemOcrInput>,
+    completion_sender: mpsc::SyncSender<SystemOcrInput>,
+    credit_sender: Arc<mpsc::Sender<()>>,
+    deadline: Instant,
+    cancellation: &ScanCancellation,
+    result_mailbox: &ProviderMailbox,
+    started: Instant,
+    resources: &mut SystemOcrResources,
+) -> Result<usize, VisionError> {
     // Preserve the existing overlap between OCR cold start and the overlay
     // hide/capture barrier. The remaining engines are created as tiles arrive.
-    let mut first_engine = Some(factory.create_engine().map_err(VisionError::Unavailable)?);
     let mut expected_tiles = None;
     let mut active: Vec<Option<ActiveSystemOcrTile>> = Vec::new();
     let mut pending = 0usize;
@@ -742,9 +844,10 @@ fn recognize_system_provider(
                     let _ = credit_sender.send(());
                     continue;
                 }
-                let engine = match first_engine
-                    .take()
-                    .map_or_else(|| factory.create_engine(), Ok)
+                let engine = match resources
+                    .engines
+                    .pop()
+                    .map_or_else(|| resources.factory.create_engine(), Ok)
                 {
                     Ok(engine) => engine,
                     Err(error) => {
@@ -778,7 +881,7 @@ fn recognize_system_provider(
                     }
                 };
                 active.push(Some(ActiveSystemOcrTile {
-                    _engine: engine,
+                    engine,
                     operation,
                     completion,
                     tile,
@@ -798,9 +901,9 @@ fn recognize_system_provider(
             &credit_sender,
             &mut operational_failures,
             &mut cleanup_failures,
+            resources,
         )?;
     }
-    drop(first_engine);
     if let Some(expected) = expected_tiles
         && active.len() != expected
     {
@@ -820,6 +923,7 @@ fn recognize_system_provider(
             &credit_sender,
             &mut operational_failures,
             &mut cleanup_failures,
+            resources,
         )?;
         if pending == 0 {
             break;
@@ -859,7 +963,7 @@ fn recognize_system_provider(
 }
 
 struct ActiveSystemOcrTile {
-    _engine: OcrEngine,
+    engine: OcrEngine,
     operation: OcrOperationGuard,
     completion: Arc<SystemOcrCompletion>,
     tile: SystemOcrTile,
@@ -875,6 +979,7 @@ fn drain_completed_system_tiles(
     credit_sender: &mpsc::Sender<()>,
     operational_failures: &mut Vec<String>,
     cleanup_failures: &mut Vec<String>,
+    resources: &mut SystemOcrResources,
 ) -> Result<(), VisionError> {
     for index in 0..active.len() {
         let Some(status) = active[index]
@@ -893,6 +998,7 @@ fn drain_completed_system_tiles(
             credit_sender,
             operational_failures,
             cleanup_failures,
+            resources,
         )?;
     }
     Ok(())
@@ -909,6 +1015,7 @@ fn complete_system_tile(
     credit_sender: &mpsc::Sender<()>,
     operational_failures: &mut Vec<String>,
     cleanup_failures: &mut Vec<String>,
+    resources: &mut SystemOcrResources,
 ) -> Result<(), VisionError> {
     let Some(slot) = active.get_mut(index) else {
         operational_failures.push(format!(
@@ -923,6 +1030,7 @@ fn complete_system_tile(
         return Ok(());
     };
     *pending = pending.saturating_sub(1);
+    let failures_before = (operational_failures.len(), cleanup_failures.len());
     let mut fatal = None;
     match completed.operation.complete(status) {
         Ok(result) => match stream_system_targets_from_result(
@@ -941,6 +1049,12 @@ fn complete_system_tile(
     }
     if let Err(error) = completed.tile.bitmap.close() {
         cleanup_failures.push(error);
+    }
+    if fatal.is_none()
+        && failures_before == (operational_failures.len(), cleanup_failures.len())
+        && resources.engines.len() < MAX_SYSTEM_OCR_IN_FLIGHT
+    {
+        resources.engines.push(completed.engine);
     }
     result_mailbox.progress(
         crate::platform::common::spatial_index::TargetSource::SystemOcr,
@@ -1033,5 +1147,159 @@ pub(super) fn retain_nonterminal_system_ocr_owner(reason: &str) -> ! {
     );
     loop {
         std::thread::park();
+    }
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+    use crate::platform::common::scan_reuse::IdleCache;
+    use windows::core::Interface;
+
+    #[test]
+    #[ignore = "requires an installed Windows OCR language pack"]
+    fn native_ocr_reuses_engine_without_old_text_and_discards_failed_resources()
+    -> Result<(), String> {
+        let _apartment = crate::platform::windows::native::ComApartment::initialise()?;
+        let factory = crate::platform::windows::native::SoftwareBitmapFactory::load()?;
+        let (maximum_dimension, languages) =
+            crate::platform::windows::native::probe_system_ocr_factory()?;
+        let descriptor = Arc::new(SystemOcrDescriptor {
+            maximum_dimension,
+            languages,
+        });
+        let mut idle = IdleCache::default();
+        idle.set_limit(1, Instant::now());
+        let geometry = capture_geometry(Rect::new(0.0, 0.0, 300.0, 100.0))?;
+        let blank = vec![255u8; 300 * 100 * 4];
+        let mut text = blank.clone();
+        // Block lettering in memory avoids desktop capture and fixture files.
+        let hello = [
+            [17, 17, 17, 31, 17, 17, 17],
+            [31, 16, 16, 30, 16, 16, 31],
+            [16, 16, 16, 16, 16, 16, 31],
+            [16, 16, 16, 16, 16, 16, 31],
+            [14, 17, 17, 17, 17, 17, 14],
+        ];
+        for (letter, rows) in hello.iter().enumerate() {
+            for (row, bits) in rows.iter().enumerate() {
+                for col in 0..5 {
+                    if bits & (1 << (4 - col)) == 0 {
+                        continue;
+                    }
+                    for y in 0..6 {
+                        for x in 0..6 {
+                            let offset =
+                                ((24 + row * 6 + y) * 300 + 24 + letter * 42 + col * 6 + x) * 4;
+                            text[offset..offset + 3].fill(0);
+                        }
+                    }
+                }
+            }
+        }
+        let shared = Arc::new(SharedQueue::default());
+        let mut identity = None;
+        for (generation, pixels) in [text.as_slice(), text.as_slice(), blank.as_slice()]
+            .into_iter()
+            .enumerate()
+        {
+            let generation = generation as u64 + 1;
+            shared
+                .latest_generation
+                .store(generation, Ordering::Release);
+            let mailbox = Arc::new(ProviderMailbox::new());
+            let cancellation = ScanCancellation::new(&shared, generation, &mailbox, Weak::new());
+            let (sender, receiver) = mpsc::sync_channel(4);
+            let (credits, _) = mpsc::channel();
+            sender
+                .send(SystemOcrInput::Begin { tile_count: 1 })
+                .unwrap();
+            sender
+                .send(SystemOcrInput::Tile(SystemOcrTile {
+                    geometry,
+                    core_bounds: geometry.desktop_bounds,
+                    bitmap: SharedSoftwareBitmap {
+                        bitmap: Some(factory.bgra_region(pixels, 300, 100, 0, 0, 300, 100)?),
+                        _ledger: crate::support::perf_probe::ResourceGuard::new(
+                            crate::support::perf_probe::ResourceKind::Bitmap,
+                        ),
+                    },
+                }))
+                .unwrap();
+            sender.send(SystemOcrInput::Done).unwrap();
+            let started = Instant::now();
+            let count = recognize_system_provider(
+                Arc::clone(&descriptor),
+                receiver,
+                sender,
+                Arc::new(credits),
+                started + Duration::from_secs(20),
+                &cancellation,
+                &mailbox,
+                started,
+                &mut idle,
+                1,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut events = ProviderEvents::new();
+            mailbox.drain_into(&mut events);
+            let names: Vec<_> = events
+                .into_iter()
+                .filter_map(|event| match event {
+                    ProviderEvent::OcrBatch { targets, .. } => Some(targets),
+                    _ => None,
+                })
+                .flatten()
+                .map(|target| target.name)
+                .collect();
+            println!(
+                "native_ocr_reuse generation={generation} elapsed_ms={:.3} targets={count} text={names:?}",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+            if generation < 3 {
+                assert!(
+                    count > 0
+                        && names
+                            .iter()
+                            .any(|name| name.to_uppercase().contains("HELLO"))
+                );
+            } else {
+                assert_eq!(count, 0);
+                assert!(names.is_empty(), "blank scan retained old text");
+            }
+            let (owner, expired) = idle.take(Instant::now());
+            assert!(expired.is_empty());
+            let owner = owner.expect("successful native OCR should retain its engine");
+            assert_eq!(owner.engines.len(), 1);
+            let current = owner.engines[0].as_raw();
+            assert_eq!(*identity.get_or_insert(current), current);
+            assert!(idle.retain(owner, Instant::now()).is_none());
+        }
+        let mailbox = Arc::new(ProviderMailbox::new());
+        let cancellation = ScanCancellation::new(&shared, 3, &mailbox, Weak::new());
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let (credits, _) = mpsc::channel();
+        sender
+            .send(SystemOcrInput::Failed("test capture failure".into()))
+            .unwrap();
+        sender.send(SystemOcrInput::Done).unwrap();
+        let started = Instant::now();
+        assert!(
+            recognize_system_provider(
+                descriptor,
+                receiver,
+                sender,
+                Arc::new(credits),
+                started + Duration::from_secs(5),
+                &cancellation,
+                &mailbox,
+                started,
+                &mut idle,
+                1,
+            )
+            .is_err()
+        );
+        assert!(idle.next_expiration().is_none());
+        Ok(())
     }
 }

@@ -11,18 +11,13 @@ use super::input_router::CompiledKeymap;
 use super::plan::{Bindings, ModeRoute};
 use super::{Engine, RuntimeError, chords_conflict};
 
-pub(super) struct TemporaryChord {
-    pub(super) chord: KeyChord,
-    pub(super) conflicts_with_ui_hint_overlap: bool,
-}
-
 struct ModeSlot {
     id: ModeId,
     mode: Box<dyn Mode>,
     pointer_events: bool,
     keyboard_prompt_supported: bool,
     table: Option<CompiledKeymap>,
-    temporary_chords: Vec<TemporaryChord>,
+    temporary_chords: Vec<KeyChord>,
 }
 
 pub(super) struct ModeRegistry {
@@ -164,9 +159,10 @@ impl ModeRegistry {
         )
     }
 
-    pub(super) fn temporary_chords(&self, id: &ModeId) -> Option<&[TemporaryChord]> {
+    pub(super) fn temporary_chords(&self, id: &ModeId) -> Option<&[KeyChord]> {
         let index = self.index_of(id)?;
-        Some(&self.slots.get(index)?.temporary_chords)
+        let chords = &self.slots.get(index)?.temporary_chords;
+        (!chords.is_empty()).then_some(chords)
     }
 
     pub(super) fn clear_routes(&mut self) {
@@ -180,7 +176,7 @@ impl ModeRegistry {
         &mut self,
         id: &ModeId,
         table: Option<CompiledKeymap>,
-        temporary_chords: Vec<TemporaryChord>,
+        temporary_chords: Vec<KeyChord>,
     ) {
         if let Some(index) = self.index_of(id)
             && let Some(slot) = self.slots.get_mut(index)
@@ -338,7 +334,7 @@ impl Engine {
                     continue;
                 }
                 for trigger in triggers {
-                    let mut pressed = trigger.chord.keys().to_vec();
+                    let mut pressed = trigger.keys().to_vec();
                     for key in entry.chord.keys() {
                         if !pressed.iter().any(|part| Self::keys_match(key, part)) {
                             pressed.push(key.clone());
@@ -547,12 +543,17 @@ impl Engine {
                         .temporary_keys
                         .iter()
                         .filter_map(|text| {
-                            KeyChord::parse(text).ok().map(|chord| TemporaryChord {
-                                conflicts_with_ui_hint_overlap: ui_hint_overlap_chord
+                            let chord = KeyChord::parse(text).ok()?;
+                            // Hint overlap cycling owns its modifier. Resolve
+                            // that conflict at compilation, not on every key.
+                            if (id == ModeId::ui_hint() || id == ModeId::text_select())
+                                && ui_hint_overlap_chord
                                     .as_ref()
-                                    .is_some_and(|overlap| chords_conflict(overlap, &chord)),
-                                chord,
-                            })
+                                    .is_some_and(|overlap| chords_conflict(overlap, &chord))
+                            {
+                                return None;
+                            }
+                            Some(chord)
                         })
                         .collect::<Vec<_>>()
                 })

@@ -10,6 +10,8 @@ import { validQuickSwitchCharacters } from '../simulator/hint-labels.ts'
 
 export type ConfigDocument = Record<string, any>
 
+const routingModes = ['normal', 'quick_switch', 'text_input', 'text_select', 'grid', 'recursive_grid', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab']
+
 function mergeSearchEditBindings(defaults: unknown, configured: unknown): Record<string, string> {
   const base = readSearchEditBindings(defaults ?? {})
   const overrides = readSearchEditBindings(configured)
@@ -74,6 +76,17 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
   const parsed = parse(source)
   if (!isRecord(parsed)) throw new Error('TOML 顶层必须是配置表')
   const warnings = normalizeConfigCompatibility(parsed)
+  for (const [mode, settings] of [
+    ...routingModes.map(mode => [mode, parsed[mode]] as const),
+    ...Object.entries(parsed.plugin_modes ?? {}).map(([mode, settings]) => [`plugin_modes.${mode}`, settings] as const),
+  ]) {
+    if (!isRecord(settings)) continue
+    for (const key of ['inherits', 'temporary_mode_keys', 'temporary_mode_passthrough_keys']) {
+      const value = settings[key]
+      if (value !== undefined && (!Array.isArray(value) || value.some(entry => typeof entry !== 'string'))) throw new Error(`${mode}.${key} must be a string array`)
+    }
+    if (settings.temporary_mode !== undefined && typeof settings.temporary_mode !== 'string') throw new Error(`${mode}.temporary_mode must be a string`)
+  }
   const quickSwitch = parsed.quick_switch as ConfigDocument | undefined
   if (quickSwitch && !validQuickSwitchCharacters(quickSwitch.hint_characters ?? 'wertyuiop', String(quickSwitch.key ?? 'q'))) {
     throw new Error('quick_switch.hint_characters requires at least two unique character keys, excluding the trigger key')
@@ -99,7 +112,10 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
   if (textSelect !== undefined) {
     if (!isRecord(textSelect)) throw new Error('text_select must be a table')
     for (const key of Object.keys(textSelect)) {
-      if (!['enabled', 'hint_characters', 'ui', 'lifecycle', 'bindings'].includes(key)) throw new Error(`text_select.${key} is unknown`)
+      if (!['enabled', 'scan_scope', 'inherits', 'temporary_mode', 'temporary_mode_keys', 'temporary_mode_passthrough_keys', 'hint_characters', 'ui', 'lifecycle', 'bindings'].includes(key)) throw new Error(`text_select.${key} is unknown`)
+    }
+    if (textSelect.scan_scope !== undefined && !['window', 'active', 'screen', 'all'].includes(textSelect.scan_scope)) {
+      throw new Error('text_select.scan_scope must be window, active, screen or all')
     }
   }
   const pairInRange = (value: unknown, min: number, max: number): boolean => Array.isArray(value)
@@ -222,6 +238,11 @@ export function resolveConfigDocument(
   document: ConfigDocument,
 ): ConfigDocument {
   const effective = mergeValue(defaults, document, '') as ConfigDocument
+  // A missing trigger list disables this optional layer, including when the
+  // entire user section is absent. Never inherit triggers from product defaults.
+  for (const mode of routingModes) {
+    if (effective[mode] && document[mode]?.temporary_mode_keys === undefined) effective[mode].temporary_mode_keys = []
+  }
   // Match the native upgrade fallback: an older Normal map must not hide a
   // newly added text mode, but occupied keys and remapped entries take priority.
   const enters = (action: unknown, mode: string): boolean => action === mode

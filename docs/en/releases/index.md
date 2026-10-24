@@ -5,6 +5,10 @@ outline: 2
 
 # Release notes
 
+## 0.12.7
+
+Scan resource reuse for UIHint and Text Select to reduce repeated initialization.
+
 ## 0.12.6
 
 Added **Text Select mode** to select and copy on-screen text, with refinement into words and characters.

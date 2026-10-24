@@ -794,17 +794,40 @@ impl Engine {
             return Ok(());
         }
 
-        let point_event = self.point_input_event(&input);
-        let point_operation = if point_event.is_none() {
+        let mut prompt_binding = None;
+        // Borrowing uses the ordinary mode route, including full-chord
+        // precedence and held-action ownership. Live editors do not intercept
+        // the temporary layer's keys.
+        let mut route_prompt_binding =
+            self.scheduler
+                .text_prompt
+                .as_ref()
+                .is_some_and(|(owner, prompt)| {
+                    prompt.live_style.is_some()
+                        && (self.temporary_layer_claims_input(
+                            owner,
+                            &input.key,
+                            &self.input.pressed,
+                        ) || (input.state == KeyState::Up || input.repeat)
+                            && self.input.active_gestures.get(&input.key).is_some())
+                });
+        let point_event = if route_prompt_binding {
+            None
+        } else {
+            self.point_input_event(&input)
+        };
+        let point_operation = if !route_prompt_binding && point_event.is_none() {
             self.point_operation_binding(&input)
         } else {
             None
         };
         if point_operation.is_none()
+            && !route_prompt_binding
             && let Some((owner, prompt)) = &self.scheduler.text_prompt
         {
             if prompt.live_style.is_some() {
                 let owner = owner.clone();
+                let prompt_mode = self.registry.keyboard_prompt_mode(&owner);
                 // The prompt route already checked copy/edit precedence before
                 // resolving point actions. Reuse its result instead of matching
                 // the same pressed keys a second time (notably for Tab).
@@ -815,18 +838,13 @@ impl Engine {
                     let matches = |chord: &crate::api::KeyChord| {
                         Self::prompt_chord_matches(chord, &input.key, &pressed)
                     };
-                    if let Some(binding) =
-                        self.registry.keyboard_prompt_mode(&owner).and_then(|mode| {
-                            self.literal_character_key(&input)
-                                .and_then(|symbol| {
-                                    mode.keyboard_prompt_binding(
-                                        symbol,
-                                        std::slice::from_ref(symbol),
-                                    )
-                                })
-                                .or_else(|| mode.keyboard_prompt_binding(&input.key, &pressed))
-                        })
-                    {
+                    if let Some(binding) = prompt_mode.and_then(|mode| {
+                        self.literal_character_key(&input)
+                            .and_then(|symbol| {
+                                mode.keyboard_prompt_binding(symbol, std::slice::from_ref(symbol))
+                            })
+                            .or_else(|| mode.keyboard_prompt_binding(&input.key, &pressed))
+                    }) {
                         (!input.repeat).then_some(ModeEvent::Binding {
                             binding,
                             state: input.state,
@@ -843,6 +861,19 @@ impl Engine {
                     {
                         None
                     } else {
+                        if input.key.as_char().is_none() {
+                            // The prompt's own controls and editing bindings
+                            // were already checked. Reuse compiled mode routes.
+                            prompt_binding = self
+                                .lookup_character(&input)
+                                .or_else(|| {
+                                    self.lookup_mode_route::<false>(
+                                        &owner, &input.key, &pressed, false,
+                                    )
+                                })
+                                .filter(|binding| binding.owner != owner);
+                            route_prompt_binding = prompt_binding.is_some();
+                        }
                         let alt = self
                             .input
                             .pressed
@@ -852,7 +883,7 @@ impl Engine {
                             matches!(key.as_str(), "left_win" | "right_win")
                                 || (!alt && matches!(key.as_str(), "left_ctrl" | "right_ctrl"))
                         });
-                        if command {
+                        if command || route_prompt_binding {
                             None
                         } else {
                             input
@@ -871,19 +902,29 @@ impl Engine {
                         }
                     }
                 };
-                // Acknowledge before clipboard access, filtering or painting.
-                let outcome = self.complete_key_disposition(&input, KeyOutcome::Consumed);
-                self.dispose_input(&input, outcome, trace_key, backend)?;
-                if let Some(event) = event {
-                    self.dispatch_to(&owner, event, backend)?;
+                if !route_prompt_binding {
+                    // Acknowledge before clipboard access, filtering or painting.
+                    let outcome = self.complete_key_disposition(&input, KeyOutcome::Consumed);
+                    self.dispose_input(&input, outcome, trace_key, backend)?;
+                    if let Some(event) = event {
+                        self.dispatch_to(&owner, event, backend)?;
+                    }
+                    if display_changed {
+                        self.refresh_overlay(backend)?;
+                    }
+                    return Ok(());
                 }
-                return Ok(());
             }
-            let copy = prompt.copy_keys.iter().position(|chord| {
-                chord.activation_matches(&input.key)
-                    && chord.keys().len() == self.input.pressed.len()
-                    && chord.matches_pressed(&self.input.pressed)
-            });
+            let copy = (!route_prompt_binding)
+                .then_some(self.scheduler.text_prompt.as_ref())
+                .flatten()
+                .and_then(|(_, prompt)| {
+                    prompt.copy_keys.iter().position(|chord| {
+                        chord.activation_matches(&input.key)
+                            && chord.keys().len() == self.input.pressed.len()
+                            && chord.matches_pressed(&self.input.pressed)
+                    })
+                });
             if let Some(index) = copy
                 && input.state == KeyState::Down
             {
@@ -899,7 +940,9 @@ impl Engine {
         if !self.enabled
             || self.is_excluded_app()
             || self.window_presets.pending.is_some()
-            || (self.scheduler.text_prompt.is_some() && point_operation.is_none())
+            || (self.scheduler.text_prompt.is_some()
+                && point_operation.is_none()
+                && !route_prompt_binding)
         {
             self.input.pending_chords.clear();
             if let Some(pending) = completed_long_press
@@ -984,7 +1027,9 @@ impl Engine {
         // Resolve the key. On press we consult the active mode's table; on
         // release we use the gesture that press started, because the chord no
         // longer matches once the keys are up.
-        let mut bound = if let Some((_, binding)) = &point_operation {
+        let mut bound = if prompt_binding.is_some() {
+            prompt_binding
+        } else if let Some((_, binding)) = &point_operation {
             Some(binding.clone())
         } else {
             match input.state {
@@ -1195,8 +1240,7 @@ impl Engine {
             return Ok(());
         }
 
-        let captures_temporary_trigger = self.registry.active == ModeId::text_input()
-            && self.key_may_change_temporary_mode(&input.key)
+        let captures_temporary_trigger = self.key_may_change_temporary_mode(&input.key)
             && self.temporary_mode_is_active(&self.registry.active);
         let captures = captures_temporary_trigger
             || (!input.key.is_mouse_button()
@@ -1270,14 +1314,13 @@ impl Engine {
         backend
             .dispose_key(disposition)
             .map_err(|error| self.recoverable_input_error("keyboard disposition", error))?;
-        // A text-entry temporary layer ends when its modifier is released,
+        // A temporary layer ends when its modifier is released,
         // even when a movement companion remains physically held.
         if !input.injected
             && input.state == KeyState::Up
             && input.key.is_modifier()
-            && self.registry.active == ModeId::text_input()
             && self.key_may_change_temporary_mode(&input.key)
-            && !self.temporary_mode_is_active(&self.registry.active)
+            && !self.temporary_trigger_active::<false>(&self.registry.active, &self.input.pressed)
         {
             let released: SmallVec<[(Key, ActiveGesture); 4]> = self
                 .input
@@ -2013,44 +2056,82 @@ impl Engine {
     }
 
     fn temporary_trigger_active<const HELP: bool>(&self, mode: &ModeId, pressed: &[Key]) -> bool {
-        if !HELP
-            && self
-                .registry
-                .keyboard_prompt_mode(mode)
-                .is_some_and(|mode| mode.keyboard_prompt_active())
-        {
-            return false;
-        }
         self.registry.temporary_chords(mode).is_some_and(|chords| {
             chords.iter().any(|entry| {
-                let reserved_for_overlap =
-                    *mode == ModeId::ui_hint() && entry.conflicts_with_ui_hint_overlap;
-                !reserved_for_overlap
-                    && (HELP || self.temporary_chord_armed(&entry.chord))
-                    && entry.chord.matches_pressed(pressed)
+                (HELP || self.temporary_chord_armed(entry)) && entry.matches_pressed(pressed)
             })
         })
     }
 
-    pub(super) fn key_may_change_temporary_mode(&self, key: &Key) -> bool {
-        if self.registry.active.is_window() {
-            return true;
+    fn temporary_remaining_keys<const HELP: bool>(
+        &self,
+        mode: &ModeId,
+        pressed: &[Key],
+    ) -> SmallVec<[Key; 8]> {
+        let chords = self.registry.temporary_chords(mode).unwrap_or_default();
+        pressed
+            .iter()
+            .filter(|physical| {
+                !chords.iter().any(|entry| {
+                    (HELP || self.temporary_chord_armed(entry))
+                        && entry.matches_pressed(pressed)
+                        && entry
+                            .keys()
+                            .iter()
+                            .any(|configured| Self::keys_match(configured, physical))
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn temporary_passthrough_matches(
+        chords: &[KeyChord],
+        key: &Key,
+        pressed: &[Key],
+        remaining: &[Key],
+    ) -> bool {
+        chords.iter().any(|chord| {
+            chord.activation_matches(key)
+                && [pressed, remaining]
+                    .into_iter()
+                    .any(|keys| chord.keys().len() == keys.len() && chord.matches_pressed(keys))
+        })
+    }
+
+    fn temporary_layer_claims_input(&self, mode: &ModeId, key: &Key, pressed: &[Key]) -> bool {
+        if !self.temporary_trigger_active::<false>(mode, pressed) {
+            return false;
         }
+        let Some(route) = self.registry.routes.get(mode) else {
+            return false;
+        };
+        route.temporary_passthrough.is_empty()
+            || !Self::temporary_passthrough_matches(
+                &route.temporary_passthrough,
+                key,
+                pressed,
+                &self.temporary_remaining_keys::<false>(mode, pressed),
+            )
+    }
+
+    pub(super) fn key_may_change_temporary_mode(&self, key: &Key) -> bool {
         self.registry
             .temporary_chords(&self.registry.active)
             .is_some_and(|chords| {
-                chords.iter().any(|entry| {
-                    entry.chord.keys().iter().any(|configured| {
-                        configured == key
-                            || matches!(
-                                (configured.as_str(), key.as_str()),
-                                ("alt", "left_alt" | "right_alt")
-                                    | ("ctrl", "left_ctrl" | "right_ctrl")
-                                    | ("shift", "left_shift" | "right_shift")
-                                    | ("win", "left_win" | "right_win")
-                            )
+                self.registry.active.is_window()
+                    || chords.iter().any(|entry| {
+                        entry.keys().iter().any(|configured| {
+                            configured == key
+                                || matches!(
+                                    (configured.as_str(), key.as_str()),
+                                    ("alt", "left_alt" | "right_alt")
+                                        | ("ctrl", "left_ctrl" | "right_ctrl")
+                                        | ("shift", "left_shift" | "right_shift")
+                                        | ("win", "left_win" | "right_win")
+                                )
+                        })
                     })
-                })
             })
     }
 
@@ -2106,10 +2187,9 @@ impl Engine {
                     .temporary_chords(&self.registry.active)
                     .is_some_and(|chords| {
                         chords.iter().any(|entry| {
-                            self.temporary_chord_armed(&entry.chord)
-                                && entry.chord.matches_pressed(&self.input.pressed)
+                            self.temporary_chord_armed(entry)
+                                && entry.matches_pressed(&self.input.pressed)
                                 && entry
-                                    .chord
                                     .keys()
                                     .iter()
                                     .any(|configured| Self::keys_match(configured, key))
@@ -2178,7 +2258,9 @@ impl Engine {
         key: &Key,
         pressed: &[Key],
     ) -> Option<ResolvedBinding> {
+        let temporary_active = self.temporary_trigger_active::<HELP>(active, pressed);
         if !HELP
+            && !temporary_active
             && let Some(binding) = self
                 .registry
                 .keyboard_prompt_mode(active)
@@ -2189,6 +2271,16 @@ impl Engine {
                 owner: active.clone(),
             });
         }
+        self.lookup_mode_route::<HELP>(active, key, pressed, temporary_active)
+    }
+
+    fn lookup_mode_route<const HELP: bool>(
+        &self,
+        active: &ModeId,
+        key: &Key,
+        pressed: &[Key],
+        temporary_active: bool,
+    ) -> Option<ResolvedBinding> {
         let available = |binding: &Binding| {
             if HELP {
                 match binding.window_action() {
@@ -2202,9 +2294,11 @@ impl Engine {
                 self.binding_available(active, binding)
             }
         };
-        let active_match = self.lookup_reference_match::<HELP>(active, active, key, pressed);
+        // Temporary routing resolves both layers itself. Query the base table
+        // only on paths that actually use this result.
+        let active_match = || self.lookup_reference_match::<HELP>(active, active, key, pressed);
         if *active == ModeId::idle() {
-            return active_match.map(|(binding, _)| ResolvedBinding {
+            return active_match().map(|(binding, _)| ResolvedBinding {
                 binding,
                 owner: active.clone(),
             });
@@ -2214,46 +2308,37 @@ impl Engine {
             return None;
         }
         let Some(route) = self.registry.routes.get(active) else {
-            return active_match.map(|(binding, _)| ResolvedBinding {
+            return active_match().map(|(binding, _)| ResolvedBinding {
                 binding,
                 owner: active.clone(),
             });
         };
-        let temporary_active = self.temporary_trigger_active::<HELP>(active, pressed);
         if temporary_active && let Some(owner) = route.temporary_mode.as_ref() {
-            let chords = self.registry.temporary_chords(active)?;
-            let remaining: SmallVec<[Key; 8]> = pressed
-                .iter()
-                .filter(|physical| {
-                    !chords.iter().any(|entry| {
-                        !(*active == ModeId::ui_hint() && entry.conflicts_with_ui_hint_overlap)
-                            && (HELP || self.temporary_chord_armed(&entry.chord))
-                            && entry.chord.matches_pressed(pressed)
-                            && entry
-                                .chord
-                                .keys()
-                                .iter()
-                                .any(|configured| Self::keys_match(configured, physical))
-                    })
-                })
-                .cloned()
-                .collect();
-            if !remaining.contains(key) {
+            let remaining = self.temporary_remaining_keys::<HELP>(active, pressed);
+            let passthrough = Self::temporary_passthrough_matches(
+                &route.temporary_passthrough,
+                key,
+                pressed,
+                &remaining,
+            );
+            if !passthrough && !remaining.contains(key) {
                 return None;
             }
-            let passthrough = route.temporary_passthrough.iter().any(|chord| {
-                chord.activation_matches(key)
-                    && [pressed, remaining.as_slice()]
-                        .into_iter()
-                        .any(|keys| chord.keys().len() == keys.len() && chord.matches_pressed(keys))
-            });
+            if !HELP
+                && passthrough
+                && let Some(mode) = self.registry.keyboard_prompt_mode(active)
+                && let Some(binding) = mode.keyboard_prompt_binding(key, pressed)
+            {
+                return Some(ResolvedBinding {
+                    binding,
+                    owner: active.clone(),
+                });
+            }
             // Full physical chords outrank stripped chords. Within each tier,
             // the temporary layer wins unless this input explicitly passes through.
             for (keys, exact) in [(pressed, true), (remaining.as_slice(), false)] {
                 for (temporary, source) in [(true, owner), (false, active)] {
-                    // Window borrows the temporary mode with activation keys
-                    // consumed; its own explicit full chords remain available.
-                    if temporary && (passthrough || exact && active.is_window()) {
+                    if temporary && passthrough {
                         continue;
                     }
                     if let Some(resolved) = self.lookup_layer_reference::<HELP>(
@@ -2268,23 +2353,12 @@ impl Engine {
                             && available(&resolved.binding))
                         .then_some(resolved);
                     }
-                    if !exact
-                        && source == active
-                        && self.registry.get(active).is_some_and(|mode| {
-                            if HELP {
-                                mode.claims_key_for_help(key)
-                            } else {
-                                mode.claims_key(key)
-                            }
-                        })
-                    {
-                        return None;
-                    }
                 }
             }
             return None;
         }
 
+        let active_match = active_match();
         if let Some((binding, _)) = &active_match
             && !available(binding)
         {

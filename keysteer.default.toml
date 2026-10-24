@@ -82,9 +82,10 @@ y = "end"
 # '\ esc' = "normal"
 # enter = ["send enter", "normal"]
 
-# OCR text selection shares UI Hint's scan scope, OCR and panel appearance.
+# OCR text selection has its own scope; OCR options and panel appearance follow UI Hint.
 [text_select]
 enabled = true
+scan_scope = "all" # 独立扫描范围，默认全部屏幕 / Independent scope: window / active / screen / all (default).
 hint_characters = "asdfghjklqwertyuiopzvbnm"
 
 [text_select.lifecycle]
@@ -368,7 +369,7 @@ font_size = 28
 # Advanced OCR/contour thresholds and roles use built-in defaults; see --dump-config.
 [ui_hint]
 search_copy_keys = ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"] # OCR / accessibility / coordinates / color.
-scan_scope = "window"
+scan_scope = "all"
 enabled = true
 strategy = "hybrid"
 hint_characters = "asdfghjkl"

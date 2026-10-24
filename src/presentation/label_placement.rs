@@ -32,7 +32,8 @@ pub(super) fn card_position(
         ] {
             let rect = candidate(x, y);
             let d = (rect.center().x - center.x).powi(2) + (rect.center().y - center.y).powi(2);
-            if free(&rect) && d < distance {
+            // A farther candidate cannot win; skip its collision scan.
+            if d < distance && free(&rect) {
                 best = Some(rect);
                 distance = d;
             }
@@ -45,7 +46,7 @@ pub(super) fn card_position(
                 area.y + row as f64 * (height + 6.0),
             );
             let d = (rect.center().x - center.x).powi(2) + (rect.center().y - center.y).powi(2);
-            if free(&rect) && d < distance {
+            if d < distance && free(&rect) {
                 best = Some(rect);
                 distance = d;
             }

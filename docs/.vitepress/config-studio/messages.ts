@@ -518,6 +518,8 @@ export const englishMessages: Record<string, string> = {
   "递归上限": "Recursion limit",
   "Recursive Grid 最大递归次数": "Maximum Recursive Grid depth",
   "扫描范围": "Scan scope",
+  "鼠标下窗口优先": "Window under pointer first",
+  "全部显示器（默认）": "All displays (default)",
   "窗口不可用时按优先级选择范围，只扫描选定范围；鼠标窗口优先时尝试激活": "Resolve unavailable windows by priority, then scan once; pointer-first attempts activation",
   "当前激活窗口优先": "Active window first",
   "鼠标下窗口（默认）": "Window under pointer (default)",

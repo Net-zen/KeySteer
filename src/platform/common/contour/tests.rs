@@ -1,5 +1,112 @@
 use super::*;
 
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn source_worker_reuses_completed_workspace_and_discards_failed_workspace() {
+    use crate::api::command::UiScanStatus;
+    use crate::platform::common::{macos_scan_workers::Workers, spatial_index::TargetSource};
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    let workers = Workers::default();
+    for (expected_warm, status) in [
+        (false, UiScanStatus::Success),
+        (
+            true,
+            UiScanStatus::Failed("injected provider failure".into()),
+        ),
+        (false, UiScanStatus::Success),
+    ] {
+        let (sender, receiver) = mpsc::channel();
+        let result = status.clone();
+        let batch =
+            workers.start_with_resources(&[TargetSource::Contour], move |_, _, resources| {
+                sender
+                    .send(resources.contour.states.capacity() > 0)
+                    .unwrap();
+                resources.contour.detect(
+                    &[255; 32 * 32],
+                    32,
+                    32,
+                    Rect::new(0., 0., 32., 32.),
+                    100,
+                    || false,
+                );
+                result.clone()
+            });
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            expected_warm
+        );
+        assert_eq!(
+            batch.wait(Instant::now() + Duration::from_secs(2), || false)[0],
+            status
+        );
+    }
+    workers
+        .stop_until(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+}
+
+#[test]
+fn reusable_workspace_overwrites_old_frames_after_resize_and_interruption() {
+    use std::cell::Cell;
+    let mut workspace = Workspace::default();
+    for (w, h, seed) in [(400, 300, 1), (32, 90, 7), (400, 300, 19), (65, 33, 4)] {
+        let gray: Vec<_> = (0..w * h)
+            .map(|i| {
+                if ((i % w) / 19 + (i / w) / 11 + seed) % 5 == 0 {
+                    20
+                } else {
+                    240
+                }
+            })
+            .collect();
+        let bounds = Rect::new(-300., 25., w as f64, h as f64);
+        let expected = detect(&gray, w, h, bounds, usize::MAX, || false);
+        let calls = Cell::new(0);
+        assert!(
+            workspace
+                .detect(&gray, w, h, bounds, usize::MAX, || {
+                    calls.set(calls.get() + 1);
+                    calls.get() > 24
+                })
+                .is_empty()
+        );
+        assert_eq!(
+            workspace.detect(&gray, w, h, bounds, usize::MAX, || false),
+            expected
+        );
+        let storage = (
+            workspace.states.as_ptr(),
+            workspace.edges.gray.as_ptr(),
+            workspace.edges.tmp.as_ptr(),
+            workspace.edges.blurred.as_ptr(),
+            workspace.edges.magnitude.as_ptr(),
+            workspace.edges.state.as_ptr(),
+            workspace.rows.as_ptr(),
+        );
+        let blank = vec![255; w * h];
+        assert_eq!(
+            workspace.detect(&blank, w, h, bounds, usize::MAX, || false),
+            detect(&blank, w, h, bounds, usize::MAX, || false)
+        );
+        assert_eq!(
+            storage,
+            (
+                workspace.states.as_ptr(),
+                workspace.edges.gray.as_ptr(),
+                workspace.edges.tmp.as_ptr(),
+                workspace.edges.blurred.as_ptr(),
+                workspace.edges.magnitude.as_ptr(),
+                workspace.edges.state.as_ptr(),
+                workspace.rows.as_ptr()
+            )
+        );
+    }
+}
+
 #[test]
 fn faint_downsampled_frames_survive_pixel_phase_and_desktop_scaling() {
     let (w, h, stride) = (3840, 2160, 3840 * 4 + 16);

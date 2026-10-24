@@ -128,7 +128,7 @@ g = "grid"
 "primary+f" = "recursive_grid"
 ```
 
-G opens Grid and Primary+F opens Recursive Grid. Bare F still maximizes/restores. Remap them or set `none` to disable; existing custom tables need the entries added. Other window modes do not have these two default entries. Holding Primary also follows temporary-layer rules.
+G opens Grid; bare F maximizes/restores. Window binds Primary+F to Recursive Grid, but the enabled temporary layer gives Normal's full chord precedence and opens UI Hint. Add `primary+f` to `temporary_mode_passthrough_keys` to retain Window's binding. Remap them or set `none` to disable; existing custom tables need the entries added. Other window modes do not have these two default entries. Holding Primary also follows temporary-layer rules.
 
 ### T: persistent tab groups
 
@@ -397,17 +397,17 @@ Normal defaults to `"?" = "key_help"`; targeting modes can inherit it. Keep this
 
 ```toml
 [ui_hint]
-scan_scope = "window" # window / active / screen / all
+scan_scope = "all" # window / active / screen / all
 ```
 
 | `scan_scope` | Area |
 | --- | --- |
-| `window` (default) | Pointer's window, then active window if unavailable, then pointer's display |
+| `window` | Pointer's window, then active window if unavailable, then pointer's display |
 | `active` | Active window, then pointer's window, then pointer's display |
 | `screen` | Pointer's whole display, without combining other displays |
-| `all` | Visible windows and UI on all displays; spanning windows are traversed once |
+| `all` (default) | Visible windows and UI on all displays; spanning windows are traversed once |
 
-All strategies use these rules on both platforms. The default attempts to activate the pointer's window. Once selected, empty results, source failure, or activation failure do not change the scope.
+All strategies use these rules on both platforms. The `window` scope attempts to activate the pointer's window. Text Select uses the same four choices through its independent `text_select.scan_scope`, also defaulting to `all`. Once selected, empty results, source failure, or activation failure do not change the scope.
 
 `screen` / `all` use the global `strategy`, without applying the foreground application's `app_configs` strategy to other applications. Visibility checks exclude fully covered windows and retain visible portions of controls; visual sources read the composited desktop. Results grow dynamically with no default 10,000-target ceiling. For visual-only scans, `rectangle_max_candidates = 0` means unlimited; explicit positive values still apply, and Hybrid ignores that option. Timeouts, cancellation and image-size protections remain active.
 
@@ -594,7 +594,7 @@ Position uses a reference and four percentage insets; see [Search panel position
 
 ## Text Select
 
-Press `c` in Normal to enter `text_select`. The input and original-position hints appear first; the compact text preview appears after input and stays visible during refinement. The mode reuses UIHint's scan scope, OCR options and appearance, requesting OCR text only.
+Press `c` in Normal to enter `text_select`. The input and original-position hints appear first; the compact text preview appears after input and stays visible during refinement. The mode uses its independent `text_select.scan_scope` (default `all`) and shares UIHint's OCR options and appearance, requesting OCR text only.
 
 Type a region label to select its text and move the pointer `[12, 12]` beyond its bottom-right corner without clicking. Press `Alt+C` (Option+C on macOS) to refine into system-tokenized words, then Unicode grapheme characters. Ctrl+C on Windows/Linux and Command+C on macOS always copy the checked OCR text, regardless of query content or input highlighting; ordinary `c` remains input. Missing language rules fall back to characters without a bundled dictionary.
 

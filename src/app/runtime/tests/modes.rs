@@ -1,4 +1,101 @@
 #[test]
+fn every_mode_compiles_optional_temporary_layers_with_the_same_precedence() {
+    for mode in ["normal", "quick_switch", "text_input", "text_select", "grid", "recursive_grid", "ui_hint", "window", "window_quick", "window_editor", "window_restore", "window_tab", "plugin:screen-selector"] {
+        let section = if mode.starts_with("plugin:") { format!("plugin_modes.\"{mode}\"") } else { mode.into() };
+        let borrowed = if mode == "normal" { "text_input" } else { "normal" };
+        for triggers in ["", "temporary_mode_keys = []", "temporary_mode_keys = ['right_alt']"] {
+            let config = Config::parse(&format!(r#"
+[hotkeys]
+f12 = 'key_help'
+[{section}]
+inherits = ['hotkeys']
+temporary_mode = '{borrowed}'
+{triggers}
+temporary_mode_passthrough_keys = ['f11', 'right_alt']
+[{section}.bindings]
+f8 = 'move_up'
+'right_alt+f10' = 'move_up'
+f11 = 'move_up'
+right_alt = 'fast'
+[{borrowed}.bindings]
+f9 = 'move_left'
+'right_alt+f10' = 'move_right'
+f11 = 'move_left'
+"#)).unwrap();
+            config.validate().unwrap();
+            let mut engine = text_input_engine(config);
+            let id = ModeId::new(mode).unwrap();
+            engine.set_active(id.clone());
+            let route = &engine.registry.routes[&id];
+            let enabled = triggers.contains("right_alt");
+            assert_eq!(route.temporary_mode.is_some(), enabled, "{mode}: {triggers}");
+            assert_eq!(engine.registry.temporary_chords(&id).is_some(), enabled, "{mode}");
+            if !enabled {
+                assert!(route.temporary_keys.is_empty() && route.temporary_passthrough.is_empty());
+            }
+            let resolve = |key: &str, modifier: bool| {
+                let key = Key::new(key).unwrap();
+                let mut pressed = vec![key.clone()];
+                if modifier && key.as_str() != "right_alt" { pressed.push(Key::new("right_alt").unwrap()); }
+                engine.lookup_for_pressed(&key, &pressed).map(|resolved| (*resolved.binding).clone())
+            };
+            assert_eq!(resolve("f8", false), Some(Binding::Move(Direction::Up)), "{mode}");
+            assert_eq!(resolve("f12", false), Some(Binding::parse("key_help").unwrap()), "{mode}");
+            assert_eq!(resolve("f9", true), enabled.then_some(Binding::Move(Direction::Left)), "{mode}");
+            assert_eq!(resolve("f10", true), Some(Binding::Move(if enabled { Direction::Right } else { Direction::Up })), "{mode}");
+            if enabled {
+                assert_eq!(resolve("f11", true), Some(Binding::Move(Direction::Up)), "{mode}");
+                assert_eq!(resolve("right_alt", true), Some(Binding::parse("fast").unwrap()), "{mode}");
+            }
+        }
+    }
+    let mut engine = text_input_engine(Config::parse("").unwrap());
+    for id in engine.registry.keys().cloned().collect::<Vec<_>>() {
+        engine.set_active(id.clone());
+        assert!(engine.registry.temporary_chords(&id).is_none(), "{id}");
+        assert!(!engine.key_may_change_temporary_mode(&Key::new("right_alt").unwrap()), "{id}");
+    }
+}
+
+#[test]
+fn ui_hint_labels_and_search_borrow_all_normal_actions_without_restarting() {
+    for search in [false, true] {
+        let mut config = Config::default();
+        config.ui_hint.temporary_mode_keys = vec!["right_alt".into()];
+        config.normal.bindings.insert("f6".into(), Binding::Mode(ModeId::text_input()));
+        let mut engine = text_input_engine(config);
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.cursor = Point::new(500.0, 400.0);
+        engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
+        let id = log.lock().unwrap().scan_requests.last().unwrap().id;
+        engine.handle_backend_event(BackendEvent::UiScanned(crate::api::UiScanResult {
+            id, status: UiScanStatus::Success, retired: Vec::new(),
+            targets: vec![crate::api::UiTarget::recognized_text(Rect::new(10., 10., 200., 20.), "hello".into())],
+        }), &mut backend).unwrap();
+        if search { point_keys(&mut engine, &mut backend, &["/"]); }
+        let prompt_id = engine.scheduler.text_prompt.as_ref().map(|(_, prompt)| prompt.id);
+        let rebuilds = engine.registry.table_rebuild_count;
+        for event in [key_down("right_alt"), key_down("h"), BackendEvent::Frame(Duration::from_millis(20))] {
+            engine.handle_backend_event(event, &mut backend).unwrap();
+        }
+        assert_eq!(engine.active_mode(), &ModeId::ui_hint());
+        assert_eq!(engine.display_mode(), ModeId::normal());
+        assert_eq!(engine.input.active_gestures.get(&Key::new("h").unwrap()).unwrap().owner, ModeId::normal());
+        assert!(!log.lock().unwrap().moves.is_empty());
+        engine.handle_backend_event(key_up("right_alt"), &mut backend).unwrap();
+        assert!(engine.input.active_gestures.is_empty());
+        engine.handle_backend_event(key_up("h"), &mut backend).unwrap();
+        assert_eq!(engine.scheduler.text_prompt.as_ref().map(|(_, prompt)| prompt.id), prompt_id);
+        assert_eq!(log.lock().unwrap().scan_requests.len(), 1);
+        assert_eq!(engine.registry.table_rebuild_count, rebuilds);
+        point_keys(&mut engine, &mut backend, &["right_alt", "f6"]);
+        assert_eq!(engine.active_mode(), &ModeId::text_input());
+        assert!(engine.scheduler.text_prompt.is_none());
+    }
+}
+
+#[test]
 fn keyboard_prompt_capability_is_generic_and_replaced_with_the_mode_instance() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct PromptMode {
@@ -588,6 +685,7 @@ fn launch_modifiers_do_not_activate_destination_temporary_layers() {
             // Exercise the configured temporary key on both platforms, not
             // the Windows default's Alt shortcut on every host.
             let primary = primary_key(&config);
+            config.ui_hint.temporary_mode_keys = vec![primary.clone()];
             config.hotkeys.insert("alt+w".into(), Binding::Mode(ModeId::new(target).unwrap()));
             let mut engine = Engine::new(config.clone(), Appearance::Dark);
             for mode in crate::app::mode_catalog::built_in(&config) { engine.register(mode); }

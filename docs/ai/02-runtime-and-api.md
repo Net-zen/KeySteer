@@ -38,7 +38,7 @@ UI 扫描的 UiScanActivationExpected 按 scan owner 路由，必须在对应原
 
 UIHint live TextPrompt 仅建立共享输入路由，不调用原生 request_text_prompt。runtime 在任何编辑、剪贴板和绘制工作前确认按键处置；TextInserted／TextEdit／TextPasted 交给 Mode，原生备注仍走原有异步协议。 未被编辑／复制／点位快捷键处理的修饰键，按 Mode 的 claims_key 交还给输入 owner；松键也交还，避免会话内状态变化丢失释放。搜索期间保留配置的重叠换层键，当前预览高亮仍置顶。 已解析的点位／换层事件直接复用，外层不重复构造按键集合或匹配复制快捷键；松键仅使用已有 tap／held 记录，组合键匹配只在按下时执行。
 
-模式自有编辑面板通过 `Mode::keyboard_prompt_supported` 声明稳定能力，Registry 在注册／替换实例时采样并缓存；只有声明支持的实例才逐键查询活动状态与上下文绑定，不能为多选输入给普通模式增加动态面板调用。活动面板优先于借用模式和普通绑定，快捷键帮助仍使用静态路由。
+模式自有编辑面板通过 `Mode::keyboard_prompt_supported` 声明稳定能力，Registry 在注册／替换实例时采样并缓存；只有声明支持的实例才逐键查询活动状态与上下文绑定，不能为多选输入给普通模式增加动态面板调用。临时层未启用时保留面板上下文绑定；启用时所有输入先走共享完整组合键／去修饰键路由，不被 live 编辑器、复制或点位处理提前消费，Window 不另设优先级。显式 passthrough 可保留当前面板操作。松开激活键统一释放借用 owner 的保持动作，保留原模式实例与选择。文字选择帮助随有效临时层显示对应绑定。
 
 显式面板 Send 绑定可通过 `Mode::keyboard_prompt_edit` 转为 `ModeEvent::TextEdit`，由模式解释光标／选区；不向前台窗口注入这些编辑键。普通模式继续跳过动态面板查询。
 
@@ -55,7 +55,7 @@ Live 搜索的编辑、复制和点位快捷键统一匹配配置解析出的 `K
 
 模式可通过 `RequestModeList` 取得按使用次数排序的注册模式快照，由 `ModeList` 所有权转移交付。面板窗口定位通过 `RequestPanelWindowBounds`／`PanelWindowBounds` 异步往返；Engine 将模式请求号映射为跨模式及重载不重复的原生序号，并核对焦点进程，先提交待绘制面板再查询。错误统一记录一次，模式仍使用屏幕回退。
 
-文字选择通过既有 live TextPrompt 收取编辑事件。处理顺序为模式的 `keyboard_prompt_binding`、面板复制／编辑绑定、普通字符；模式绑定先复用公共 `literal_character_key` 与预编译字符键索引匹配系统实际产生的字符，再匹配物理键组合，保留真实物理键的处置与释放。不硬编码问号、键盘布局或 key_help 动作；未绑定／禁用的字符仍按模式策略输入。默认细分用独立于 Primary 的 `Alt+C`（macOS Option+C），复制绑定默认合写为 `"mod+c enter" = "text_copy"`（Windows/Linux Ctrl+C，macOS Command+C），不依赖可配置 Primary。复制键由 `text_select.bindings` 修改，始终优先复制面板勾选文字，不依赖输入内容／选区。该模式不接入共享编辑器的 Copy／Cut；`ctrl+x = text_clear_input` 清空整个查询和光标选区，保留当前层级与细分层已确认的勾选，不操作剪贴板。模式可在输入非空时让 Backspace 回到编辑器。`key_help` 对文字选择的 live prompt 使用相同的上下文绑定判断，显示当前有效的控制与编辑键，并合并模式提供的首层重叠换层键；修饰键仍走公共 live prompt owner 路由。其他文本面板保留原有帮助显示规则。窗口恢复的翻页帮助根据实际绑定与页数动态生成，不写死 PageUp/PageDown。
+文字选择通过既有 live TextPrompt 收取编辑事件。未借用临时层时，处理顺序为模式的 `keyboard_prompt_binding`、面板复制／编辑绑定、普通字符；模式绑定先复用公共 `literal_character_key` 与预编译字符键索引匹配系统实际产生的字符，再匹配物理键组合，保留真实物理键的处置与释放。不硬编码问号、键盘布局或 key_help 动作；未绑定／禁用的字符仍按模式策略输入。默认细分用独立于 Primary 的 `Alt+C`（macOS Option+C），复制绑定默认合写为 `"mod+c enter" = "text_copy"`（Windows/Linux Ctrl+C，macOS Command+C），不依赖可配置 Primary。复制键由 `text_select.bindings` 修改，始终优先复制面板勾选文字，不依赖输入内容／选区。该模式不接入共享编辑器的 Copy／Cut；`ctrl+x = text_clear_input` 清空整个查询和光标选区，保留当前层级与细分层已确认的勾选，不操作剪贴板。模式可在输入非空时让 Backspace 回到编辑器。`key_help` 对文字选择的 live prompt 使用相同的上下文绑定判断，显示当前有效的控制与编辑键，并合并模式提供的首层重叠换层键；修饰键仍走公共 live prompt owner 路由。其他文本面板保留原有帮助显示规则。窗口恢复的翻页帮助根据实际绑定与页数动态生成，不写死 PageUp/PageDown。
 
 `HintView.highlighted_hint` 允许文字选择在没有四栏信息面板时指定当前预览标签；与 UIHint 从信息面板／点位推导的标签共用置顶、高亮样式及保留场景槽位替换，不另建标签绘制路径。
 

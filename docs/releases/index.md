@@ -5,6 +5,12 @@ outline: 2
 
 # 更新日志 / Release Notes
 
+## 0.12.7
+
+UIHint 与文字选择模式的扫描资源复用，减少重复初始化。
+
+Scan resource reuse for UIHint and Text Select to reduce repeated initialization.
+
 ## 0.12.6
 
 新增 **文字选择（Text Select）模式**，用键盘选择并复制屏幕文字，支持逐级细分到词语、字符。

@@ -485,6 +485,7 @@ pub(crate) fn quick_switch(config: &Config) -> modes::quick_switch::QuickSwitchM
 
 pub(crate) fn text_select(config: &Config) -> modes::text_select::TextSelectMode {
     let mut hint = hint_settings(config);
+    hint.scan_scope = config.text_select.scan_scope;
     hint.search_info_ui.width = f64::from(config.text_select.ui.panel_width);
     modes::text_select::TextSelectMode::new(modes::text_select::Settings {
         hint,
@@ -653,10 +654,10 @@ pub(crate) fn built_in_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
             Box::new(quick_switch(config)),
             compile_route(
                 &config.quick_switch.bindings,
-                &[],
-                None,
-                &[],
-                &[],
+                &config.quick_switch.inherits,
+                config.quick_switch.temporary_mode.as_deref(),
+                &config.quick_switch.temporary_mode_keys,
+                &config.quick_switch.temporary_mode_passthrough_keys,
                 Vec::new(),
             )?,
         ));
@@ -666,10 +667,10 @@ pub(crate) fn built_in_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
             Box::new(text_select(config)),
             compile_route(
                 &config.text_select.bindings,
-                &[],
-                None,
-                &[],
-                &[],
+                &config.text_select.inherits,
+                config.text_select.temporary_mode.as_deref(),
+                &config.text_select.temporary_mode_keys,
+                &config.text_select.temporary_mode_passthrough_keys,
                 Vec::new(),
             )?,
         ));
@@ -701,9 +702,9 @@ pub(crate) fn built_in_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
         compile_route(
             &config.normal.bindings,
             &config.normal.inherits,
-            None,
-            &[],
-            &[],
+            config.normal.temporary_mode.as_deref(),
+            &config.normal.temporary_mode_keys,
+            &config.normal.temporary_mode_passthrough_keys,
             app_overrides(&config.normal.app_configs),
         )?,
     ));
@@ -810,6 +811,9 @@ fn compile_route(
     temporary_passthrough: &[String],
     app_overrides: Vec<AppRouteOverride>,
 ) -> Result<ModeRoute, String> {
+    // Disabled layers carry no target, trigger list or passthrough matcher.
+    // The input hot path only checks the registry's precompiled empty slot.
+    let temporary_mode = temporary_mode.filter(|_| !temporary_keys.is_empty());
     Ok(ModeRoute {
         bindings: bindings.clone(),
         inherits: inherits
@@ -823,9 +827,14 @@ fn compile_route(
             })
             .collect::<Result<Vec<_>, _>>()?,
         temporary_mode: temporary_mode.map(ModeId::parse_borrowed).transpose()?,
-        temporary_keys: temporary_keys.to_vec(),
+        temporary_keys: if temporary_mode.is_some() {
+            temporary_keys.to_vec()
+        } else {
+            Vec::new()
+        },
         temporary_passthrough: temporary_passthrough
             .iter()
+            .filter(|_| temporary_mode.is_some())
             .map(|key| crate::api::KeyChord::parse(key))
             .collect::<Result<_, _>>()?,
         app_overrides,

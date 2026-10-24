@@ -15,6 +15,7 @@ use crate::api::command::UiScanStatus;
 #[cfg(test)]
 use crate::api::geometry::SemanticRole;
 use crate::api::geometry::{Rect, UiTarget};
+use crate::platform::common::scan_reuse::{IdleWorker, JobJoin};
 use crate::support::worker::WorkerJoin;
 
 use super::accessibility::WindowsScanPlan;
@@ -111,10 +112,13 @@ struct QueueState {
 #[derive(Default)]
 struct SharedQueue {
     state: Mutex<QueueState>,
+    ready: Condvar,
+    contour: IdleWorker<crate::platform::common::contour::Workspace>,
+    system_ocr: IdleWorker<SystemOcrResources>,
     latest_generation: AtomicU64,
     stopping: AtomicBool,
     provider_quarantine_nonempty: AtomicBool,
-    provider_quarantine: Mutex<Vec<WorkerJoin>>,
+    provider_quarantine: Mutex<Vec<JobJoin>>,
 }
 
 #[derive(Clone)]
@@ -226,13 +230,13 @@ impl ScanSignal {
     }
 }
 
-/// Own every provider thread started for one scan. Dropping a scan first
+/// Own every provider job started for one scan. Dropping a scan first
 /// invalidates its cancellation token and then joins all providers, so leaving
 /// UI Hint cannot strand OCR or pixel-analysis work in normal mode.
 struct ProviderThreads {
     cancellation: ScanCancellation,
     shared: Arc<SharedQueue>,
-    threads: Vec<WorkerJoin>,
+    threads: Vec<JobJoin>,
 }
 
 impl ProviderThreads {
@@ -244,23 +248,23 @@ impl ProviderThreads {
         }
     }
 
-    fn spawn(&mut self, name: &'static str, work: impl FnOnce() + Send + 'static) -> bool {
-        let background_work = move || {
+    fn spawn_reused<T: 'static>(
+        &mut self,
+        worker: &IdleWorker<T>,
+        name: &'static str,
+        work: impl FnOnce(&mut crate::platform::common::scan_reuse::IdleCache<T>) + Send + 'static,
+    ) -> bool {
+        match worker.submit(name, move |idle| {
             if let Err(error) = super::native::prefer_background_work() {
                 crate::report_warning!(
                     "windows-vision",
                     "cannot lower {name} provider priority: {error}"
                 );
             }
-            work();
-        };
-        match WorkerJoin::spawn(
-            name,
-            std::thread::Builder::new().name(name.into()),
-            background_work,
-        ) {
-            Ok(worker) => {
-                self.threads.push(worker);
+            work(idle);
+        }) {
+            Ok(job) => {
+                self.threads.push(job);
                 true
             }
             Err(error) => {
@@ -371,6 +375,7 @@ impl VisionWorker {
             source,
             capture: Some(capture),
         });
+        self.shared.ready.notify_one();
         if !state.running {
             state.running = true;
             let shared = Arc::clone(&self.shared);
@@ -505,9 +510,12 @@ impl VisionWorker {
             let pending = state.pending.take();
             let active_cancellation = state.active_cancellation.as_ref().and_then(Weak::upgrade);
             self.shared.stopping.store(true, Ordering::Release);
+            self.shared.ready.notify_all();
             (pending, active_cancellation)
         };
         self.shared.latest_generation.store(0, Ordering::Release);
+        self.shared.system_ocr.request_stop();
+        self.shared.contour.request_stop();
         if let Some(cancellation) = active_cancellation {
             cancellation.cancel();
         }
@@ -515,6 +523,14 @@ impl VisionWorker {
             finish_cancelled_job(job);
         }
         let mut errors = crate::support::errors::ErrorBundle::default();
+        errors.record(
+            "OCR source shutdown",
+            self.shared.system_ocr.stop_until(deadline),
+        );
+        errors.record(
+            "contour source shutdown",
+            self.shared.contour.stop_until(deadline),
+        );
         errors.record(
             "OCR discovery shutdown",
             self.discovery.stop_until(deadline),
@@ -577,29 +593,40 @@ impl Drop for VisionWorker {
 }
 
 fn worker_main(shared: Arc<SharedQueue>, discovery: DiscoveryHandle) {
+    use crate::platform::common::scan_reuse::{IDLE_TIMEOUT, IdleCache, wait_until};
+    let mut idle = IdleCache::<CaptureResources>::default();
+    idle.set_limit(1, Instant::now());
+    let mut idle_until = Instant::now() + IDLE_TIMEOUT;
     loop {
+        drop(idle.take_expired(Instant::now()));
         let job = {
-            let mut state = shared
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if state.stopping {
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.pending.is_none() && !state.stopping && Instant::now() < idle_until {
+                let until = idle
+                    .next_expiration()
+                    .map_or(idle_until, |until| until.min(idle_until));
+                drop(wait_until(&shared.ready, state, Some(until)));
+                continue;
+            }
+            if state.stopping || state.pending.is_none() {
                 state.running = false;
                 return;
             }
             let Some(job) = state.pending.take() else {
-                state.running = false;
-                return;
+                continue;
             };
             state.active_request_id = Some(job.request.id);
             job
         };
         let request_id = job.request.id;
-        run_scan(job, &shared, &discovery);
-        let mut state = shared
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let (cached, expired) = idle.take(Instant::now());
+        drop(expired);
+        let mut resources = cached.unwrap_or_default();
+        if run_scan(job, &shared, &discovery, &mut resources) {
+            drop(idle.retain(resources, Instant::now()));
+        }
+        idle_until = Instant::now() + IDLE_TIMEOUT;
+        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.active_request_id == Some(request_id) {
             state.active_request_id = None;
             state.active_cancellation = None;

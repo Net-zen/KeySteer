@@ -472,12 +472,12 @@ fn detect_inner(
             sender: Some(sender),
             receiver: Arc::new(Mutex::new(receiver)),
         };
-        let batch = workers.start(&[source], {
+        let batch = workers.start_with_resources(&[source], {
             let receiver = Arc::clone(&input.receiver);
             let options = options.clone();
             let cancelled = Arc::clone(&cancelled);
             let output = output.clone();
-            move |_, stopped| {
+            move |_, stopped, resources| {
                 if source == TargetSource::SystemOcr {
                     stopped.reuse_processes(frame_workers);
                 }
@@ -491,7 +491,12 @@ fn detect_inner(
                     detect_rectangles: source == TargetSource::NativeRectangles,
                     ..config
                 };
-                let consume = |tile_lanes| {
+                // Only the serial contour branch borrows this workspace. OCR
+                // display helpers receive None and never share mutable scratch.
+                let consume = |tile_lanes,
+                               mut contour: Option<
+                    &mut crate::platform::common::contour::Workspace,
+                >| {
                     let mut statuses = smallvec::SmallVec::<[UiScanStatus; 2]>::new();
                     loop {
                         if let Some(status) =
@@ -559,6 +564,11 @@ fn detect_inner(
                                 (&publish, &progress),
                             )
                         } else if source == TargetSource::Contour {
+                            let Some(workspace) = contour.as_deref_mut() else {
+                                return Some(UiScanStatus::Failed(
+                                    "missing contour workspace".into(),
+                                ));
+                            };
                             recognize_contours(
                                 frame,
                                 scan_id,
@@ -566,6 +576,7 @@ fn detect_inner(
                                 deadline,
                                 &cancelled,
                                 &publish,
+                                workspace,
                             )
                         } else {
                             recognize_image(
@@ -589,7 +600,8 @@ fn detect_inner(
                     (!statuses.is_empty()).then(|| combined_status(&statuses))
                 };
                 if source != TargetSource::SystemOcr || frame_workers == 1 {
-                    return consume(request_budget).unwrap_or(UiScanStatus::Success);
+                    return consume(request_budget, Some(&mut resources.contour))
+                        .unwrap_or(UiScanStatus::Success);
                 }
                 // Split one scan-wide request budget between display workers.
                 // Every worker has at least one lane; the remainder is shared
@@ -603,14 +615,14 @@ fn detect_inner(
                         if let Ok(worker) = std::thread::Builder::new()
                             .name("keysteer-ocr-display".into())
                             .spawn_scoped(scope, move || {
-                                objc2::rc::autoreleasepool(|_| consume(lane_count))
+                                objc2::rc::autoreleasepool(|_| consume(lane_count, None))
                             })
                         {
                             displays.push(worker);
                         }
                     }
                     let mut statuses = smallvec::SmallVec::<[UiScanStatus; 2]>::new();
-                    statuses.extend(consume(lanes(0)));
+                    statuses.extend(consume(lanes(0), None));
                     for display in displays {
                         statuses.extend(display.join().unwrap_or_else(|_| {
                             Some(UiScanStatus::Failed("OCR display worker panicked".into()))
@@ -728,6 +740,7 @@ fn recognize_contours(
     deadline: Instant,
     cancelled: &(impl Fn() -> bool + Sync),
     publish: &impl Fn(Vec<UiTarget>),
+    workspace: &mut crate::platform::common::contour::Workspace,
 ) -> UiScanStatus {
     let started = Instant::now();
     let interrupted = || super::scan_workers::interrupt_status(deadline, cancelled());
@@ -768,15 +781,13 @@ fn recognize_contours(
             return Ok(status);
         }
         let targets = if let Some(input) = &input {
-            crate::platform::common::contour::detect_prepared(input, candidate_limit, || {
-                interrupted().is_some()
-            })
+            workspace.detect_prepared(input, candidate_limit, || interrupted().is_some())
         } else {
             let (pixels, width, height, _) = native
                 .as_ref()
                 .ok_or("missing contour frame")?
                 .contour_pixels()?;
-            crate::platform::common::contour::detect(
+            workspace.detect(
                 pixels,
                 width,
                 height,

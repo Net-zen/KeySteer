@@ -263,6 +263,12 @@ fn temporary_unbound_full_chords_move_immediately_without_deferral() {
                 r#"
                 [key_aliases]
                 primary = "left_alt"
+                [grid]
+                temporary_mode_keys = ["primary"]
+                [recursive_grid]
+                temporary_mode_keys = ["primary"]
+                [ui_hint]
+                temporary_mode_keys = ["primary"]
                 [normal.bindings]
                 w = "move_up"
                 a = "move_left"
@@ -330,6 +336,10 @@ fn temporary_layer_preserves_local_bindings_other_modifiers_and_normal_shortcuts
         r#"
         [key_aliases]
         primary = "left_alt"
+        [grid]
+        temporary_mode_keys = ["primary"]
+        [recursive_grid]
+        temporary_mode_keys = ["primary"]
         [normal.bindings]
         s = "move_down"
         "primary+s" = "screen next"
@@ -1587,6 +1597,8 @@ fn window_targeting_keeps_existing_temporary_layer_resolution() {
     let config = Config::parse(r#"
 [key_aliases]
 primary = "left_alt"
+[window]
+temporary_mode_keys = ["primary"]
 [normal.bindings]
 f = "none"
 g = "none"

@@ -652,7 +652,10 @@ impl ConfigFile {
             ));
         }
         for (mode, keys) in [
+            ("normal", &self.normal.temporary_mode_keys),
+            ("quick_switch", &self.quick_switch.temporary_mode_keys),
             ("text_input", &self.text_input.temporary_mode_keys),
+            ("text_select", &self.text_select.temporary_mode_keys),
             ("grid", &self.grid.temporary_mode_keys),
             ("recursive_grid", &self.recursive_grid.temporary_mode_keys),
             ("ui_hint", &self.ui_hint.temporary_mode_keys),
@@ -661,7 +664,13 @@ impl ConfigFile {
             ("window_editor", &self.window_editor.temporary_mode_keys),
             ("window_restore", &self.window_restore.temporary_mode_keys),
             ("window_tab", &self.window_tab.temporary_mode_keys),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            self.plugin_modes
+                .iter()
+                .map(|(id, mode)| (id.as_str(), &mode.temporary_mode_keys)),
+        ) {
             for key in keys {
                 let key = Key::new(key).map_err(|error| {
                     bad(format!(
@@ -1010,8 +1019,9 @@ impl ConfigFile {
 fn validate_inheritance(config: &Config) -> Result<(), String> {
     let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::from([
         ("normal".into(), config.normal.inherits.clone()),
+        ("quick_switch".into(), config.quick_switch.inherits.clone()),
         ("text_input".into(), config.text_input.inherits.clone()),
-        ("text_select".into(), Vec::new()),
+        ("text_select".into(), config.text_select.inherits.clone()),
         ("grid".into(), config.grid.inherits.clone()),
         (
             "recursive_grid".into(),
@@ -1036,7 +1046,13 @@ fn validate_inheritance(config: &Config) -> Result<(), String> {
         }
     }
     for (mode, source) in [
+        ("normal", config.normal.temporary_mode.as_deref()),
+        (
+            "quick_switch",
+            config.quick_switch.temporary_mode.as_deref(),
+        ),
         ("text_input", config.text_input.temporary_mode.as_deref()),
+        ("text_select", config.text_select.temporary_mode.as_deref()),
         ("grid", config.grid.temporary_mode.as_deref()),
         ("window", config.window.temporary_mode.as_deref()),
         (
@@ -1057,7 +1073,14 @@ fn validate_inheritance(config: &Config) -> Result<(), String> {
             config.recursive_grid.temporary_mode.as_deref(),
         ),
         ("ui_hint", config.ui_hint.temporary_mode.as_deref()),
-    ] {
+    ]
+    .into_iter()
+    .chain(
+        config
+            .plugin_modes
+            .iter()
+            .map(|(id, mode)| (id.as_str(), mode.temporary_mode.as_deref())),
+    ) {
         if let Some(source) = source
             && !known(source)
         {

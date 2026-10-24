@@ -370,18 +370,22 @@ fn run_scan(mut job: ScanJob, providers: &Workers, captures: &mut vision::Captur
         let request = job.request.clone();
         let generation = job.generation;
         let publisher = publisher.clone();
-        providers.start(&[TargetSource::Accessibility], move |_, cancelled| {
-            autoreleasepool(|_| {
-                stream_ax(
-                    generation,
-                    &request,
-                    target,
-                    &publisher,
-                    ax_deadline,
-                    || !cancelled.load(Ordering::Acquire) && scan_id_is_current(generation),
-                )
-            })
-        })
+        providers.start_with_resources(
+            &[TargetSource::Accessibility],
+            move |_, cancelled, resources| {
+                autoreleasepool(|_| {
+                    stream_ax(
+                        generation,
+                        &request,
+                        target,
+                        &publisher,
+                        ax_deadline,
+                        || !cancelled.load(Ordering::Acquire) && scan_id_is_current(generation),
+                        resources.ax.get_or_insert_with(Default::default),
+                    )
+                })
+            },
+        )
     });
     let vision = vision_enabled.then(|| {
         scan_vision(
@@ -426,6 +430,7 @@ fn stream_ax(
     publisher: &PartialPublisher,
     deadline: Instant,
     is_current: impl Fn() -> bool,
+    plan: &accessibility::QueryPlan,
 ) -> UiScanStatus {
     if let Some(status) = super::scan_workers::interrupt_status(deadline, !is_current()) {
         return status;
@@ -454,14 +459,13 @@ fn stream_ax(
         progress(crate::platform::common::scan_progress::Progress::Plan(
             vec![bounds],
         ));
-        let result =
-            accessibility::scan_process_stream(pid, bounds, request, deadline, current, publish);
+        let result = plan.scan_process_stream(pid, bounds, request, deadline, current, publish);
         progress(crate::platform::common::scan_progress::Progress::Complete(
             bounds,
         ));
         result
     } else {
-        accessibility::scan_screen_stream(request, deadline, current, publish, progress)
+        plan.scan_screen_stream(request, deadline, current, publish, progress)
     };
     crate::log_info!(
         "macos-ui-scan",

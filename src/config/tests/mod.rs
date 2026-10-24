@@ -484,9 +484,13 @@ fn invalid_key_aliases_are_rejected() {
 }
 
 #[test]
-fn empty_config_is_valid_and_equals_the_defaults() {
+fn empty_config_preserves_defaults_except_opt_in_temporary_layers() {
     let config = Config::parse("").unwrap();
-    assert_eq!(config, Config::default());
+    let mut defaults = Config::default();
+    for (_, keys) in defaults.temporary_key_lists_mut() {
+        keys.clear();
+    }
+    assert_eq!(config, defaults);
     config.validate().unwrap();
 }
 
@@ -1874,10 +1878,80 @@ fn sparse_restore_lifecycle_preserves_default_finish_destination() {
 }
 
 #[test]
+fn text_select_inheritance_and_temporary_mode_use_shared_validation() {
+    let defaults = Config::default();
+    assert!(defaults.text_select.inherits.is_empty());
+    assert!(defaults.text_select.temporary_mode.is_none());
+    assert!(defaults.text_select.temporary_mode_keys.is_empty());
+    assert!(defaults.ui_hint.temporary_mode_keys.is_empty());
+    let config = Config::parse("[key_aliases]\nBorrow = 'right_alt'\n[text_select]\ninherits = ['normal']\ntemporary_mode = 'grid'\ntemporary_mode_keys = ['Borrow']\ntemporary_mode_passthrough_keys = ['Borrow+f8']").unwrap();
+    assert_eq!(config.text_select.temporary_mode_keys, ["right_alt"]);
+    assert_eq!(
+        config.text_select.temporary_mode_passthrough_keys,
+        ["right_alt+f8"]
+    );
+    assert_eq!(
+        Config::parse(&config.to_toml().unwrap())
+            .unwrap()
+            .text_select,
+        config.text_select
+    );
+    for source in [
+        "[text_select]\ninherits = ['missing']",
+        "[text_select]\ninherits = ['text_select']",
+        "[normal]\ninherits = ['text_select']\n[text_select]\ninherits = ['normal']",
+        "[text_select]\ntemporary_mode = 'missing'",
+        "[text_select]\ntemporary_mode_keys = ['h']",
+        "[text_select]\ntemporary_mode_passthrough_keys = ['ctrl+']",
+    ] {
+        assert!(
+            Config::parse(source)
+                .and_then(|config| config.validate())
+                .is_err(),
+            "{source}"
+        );
+    }
+    let disabled = Config::parse("[text_select]\ninherits = []\ntemporary_mode_keys = []").unwrap();
+    assert!(disabled.text_select.inherits.is_empty());
+    assert!(disabled.text_select.temporary_mode_keys.is_empty());
+}
+
+#[test]
+fn text_select_scan_scope_is_independent_and_round_trips() {
+    use crate::api::UiScanScope;
+    assert_eq!(Config::default().text_select.scan_scope, UiScanScope::All);
+    for source in [
+        "[ui_hint]\nscan_scope = 'screen'",
+        "[ui_hint]\nscan_scope = 'screen'\n[text_select]",
+    ] {
+        let config = Config::parse(source).unwrap();
+        assert_eq!(config.text_select.scan_scope, UiScanScope::All);
+        assert_eq!(config.ui_hint.scan_scope, UiScanScope::Screen);
+    }
+    for (value, scope) in [
+        ("window", UiScanScope::Window),
+        ("active", UiScanScope::Active),
+        ("screen", UiScanScope::Screen),
+        ("all", UiScanScope::All),
+    ] {
+        let config = Config::parse(&format!(
+            "[ui_hint]\nscan_scope = 'active'\n[text_select]\nscan_scope = '{value}'"
+        ))
+        .unwrap();
+        let restored = Config::parse(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(restored.text_select.scan_scope, scope);
+        assert_eq!(restored.ui_hint.scan_scope, UiScanScope::Active);
+    }
+    for value in ["'invalid'", "'inherit'", "true", "1", "[]"] {
+        assert!(Config::parse(&format!("[text_select]\nscan_scope = {value}")).is_err());
+    }
+}
+
+#[test]
 fn ui_hint_scan_scope_defaults_and_round_trips() {
     assert_eq!(
         Config::default().ui_hint.scan_scope,
-        crate::api::UiScanScope::Window
+        crate::api::UiScanScope::All
     );
     let config = Config::parse("[ui_hint]\nscan_scope = 'screen'\n").unwrap();
     assert_eq!(config.ui_hint.scan_scope, crate::api::UiScanScope::Screen);
