@@ -883,18 +883,37 @@ fn bindings_need_no_action_prefix() {
 }
 
 #[test]
-fn whitespace_separates_multiple_single_key_binding_aliases() {
+fn whitespace_separates_single_keys_and_chords_in_binding_groups() {
     let config = Config::parse(
         r#"
             [normal.bindings]
             "v b" = "fast"
+            [text_select.bindings]
+            "mod+c enter" = "text_copy"
             "#,
     )
     .unwrap();
     assert_eq!(config.normal.bindings["v"], Binding::Speed(Speed::Fast));
     assert_eq!(config.normal.bindings["b"], Binding::Speed(Speed::Fast));
     assert!(!config.normal.bindings.contains_key("v b"));
+    let copy_chord = KeyChord::parse("mod+c").unwrap().canonical();
+    let action = Binding::TextSelect(crate::api::text_select::Action::Copy);
+    assert_eq!(config.text_select.bindings[&copy_chord], action);
+    assert_eq!(config.text_select.bindings["enter"], action);
+    assert!(!config.text_select.bindings.contains_key("mod+c enter"));
+    let roundtrip = Config::parse(&config.to_toml().unwrap()).unwrap();
+    assert_eq!(roundtrip.text_select.bindings, config.text_select.bindings);
     config.validate().unwrap();
+    let alias = Config::parse("[key_aliases]\nCopyMod = 'right_ctrl'\n[text_select.bindings]\n'CopyMod+c enter' = 'text_copy'").unwrap();
+    assert_eq!(alias.text_select.bindings["right_ctrl+c"], action);
+    assert_eq!(alias.text_select.bindings["enter"], action);
+    alias.validate().unwrap();
+    for source in [
+        "[text_select.bindings]\n'mod+c enter' = 'text_copy'\nenter = 'text_copy'",
+        "[text_select.bindings]\n'ctrl+shift enter' = 'text_copy'",
+    ] {
+        assert!(Config::parse(source).is_err(), "{source}");
+    }
 }
 
 #[test]
@@ -1164,6 +1183,176 @@ fn a_binding_typo_is_rejected_at_parse_time() {
 fn none_disables_an_inherited_binding() {
     let config = Config::parse("[normal.bindings]\nh = \"none\"").unwrap();
     assert_eq!(config.normal.bindings["h"], Binding::Disabled);
+}
+
+#[test]
+fn text_select_copy_lifecycle_defaults_roundtrip_and_validate() {
+    for source in [
+        "",
+        "[text_select.lifecycle]",
+        include_str!("../../../keysteer.default.toml"),
+    ] {
+        let config = Config::parse(source).unwrap();
+        let copy = if cfg!(target_os = "macos") {
+            "win+c"
+        } else {
+            "ctrl+c"
+        };
+        assert_eq!(
+            KeyChord::parse_with_aliases("mod+c", config.resolved_key_aliases())
+                .unwrap()
+                .canonical(),
+            copy
+        );
+        for expected in [copy, "enter"] {
+            assert!(config.text_select.bindings.iter().any(|(key, binding)| {
+                KeyChord::parse_with_aliases(key, config.resolved_key_aliases())
+                    .unwrap()
+                    .canonical()
+                    == expected
+                    && *binding == Binding::TextSelect(crate::api::text_select::Action::Copy)
+            }));
+        }
+        assert_eq!(
+            config.text_select.bindings.get("ctrl+x"),
+            Some(&Binding::TextSelect(
+                crate::api::text_select::Action::ClearInput
+            ))
+        );
+        assert_eq!(
+            config.text_select.lifecycle.after_copy,
+            LifecycleAction::Mode(ModeId::normal())
+        );
+    }
+    for action in [
+        "normal",
+        "idle",
+        "keep",
+        "restart",
+        "return",
+        "example:picker",
+    ] {
+        let config = Config::parse(&format!(
+            "[plugin_modes.\"example:picker\"]\n[text_select.lifecycle]\nafter_copy = '{action}'"
+        ))
+        .unwrap();
+        config.validate().unwrap();
+        let roundtrip = Config::parse(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            roundtrip.text_select.lifecycle,
+            config.text_select.lifecycle
+        );
+    }
+    for action in ["finish", "left_click", "double_click", "missing_mode"] {
+        let config =
+            Config::parse(&format!("[text_select.lifecycle]\nafter_copy = '{action}'")).unwrap();
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("text_select.lifecycle.after_copy")
+        );
+    }
+}
+
+#[test]
+fn text_select_copy_binding_can_be_replaced_disabled_and_exported() {
+    let config =
+        Config::parse("[text_select.bindings]\n'mod+c' = 'none'\nf9 = 'text_copy'\n'ctrl+x' = 'none'\nf8 = 'text_clear_input'").unwrap();
+    let restored = Config::parse(&config.to_toml().unwrap()).unwrap();
+    assert_eq!(restored.text_select.bindings, config.text_select.bindings);
+    assert_eq!(
+        restored.text_select.bindings.get("mod+c"),
+        Some(&Binding::Disabled)
+    );
+    assert_eq!(
+        restored.text_select.bindings.get("f9"),
+        Some(&Binding::TextSelect(crate::api::text_select::Action::Copy))
+    );
+    assert!(!restored.text_select.bindings.contains_key("enter"));
+    assert_eq!(
+        restored.text_select.bindings.get("ctrl+x"),
+        Some(&Binding::Disabled)
+    );
+    assert_eq!(
+        restored.text_select.bindings.get("f8"),
+        Some(&Binding::TextSelect(
+            crate::api::text_select::Action::ClearInput
+        ))
+    );
+}
+
+#[test]
+fn text_select_outline_and_pointer_offset_validate_and_roundtrip() {
+    for source in [
+        "",
+        "[text_select.ui]",
+        include_str!("../../../keysteer.default.toml"),
+    ] {
+        let config = Config::parse(source).unwrap();
+        assert_eq!(config.text_select.ui.pointer_offset, [12, 12]);
+        assert_eq!(config.text_select.ui.padding, [2, 2]);
+        assert_eq!(config.text_select.ui.border_width, 1.5);
+        assert_eq!(config.text_select.ui.word_min_width, 48);
+        assert_eq!(config.text_select.ui.char_min_width, 40);
+        assert_eq!(config.text_select.ui.panel_width, 800);
+    }
+    let config = Config::parse(
+        r##"
+[text_select.ui]
+pointer_offset = [20, -8]
+border_color = {light = "#112233FF", dark = "#AABBCCFF"}
+border_width = 2.5
+padding = [5, 3]
+word_min_width = 60
+char_min_width = 32
+panel_width = 960
+"##,
+    )
+    .unwrap();
+    config.validate().unwrap();
+    assert_eq!(
+        Config::parse(&toml::to_string(&config).unwrap())
+            .unwrap()
+            .text_select,
+        config.text_select
+    );
+    for value in ["[1]", "[1, 2, 3]", "[1.5, 2]", "[32768, 0]"] {
+        assert!(Config::parse(&format!("[text_select.ui]\npointer_offset = {value}")).is_err());
+    }
+    for field in [
+        "border_width = -1",
+        "border_width = 21",
+        "border_width = nan",
+        "padding = [-1, 0]",
+        "padding = [101, 0]",
+        "padding = [1]",
+        "padding = [1.5, 2]",
+        "border_color = 'invalid'",
+        "panel_width = 319",
+        "panel_width = 2401",
+        "panel_width = 800.5",
+        "word_min_width = 23",
+        "char_min_width = 241",
+        "char_min_width = 42.5",
+    ] {
+        let parsed = Config::parse(&format!("[text_select.ui]\n{field}"));
+        assert!(
+            parsed.is_err() || parsed.unwrap().validate().is_err(),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn text_select_rejects_unreleased_legacy_appearance_fields() {
+    for source in [
+        "[text_select]\npointer_offset = [12, 12]",
+        "[text_select.selection_outline]\npadding = [2, 2]",
+    ] {
+        assert!(Config::parse(source).is_err(), "{source}");
+    }
 }
 
 #[test]
@@ -2216,7 +2405,7 @@ fn older_configs_enable_text_modes_and_supply_unoccupied_default_entrances() {
     assert!(config.text_select.enabled);
     assert_eq!(
         config.text_select.bindings,
-        crate::config::settings::TextSelect::default().bindings
+        Config::default().text_select.bindings
     );
     assert_eq!(
         config.text_input.bindings,
@@ -2260,5 +2449,21 @@ fn upgrade_keeps_explicit_text_mode_disabling_and_remapped_or_occupied_entries()
             Some(&Binding::Mode(ModeId::text_input())),
             "{source}"
         );
+    }
+}
+
+#[test]
+fn text_select_uses_one_cyclic_page_action_without_retired_page_bindings() {
+    let config = Config::default();
+    assert_eq!(
+        config.text_select.bindings.get("tab"),
+        Some(&Binding::TextSelect(
+            crate::api::text_select::Action::CyclePage
+        ))
+    );
+    assert!(!config.text_select.bindings.contains_key("page_up"));
+    assert!(!config.text_select.bindings.contains_key("page_down"));
+    for action in ["text_next_page", "text_previous_page"] {
+        assert!(Binding::parse(action).is_err(), "{action}");
     }
 }

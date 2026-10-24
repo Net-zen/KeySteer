@@ -505,6 +505,27 @@ impl ConfigFile {
             }
         }
 
+        let outline = &self.text_select.ui;
+        if !(320..=2400).contains(&outline.panel_width) {
+            return Err(bad("text_select.ui.panel_width must be 320..=2400".into()));
+        }
+        for (name, width) in [
+            ("word_min_width", outline.word_min_width),
+            ("char_min_width", outline.char_min_width),
+        ] {
+            if !(24..=240).contains(&width) {
+                return Err(bad(format!("text_select.ui.{name} must be 24..=240")));
+            }
+        }
+        validate_optional_color("text_select.ui.border_color", outline.border_color.as_ref())?;
+        if !outline.border_width.is_finite() || !(0.0..=20.0).contains(&outline.border_width) {
+            return Err(bad("text_select.ui.border_width must be 0..=20".into()));
+        }
+        if outline.padding.iter().any(|&value| value > 100) {
+            return Err(bad(
+                "text_select.ui.padding must be [x, y], each 0..=100".into()
+            ));
+        }
         if self.text_select.enabled {
             let mut characters = BTreeSet::new();
             for character in self.text_select.hint_characters.chars() {
@@ -848,6 +869,25 @@ impl ConfigFile {
                     )));
                 }
             }
+        }
+
+        match &self.text_select.lifecycle.after_copy {
+            LifecycleAction::Finish | LifecycleAction::Click { .. } => {
+                return Err(bad(
+                    "text_select.lifecycle.after_copy must be keep, restart, return or a mode"
+                        .into(),
+                ));
+            }
+            LifecycleAction::Mode(target)
+                if !ModeId::BUILT_IN.contains(&target.as_str())
+                    && !self.plugin_modes.contains_key(target.as_str()) =>
+            {
+                return Err(bad(format!(
+                    "text_select.lifecycle.after_copy names unknown mode {:?}",
+                    target.as_str()
+                )));
+            }
+            _ => {}
         }
 
         // Every binding chord must parse, or it would silently never fire.

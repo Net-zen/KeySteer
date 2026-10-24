@@ -158,5 +158,5 @@ width = 320
 | --- | --- |
 | 自绘界面缺少控件信息 | 改用 `strategy = "vision"` |
 | 标准控件标签太多 | 缩小 `clickable_roles` 范围 |
-| Windows 文字识别不理想 | 使用本机可用的系统 OCR 或可选微信 OCR；KeySteer 不会下载微信组件 |
+| Windows 文字识别不理想 | 检查 Windows 已安装的 OCR 识别语言；KeySteer 使用系统 OCR |
 | macOS 没有视觉标签或颜色 | 检查录屏权限，授权后重启 KeySteer |

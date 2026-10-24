@@ -28,9 +28,17 @@ export const fields = {
   window_editor: { colors: [], layout: [], advanced: [] },
   window_restore: { colors: [], layout: [], advanced: [] },
   window_tab: { colors: [], layout: [], advanced: [] },
-  text_select: { colors: [], layout: [
+  text_select: { colors: [
+    { path: 'text_select.ui.border_color', label: '选中区域包围框颜色', kind: 'color' },
+  ], layout: [
     { path: 'text_select.enabled', label: '启用文字选择', kind: 'boolean' },
-    { path: 'text_select.hint_characters', label: '文字选择标签字符', kind: 'text' },
+    { path: 'text_select.hint_characters', label: '区域层标签字符', kind: 'text' },
+    { path: 'text_select.ui.panel_width', label: '文字选择面板宽度', kind: 'number', min: 320, max: 2400, step: 10, default: 800 },
+    { path: 'text_select.ui.pointer_offset', label: '鼠标距区域右下角偏移 [X, Y]', kind: 'offset', default: [12, 12] },
+    { path: 'text_select.ui.border_width', label: '选中区域包围框线宽', kind: 'number', min: 0, max: 20, step: .5, default: 1.5 },
+    { path: 'text_select.ui.padding', label: '包围框外扩边距 [X, Y]', kind: 'offset', min: 0, max: 100, default: [2, 2] },
+    { path: 'text_select.ui.word_min_width', label: '单词卡片最小宽度', kind: 'number', min: 24, max: 240, step: 1, default: 48 },
+    { path: 'text_select.ui.char_min_width', label: '字符卡片最小宽度', kind: 'number', min: 24, max: 240, step: 1, default: 40 },
   ], advanced: [] },
   window: {
     colors: [
@@ -247,10 +255,13 @@ for (const mode of ['window_quick', 'window_editor', 'window_restore', 'window_t
 
 export const lifecycleModes = ['grid', 'recursive_grid', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab'] as const
 export const lifecycleClickActions = ['left_click', 'right_click', 'middle_click', 'double_click']
-export function lifecycleOptions(event: 'after_finish' | 'after_click', plugins: string[] = []): string[] {
-  return ['keep', 'restart', 'return', ...(event === 'after_finish' ? lifecycleClickActions : ['finish']),
+export function lifecycleOptions(event: 'after_finish' | 'after_click' | 'after_copy', plugins: string[] = []): string[] {
+  return ['keep', 'restart', 'return', ...(event === 'after_finish' ? lifecycleClickActions : event === 'after_click' ? ['finish'] : []),
     'idle', 'normal', 'text_input', 'text_select', ...lifecycleModes, ...plugins]
 }
+fields.text_select.advanced.push(
+  { path: 'text_select.lifecycle.after_copy', label: '复制后动作', kind: 'select', options: lifecycleOptions('after_copy'), default: 'normal' },
+)
 for (const mode of lifecycleModes) {
   fields[mode].advanced.push(
     { path: `${mode}.lifecycle.after_finish`, label: '完成后动作', kind: 'select', options: lifecycleOptions('after_finish') },

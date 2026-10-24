@@ -590,7 +590,12 @@ impl Engine {
 
     fn point_input_event(&mut self, input: &crate::api::input::InputEvent) -> Option<ModeEvent> {
         let (owner, prompt) = self.scheduler.text_prompt.as_ref()?;
-        let keys = prompt.point_keys.as_ref()?;
+        if prompt.point_keys.is_none() && prompt.live_style.is_none() {
+            return None;
+        }
+        // Mode-owned live prompts can claim modifiers without offering point
+        // actions (Text Select uses this for overlapping region labels).
+        let keys = prompt.point_keys.as_deref().unwrap_or(&[]);
         match input.state {
             KeyState::Down if !input.repeat => {
                 // Only chord presses need a pressed-key snapshot. Releases use
@@ -810,10 +815,17 @@ impl Engine {
                     let matches = |chord: &crate::api::KeyChord| {
                         Self::prompt_chord_matches(chord, &input.key, &pressed)
                     };
-                    if let Some(binding) = self
-                        .registry
-                        .keyboard_prompt_mode(&owner)
-                        .and_then(|mode| mode.keyboard_prompt_binding(&input.key, &pressed))
+                    if let Some(binding) =
+                        self.registry.keyboard_prompt_mode(&owner).and_then(|mode| {
+                            self.literal_character_key(&input)
+                                .and_then(|symbol| {
+                                    mode.keyboard_prompt_binding(
+                                        symbol,
+                                        std::slice::from_ref(symbol),
+                                    )
+                                })
+                                .or_else(|| mode.keyboard_prompt_binding(&input.key, &pressed))
+                        })
                     {
                         (!input.repeat).then_some(ModeEvent::Binding {
                             binding,
@@ -2070,14 +2082,18 @@ impl Engine {
         self.lookup_for_pressed(key, &self.input.pressed)
     }
 
-    fn lookup_character(&self, input: &crate::api::input::InputEvent) -> Option<ResolvedBinding> {
+    fn literal_character_key(&self, input: &crate::api::input::InputEvent) -> Option<&Key> {
         let character = input.character?.to_lowercase().next()?;
         if input.key.as_char() == Some(character) || character.is_control() {
             return None;
         }
         // Borrow the configured symbol itself. No symbol-to-keyboard map,
         // per-event String allocation, or synthetic key press is involved.
-        let symbol = self.registry.character_keys.get(&character)?;
+        self.registry.character_keys.get(&character)
+    }
+
+    fn lookup_character(&self, input: &crate::api::input::InputEvent) -> Option<ResolvedBinding> {
+        let symbol = self.literal_character_key(input)?;
         // A produced character is already the result of the OS layout. Its
         // producer modifiers are not part of a literal character binding.
         // Keep the real input.key for disposition and held-action release.

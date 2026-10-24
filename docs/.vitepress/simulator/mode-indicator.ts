@@ -43,7 +43,7 @@ export function modeIndicatorPreview(document: ConfigDocument, mode: string, app
   const x = Math.max(Math.min(width, canvas.width), Math.min(canvas.width, pointer.x / 100 * canvas.width + offset[0]))
   const y = Math.max(0, Math.min(Math.max(0, canvas.height - height), pointer.y / 100 * canvas.height + offset[1]))
   const theme = { ...palettes[appearance === 'light' ? 'light' : 'dark'], ...document.theme?.[appearance] }
-  const background = ['normal', 'grid', 'ui_hint'].includes(mode) ? theme.accent : mode === 'recursive_grid' ? theme.accent_alt : theme.surface.slice(0, 7) + 'F2'
+  const background = ['normal', 'grid', 'ui_hint', 'text_select', 'quick_switch'].includes(mode) ? theme.accent : mode === 'recursive_grid' ? theme.accent_alt : theme.surface.slice(0, 7) + 'F2'
   const color = (value: any, fallback: string): string => typeof value === 'string' ? value : value?.[appearance] ?? fallback
   return { ...badge, style: {
     position: 'absolute' as const, pointerEvents: 'none' as const, zIndex: 25,

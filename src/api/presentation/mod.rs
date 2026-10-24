@@ -182,6 +182,8 @@ pub struct HintContent<'a> {
 
 pub struct HintView<'a> {
     pub cache: Option<&'a HintSceneCache>,
+    /// Current text-only preview, independent of UIHint's information panel.
+    pub highlighted_hint: Option<&'a CompactHint<usize>>,
     pub point: Option<HintPointView<'a>>,
     pub info: Option<HintInfoView<'a>>,
     pub window_bounds: &'a Option<Rect>,
@@ -199,11 +201,14 @@ pub struct TextSelectView<'a> {
     pub hints: HintView<'a>,
     pub ui: &'a CompiledSearchPanel,
     pub chips: &'a [TextChip<'a>],
+    pub grid_min_width: f64,
     pub text: &'a str,
     pub status: &'a str,
     pub summary: &'a str,
     pub page: (usize, usize),
+    pub page_keys: &'a str,
     pub selected_bounds: Vec<Rect>,
+    pub selection_ui: &'a super::text_select::Ui<ThemedColor>,
 }
 
 /// Session-owned portable presentation data, never native drawing resources.
@@ -365,7 +370,7 @@ impl HintInfoView<'_> {
                             remaining: limit,
                         };
                         if field == 0 {
-                            let _ = write_ocr_text(&mut out, target.ocr_text());
+                            let _ = write_ocr_text(&mut out, target.ocr_text().chars());
                         } else if target.details.is_none()
                             || !target.accessibility_text().is_empty()
                         {
@@ -404,7 +409,7 @@ impl HintInfoView<'_> {
             let result = match field {
                 0 => {
                     present |= !target.ocr_text().is_empty();
-                    write_ocr_text(&mut out, target.ocr_text())
+                    write_ocr_text(&mut out, target.ocr_text().chars())
                 }
                 1 if target.details.is_none() || !target.accessibility_text().is_empty() => {
                     present = true;
@@ -448,7 +453,11 @@ impl HintInfoView<'_> {
 /// Stream OCR whitespace cleanup into the existing preview/clipboard buffer.
 /// Keep word boundaries and line breaks, but remove recognition gaps between
 /// Chinese characters and around Chinese punctuation. No temporary String.
-pub(crate) fn write_ocr_text(out: &mut impl std::fmt::Write, text: &str) -> std::fmt::Result {
+/// A character stream also lets Text Select join OCR rows before this same cleanup.
+pub(crate) fn write_ocr_text(
+    out: &mut impl std::fmt::Write,
+    text: impl IntoIterator<Item = char>,
+) -> std::fmt::Result {
     let chinese = |c: char| {
         matches!(c as u32,
         0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x323af)
@@ -456,7 +465,7 @@ pub(crate) fn write_ocr_text(out: &mut impl std::fmt::Write, text: &str) -> std:
     let punctuation = |c: char| "，。！？；：、（）【】《》〈〉「」『』“”‘’".contains(c);
     let mut previous = None;
     let mut space = false;
-    let mut chars = text.chars().peekable();
+    let mut chars = text.into_iter().peekable();
     while let Some(c) = chars.next() {
         if c == '\r' || c == '\n' {
             if c == '\r' && chars.peek() == Some(&'\n') {
@@ -559,7 +568,7 @@ mod info_preview_tests {
                     position: 0,
                     remaining: limit,
                 };
-                write_ocr_text(&mut out, input).unwrap();
+                write_ocr_text(&mut out, input.chars()).unwrap();
                 assert_eq!(text, expected);
             }
         }
@@ -569,7 +578,7 @@ mod info_preview_tests {
             position: 0,
             remaining: 2,
         };
-        assert!(write_ocr_text(&mut out, "中 文 字 后 续").is_err());
+        assert!(write_ocr_text(&mut out, "中 文 字 后 续".chars()).is_err());
         assert_eq!(text, "中文…");
     }
 
@@ -583,7 +592,6 @@ mod info_preview_tests {
             name: "按钮".into(),
             role: crate::api::SemanticRole::Button,
             details: Some(Box::new(crate::api::geometry::UiTargetDetails {
-                ocr_spans: Vec::new(),
                 ocr: "中文🦀".repeat(20_000),
                 accessibility: "按钮".into(),
                 color: None,
@@ -646,7 +654,6 @@ mod info_preview_tests {
             name: String::new(),
             role: crate::api::SemanticRole::Button,
             details: Some(Box::new(crate::api::geometry::UiTargetDetails {
-                ocr_spans: Vec::new(),
                 ocr: "长文字🦀".repeat(200),
                 accessibility: String::new(),
                 color: Some(crate::api::Color::rgb(1, 2, 3)),

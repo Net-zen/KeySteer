@@ -113,6 +113,7 @@ h = "move_left"
 | `h` | One key |
 | `primary+shift+s` | Keys held together as a chord |
 | `"v b"` | V and B independently perform the same action; spaces do not mean a sequence |
+| `"mod+c enter"` | Chords and single keys can share a group; either the system copy shortcut or Enter performs the action |
 | `ctrl` / `alt` / `shift` | Either side can trigger the binding |
 | `left_shift` / `right_shift` | Only the specified side |
 
@@ -336,7 +337,7 @@ Labels appear in batches. Outlines have no text names to search; `clickable_role
 | `vision.rectangle_max_candidates` | Outline candidate limit, default 10000 |
 | `vision.detect_text` / `vision.detect_rectangles` | Only control `vision` sources; do not disable sources in `hybrid` or standalone `contour` |
 
-Scans remain limited by scope, timeout, and the overall 10000-target cap. Very small targets in high-resolution images may be missed. Windows detects local system/WeChat OCR without downloading WeChat components. Visual recognition on macOS needs screen-recording permission.
+Scans remain limited by scope, timeout, and the overall 10000-target cap. Very small targets in high-resolution images may be missed. Windows uses the installed system OCR engine. Visual recognition on macOS needs screen-recording permission.
 
 For search steps, see [UI Hint](/en/modes/ui-hint#search-and-result-previews). `search_match_priority = ["pinyin", "text", "label"]` orders categories with equal match quality. `point_next` in `search_bindings` defaults to Tab.
 
@@ -599,6 +600,8 @@ Modes rank by entry count, with ties sorted by mode id and no nine-item limit. L
 
 An explicit `[quick_switch.bindings]` table replaces the defaults: include only the `esc` line for Escape, only the `q` line for Q, or both for either key. Keep the `backspace` line if needed. Binding keys must not conflict with label characters.
 
+Typed label prefixes use the same yellow highlight as UI Hint by default. Override `quick_switch.ui.matched_text_color` with a shared or light/dark color. The `Quick Switch` mode badge uses the shared indicator style and theme accent.
+
 ::: info Q still performs its original action first
 Pressing Q immediately runs its binding. After entering Quick Switch, that action stops repeating; release ends the original gesture normally and keeps the panel open. A hold can still open the panel after its action enters Idle. Q is not captured when starting in Idle, paused, in excluded apps, or during text/note entry.
 :::
@@ -688,19 +691,39 @@ Omitted fields inherit from the chosen grid. UI styling is not accepted here. Ke
 enabled = true
 hint_characters = "asdfghjklqwertyuiopzvbnm"
 
+[text_select.lifecycle]
+after_copy = "normal"
+
 [text_select.bindings]
-"primary+c" = "text_refine"
+"alt+c" = "text_refine" # Option+C on macOS; Alt+C on Windows
+"alt+backspace" = "previous_level"
 "ctrl+backspace" = "first_level"
-"tab backspace" = "previous_level"
-enter = "text_copy"
-page_up = "text_previous_page"
-page_down = "text_next_page"
+tab = "text_cycle_page"
+
+"ctrl+a" = "text_select_all"
+backspace = "text_clear_selection"
+"ctrl+x" = "text_clear_input"
+"mod+c enter" = "text_copy"
+
+"primary+q" = "normal"
 esc = "cancel_selection"
 "?" = "key_help"
 ```
 
+Under **Text Select → Keys**, use the shared key mapper to assign **Copy text** (`text_copy`) or **Clear input** (`text_clear_input`). Defaults are `mod+c enter` and `ctrl+x`, respectively. Ctrl+C (Command+C on macOS) and Enter always copy checked panel text, regardless of query content or input highlighting. Ctrl+X clears the entire input without changing the clipboard or level; confirmed word/character checks stay unchanged. Ctrl+A selects input when nonempty or checks all items when empty. These controls can all be remapped.
+
+Every `[text_select.ui]` field has a built-in default, so the entire section can be omitted. Write only the fields you want to customize, or edit them under **Text Select → Appearance** in the web configuration editor. Drag the outline’s bottom-right handle to adjust padding, or select pointer placement and click or drag its hotspot. Horizontal/vertical sliders and arrow keys provide fine adjustment; Shift takes larger steps and Esc cancels a drag.
+
+`panel_width` sets this panel’s width (800 by default, range 320–2400), constrained to the available screen/window. A separator and spacing distinguish the selection count from compact cards. The footer shows the current/total pages and the configured cycle key; Tab advances and wraps from the last page to the first. Backspace with empty input clears checked items; Alt+Backspace returns to the parent.
+
+Word cards wrap according to each word’s length; a long word does not widen other cards. Characters wrap automatically too. `word_min_width` and `char_min_width` set their minimum widths (48 and 40 by default, range 24–240), both editable in **Text Select → Appearance**. Smaller values fit more columns; larger values add room. On short screens oversized cards are capped and long text is elided; copied text stays complete.
+
+`pointer_offset = [x, y]` offsets the pointer from the original region’s bottom-right corner; the default `[12, 12]` moves right/down. The outline fields control only first-level regions: optional themed `border_color`, `border_width` from 0–20 (zero hides it), and a single `padding = [x, y]` array expanding both horizontal/vertical sides by 0–100, default `[2, 2]`. Word and character levels start fully checked and use fixed decimal numbers; `hint_characters` controls regions only. Text and pinyin search all items across every page in the current level, filtering choices without changing checks. Single numbers toggle checks; `1-20` and `1-3 4-5` select inclusive ranges in input order. Unambiguous numbers and range endpoints resolve immediately; otherwise a space, copy or refine action confirms them.
+
+`text_select.lifecycle.after_copy` runs only after successfully copying checked text and defaults to `normal`. Use `keep` to retain the selection, `restart` to scan again, `return` to restore the previous mode, or another built-in/configured plugin mode. Click actions and `finish` are not supported. Failed copies preserve the selection. Entry shows the input and original-position hints; the compact text preview appears after input and stays visible during refinement.
+
 Older configurations without `[text_select]` or `[text_input]` inherit the mode and its default controls. Missing Normal entry keys (`c` / `\`) are supplied only when unoccupied and the mode has not already been remapped. Explicit `none`, occupied keys (including custom chords and Normal targeting), and `text_select.enabled = false` are respected.
 
-Normal binds `c = "text_select"` by default. Inside Text Select, ordinary `c` is input, `Primary+C` refines and Enter copies. Entry and refinement bindings are independent. An explicit Text Select binding table replaces its defaults. Space remains input; Backspace edits nonempty input and returns only when empty. UIHint's `search_edit_keys` supplies cursor and clipboard editing, with Text Select controls taking priority. Bare letters assigned to controls are excluded from its labels.
+Normal binds `c = "text_select"` by default. Inside Text Select, ordinary `c` is input, `Alt+C` refines (Option+C on macOS, independent of Primary), Enter copies the OCR selection, and `Primary+Q` returns to Normal without copying. Ctrl+C (Command+C on macOS) always copies checked OCR text. Ctrl+X clears the entire query; input Copy/Cut editing shortcuts are not active in this mode. In existing configurations, replace the old refinement binding with `alt+c = "text_refine"`. Entry and refinement bindings are independent. An explicit Text Select binding table replaces its defaults. Space remains input; Backspace edits nonempty input and clears checked items when empty; Alt+Backspace returns to the parent. UIHint's `search_edit_keys` supplies cursor movement and paste, with Text Select controls taking priority. Bare letters assigned to controls are excluded from region labels.
 
 Formerly fixed grid, UIHint, screen-selection and window navigation keys are now configurable. Their defaults are unchanged; sparse older configurations retain those controls, and explicit `none` disables them. See [Configurable selection controls](/en/reference/modes-and-actions#configurable-selection-controls).

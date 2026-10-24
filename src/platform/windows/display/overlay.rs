@@ -1165,9 +1165,12 @@ impl TextRasterizer {
                             crate::api::overlay::TextAlignment::Right => {
                                 windows::Win32::Graphics::Gdi::DT_RIGHT
                             }
-                        } | DT_VCENTER
-                            | DT_SINGLELINE
-                            | DT_NOPREFIX,
+                        } | if style.wrap {
+                            windows::Win32::Graphics::Gdi::DT_WORDBREAK
+                                | windows::Win32::Graphics::Gdi::DT_END_ELLIPSIS
+                        } else {
+                            DT_VCENTER | DT_SINGLELINE
+                        } | DT_NOPREFIX,
                     );
                 }
                 if trailing_boundary.is_some() {
@@ -1429,6 +1432,43 @@ mod tests {
         }
     }
     use super::*;
+
+    #[test]
+    #[ignore = "native GDI fonts; rasterizes into a retained scratch buffer without windows"]
+    fn native_text_select_paragraph_fills_the_first_line() -> Result<(), String> {
+        let mut rasterizer = TextRasterizer::new();
+        for scale in [1.0, 1.5, 2.0] {
+            let style = LabelStyle {
+                wrap: true,
+                font_size: 14.0 * scale,
+                bold: false,
+                text_alignment: crate::api::overlay::TextAlignment::Left,
+                ..Default::default()
+            };
+            for width in [400, 1000] {
+                let width = (f64::from(width) * scale) as usize;
+                let height = (style.font_size * 1.4 * 4.0).ceil() as usize;
+                let text = "alpha beta gamma delta epsilon iii WWW 中文 ".repeat(40);
+                let drawn =
+                    rasterizer.rasterize(&text, &style, width, height, 0, (None, false, 0))?;
+                let first_line = &drawn.mask[..width * style.font_size.ceil() as usize];
+                let rightmost = first_line
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, coverage)| **coverage > 0)
+                    .map(|(index, _)| index % width)
+                    .max()
+                    .unwrap();
+                assert!(rightmost > width * 85 / 100, "used {rightmost}/{width}");
+                assert!(
+                    drawn.mask[width * (style.font_size * 1.8) as usize..]
+                        .iter()
+                        .any(|coverage| *coverage > 0)
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     #[ignore = "native GDI rasterization; requires an interactive Windows desktop"]

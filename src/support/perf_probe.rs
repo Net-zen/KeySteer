@@ -222,10 +222,6 @@ mod enabled {
     static BITMAPS: AtomicIsize = AtomicIsize::new(0);
     #[cfg(target_os = "windows")]
     static GDI_SURFACES: AtomicIsize = AtomicIsize::new(0);
-    #[cfg(target_os = "windows")]
-    static HELPERS: AtomicIsize = AtomicIsize::new(0);
-    #[cfg(target_os = "windows")]
-    static TEMP_FILES: AtomicIsize = AtomicIsize::new(0);
 
     #[cfg(target_os = "windows")]
     fn resource(kind: super::ResourceKind) -> (&'static AtomicIsize, &'static str) {
@@ -234,8 +230,6 @@ mod enabled {
             super::ResourceKind::Provider => (&PROVIDERS, "resource_provider"),
             super::ResourceKind::Bitmap => (&BITMAPS, "resource_bitmap"),
             super::ResourceKind::GdiSurface => (&GDI_SURFACES, "resource_gdi_surface"),
-            super::ResourceKind::Helper => (&HELPERS, "resource_helper"),
-            super::ResourceKind::TempFile => (&TEMP_FILES, "resource_temp_file"),
         }
     }
 
@@ -267,8 +261,6 @@ pub(crate) enum ResourceKind {
     Provider,
     Bitmap,
     GdiSurface,
-    Helper,
-    TempFile,
 }
 
 #[cfg(target_os = "windows")]

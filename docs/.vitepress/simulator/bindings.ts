@@ -82,7 +82,7 @@ function asRecord(value: unknown): Record<string, any> {
 function aliasesFor(document: BindingDocument, isMac: boolean): Record<string, string> {
   const source = asRecord(document.key_aliases)
   const platform = asRecord(source[isMac ? 'macos' : 'windows'])
-  const aliases: Record<string, string> = { primary: isMac ? 'cmd' : 'ctrl' }
+  const aliases: Record<string, string> = { primary: isMac ? 'cmd' : 'ctrl', mod: isMac ? 'cmd' : 'ctrl' }
   for (const [key, value] of Object.entries({ ...source, ...platform })) {
     if (typeof value === 'string') aliases[key.toLowerCase()] = value.toLowerCase()
   }

@@ -39,7 +39,7 @@ export default defineComponent({
         '--quick-label-width': `${labelWidth}em`,
       }}>
         {props.rows.length ? props.rows.map(row => <button type="button" key={row.mode} onMousedown={event => event.preventDefault()} onClick={() => props.onSelect(row.mode)}>
-          <kbd><span><span style={{ opacity: .45 }}>{row.label.slice(0, props.prefix.length)}</span>{row.label.slice(props.prefix.length)}</span></kbd><span>{row.mode}</span>
+          <kbd><span><span style={{ color: colors.matched_text_color }}>{row.label.slice(0, props.prefix.length)}</span>{row.label.slice(props.prefix.length)}</span></kbd><span>{row.mode}</span>
         </button>) : <span>{t("没有可切换的模式")}</span>}
       </div>
     }

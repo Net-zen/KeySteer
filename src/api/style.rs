@@ -12,6 +12,9 @@ use crate::api::overlay::{Color, LabelStyle, Placement, SharedLabelStyle, TextAl
 
 use super::theme::{ColorValue, CompiledColor, Palette, ThemedColor};
 
+/// Shared typed-prefix color for UIHint and quick-switch labels.
+pub const HINT_MATCHED_TEXT_COLOR: Color = Color::rgb(0xE4, 0xB4, 0x00);
+
 /// Current search result or individually selected Point member.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -480,6 +483,7 @@ impl<C: ColorValue> LabelUi<C> {
         let background = resolve(self.background_color.as_ref(), appearance, background);
         LabelStyle {
             text_alignment: Default::default(),
+            wrap: false,
             background,
             text_color: resolve(self.text_color.as_ref(), appearance, text),
             matched_text_color: resolve(

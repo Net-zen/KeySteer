@@ -502,6 +502,13 @@ fn quick_switch_labels_cover_all_modes_and_filter_without_reassigning() {
         );
         let mut config = Config::default();
         config.quick_switch.hint_characters = characters.into();
+        let matched_color = if characters == "ab" {
+            config.quick_switch.ui.matched_text_color =
+                Some(crate::api::theme::ThemedColor::Both("#CC0088FF".into()));
+            crate::api::Color::rgb(0xCC, 0, 0x88)
+        } else {
+            crate::api::style::HINT_MATCHED_TEXT_COLOR
+        };
         engine.register(Box::new(crate::app::mode_catalog::quick_switch(&config)));
         let (mut backend, log) = FakeBackend::new(vec![]);
         engine.start_runtime(&mut backend).unwrap();
@@ -538,6 +545,18 @@ fn quick_switch_labels_cover_all_modes_and_filter_without_reassigning() {
             .unwrap();
         let filtered = panel_rows();
         assert!(!filtered.is_empty() && filtered.len() < all.len());
+        {
+            let record = log.lock().unwrap();
+            let scene = record.scenes.last().unwrap();
+            let indicator = scene.indicator.as_ref().unwrap();
+            assert_eq!(indicator.text, "Quick Switch");
+            assert_eq!(indicator.style.background, engine.palette.accent);
+            for label in scene.labels.iter().filter(|label| label.z_index == 10001) {
+                assert_eq!(label.matched_prefix_len, 1);
+                assert_eq!(label.style.matched_text_color, matched_color);
+                assert_ne!(label.style.matched_text_color, label.style.text_color);
+            }
+        }
         assert_eq!(
             filtered,
             all.iter()

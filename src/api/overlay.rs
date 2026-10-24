@@ -149,6 +149,10 @@ impl TextAlignment {
 pub struct LabelStyle {
     #[serde(default)]
     pub text_alignment: TextAlignment,
+    /// Lay out prose within the label rectangle using native font metrics.
+    /// Wrapped labels are top-aligned and clipped/ellipsized at the lower edge.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wrap: bool,
     pub background: Color,
     pub text_color: Color,
     /// Color of the already-typed prefix, so users see their progress.
@@ -168,6 +172,7 @@ impl Default for LabelStyle {
     fn default() -> Self {
         Self {
             text_alignment: TextAlignment::Center,
+            wrap: false,
             background: Color::rgba(0x0A, 0x13, 0x38, 0xF2),
             text_color: Color::rgb(0xE8, 0xEE, 0xFF),
             matched_text_color: Color::rgb(0x8F, 0xA2, 0xF0),

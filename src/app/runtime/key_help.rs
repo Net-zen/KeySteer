@@ -201,6 +201,11 @@ impl Engine {
             && let Some(mode) = self.registry.keyboard_prompt_mode(owner)
         {
             let mut entries = std::collections::BTreeSet::new();
+            entries.extend(
+                mode.available_keys()
+                    .into_iter()
+                    .map(|(key, action)| format!("{key}  ·  {action}")),
+            );
             if let Some(table) = self.registry.table(owner) {
                 for entry in table.iter_entries() {
                     if let Some(binding) = mode

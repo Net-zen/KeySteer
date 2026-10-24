@@ -24,7 +24,7 @@
 
 Windows `system_events.rs` 集中前台变化及控制台退出通知，两个注册对象仍独立管理回调和关闭状态。`native/gdi.rs` 同时保存桌面 DC、像素表面及复用它们的 `PreparedCapture`；截图类型和方法继续禁止 unsafe，线程归属及释放顺序不变。公共窗口历史的快照、提交和撤销／重做确认集中在 `common/window_session/history.rs`，取消及失败后的逆向记录仍由同一历史事务持有。布局／历史事务的分派枚举随 `window_session/worker.rs` 保存，原有串行屏障和独立确认实现保留。
 
-能力目录只组织现有实现，不增加代理或资源管理层。`input/`、`display/` 的入口直接保留映射／注入和显示枚举实现；后端仍按原顺序创建与关闭资源。Windows 的 WeChat OCR 进程实现位于 `vision/wechat_ocr.rs`；macOS 的 Vision 桥接及两个头文件与 Rust 入口同处 `vision/`，构建脚本和原生回归夹具直接引用这些文件。
+能力目录只组织现有实现，不增加代理或资源管理层。`input/`、`display/` 的入口直接保留映射／注入和显示枚举实现；后端仍按原顺序创建与关闭资源。Windows 仅使用系统 WinRT OCR，没有第三方 OCR 发现、桥接 DLL 或辅助进程。macOS 的 Vision 桥接及两个头文件与 Rust 入口同处 `vision/`，构建脚本和原生回归夹具直接引用这些文件。
 
 Windows overlay worker 以实际资源和待办表达生命周期：截图门由 generation、隐藏确认通道和延后帧共同拥有，关闭由 `Shutdown` 待办和 `alive` 控制，不另维护一套阶段枚举。渲染器仍独立记录像素是否已提交，用于决定截图前是否需要原生刷新屏障；这个状态不能由邮箱是否为空推导。
 

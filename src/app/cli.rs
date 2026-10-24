@@ -45,10 +45,6 @@ pub fn run_cli() -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    #[cfg(target_os = "windows")]
-    if let Some(exit) = run_internal_wechat_helper() {
-        return exit;
-    }
     let args = if restart_snapshot.is_some() {
         Ok(CliOptions::default())
     } else {
@@ -143,39 +139,6 @@ fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOption
         }
     }
     Ok(args)
-}
-
-#[cfg(target_os = "windows")]
-fn run_internal_wechat_helper() -> Option<ExitCode> {
-    let mut arguments = std::env::args_os().skip(1);
-    if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--internal-wechat-ocr-helper")) {
-        return None;
-    }
-    let Some(bridge) = arguments.next() else {
-        return Some(ExitCode::FAILURE);
-    };
-    let Some(component) = arguments.next() else {
-        return Some(ExitCode::FAILURE);
-    };
-    let Some(runtime) = arguments.next() else {
-        return Some(ExitCode::FAILURE);
-    };
-    if arguments.next().is_some() {
-        return Some(ExitCode::FAILURE);
-    }
-    Some(
-        if crate::platform::run_internal_wechat_ocr_helper(
-            PathBuf::from(bridge),
-            PathBuf::from(component),
-            PathBuf::from(runtime),
-        )
-        .is_ok()
-        {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        },
-    )
 }
 
 fn print_help() {

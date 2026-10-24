@@ -655,9 +655,6 @@ pub enum UiScanStrategy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct VisionOptions {
-    /// Internal request detail; ordinary UIHint scans retain the cheaper line-only path.
-    #[serde(skip)]
-    pub text_positions: bool,
     /// Vision-only source switch; Hybrid always runs every available source.
     pub detect_text: bool,
     /// Vision-only source switch; Hybrid and Contour always detect contours.
@@ -685,7 +682,6 @@ pub struct VisionOptions {
 impl Default for VisionOptions {
     fn default() -> Self {
         Self {
-            text_positions: false,
             detect_text: true,
             detect_rectangles: true,
             request_timeout_ms: 5_000,

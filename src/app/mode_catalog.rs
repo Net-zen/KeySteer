@@ -449,12 +449,16 @@ pub fn hint(config: &Config) -> HintMode {
 pub(crate) fn quick_switch(config: &Config) -> modes::quick_switch::QuickSwitchMode {
     let style = |appearance| {
         let palette = config.theme.palette(appearance);
-        crate::api::style::QuickSwitchStyles::new(config.quick_switch.ui.resolve(
+        let mut panel = config.quick_switch.ui.resolve(
             &palette,
             palette.surface_label(),
             palette.text,
             palette.accent_border(),
-        ))
+        );
+        if config.quick_switch.ui.matched_text_color.is_none() {
+            panel.matched_text_color = crate::api::style::HINT_MATCHED_TEXT_COLOR;
+        }
+        crate::api::style::QuickSwitchStyles::new(panel)
     };
     modes::quick_switch::QuickSwitchMode::new(modes::quick_switch::Settings {
         alphabet: config
@@ -480,9 +484,13 @@ pub(crate) fn quick_switch(config: &Config) -> modes::quick_switch::QuickSwitchM
 }
 
 pub(crate) fn text_select(config: &Config) -> modes::text_select::TextSelectMode {
+    let mut hint = hint_settings(config);
+    hint.search_info_ui.width = f64::from(config.text_select.ui.panel_width);
     modes::text_select::TextSelectMode::new(modes::text_select::Settings {
-        hint: hint_settings(config),
+        hint,
         alphabet: config.text_select.hint_characters.clone(),
+        ui: config.text_select.ui.compile(),
+        lifecycle: config.text_select.lifecycle.clone(),
         bindings: config
             .text_select
             .bindings

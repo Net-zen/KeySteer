@@ -52,18 +52,6 @@ const NO_WINDOW_UNDER_POINTER: &str =
 
 pub(crate) use native::{atomic_replace, prepare_console_for_cli};
 
-pub(crate) fn run_internal_wechat_ocr_helper(
-    bridge: std::path::PathBuf,
-    component: std::path::PathBuf,
-    runtime: std::path::PathBuf,
-) -> Result<(), String> {
-    vision::wechat_ocr::run_helper(vision::wechat_ocr::HelperPaths {
-        bridge,
-        component,
-        runtime,
-    })
-}
-
 pub(crate) fn run_internal_update_helper() -> Option<Result<(), String>> {
     update_installer::run_internal_helper()
 }
@@ -501,8 +489,7 @@ impl WindowsBackend {
             }
         }
         // Stop visual providers before tearing down the hook and overlay. The
-        // vision worker cancels WinRT OCR, terminates the optional WeChat
-        // helper, and joins pure-Rust fallback work before returning.
+        // vision worker cancels WinRT OCR, and joins pure-Rust fallback work before returning.
         if let Err(error) = self.vision.stop_until(deadline) {
             errors.push("vision worker", error);
         }

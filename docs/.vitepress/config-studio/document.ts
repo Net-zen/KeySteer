@@ -95,6 +95,29 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
     throw new Error('scroll.speed must be finite and non-negative')
   }
   const indicator = parsed.mode_indicator as ConfigDocument | undefined
+  const textSelect = parsed.text_select as ConfigDocument | undefined
+  if (textSelect !== undefined) {
+    if (!isRecord(textSelect)) throw new Error('text_select must be a table')
+    for (const key of Object.keys(textSelect)) {
+      if (!['enabled', 'hint_characters', 'ui', 'lifecycle', 'bindings'].includes(key)) throw new Error(`text_select.${key} is unknown`)
+    }
+  }
+  const pairInRange = (value: unknown, min: number, max: number): boolean => Array.isArray(value)
+    && value.length === 2 && value.every(v => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max)
+  const textSelectUi = textSelect?.ui
+  if (textSelectUi !== undefined) {
+    if (!isRecord(textSelectUi)) throw new Error('text_select.ui must be a table')
+    for (const [key, value] of Object.entries(textSelectUi)) {
+      const valid = key === 'border_width' ? typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 20
+        : key === 'panel_width' ? typeof value === 'number' && Number.isInteger(value) && value >= 320 && value <= 2400
+        : ['word_min_width', 'char_min_width'].includes(key) ? typeof value === 'number' && Number.isInteger(value) && value >= 24 && value <= 240
+        : key === 'padding' ? pairInRange(value, 0, 100)
+          : key === 'pointer_offset' ? pairInRange(value, -32768, 32767)
+            : key === 'border_color' && (typeof value === 'string' ? /^#[\da-f]{8}$/i.test(value)
+              : isRecord(value) && Object.keys(value).length === 2 && ['light', 'dark'].every(k => typeof value[k] === 'string' && /^#[\da-f]{8}$/i.test(value[k])))
+      if (!valid) throw new Error(`text_select.ui.${key} is invalid`)
+    }
+  }
   for (const ui of [indicator?.ui, ...Object.values(indicator?.modes ?? {}).map(entry => (entry as ConfigDocument)?.ui)]) {
     if (ui?.indicator_offset !== undefined && (!Array.isArray(ui.indicator_offset) || ui.indicator_offset.length !== 2 || !ui.indicator_offset.every((v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= -32768 && v <= 32767))) throw new Error('indicator_offset requires [X, Y] integers')
   }

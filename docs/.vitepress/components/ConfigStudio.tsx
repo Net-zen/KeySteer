@@ -99,7 +99,9 @@ const actionGroups: ActionGroup[] = [
     ['first_level', '回到第一层'], ['previous_level', '返回上一层'], ['reopen_selection', '返回已完成的选择'],
     ['confirm_selection', '确认选择'], ['cancel_selection', '取消选择'], ['search_selection', '搜索文字'],
     ['text_refine', '细分文字'], ['text_copy', '复制文字'], ['text_search', '搜索选词'],
-    ['text_next_page', '下一页文字'], ['text_previous_page', '上一页文字'],
+    ['text_cycle_page', '循环翻页文字'],
+    ['text_select_all', '全选文字'], ['text_clear_selection', '清空文字选择'],
+    ['text_clear_input', '清空输入框'],
     ['window_area_number', '区域编号'], ['window_next_page', '下一页布局'], ['window_previous_page', '上一页布局'], ['window_multi_cancel', '取消多选输入'],
   ].map(([value, label]) => ({ value, label })) },
   { name: 'Tabs', actions: [
@@ -1344,8 +1346,8 @@ export default defineComponent({
               </div>
               {selectedTab.value === 'appearance' && <section class="ks-quick-colors">
                 <h3>{t('模式颜色')}</h3>
-                <div class="ks-style-fields">{(['background_color', 'text_color', 'border_color'] as const).map(field => <StyleControl key={field}
-                  field={{ path: `quick_switch.ui.${field}`, label: { background_color: '背景颜色', text_color: '文字颜色', border_color: '边框颜色' }[field], kind: 'color' }}
+                <div class="ks-style-fields">{(['background_color', 'text_color', 'matched_text_color', 'border_color'] as const).map(field => <StyleControl key={field}
+                  field={{ path: `quick_switch.ui.${field}`, label: { background_color: '背景颜色', text_color: '文字颜色', matched_text_color: '匹配文字', border_color: '边框颜色' }[field], kind: 'color' }}
                   value={effectiveDocument.value?.quick_switch?.ui?.[field] ?? quickSwitchColors(effectiveDocument.value?.quick_switch ?? {}, appearance.value)[field]}
                   appearance={appearance.value}
                   inherited={document.value?.quick_switch?.ui?.[field] === undefined}

@@ -152,6 +152,7 @@ struct FontEntry {
     size_bits: u64,
     bold: bool,
     alignment: crate::api::overlay::TextAlignment,
+    wrap: bool,
     format: IDWriteTextFormat,
 }
 
@@ -1256,6 +1257,7 @@ impl GpuOverlay {
                 && entry.size_bits == size_bits
                 && entry.bold == style.bold
                 && entry.alignment == style.text_alignment
+                && entry.wrap == style.wrap
         }) {
             return Ok(entry.format.clone());
         }
@@ -1269,26 +1271,26 @@ impl GpuOverlay {
         };
         let mut family_wide: Vec<u16> = family.encode_utf16().chain([0]).collect();
         let locale = w!("en-us");
-        // SAFETY: both strings are NUL-terminated and live through the call;
-        // the shared factory retains all data it needs.
+        // SAFETY: both NUL-terminated strings and resolved dimensions are valid.
+        // The factory owns the newly returned format; configuration uses documented
+        // enums and SetTrimming retains the factory-owned ellipsis sign.
         let format = unsafe {
-            self.dwrite.CreateTextFormat(
-                PCWSTR(family_wide.as_mut_ptr()),
-                None,
-                if style.bold {
-                    DWRITE_FONT_WEIGHT_BOLD
-                } else {
-                    DWRITE_FONT_WEIGHT_NORMAL
-                },
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                style.font_size.max(1.0) as f32,
-                locale,
-            )
-        }
-        .map_err(|error| format!("CreateTextFormat failed: {error}"))?;
-        // SAFETY: the format is newly owned and all enum values are valid.
-        unsafe {
+            let format = self
+                .dwrite
+                .CreateTextFormat(
+                    PCWSTR(family_wide.as_mut_ptr()),
+                    None,
+                    if style.bold {
+                        DWRITE_FONT_WEIGHT_BOLD
+                    } else {
+                        DWRITE_FONT_WEIGHT_NORMAL
+                    },
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    style.font_size.max(1.0) as f32,
+                    locale,
+                )
+                .map_err(|error| format!("CreateTextFormat failed: {error}"))?;
             format
                 .SetTextAlignment(match style.text_alignment {
                     crate::api::overlay::TextAlignment::Left => {
@@ -1299,15 +1301,55 @@ impl GpuOverlay {
                         windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_TRAILING
                     }
                 })
-                .and_then(|()| format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER))
-                .and_then(|()| format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP))
-        }
-        .map_err(|error| format!("cannot configure DirectWrite format: {error}"))?;
+                .and_then(|()| {
+                    format.SetParagraphAlignment(if style.wrap {
+                        windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_NEAR
+                    } else {
+                        DWRITE_PARAGRAPH_ALIGNMENT_CENTER
+                    })
+                })
+                .and_then(|()| {
+                    format.SetWordWrapping(if style.wrap {
+                        windows::Win32::Graphics::DirectWrite::DWRITE_WORD_WRAPPING_WRAP
+                    } else {
+                        DWRITE_WORD_WRAPPING_NO_WRAP
+                    })
+                })
+                .map_err(|error| format!("cannot configure DirectWrite format: {error}"))?;
+            if style.wrap {
+                use windows::Win32::Graphics::DirectWrite::{
+                    DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_TRIMMING,
+                    DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                };
+                format
+                    .SetLineSpacing(
+                        DWRITE_LINE_SPACING_METHOD_UNIFORM,
+                        (style.font_size * 1.4) as f32,
+                        style.font_size as f32,
+                    )
+                    .map_err(|error| format!("Set paragraph spacing failed: {error}"))?;
+                let ellipsis = self
+                    .dwrite
+                    .CreateEllipsisTrimmingSign(&format)
+                    .map_err(|error| format!("Create paragraph ellipsis failed: {error}"))?;
+                format
+                    .SetTrimming(
+                        &DWRITE_TRIMMING {
+                            granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                            ..Default::default()
+                        },
+                        &ellipsis,
+                    )
+                    .map_err(|error| format!("Set paragraph trimming failed: {error}"))?;
+            }
+            format
+        };
         self.formats.push(FontEntry {
             family: style.font_family.clone(),
             size_bits,
             bold: style.bold,
             alignment: style.text_alignment,
+            wrap: style.wrap,
             format: format.clone(),
         });
         Ok(format)
@@ -1547,6 +1589,83 @@ mod tests {
     use super::*;
     use std::process::Command;
     use std::time::Instant;
+
+    #[test]
+    #[ignore = "native DirectWrite layout; initializes a GPU device without displaying windows"]
+    fn native_text_select_paragraph_uses_full_width_and_reuses_fonts() -> Result<(), String> {
+        use windows::Win32::Graphics::DirectWrite::DWRITE_LINE_METRICS;
+        let mut renderer = GpuOverlay::new()?;
+        for scale in [1.0, 1.5, 2.0] {
+            let mut style = LabelStyle {
+                wrap: true,
+                font_size: 14.0 * scale,
+                bold: false,
+                text_alignment: crate::api::overlay::TextAlignment::Left,
+                ..Default::default()
+            };
+            let format = renderer.text_format(&style)?;
+            assert_eq!(format, renderer.text_format(&style)?);
+            for phrase in [
+                "alpha beta gamma delta epsilon ",
+                "中文测试自然换行 ",
+                "iii WWW iii ",
+            ] {
+                let text = phrase.repeat(40);
+                let text: Vec<_> = text.encode_utf16().collect();
+                let mut first_lengths = Vec::new();
+                for width in [400.0, 1000.0] {
+                    let width = (width * scale) as f32;
+                    let mut lines = [DWRITE_LINE_METRICS::default(); 128];
+                    let mut count = 0;
+                    // SAFETY: UTF-16, format and output metrics are owned through
+                    // all synchronous calls; hit-test indices come from this layout.
+                    unsafe {
+                        let layout = renderer
+                            .dwrite
+                            .CreateTextLayout(
+                                &text,
+                                &format,
+                                width,
+                                (style.font_size * 1.4 * 4.0) as f32,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        layout
+                            .GetLineMetrics(Some(&mut lines), &mut count)
+                            .map_err(|e| e.to_string())?;
+                        assert!(count > 1);
+                        let first = lines[0];
+                        first_lengths.push(first.length);
+                        let (mut x, mut y) = (0.0, 0.0);
+                        let mut metrics = DWRITE_HIT_TEST_METRICS::default();
+                        layout
+                            .HitTestTextPosition(
+                                first.length - first.trailingWhitespaceLength - 1,
+                                true,
+                                &mut x,
+                                &mut y,
+                                &mut metrics,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        assert!(
+                            x > width * 0.85 && x <= width + 0.1,
+                            "{phrase}: used {x}/{width}"
+                        );
+                        assert!((first.height - (style.font_size * 1.4) as f32).abs() < 0.01);
+                    }
+                }
+                assert!(first_lengths[1] > first_lengths[0] * 2);
+            }
+            style.wrap = false;
+            assert_ne!(format, renderer.text_format(&style)?);
+            style.wrap = true;
+            assert_eq!(format, renderer.text_format(&style)?);
+        }
+        assert!(
+            renderer.content.is_none(),
+            "font measurement must not create a window"
+        );
+        Ok(())
+    }
 
     #[test]
     #[ignore = "requires an interactive Windows compositor; disposable overlay pixel comparison"]

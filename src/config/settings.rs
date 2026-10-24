@@ -240,6 +240,8 @@ fn default_text_input_bindings() -> Bindings {
 pub struct TextSelect {
     pub enabled: bool,
     pub hint_characters: String,
+    pub ui: crate::api::text_select::Ui,
+    pub lifecycle: crate::api::text_select::Lifecycle,
     pub bindings: Bindings,
 }
 
@@ -248,16 +250,20 @@ impl Default for TextSelect {
         Self {
             enabled: true,
             hint_characters: "asdfghjklqwertyuiopzvbnm".into(),
+            ui: crate::api::text_select::Ui::default(),
+            lifecycle: crate::api::text_select::Lifecycle::default(),
             bindings: builtin_bindings(&[
-                ("primary+c", "text_refine"),
+                ("alt+c", "text_refine"),
+                ("alt+backspace", "previous_level"),
                 ("ctrl+backspace", "first_level"),
-                ("tab", "previous_level"),
-                ("backspace", "previous_level"),
-                ("enter", "text_copy"),
+                ("tab", "text_cycle_page"),
+                ("ctrl+a", "text_select_all"),
+                ("backspace", "text_clear_selection"),
+                ("ctrl+x", "text_clear_input"),
+                ("mod+c enter", "text_copy"),
+                ("primary+q", "normal"),
                 ("esc", "cancel_selection"),
                 ("?", "key_help"),
-                ("page_down", "text_next_page"),
-                ("page_up", "text_previous_page"),
             ]),
         }
     }

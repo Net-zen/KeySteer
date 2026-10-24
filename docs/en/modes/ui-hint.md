@@ -154,5 +154,5 @@ width = 320
 | --- | --- |
 | Custom interface lacks control information | Use `strategy = "vision"` |
 | Too many standard-control labels | Narrow `clickable_roles` |
-| Windows text recognition is poor | Use available system OCR or optional local WeChat OCR; KeySteer does not download WeChat components |
+| Windows text recognition is poor | Check the installed Windows OCR languages; KeySteer uses the system OCR engine |
 | No visual labels or colors on macOS | Check screen-recording permission, then restart KeySteer |

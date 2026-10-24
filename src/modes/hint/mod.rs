@@ -633,6 +633,7 @@ impl HintMode {
         } else {
             View::Hints(HintView {
                 cache: Some(&self.scene_cache),
+                highlighted_hint: None,
                 point: self
                     .inspection
                     .as_ref()
@@ -1884,7 +1885,6 @@ mod tests {
             .map(|(i, name)| {
                 let mut item = target(name, i as f64 * 200.0);
                 item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
-                    ocr_spans: Vec::new(),
                     ocr: name.into(),
                     accessibility: name.into(),
                     color: None,
@@ -2303,7 +2303,6 @@ mod tests {
                 role: SemanticRole::Button,
                 details: Some(Box::new(crate::api::geometry::UiTargetDetails {
                     ocr: format!("text{i}"),
-                    ocr_spans: Vec::new(),
                     accessibility: format!("item{i}"),
                     color: None,
                 })),
@@ -2404,7 +2403,6 @@ mod tests {
                 .map(|(i, name)| {
                     let mut item = target(name, i as f64 * 200.0);
                     item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
-                        ocr_spans: Vec::new(),
                         ocr: name.into(),
                         accessibility: name.into(),
                         color: None,
@@ -3712,7 +3710,6 @@ mod tests {
             .map(|i| target(&format!("项目 {i}"), i as f64 * 25.0))
             .collect();
         targets[7].details = Some(Box::new(crate::api::geometry::UiTargetDetails {
-            ocr_spans: Vec::new(),
             ocr: "复制文本".into(),
             accessibility: "Copy".into(),
             color: None,
@@ -3765,7 +3762,6 @@ mod tests {
             let original = "这是一段很长的 OCR 内容\n不能换行也不能越过面板边界 ".repeat(60);
             let mut item = target("复制", 200.0);
             item.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
-                ocr_spans: Vec::new(),
                 ocr: original.clone(),
                 accessibility: "复制".into(),
                 color: None,
@@ -3945,7 +3941,6 @@ mod tests {
             .map(|(index, name)| {
                 let mut target = target(name, index as f64 * 200.0);
                 target.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
-                    ocr_spans: Vec::new(),
                     ocr: name.into(),
                     accessibility: name.into(),
                     color: Some(Color::rgb(1, 2, 3)),

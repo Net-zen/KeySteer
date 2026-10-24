@@ -8,6 +8,7 @@ export function quickSwitchColors(settings: ConfigDocument, appearance: string) 
   return {
     background_color: color(ui.background_color, appearance === 'dark' ? '#182444FF' : '#EEF2FFFF'),
     text_color: color(ui.text_color, appearance === 'dark' ? '#E8EEFFFF' : '#1A3479FF'),
+    matched_text_color: color(ui.matched_text_color, '#E4B400FF'),
     border_color: color(ui.border_color, '#8B9CDAFF'),
   }
 }

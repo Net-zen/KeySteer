@@ -20,21 +20,19 @@ use crate::support::worker::WorkerJoin;
 use super::accessibility::WindowsScanPlan;
 use super::display::overlay_worker::CaptureLease;
 use super::ui_scan::ScanSource;
-use wechat_ocr::{WechatDescriptor, WechatOcr};
 
 mod capture;
 mod discovery;
 mod provider_mailbox;
 mod providers;
 mod system_ocr;
-pub(super) mod wechat_ocr;
 
 use capture::*;
 use discovery::*;
 use provider_mailbox::*;
 use providers::*;
+pub(super) use system_ocr::image_to_desktop;
 use system_ocr::{OcrOperationGuard, stream_system_targets_from_result};
-pub(super) use system_ocr::{image_to_desktop, trim_string_in_place, valid_target_rect};
 
 // Covers a native 3840x2160 desktop so common 4K scans use the BitBlt fast
 // path. Apply this budget to each display in All scope; larger 5K/8K captures
@@ -91,7 +89,7 @@ pub(super) fn diagnostic_lines() -> Vec<String> {
         ),
         Err(error) => format!("system OCR: unavailable ({error})"),
     };
-    vec![system, wechat_ocr::diagnostic_line()]
+    vec![system]
 }
 
 struct ScanJob {
@@ -131,7 +129,6 @@ struct ScanSignal {
     mailbox: Arc<ProviderMailbox>,
     system_wake: Mutex<Option<mpsc::SyncSender<SystemOcrInput>>>,
     credit_wakes: Mutex<SmallVec<[Weak<mpsc::Sender<()>>; 2]>>,
-    wechat_wake: Mutex<Option<mpsc::SyncSender<WechatInput>>>,
     discovery: Weak<DiscoveryShared>,
 }
 
@@ -150,7 +147,6 @@ impl ScanCancellation {
                 mailbox: Arc::clone(mailbox),
                 system_wake: Mutex::new(None),
                 credit_wakes: Mutex::new(SmallVec::new()),
-                wechat_wake: Mutex::new(None),
                 discovery,
             }),
         }
@@ -172,10 +168,6 @@ impl ScanCancellation {
 
     fn register_system_wake(&self, sender: mpsc::SyncSender<SystemOcrInput>) {
         self.signal.register_system_wake(sender);
-    }
-
-    fn register_wechat_wake(&self, sender: mpsc::SyncSender<WechatInput>) {
-        self.signal.register_wechat_wake(sender);
     }
 
     fn register_credit_wake(&self, sender: &Arc<mpsc::Sender<()>>) {
@@ -206,13 +198,6 @@ impl ScanSignal {
         {
             let _ = sender.send(());
         }
-        let wake = self
-            .wechat_wake
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(sender) = wake.as_ref() {
-            let _ = sender.try_send(WechatInput::CancelWake);
-        }
         if let Some(discovery) = self.discovery.upgrade() {
             discovery.ready.notify_all();
         }
@@ -225,17 +210,6 @@ impl ScanSignal {
             .unwrap_or_else(|error| error.into_inner());
         if self.local.load(Ordering::Acquire) {
             let _ = sender.try_send(SystemOcrInput::CancelWake);
-        }
-        *wake = Some(sender);
-    }
-
-    fn register_wechat_wake(&self, sender: mpsc::SyncSender<WechatInput>) {
-        let mut wake = self
-            .wechat_wake
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if self.local.load(Ordering::Acquire) {
-            let _ = sender.try_send(WechatInput::CancelWake);
         }
         *wake = Some(sender);
     }

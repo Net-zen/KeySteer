@@ -3,6 +3,7 @@ import { fieldLocation, type SettingsTab } from './navigation'
 import { percentagePositionRatios } from '../simulator/window-card-position.ts'
 import CardPositionEditor from './CardPositionEditor'
 import CardStylePreview from './CardStylePreview'
+import TextSelectionGeometryEditor from './TextSelectionGeometryEditor'
 import { panelPositionPercentages, searchPanelSettings, type SearchPanelBlock } from '../simulator/search-panel-position.ts'
 import { selectedCardStyle } from '../simulator/window-card-style'
 import { searchPanelColors } from '../simulator/search-input-style'
@@ -40,6 +41,7 @@ export default defineComponent({
     const currentLabel = ref(0)
     const highlightColors = computed(() => searchHighlightStyle(props.effectiveDocument, props.appearance))
     const isHighlightField = (field: StyleField) => field.path.startsWith('ui_hint.search_highlight.')
+    const isTextGeometryField = (field: StyleField) => ['text_select.ui.padding', 'text_select.ui.pointer_offset'].includes(field.path)
     const previewPanelStyle = (block: 'search_input_ui' | 'search_info_ui') => {
       const ui = { width: block === 'search_input_ui' ? 280 : 520, font_size: 14,
         padding_y: block === 'search_input_ui' ? 6 : 16, ...props.effectiveDocument.ui_hint?.[block] }
@@ -75,10 +77,10 @@ export default defineComponent({
         return Object.fromEntries(['light', 'dark'].map(appearance => [appearance, searchPanelColors(props.effectiveDocument, appearance, block)[key as keyof ReturnType<typeof searchPanelColors>]]))
       }
       if (field.kind === 'binding') return Object.entries(configured as Record<string, string> ?? {}).filter(([, action]) => action === field.action).map(([key]) => key).join(' ')
-      if (configured === undefined && field.path === 'ui_hint.search_point.marker_color') {
+      if (configured === undefined && ['ui_hint.search_point.marker_color', 'text_select.ui.border_color'].includes(field.path)) {
         return Object.fromEntries(['light', 'dark'].map(appearance => [appearance, props.effectiveDocument.theme?.[appearance]?.accent ?? (appearance === 'dark' ? '#7F9AFFFF' : '#4965D9FF')]))
       }
-      if (field.path.includes('.lifecycle.')) return configured ?? 'keep'
+      if (field.path.includes('.lifecycle.')) return configured ?? field.default ?? 'keep'
       if (configured !== undefined || !isCardField(field)) return configured
       if (field.path.endsWith('.ui.border_width')) return 1
       if (field.path === 'window.card.selected_border_width') return 1.5
@@ -124,7 +126,7 @@ export default defineComponent({
       <div class="ks-style-fields">
         {items.filter(field => { const location = fieldLocation(field.path); return location.page === props.page && location.tab === props.tab }).map((field) => (
           <StyleControl
-            field={field.path.includes('.lifecycle.') ? { ...field, options: lifecycleOptions(field.path.endsWith('after_finish') ? 'after_finish' : 'after_click', Object.keys(props.effectiveDocument.plugin_modes ?? {})) } : field}
+            field={field.path.includes('.lifecycle.') ? { ...field, options: lifecycleOptions(field.path.endsWith('after_copy') ? 'after_copy' : field.path.endsWith('after_finish') ? 'after_finish' : 'after_click', Object.keys(props.effectiveDocument.plugin_modes ?? {})) } : field}
             value={fieldValue(field)}
             appearance={props.appearance}
             inherited={getConfigPath(props.document, field.path) === undefined}
@@ -263,12 +265,22 @@ export default defineComponent({
           </div>
           <div class="ks-style-section">
             <span class="ks-style-section-label">{t("常用布局")}</span>
-            {renderFields(modeFields.value.layout.filter(field => !isCardField(field) && !isColorPreviewField(field) && !isHighlightField(field)))}
+            {renderFields(modeFields.value.layout.filter(field => !isCardField(field) && !isColorPreviewField(field) && !isHighlightField(field) && !isTextGeometryField(field)))}
           </div>
+          {props.page === 'text_select' && props.tab === 'appearance' && <section class="ks-style-section ks-settings-section">
+            <header class="ks-settings-section-heading"><h2>{t('包围框与鼠标落点')}</h2></header>
+            <div class="ks-settings-section-body">
+              <TextSelectionGeometryEditor document={props.effectiveDocument} appearance={props.appearance}
+                inheritedPadding={getConfigPath(props.document, 'text_select.ui.padding') === undefined}
+                inheritedPointer={getConfigPath(props.document, 'text_select.ui.pointer_offset') === undefined}
+                onChange={(field, value) => update(`text_select.ui.${field}`, value)}
+                onReset={field => reset(`text_select.ui.${field}`)} />
+            </div>
+          </section>}
           {props.tab === 'behavior' && modeFields.value.advanced.some(field => field.path.includes('.lifecycle.')) && <section class="ks-style-section ks-settings-section">
             <header class="ks-settings-section-heading">
               <h2>{t('生命周期')}</h2>
-              <p>{t('keep 保留当前状态；restart 重新开始；return 返回上层模式。点击后仅响应成功的模拟点击。')}</p>
+              <p>{t(props.mode === 'text_select' ? 'keep 保留选择；restart 重新识别；return 返回来源模式。仅复制勾选文字成功后执行，默认返回 Normal；清空输入不触发。' : 'keep 保留当前状态；restart 重新开始；return 返回上层模式。点击后仅响应成功的模拟点击。')}</p>
               <p>{t('生命周期写入 TOML；网页预览暂不完整模拟这些动作。')}</p>
             </header>
             <div class="ks-settings-section-body">
@@ -320,7 +332,7 @@ export const StyleControl = defineComponent({
               const input = event.target as HTMLInputElement
               try {
                 const pair = JSON.parse(input.value)
-                if (!Array.isArray(pair) || pair.length !== 2 || !pair.every(v => Number.isInteger(v) && v >= -32768 && v <= 32767)) throw new Error()
+                if (!Array.isArray(pair) || pair.length !== 2 || !pair.every(v => Number.isInteger(v) && v >= (field.min ?? -32768) && v <= (field.max ?? 32767))) throw new Error()
                 input.setCustomValidity(''); props.onUpdate(pair)
               } catch { input.setCustomValidity(t('请输入两个整数，例如 [-12, 18]')); input.reportValidity() }
             }} />

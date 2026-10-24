@@ -85,15 +85,23 @@ y = "end"
 # OCR text selection shares UI Hint's scan scope, OCR and panel appearance.
 [text_select]
 enabled = true
-hint_characters = "asdfghjklqwertyuiopzvbnm" # Bare command keys are excluded.
+hint_characters = "asdfghjklqwertyuiopzvbnm"
+
+[text_select.lifecycle]
+after_copy = "normal"
 
 [text_select.bindings]
-"primary+c" = "text_refine" # Select text, then refine; plain c remains input.
-"ctrl+backspace" = "first_level" # 回到区域层，清空选择；Space 用于输入空格。
-"tab backspace" = "previous_level" # 返回上一层；输入非空时 Backspace 删除文字。
-enter = "text_copy"
-page_down = "text_next_page"
-page_up = "text_previous_page"
+"alt+c" = "text_refine"
+"alt+backspace" = "previous_level"
+"ctrl+backspace" = "first_level"
+tab = "text_cycle_page"
+
+"ctrl+a" = "text_select_all"
+backspace = "text_clear_selection"
+"ctrl+x" = "text_clear_input"
+"mod+c enter" = "text_copy"
+
+"primary+q" = "normal"
 esc = "cancel_selection"
 "?" = "key_help"
 

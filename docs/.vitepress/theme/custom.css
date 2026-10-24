@@ -1599,6 +1599,24 @@
 .ks-demo-tabbed-window .ks-demo-tab-bar button.selected { background: #364658; }
 
 /* Window card visual editor */
+.ks-text-geometry-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ks-text-geometry-field { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.ks-text-geometry-field > button:first-child { display: grid; flex: 1; gap: 3px; text-align: left; min-width: 0; padding: 10px; }
+.ks-text-geometry-field output { font: 11px var(--vp-font-family-mono); white-space: nowrap; }
+.ks-text-geometry-field button:disabled { opacity: .45; cursor: default; }
+.ks-text-geometry-canvas { display: block; width: 100%; height: auto; outline: 1px solid var(--vp-c-divider); border-radius: 8px; touch-action: none; cursor: crosshair; user-select: none; }
+.ks-text-geometry-canvas:focus-visible { outline: 2px solid var(--vp-c-brand-1); outline-offset: 3px; }
+.ks-text-geometry-canvas.dragging { cursor: grabbing; }
+.ks-text-geometry-canvas > * { pointer-events: none; }
+.ks-text-geometry-original { fill: color-mix(in srgb, currentColor 6%, transparent); stroke: currentColor; stroke-opacity: .35; stroke-dasharray: 3 3; stroke-width: 1; }
+.ks-text-geometry-sample { fill: currentColor; font: 13px var(--vp-font-family-base); }
+.ks-text-geometry-caption { fill: currentColor; opacity: .65; font: 10px var(--vp-font-family-base); }
+.ks-text-geometry-guide { fill: none; stroke: currentColor; stroke-opacity: .45; stroke-dasharray: 3 3; }
+.ks-text-geometry-origin { fill: currentColor; opacity: .6; }
+.ks-text-geometry-cursor { fill: currentColor; stroke: var(--ks-geometry-background); stroke-width: 1.5; stroke-linejoin: round; }
+.ks-text-geometry-handle { stroke: var(--ks-geometry-background); stroke-width: 1.5; }
+.ks-text-geometry-help { font-size: 11px; }
+@media (max-width: 640px) { .ks-text-geometry-fields { grid-template-columns: 1fr; } }
 .ks-card-editor { display: grid; gap: 16px; }
 .ks-card-preview-caption, .ks-position-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ks-card-preview-caption span, .ks-position-editor p { font-size: 12px; color: var(--vp-c-text-2); }

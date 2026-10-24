@@ -82,6 +82,12 @@ test('sparse global style keeps the default offset', () => {
 })
 
 test('native mode colors and explicit themed overrides remain distinct', () => {
+  for (const mode of ['text_select', 'quick_switch']) {
+    for (const appearance of ['light', 'dark']) {
+      assert.equal(modeIndicatorPreview(defaults, mode, appearance, { x: 50, y: 50 }).style.background,
+        modeIndicatorPreview(defaults, 'ui_hint', appearance, { x: 50, y: 50 }).style.background)
+    }
+  }
   assert.equal(modeIndicatorPreview(defaults, 'recursive_grid', 'light', { x: 50, y: 50 }).style.background, '#0B2377FF')
   assert.equal(modeIndicatorPreview(defaults, 'window', 'light', { x: 50, y: 50 }).style.background, '#EEF2FFF2')
   const document = resolveConfigDocument(defaults, { mode_indicator: { ui: { background_color: '#112233FF', text_color: '#ABCDEF88' } } })

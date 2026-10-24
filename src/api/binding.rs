@@ -516,8 +516,10 @@ impl Binding {
             "search_selection" => B::SelectionSearch,
             "text_copy" => B::TextSelect(super::text_select::Action::Copy),
             "text_search" => B::TextSelect(super::text_select::Action::Search),
-            "text_next_page" => B::TextSelect(super::text_select::Action::NextPage),
-            "text_previous_page" => B::TextSelect(super::text_select::Action::PreviousPage),
+            "text_cycle_page" => B::TextSelect(super::text_select::Action::CyclePage),
+            "text_select_all" => B::TextSelect(super::text_select::Action::SelectAll),
+            "text_clear_selection" => B::TextSelect(super::text_select::Action::ClearSelection),
+            "text_clear_input" => B::TextSelect(super::text_select::Action::ClearInput),
 
             "escape" | "exit_mode" => B::Escape,
             "rescan" | "rescan_ui" => B::RescanUi,

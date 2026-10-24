@@ -113,6 +113,7 @@ h = "move_left"
 | `h` | 单键 |
 | `primary+shift+s` | 同时按下的组合键 |
 | `"v b"` | V 和 B 分别执行同一动作，空格不表示先后顺序 |
+| `"mod+c enter"` | 组合键和单键也可同组；系统复制快捷键或 Enter 均执行该动作 |
 | `ctrl` / `alt` / `shift` | 左右两侧都能触发 |
 | `left_shift` / `right_shift` | 只匹配指定一侧 |
 
@@ -342,7 +343,7 @@ after_click = "normal"
 | `vision.rectangle_max_candidates` | 轮廓候选上限，默认 10000 |
 | `vision.detect_text` / `vision.detect_rectangles` | 只控制 `vision` 来源；不关闭 `hybrid` 或独立 `contour` 的识别来源 |
 
-扫描仍受范围、超时和总上限 10000 约束；高分辨率画面中的极小目标可能识别不到。Windows 自动发现本机系统／微信 OCR，不下载微信组件；macOS 视觉识别需要录屏权限。
+扫描仍受范围、超时和总上限 10000 约束；高分辨率画面中的极小目标可能识别不到。Windows 使用本机系统 OCR；macOS 视觉识别需要录屏权限。
 
 搜索用法见 [UI Hint](/modes/ui-hint#搜索与结果预览)。`search_match_priority = ["pinyin", "text", "label"]` 设置同等匹配程度下的优先级；`search_bindings` 的 `point_next` 默认 Tab。
 
@@ -604,6 +605,8 @@ padding_y = 8
 
 配置 `[quick_switch.bindings]` 时整张表替换默认值：只写 `esc = "cancel_selection"` 即只允许 Esc；只写 `q = "cancel_selection"` 即只允许 Q；两行都写则都能退出。需要退格时保留 `backspace` 行。绑定键不能与标签字符冲突。
 
+已输入的标签前缀默认使用与 UI Hint 相同的黄色高亮；通过 `quick_switch.ui.matched_text_color` 修改，支持浅／深主题颜色。`Quick Switch` 模式指示器沿用共享样式和主题强调色。
+
 ::: info Q 仍先执行原来的动作
 按下 Q 会立即执行原绑定；进入快速切换后，不再重复原动作，松开时只正常结束原手势，面板保持。即使原动作已进入 Idle，本次长按仍有效；从 Idle 开始、暂停、排除应用或文本／备注输入时不接管 Q。
 :::
@@ -693,19 +696,37 @@ Normal 也能直接输入网格键定位，但默认关闭。启用步骤和安�
 enabled = true
 hint_characters = "asdfghjklqwertyuiopzvbnm"
 
+[text_select.lifecycle]
+after_copy = "normal"
+
 [text_select.bindings]
-"primary+c" = "text_refine"
+"alt+c" = "text_refine" # macOS Option+C，Windows Alt+C
+"alt+backspace" = "previous_level"
 "ctrl+backspace" = "first_level"
-"tab backspace" = "previous_level"
-enter = "text_copy"
-page_up = "text_previous_page"
-page_down = "text_next_page"
+tab = "text_cycle_page"
+
+"ctrl+a" = "text_select_all"
+backspace = "text_clear_selection"
+"ctrl+x" = "text_clear_input"
+"mod+c enter" = "text_copy"
+
+"primary+q" = "normal"
 esc = "cancel_selection"
 "?" = "key_help"
 ```
 
+`[text_select.ui]` 的所有字段都有内置默认值，整段可省略；自定义时只需写要修改的字段。包围框样式和鼠标偏移可在网页配置编辑器的 **文字选择 → 外观** 中调节。边距与鼠标落点使用交互示意图：拖动包围框右下角调整边距，切换到鼠标落点后点击或拖动定位；也可使用横向／纵向滑块和方向键微调，Shift 加速、Esc 撤销当前拖动。
+
+`panel_width` 设置本模式面板宽度，默认 800，范围 320–2400；实际显示受屏幕／窗口宽度限制。数量统计下方有留白和分隔线，卡片内标签与文字紧凑排列。页脚显示当前页／总页数及实际翻页键；Tab 循环翻页，末页回到首页，空输入时 Backspace 清空勾选，Alt+Backspace 返回上一层。
+
+单词卡片按各自长度自动排满一行，长词不会加宽其他卡片；字符层也会自动换行。`word_min_width`／`char_min_width` 分别设置最小宽度，默认 48／40，范围 24–240；调小可显示更多列，调大可增加间距。两项都在“文字选择 → 外观”中调节。屏幕高度不足时会压缩过宽卡片并省略显示长词，复制内容保持完整。
+
+`pointer_offset = [x, y]` 是鼠标相对原始区域右下角的偏移，默认 `[12, 12]`，正值向右／向下。包围框字段只控制第一层：`border_color` 省略时跟随主题强调色，支持浅深主题；`border_width` 为 0–20，0 隐藏；`padding` 使用单个 `[x, y]` 数组，向水平／垂直两侧各外扩 0–100，默认 `[2, 2]`。
+
+`text_select.lifecycle.after_copy` 仅在复制勾选文字成功后执行，默认 `normal`。可设为 `keep` 保留当前选择、`restart` 重新识别、`return` 返回进入前的模式，或其他内置／已配置插件模式；不接受点击动作或 `finish`。复制失败保留当前选择。初始只显示输入框和原位标签，输入后才显示紧凑文字预览；细分时保留预览。
+
 升级时若没有 `[text_select]` 或 `[text_input]`，模式及内部按键采用默认值；旧 Normal 绑定表缺少对应入口时补齐 `c`／`\`，但不覆盖已占用、参与自定义组合键／Normal 盲操网格或设为 `none` 的按键，也不追加已改键模式的第二个入口。显式 `text_select.enabled = false` 仍关闭文字选择。
 
-进入模式的键在 Normal 配置，细分键在 Text Select 配置，互不影响。进入后直接输入文字、简拼或空格分隔的标签；普通 `c` 始终参与输入，`Primary+C` 细分，`Enter` 复制。输入框中 Space 用于输入；Backspace 在输入非空时编辑，清空后才返回上层。UIHint 的 `search_edit_keys` 同时提供光标、粘贴等编辑键；文字选择操作绑定优先。绑定为操作的单字母不会生成文字选择标签。
+进入模式的键在 Normal 配置，细分键在 Text Select 配置，互不影响。第一层直接输入文字、简拼或空格分隔的标签；词语／字符层默认全选，标签固定为数字，`hint_characters` 仅控制第一层。字母／文字／简拼搜索当前细分层的全部条目（跨页），只筛选候选并保留已有勾选；单个编号切换勾选，`1-20`、`1-3 4-5` 勾选区间，按输入顺序组合，无歧义编号立即生效，其余用空格或复制／细分动作确认；普通 `c` 始终参与输入，`Alt+C` 细分（macOS 为 Option+C，不依赖 Primary 别名），网页“文字选择 → 按键”使用统一按键映射编辑“复制文字”（`text_copy`）和“清空输入框”（`text_clear_input`）；默认分别为 `mod+c enter` 和 `ctrl+x`。Ctrl+C（macOS Command+C）和 Enter 始终复制面板勾选文字，与输入内容和选区无关；Ctrl+X 清空整个输入框，不操作剪贴板，不改变当前层级或词语／字符层已确认的勾选。`Primary+Q` 不复制并返回 Normal。已有配置请将旧细分绑定替换为 `alt+c = "text_refine"`。输入框中 Space 用于输入；Backspace 在输入非空时编辑，空输入时清空勾选；Ctrl+A 有输入时全选输入，空输入时全选勾选；Alt+Backspace 返回上层。UIHint 的 `search_edit_keys` 同时提供光标、粘贴等编辑键；文字选择操作绑定优先。绑定为操作的单字母不会生成区域层标签。
 
 原来不能修改的网格、UIHint、屏幕选择和窗口导航键也已开放配置，旧默认键保持不变；稀疏旧配置自动补齐这些原有操作，显式 `none` 可禁用。详见[可配置的选择操作](/reference/modes-and-actions#可配置的选择操作)。

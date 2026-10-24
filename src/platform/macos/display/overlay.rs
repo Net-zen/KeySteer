@@ -936,7 +936,11 @@ impl WindowContent {
                 &foreground.cocoa,
                 &matched_foreground.cocoa,
                 (
-                    spec.fixed_bounds.then_some(spec.rect.height),
+                    spec.fixed_bounds.then_some(if spec.style.wrap {
+                        spec.style.font_size * 1.4
+                    } else {
+                        spec.rect.height
+                    }),
                     spec.trailing_text_len,
                     spec.edit.is_some() || !spec.scroll_to_cursor,
                 ),
@@ -965,6 +969,12 @@ impl WindowContent {
             alignment
         });
         layer.matched.setAlignmentMode(alignment);
+        layer.base.setWrapped(spec.style.wrap);
+        layer.base.setTruncationMode(if spec.style.wrap {
+            ns_string!("end")
+        } else {
+            ns_string!("none")
+        });
         layer.base.setHidden(false);
         layer.base.setFrame(frame);
         layer.base.setBackgroundColor(
@@ -1456,6 +1466,7 @@ fn scene_changes(previous: Option<&OverlayScene>, current: &OverlayScene) -> Sce
 
 fn label_text_content_eq(previous: &OverlayLabel, current: &OverlayLabel) -> bool {
     previous.text == current.text
+        && previous.style.wrap == current.style.wrap
         && previous.scroll_to_cursor == current.scroll_to_cursor
         && previous.trailing_text_len == current.trailing_text_len
         && previous.fixed_bounds == current.fixed_bounds

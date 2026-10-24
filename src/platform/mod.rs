@@ -57,15 +57,6 @@ pub(crate) fn prepare_console_for_cli() {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn run_internal_wechat_ocr_helper(
-    bridge: std::path::PathBuf,
-    component: std::path::PathBuf,
-    runtime: std::path::PathBuf,
-) -> Result<(), String> {
-    windows::run_internal_wechat_ocr_helper(bridge, component, runtime)
-}
-
-#[cfg(target_os = "windows")]
 pub(crate) fn run_internal_update_helper() -> Option<Result<(), String>> {
     windows::run_internal_update_helper()
 }

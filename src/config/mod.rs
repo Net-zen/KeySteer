@@ -648,11 +648,11 @@ impl ConfigFile {
         Ok((config, warnings))
     }
 
-    /// Expand whitespace-separated single-key aliases in a binding key.
+    /// Expand whitespace-separated key or chord alternatives in a binding key.
     ///
     /// For example, `"v b" = "fast"` is stored as the two ordinary bindings
-    /// `v = "fast"` and `b = "fast"`. Chords still use `+`, so
-    /// `primary+f` remains one binding.
+    /// `v = "fast"` and `b = "fast"`. `"mod+c enter"` similarly binds
+    /// both the chord and Enter; `+` combines keys within one alternative.
     fn apply_configured_key_aliases(&mut self) -> Result<(), ConfigError> {
         let aliases = self.resolved_key_aliases.clone();
         normalize_binding_keys(&mut self.hotkeys, "[hotkeys]", &aliases)?;

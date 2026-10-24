@@ -27,6 +27,9 @@ use crate::api::overlay::{LabelStyle, LabelTextAnalysis};
 
 #[inline]
 fn label_text_offset_y(style: &LabelStyle, analysis: LabelTextAnalysis, fixed_line: bool) -> f64 {
+    if style.wrap {
+        return 0.0;
+    }
     let units = if analysis.has_descender && !fixed_line {
         -2.0
     } else {

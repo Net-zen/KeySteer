@@ -11,75 +11,6 @@ pub(super) struct SystemOcrDescriptor {
 #[derive(Debug, Default)]
 pub(super) struct OcrDiscoverySnapshot {
     pub(super) system: Option<Arc<SystemOcrDescriptor>>,
-    pub(super) wechat: Option<Arc<WechatDescriptor>>,
-}
-
-#[derive(Debug)]
-pub(super) enum OcrExecutionPlan {
-    None,
-    SystemOnly(Arc<SystemOcrDescriptor>),
-    WechatOnly(Arc<WechatDescriptor>),
-    Dual {
-        system: Arc<SystemOcrDescriptor>,
-        wechat: Arc<WechatDescriptor>,
-    },
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum OcrExecutionKind {
-    None,
-    SystemOnly,
-    WechatOnly,
-    Dual,
-}
-
-#[cfg(test)]
-pub(super) fn ocr_execution_kind(
-    system_available: bool,
-    wechat_available: bool,
-    detect_text: bool,
-) -> OcrExecutionKind {
-    if !detect_text {
-        return OcrExecutionKind::None;
-    }
-    match (system_available, wechat_available) {
-        (false, false) => OcrExecutionKind::None,
-        (true, false) => OcrExecutionKind::SystemOnly,
-        (false, true) => OcrExecutionKind::WechatOnly,
-        (true, true) => OcrExecutionKind::Dual,
-    }
-}
-
-impl OcrExecutionPlan {
-    pub(super) fn from_snapshot(snapshot: &OcrDiscoverySnapshot, detect_text: bool) -> Self {
-        if !detect_text {
-            return Self::None;
-        }
-        match (&snapshot.system, &snapshot.wechat) {
-            (Some(system), Some(wechat)) => Self::Dual {
-                system: Arc::clone(system),
-                wechat: Arc::clone(wechat),
-            },
-            (Some(system), None) => Self::SystemOnly(Arc::clone(system)),
-            (None, Some(wechat)) => Self::WechatOnly(Arc::clone(wechat)),
-            (None, None) => Self::None,
-        }
-    }
-
-    pub(super) fn into_descriptors(
-        self,
-    ) -> (
-        Option<Arc<SystemOcrDescriptor>>,
-        Option<Arc<WechatDescriptor>>,
-    ) {
-        match self {
-            Self::None => (None, None),
-            Self::SystemOnly(system) => (Some(system), None),
-            Self::WechatOnly(wechat) => (None, Some(wechat)),
-            Self::Dual { system, wechat } => (Some(system), Some(wechat)),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -238,9 +169,7 @@ pub(super) fn discover_ocr(shared: Arc<DiscoveryShared>) {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     *state = match snapshot {
-        Some(snapshot) if snapshot.system.is_some() || snapshot.wechat.is_some() => {
-            DiscoveryState::Ready(Arc::new(snapshot))
-        }
+        Some(snapshot) if snapshot.system.is_some() => DiscoveryState::Ready(Arc::new(snapshot)),
         _ => DiscoveryState::Unavailable,
     };
     shared.completed.store(true, Ordering::Release);
@@ -271,28 +200,7 @@ pub(super) fn probe_ocr(cancelled: impl Fn() -> bool + Copy) -> Option<OcrDiscov
     if cancelled() {
         return None;
     }
-    let wechat = match super::wechat_ocr::discover_descriptor() {
-        Ok(Some(descriptor)) => {
-            crate::log_info!(
-                "windows-vision",
-                "WeChat OCR discovered ({})",
-                descriptor.description()
-            );
-            Some(Arc::new(descriptor))
-        }
-        Ok(None) => {
-            crate::report_warning!(
-                "windows-vision",
-                "WeChat OCR unavailable: optional components were not found"
-            );
-            None
-        }
-        Err(error) => {
-            crate::report_warning!("windows-vision", "WeChat OCR unavailable: {error}");
-            None
-        }
-    };
-    Some(OcrDiscoverySnapshot { system, wechat })
+    Some(OcrDiscoverySnapshot { system })
 }
 
 pub(super) fn probe_system_ocr(
