@@ -330,14 +330,11 @@ impl SearchText {
         } else {
             0
         };
-        let mut ascii = true;
-        let unicode_lowercase = name.chars().any(|ch| {
-            if ch.is_ascii() {
-                return false;
-            }
-            ascii = false;
-            ch.to_lowercase().ne(std::iter::once(ch))
-        });
+        let ascii = name.is_ascii();
+        let unicode_lowercase = !ascii
+            && name
+                .chars()
+                .any(|ch| !ch.is_ascii() && ch.to_lowercase().ne(std::iter::once(ch)));
         let mut text = if unicode_lowercase {
             // Whole-string conversion preserves contextual Unicode mappings,
             // including final sigma, and mappings that expand to multiple chars.

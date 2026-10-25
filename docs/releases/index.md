@@ -5,6 +5,14 @@ outline: 2
 
 # 更新日志 / Release Notes
 
+## 0.12.8
+
+- 优化文字选择细分为词语时的预览响应，减少重复索引和临时内存分配。
+- 减少 UIHint 与文字选择中 ASCII 文本的搜索索引构建开销。
+
+- Improved preview responsiveness when refining text into words, with less repeated indexing and fewer temporary allocations.
+- Reduced search-index preparation overhead for ASCII text in UIHint and Text Select.
+
 ## 0.12.7
 
 UIHint 与文字选择模式的扫描资源复用，减少重复初始化。

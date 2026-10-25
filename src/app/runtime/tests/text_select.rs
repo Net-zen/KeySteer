@@ -81,6 +81,14 @@ fn text_select_unambiguous_digits_need_no_separator_in_words_or_characters() {
         .unwrap();
     point_keys(&mut engine, &mut backend, &["a"]);
     point_keys(&mut engine, &mut backend, &["left_alt", "c"]);
+    {
+        let record = log.lock().unwrap();
+        let segment = record.timeline.iter().position(|step| *step == "segment").unwrap();
+        assert_eq!(record.timeline[segment - 1], "present");
+        assert_eq!(record.timeline[segment + 1], "present");
+        assert!(!record.scenes[record.scenes.len() - 2].labels.iter().any(|label| label.text == "✓ 1"));
+        assert!(record.scenes.last().unwrap().labels.iter().any(|label| label.text == "✓ 1"));
+    }
     for expected in ["word08 word09", "or"] {
         point_keys(&mut engine, &mut backend, &["backspace"]);
         point_keys(&mut engine, &mut backend, &["8"]);

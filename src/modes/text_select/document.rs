@@ -232,7 +232,13 @@ impl Frame {
 
     pub fn descend(&self, level: Level) -> Self {
         let text: Arc<str> = self.selected_text().into();
-        let units = graphemes(&text, 0);
+        // Words arrive asynchronously; provisional character choices would
+        // never be displayed or selectable before apply_words replaces them.
+        let units = if level == Level::Characters {
+            graphemes(&text, 0)
+        } else {
+            Vec::new()
+        };
         let selected = vec![true; units.len()];
         let selection_order = (0..units.len()).collect();
         Self {
@@ -247,12 +253,17 @@ impl Frame {
 
     pub fn apply_words(&mut self, ranges: &[Range<usize>]) {
         let mut units = Vec::new();
-        let boundaries: Vec<_> = self
-            .text
-            .grapheme_indices(true)
-            .map(|(i, _)| i)
-            .chain([self.text.len()])
-            .collect();
+        // An unavailable tokenizer returns no ranges. Its fallback already
+        // walks graphemes; no separate boundary table is needed in that case.
+        let boundaries: Vec<_> = if ranges.is_empty() {
+            Vec::new()
+        } else {
+            self.text
+                .grapheme_indices(true)
+                .map(|(i, _)| i)
+                .chain([self.text.len()])
+                .collect()
+        };
         let mut end = 0;
         for range in ranges {
             if range.start < end
@@ -262,13 +273,13 @@ impl Frame {
             {
                 continue;
             }
-            units.extend(fallback(&self.text[end..range.start], end));
+            append_fallback(&mut units, &self.text[end..range.start], end);
             if !self.text[range.clone()].trim().is_empty() {
                 units.push(range.clone());
             }
             end = range.end;
         }
-        units.extend(fallback(&self.text[end..], end));
+        append_fallback(&mut units, &self.text[end..], end);
         self.selected = vec![true; units.len()];
         self.selection_order = (0..units.len()).collect();
         self.units = units;
@@ -284,8 +295,8 @@ fn graphemes(text: &str, offset: usize) -> Vec<Range<usize>> {
 
 /// System tokenizers omit punctuation. Preserve it as selectable units;
 /// unavailable Chinese rules fall back to graphemes, ASCII runs remain words.
-fn fallback(text: &str, offset: usize) -> Vec<Range<usize>> {
-    let mut ranges: Vec<Range<usize>> = Vec::new();
+fn append_fallback(ranges: &mut Vec<Range<usize>>, text: &str, offset: usize) {
+    // Do not merge the first fallback run into the preceding tokenizer word.
     let mut ascii = false;
     for (i, g) in text.grapheme_indices(true) {
         let current = g.chars().all(|c| c.is_ascii_alphanumeric());
@@ -301,12 +312,45 @@ fn fallback(text: &str, offset: usize) -> Vec<Range<usize>> {
         }
         ascii = current;
     }
-    ranges
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn word_gaps_preserve_token_boundaries_and_reject_invalid_ranges() {
+        for (text, ranges, expected) in [
+            ("abcdef", vec![0..2, 4..5], vec!["ab", "cd", "e", "f"]),
+            ("ab cd!", vec![0..2, 2..3], vec!["ab", "cd", "!"]),
+            (
+                "ab中e\u{301}🙂cd",
+                vec![0..2, 1..5, 2..3, 5..6, 8..99, 8..8, 8..12],
+                vec!["ab", "中", "e\u{301}", "🙂", "cd"],
+            ),
+            (
+                "ab 中e\u{301}🙂 cd",
+                vec![],
+                vec!["ab", "中", "e\u{301}", "🙂", "cd"],
+            ),
+        ] {
+            let mut frame = Frame {
+                text: text.into(),
+                level: Level::Words,
+                ..Frame::default()
+            };
+            frame.apply_words(&ranges);
+            assert_eq!(
+                frame
+                    .units
+                    .iter()
+                    .map(|range| &frame.text[range.clone()])
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(frame.selected_text(), text);
+        }
+    }
 
     #[test]
     fn panel_refinement_preserves_text_without_desktop_geometry() {

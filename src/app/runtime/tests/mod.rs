@@ -129,6 +129,10 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
+    fn request_text_segmentation(&mut self, _request: crate::api::text_select::Request) -> bool {
+        self.log.lock().unwrap().timeline.push("segment");
+        false
+    }
     fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
         self.log.lock().unwrap().point_requests.push(request);
         true

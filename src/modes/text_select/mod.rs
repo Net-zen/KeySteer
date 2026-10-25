@@ -158,6 +158,7 @@ impl TextSelectMode {
         self.search.search_text_only = true;
         self.search.search_selection = Selection::default();
         if self.frame.level == Level::Regions {
+            self.base_selected.clone_from(&self.frame.selected);
             self.search.scanned = self
                 .frame
                 .units
@@ -178,6 +179,9 @@ impl TextSelectMode {
                 self.config.hint.label_direction,
             );
         } else {
+            // Only region queries restore a base selection. Refined selection
+            // belongs to Frame and text filtering never changes it.
+            self.base_selected = Vec::new();
             self.search
                 .search_hints
                 .extend(
@@ -192,9 +196,7 @@ impl TextSelectMode {
             // No text index is needed until a refined search is actually entered.
             self.search.search_names_initialized = true;
         }
-        self.base_selected.clone_from(&self.frame.selected);
         self.page = 0;
-        self.filter(0);
     }
 
     fn filter(&mut self, budget: usize) {
@@ -245,8 +247,19 @@ impl TextSelectMode {
     }
 
     fn update_summary(&mut self) {
-        self.frame.write_selected_text(&mut self.output);
-        let selected = self.frame.selected.iter().filter(|&&s| s).count();
+        let selected = if self.pending_segment {
+            // Preserve the waiting preview/count without disposable character
+            // ranges, selection flags, order, or numeric hint lists.
+            self.output.clear();
+            self.output.push_str(&self.frame.text);
+            self.output
+                .graphemes(true)
+                .filter(|g| !g.trim().is_empty())
+                .count()
+        } else {
+            self.frame.write_selected_text(&mut self.output);
+            self.frame.selected.iter().filter(|&&s| s).count()
+        };
         self.summary.clear();
         if selected != 0 {
             let unit = match self.frame.level {
@@ -361,6 +374,7 @@ impl TextSelectMode {
         self.window = None;
         self.status = "Recognizing text…".into();
         self.reindex();
+        self.filter(0);
         let screens = if self.config.hint.scan_scope == crate::api::UiScanScope::All {
             ctx.screens
         } else {
@@ -465,13 +479,14 @@ impl TextSelectMode {
         let next = self.frame.descend(level);
         self.history.push(std::mem::replace(&mut self.frame, next));
         self.frozen = true;
+        self.pending_segment = level == Level::Words;
         self.reindex();
-        if level == Level::Words {
+        self.status.clear();
+        if self.pending_segment {
             self.segment_id = self.segment_id.wrapping_add(1);
-            self.pending_segment = true;
-            self.status = "Segmenting words…".into();
+            self.update_summary();
         } else {
-            self.status.clear();
+            self.filter(0);
         }
         // Paint pending state first: a backend may complete with its fallback
         // synchronously, and that result must remain the newest scene.
@@ -494,13 +509,18 @@ impl TextSelectMode {
         let query = std::mem::take(&mut self.search.search_query);
         let edit = self.search.search_selection;
         self.reindex();
+        // Committed numbers locate their page in the complete new choices
+        // before the saved text query filters that list.
+        self.search.hints.clone_from(&self.search.search_hints);
         self.search.search_query = query;
         self.search.search_selection = edit;
-        if self.consume_selection_numbers(false) {
-            self.update_summary();
-        }
+        self.consume_selection_numbers(false);
+        self.filter_refined(256);
+        self.consume_unambiguous_selection();
+        self.copying = false;
+        self.update_summary();
         self.status.clear();
-        self.query_changed(false, ctx)
+        self.finish(ctx, CommandBatch::new())
     }
 
     fn action(&mut self, action: Action, ctx: &HostContext<'_>) -> CommandBatch {
@@ -541,9 +561,12 @@ impl TextSelectMode {
             }
             Action::Refine => return self.refine(ctx),
             Action::Copy => {
-                let committed = !self.pending_segment && self.consume_selection_numbers(true);
+                if self.pending_segment {
+                    return CommandBatch::new();
+                }
+                let committed = self.consume_selection_numbers(true);
                 self.filter(usize::MAX);
-                if !self.output.is_empty() && !self.pending_segment {
+                if !self.output.is_empty() {
                     self.copying = true;
                     let mut commands = CommandBatch::new();
                     if committed {
@@ -578,6 +601,7 @@ impl TextSelectMode {
             self.frame = frame;
         }
         self.reindex();
+        self.filter(0);
         self.status.clear();
         self.finish(ctx, CommandBatch::one(Command::CancelTextSegmentation))
     }

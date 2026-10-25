@@ -200,7 +200,7 @@ fn preview_is_hidden_until_input_and_stays_visible_during_refinement() {
     assert!(preview(&mode).iter().any(|text| text == "hello world"));
     mode.action(Action::Refine, &env.ctx());
     assert!(mode.search.search_query.is_empty());
-    assert!(!preview(&mode).is_empty());
+    assert_eq!(preview(&mode), ["hello world", "10 words · 11 chars"]);
     mode.segmented(
         Segmented {
             id: mode.segment_id,
@@ -732,13 +732,23 @@ fn edited_or_waiting_numbers_resolve_when_the_panel_has_a_unique_candidate() {
 #[test]
 fn numeric_input_waits_for_word_segmentation_before_resolving_ids() {
     let env = Env::new();
-    for input in ["2 ", "2"] {
+    for (input, remaining) in [
+        ("2 ", ""),
+        ("2", ""),
+        ("world 2 ", "world "),
+        ("world 2", "world "),
+    ] {
         let mut mode = mode();
         mode.start(&env.ctx());
         deliver(&mut mode, &env, UiScanStatus::Success, "hello world");
         mode.insert("a", &env.ctx());
         mode.action(Action::Refine, &env.ctx());
         assert!(mode.pending_segment);
+        assert!(mode.frame.units.is_empty());
+        assert!(mode.frame.selected.is_empty());
+        assert!(mode.search.search_hints.is_empty());
+        assert!(mode.search.hints.is_empty());
+        assert!(mode.base_selected.is_empty());
         mode.insert(input, &env.ctx());
         assert_eq!(mode.search.search_query, input);
         assert!(
@@ -747,6 +757,8 @@ fn numeric_input_waits_for_word_segmentation_before_resolving_ids() {
                 .iter()
                 .any(|command| matches!(command, Command::CopyText(_)))
         );
+        assert!(mode.search.search_text.is_empty());
+        assert_eq!(mode.output, "hello world");
         mode.segmented(
             Segmented {
                 id: mode.segment_id,
@@ -761,7 +773,7 @@ fn numeric_input_waits_for_word_segmentation_before_resolving_ids() {
                 .any(|command| matches!(command, Command::CopyText(text) if text == "hello"))
         );
         assert_eq!(mode.frame.selected, [true, false]);
-        assert!(mode.search.search_query.is_empty());
+        assert_eq!(mode.search.search_query, remaining);
     }
 }
 

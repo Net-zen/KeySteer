@@ -5,6 +5,11 @@ outline: 2
 
 # Release notes
 
+## 0.12.8
+
+- Improved preview responsiveness when refining text into words, with less repeated indexing and fewer temporary allocations.
+- Reduced search-index preparation overhead for ASCII text in UIHint and Text Select.
+
 ## 0.12.7
 
 Scan resource reuse for UIHint and Text Select to reduce repeated initialization.

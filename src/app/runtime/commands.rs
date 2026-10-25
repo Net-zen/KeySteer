@@ -76,6 +76,9 @@ impl Engine {
                     }
                 }
                 Command::SegmentText(mut request) => {
+                    // Submit the waiting scene before starting native work;
+                    // batch coalescing would otherwise defer it until afterward.
+                    self.flush_pending_overlay(backend)?;
                     self.scheduler.text_segmentation_serial =
                         self.scheduler.text_segmentation_serial.wrapping_add(1);
                     let id = self.scheduler.text_segmentation_serial;
