@@ -1,7 +1,8 @@
 import importlib.util
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import runpy
 import subprocess
 import tempfile
 import unittest
@@ -273,6 +274,20 @@ class CleanupCacheTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     cleanup_caches.cleanup(self.repository, days, self.now)
                 run.assert_not_called()
+
+    def test_cli_respects_configured_retention_and_defaults_missing_or_empty_to_three_days(self):
+        accessed = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat()
+        pages = [{"actions_caches": [{"id": 1, "last_accessed_at": accessed}]}]
+        response = subprocess.CompletedProcess([], 0, json.dumps(pages))
+        for configured in (None, "", "3", "7"):
+            environment = {"GITHUB_REPOSITORY": self.repository}
+            if configured is not None:
+                environment["CACHE_MAX_IDLE_DAYS"] = configured
+            with self.subTest(configured=configured), \
+                 patch.dict(cleanup_caches.os.environ, environment, clear=True), \
+                 patch.object(cleanup_caches.subprocess, "run", return_value=response) as run:
+                runpy.run_path(cleanup_caches.__file__, run_name="__main__")
+                self.assertEqual(run.call_count, 1 if configured == "7" else 2)
 
 
 if __name__ == "__main__":

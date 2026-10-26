@@ -34,4 +34,4 @@ def cleanup(repository, max_idle_days, now=None):
 
 
 if __name__ == "__main__":
-    cleanup(os.environ["GITHUB_REPOSITORY"], int(os.environ.get("CACHE_MAX_IDLE_DAYS", "7")))
+    cleanup(os.environ["GITHUB_REPOSITORY"], int(os.environ.get("CACHE_MAX_IDLE_DAYS") or "3"))

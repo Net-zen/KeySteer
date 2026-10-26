@@ -1,5 +1,5 @@
 name: Build
-run-name: ${{ (github.event_name == 'push' || github.ref != format('refs/heads/{0}', github.event.repository.default_branch)) && 'Start' || 'Build' }} · ${{ inputs.build_mode || 'cross' }} · ${{ inputs.release_tag || inputs.source_sha || github.ref_name }}
+run-name: ${{ (github.event_name == 'push' || github.ref != format('refs/heads/{0}', github.event.repository.default_branch)) && 'Start' || 'Build' }} · ${{ inputs.build_mode == 'native' && 'Native' || 'Cross' }} · ${{ inputs.release_tag || inputs.source_sha || github.ref_name }}
 
 on:
   push:
@@ -133,7 +133,7 @@ jobs:
     needs: source
     if: ${{ needs.source.outputs.sha != '' && needs.source.outputs.build_mode == 'cross' && (inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all') }}
     # Static names also render correctly when the job is skipped before expansion.
-    name: Cross Windows
+    name: Windows
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -279,7 +279,7 @@ jobs:
   macos:
     needs: source
     if: ${{ needs.source.outputs.sha != '' && needs.source.outputs.build_mode == 'cross' && (inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all') }}
-    name: Cross macOS
+    name: macOS
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -385,7 +385,7 @@ jobs:
 
   native-windows:
     needs: source
-    name: Native Windows
+    name: Windows
     if: ${{ needs.source.outputs.sha != '' && needs.source.outputs.build_mode == 'native' && (inputs.publish || inputs.platform == 'windows' || inputs.platform == 'all') }}
     runs-on: windows-2025
     strategy:
@@ -455,7 +455,7 @@ jobs:
 
   native-macos:
     needs: source
-    name: Native macOS
+    name: macOS
     if: ${{ needs.source.outputs.sha != '' && needs.source.outputs.build_mode == 'native' && (inputs.publish || inputs.platform == 'macos' || inputs.platform == 'all') }}
     # Link against the current AppKit SDK so standard controls adopt macOS 26
     # styling. package.sh retains the macOS 14 deployment target.
@@ -555,11 +555,20 @@ jobs:
         working-directory: workflow-tools
         env:
           GH_TOKEN: ${{ github.token }}
+          PUBLISHED_TAG: ${{ steps.publish.outputs.tag }}
         run: |
           gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/release.json"
           tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"])' "$RUNNER_TEMP/release.json")"
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*.zip' --dir "$RUNNER_TEMP/package-assets"
-          python3 packaging/package-managers/generate.py "$RUNNER_TEMP/release.json" --assets-dir "$RUNNER_TEMP/package-assets"
+          if [[ "$tag" == "$PUBLISHED_TAG" ]]; then
+            assets="$GITHUB_WORKSPACE/release-assets"
+          else
+            assets="$RUNNER_TEMP/package-assets"
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern '*-aarch64-apple-darwin.zip' --pattern '*-x86_64-apple-darwin.zip' \
+              --pattern '*-aarch64-pc-windows-msvc.zip' --pattern '*-x86_64-pc-windows-msvc.zip' \
+              --dir "$assets"
+          fi
+          python3 packaging/package-managers/generate.py "$RUNNER_TEMP/release.json" --assets-dir "$assets"
           python3 -m unittest discover -s packaging/package-managers -p 'test_*.py'
 
       - name: Commit package manager metadata
