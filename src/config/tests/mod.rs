@@ -943,6 +943,19 @@ fn grid_like_modes_do_not_steal_label_keys_with_exit_bindings() {
 }
 
 #[test]
+fn all_modes_default_to_empty_temporary_triggers() {
+    let mut defaults = Config::default();
+    for (mode, keys) in defaults.temporary_key_lists_mut() {
+        assert!(keys.is_empty(), "{mode}");
+    }
+    assert!(
+        super::PluginModeConfig::default()
+            .temporary_mode_keys
+            .is_empty()
+    );
+}
+
+#[test]
 fn temporary_mode_keys_must_be_modifiers() {
     let config = Config::parse("[grid]\ntemporary_mode_keys = [\"h\"]").unwrap();
     let error = config.validate().unwrap_err().to_string();
@@ -1795,6 +1808,9 @@ fn a_flagged_chord_warns_but_still_validates() {
 
             [normal.bindings]
             "alt+e" = "move_left"
+
+            # Isolate this warning from the intentional default Alt+C advisory.
+            [text_select.bindings]
             "#,
     )
     .unwrap();
@@ -1813,10 +1829,26 @@ fn a_flagged_chord_warns_but_still_validates() {
 }
 
 #[test]
-fn the_default_config_produces_no_platform_warnings() {
-    // Nothing we ship may warn on the platform it runs on.
-    let warnings = Config::default().platform_warnings();
-    assert!(warnings.is_empty(), "{warnings:?}");
+fn default_platform_warnings_cover_only_the_intentional_option_refinement_chord() {
+    let config = Config::default();
+    assert_eq!(
+        config.text_select.bindings.get("alt+c"),
+        Some(&Binding::TextSelect(
+            crate::api::text_select::Action::Refine
+        )),
+    );
+    let warnings = config.platform_warnings();
+    // Alt+C is an intentional physical-key binding. Keep the conservative
+    // layout advisory without allowing additional default warnings unnoticed.
+    if cfg!(target_os = "macos") {
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("[text_select.bindings] binding \"alt+c\": on macOS, Option+C"),
+            "{warnings:?}"
+        );
+    } else {
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
 }
 
 #[test]

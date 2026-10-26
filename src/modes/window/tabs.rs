@@ -2,6 +2,7 @@
 use super::*;
 use crate::api::window_tabs::{TabGroupId, TabOperation, TabState, WindowTarget};
 use std::collections::VecDeque;
+use std::fmt::Write;
 
 #[derive(Clone, Copy)]
 pub(super) enum Input {
@@ -263,20 +264,25 @@ impl WindowSession {
     }
     pub(super) fn tab_detail(&self) -> String {
         if let Some(restore) = &self.tabs.restore {
-            let members = restore
-                .members
-                .iter()
-                .filter_map(|id| self.numbers.get(id))
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
             let mut text = format!(
-                "Restore Tabs · {} / {} windows\nSelected: {members}\nSelect window numbers in tab order · applies when complete",
+                "Restore Tabs · {} / {} windows\nSelected: ",
                 restore.members.len(),
                 restore.count
             );
+            for (index, number) in restore
+                .members
+                .iter()
+                .filter_map(|id| self.numbers.get(id))
+                .enumerate()
+            {
+                if index != 0 {
+                    text.push_str(", ");
+                }
+                let _ = write!(text, "{number}");
+            }
+            text.push_str("\nSelect window numbers in tab order · applies when complete");
             if !self.number.display.is_empty() {
-                text.push_str(&format!("\nInput: {}", self.number.display));
+                let _ = write!(text, "\nInput: {}", self.number.display);
             }
             text.push('\n');
             if let Some(status) = &self.status {
@@ -296,20 +302,27 @@ impl WindowSession {
             && let Some(group) = self.tabs.state.group(id)
         {
             text.push_str("\nMembers: ");
-            text.push_str(
-                &group
-                    .members
-                    .iter()
-                    .filter_map(|id| self.numbers.get(id))
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
+            for (index, number) in group
+                .members
+                .iter()
+                .filter_map(|id| self.numbers.get(id))
+                .enumerate()
+            {
+                if index != 0 {
+                    text.push_str(", ");
+                }
+                let _ = write!(text, "{number}");
+            }
         }
         text.push_str("\nContinue to add · end group to start the next");
         if !self.number.display.is_empty() {
             text.push_str("\nInput: ");
-            text.push_str(&self.number.display.replace('`', "~"));
+            text.extend(
+                self.number
+                    .display
+                    .chars()
+                    .map(|c| if c == '`' { '~' } else { c }),
+            );
         }
         if self.number.slot {
             text.push_str(" · choose a tab group");

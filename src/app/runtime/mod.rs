@@ -1488,7 +1488,21 @@ impl Engine {
                         append(action, flattened);
                     }
                 }
-                action => flattened.push(action.clone()),
+                action => {
+                    // Adjacent identical sends are a double tap, including
+                    // sends separated only by a nested sequence boundary.
+                    // An explicit wait already breaks the adjacency.
+                    if matches!(
+                        (flattened.last(), action),
+                        (Some(Binding::Send(previous)), Binding::Send(current)) if previous == current
+                    ) {
+                        flattened.push(Binding::Wait {
+                            min_ms: DEFAULT_WAIT_MS,
+                            max_ms: DEFAULT_WAIT_MS,
+                        });
+                    }
+                    flattened.push(action.clone());
+                }
             }
         }
 
@@ -1496,24 +1510,7 @@ impl Engine {
         for action in actions {
             append(action, &mut flattened);
         }
-
-        // Two identical key sends are a double tap. Give the focused app the
-        // same default interval as an explicit `wait`/`wait 0`, while leaving
-        // an explicitly configured wait untouched.
-        let mut expanded = Vec::with_capacity(flattened.len());
-        for action in flattened {
-            if matches!(
-                (expanded.last(), &action),
-                (Some(Binding::Send(previous)), Binding::Send(current)) if previous == current
-            ) {
-                expanded.push(Binding::Wait {
-                    min_ms: DEFAULT_WAIT_MS,
-                    max_ms: DEFAULT_WAIT_MS,
-                });
-            }
-            expanded.push(action);
-        }
-        expanded
+        flattened
     }
 
     fn continue_sequence(

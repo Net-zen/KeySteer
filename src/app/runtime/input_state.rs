@@ -2178,14 +2178,14 @@ impl Engine {
         // A produced character is already the result of the OS layout. Its
         // producer modifiers are not part of a literal character binding.
         // Keep the real input.key for disposition and held-action release.
-        let mut literal: SmallVec<[Key; 8]> = self
-            .input
-            .pressed
-            .iter()
-            .filter(|key| {
-                self.registry
-                    .temporary_chords(&self.registry.active)
-                    .is_some_and(|chords| {
+        let mut retained: SmallVec<[Key; 8]>;
+        let literal = if let Some(chords) = self.registry.temporary_chords(&self.registry.active) {
+            retained = SmallVec::new();
+            retained.extend(
+                self.input
+                    .pressed
+                    .iter()
+                    .filter(|key| {
                         chords.iter().any(|entry| {
                             self.temporary_chord_armed(entry)
                                 && entry.matches_pressed(&self.input.pressed)
@@ -2195,11 +2195,15 @@ impl Engine {
                                     .any(|configured| Self::keys_match(configured, key))
                         })
                     })
-            })
-            .cloned()
-            .collect();
-        literal.push(symbol.clone());
-        let resolved = self.lookup_for_pressed(symbol, &literal)?;
+                    .cloned(),
+            );
+            retained.push(symbol.clone());
+            retained.as_slice()
+        } else {
+            // Disabled layers need neither held-key filtering nor a copied key.
+            std::slice::from_ref(symbol)
+        };
+        let resolved = self.lookup_for_pressed(symbol, literal)?;
         // Character production may strip shortcut modifiers on alternate
         // layouts. A generated grid key must not steal an application chord.
         // Shift remains available for producing literal symbols; temporary

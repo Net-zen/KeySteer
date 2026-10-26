@@ -7,7 +7,9 @@ pub(super) fn words(text: &str) -> Vec<Range<usize>> {
         let value = NSString::from_str(text);
         let ranges = std::rc::Rc::new(RefCell::new(Vec::new()));
         let result = ranges.clone();
-        let block = block2::RcBlock::new(
+        // Enumeration is synchronous, so there is no need to copy the block
+        // onto the heap. Keep owned captures for Foundation's 'static signature.
+        let block = block2::StackBlock::new(
             move |_: *mut NSString,
                   range: NSRange,
                   _: NSRange,

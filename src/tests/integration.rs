@@ -47,8 +47,22 @@ fn the_shipped_config_parses_and_validates() {
 }
 
 #[test]
-fn the_shipped_config_matches_the_embedded_product_defaults() {
-    assert_eq!(shipped(), Config::default());
+fn the_shipped_config_matches_defaults_with_explicit_temporary_triggers() {
+    let mut expected = Config::default();
+    // The shipped document explicitly opts in; omitted user fields stay empty.
+    for keys in [
+        &mut expected.grid.temporary_mode_keys,
+        &mut expected.recursive_grid.temporary_mode_keys,
+        &mut expected.ui_hint.temporary_mode_keys,
+        &mut expected.window.temporary_mode_keys,
+        &mut expected.window_quick.temporary_mode_keys,
+        &mut expected.window_editor.temporary_mode_keys,
+        &mut expected.window_restore.temporary_mode_keys,
+        &mut expected.window_tab.temporary_mode_keys,
+    ] {
+        *keys = vec!["primary".into()];
+    }
+    assert_eq!(shipped(), expected);
 }
 
 #[test]
@@ -280,12 +294,17 @@ fn the_shipped_config_has_no_macos_option_letter_chords() {
 }
 
 #[test]
-fn the_shipped_config_validates_without_platform_warnings() {
+fn the_shipped_config_validates_with_the_expected_platform_advisories() {
     let config = shipped();
     config
         .validate()
         .expect("keysteer.default.toml should validate");
-    assert!(config.platform_warnings().is_empty());
+    // The default-warning unit test checks the sole intentional macOS Alt+C
+    // advisory. The shipped document must preserve exactly that diagnostic set.
+    assert_eq!(
+        config.platform_warnings(),
+        Config::default().platform_warnings()
+    );
     assert!(
         Config::parse_with_warnings(include_str!("../../keysteer.default.toml"))
             .unwrap()

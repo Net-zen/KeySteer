@@ -551,8 +551,11 @@ impl Engine {
                     repeating,
                 } => {
                     let now = Instant::now();
+                    self.trace_lazy(self.settings.debug.timers, "timer", || {
+                        format!("set id={id:?} owner={owner} delay={delay:?} repeating={repeating}")
+                    });
                     self.scheduler.timers.insert(
-                        id.clone(),
+                        id,
                         Timer {
                             fires_at: now + delay,
                             last_fired: now,
@@ -560,9 +563,6 @@ impl Engine {
                             owner: owner.clone(),
                         },
                     );
-                    self.trace_lazy(self.settings.debug.timers, "timer", || {
-                        format!("set id={id:?} owner={owner} delay={delay:?} repeating={repeating}")
-                    });
                 }
                 Command::CancelTimer { id } => {
                     self.scheduler.timers.remove(&id);

@@ -118,6 +118,14 @@ pub(crate) fn utf16_ranges(
     text: &str,
     ranges: impl IntoIterator<Item = Range<usize>>,
 ) -> Vec<Range<usize>> {
+    // ASCII byte and UTF-16 offsets coincide. Both native tokenizers use this
+    // path without building a per-character translation table.
+    if text.is_ascii() {
+        return ranges
+            .into_iter()
+            .filter(|r| r.start < r.end && r.end <= text.len())
+            .collect();
+    }
     let mut map = Vec::with_capacity(text.len() + 1);
     for (offset, c) in text.char_indices() {
         map.push(Some(offset));
@@ -140,10 +148,32 @@ pub(crate) fn utf16_ranges(
 mod tests {
     use super::*;
     #[test]
-    fn surrogate_boundaries_are_checked_before_conversion() {
+    fn native_ranges_preserve_order_and_reject_invalid_boundaries() {
         assert_eq!(
             utf16_ranges("a🦀中", [0..1, 1..3, 3..4, 2..3, 3..9]),
             [0..1, 1..5, 5..8]
+        );
+        for text in ["", "hello world", "\t\r\n", "a\0b"] {
+            assert_eq!(
+                utf16_ranges(
+                    text,
+                    [
+                        0..text.len(),
+                        0..0,
+                        Range { start: 2, end: 1 },
+                        0..text.len() + 1
+                    ],
+                ),
+                if text.is_empty() {
+                    Vec::new()
+                } else {
+                    std::iter::once(0..text.len()).collect()
+                },
+            );
+        }
+        assert_eq!(
+            utf16_ranges("hello world", [6..11, 0..5, 0..5, 10..usize::MAX]),
+            [6..11, 0..5, 0..5],
         );
     }
     #[test]

@@ -17,7 +17,8 @@ struct ModeSlot {
     pointer_events: bool,
     keyboard_prompt_supported: bool,
     table: Option<CompiledKeymap>,
-    temporary_chords: Vec<KeyChord>,
+    /// None is decided when routes compile, including filtered-out triggers.
+    temporary_chords: Option<Vec<KeyChord>>,
 }
 
 pub(super) struct ModeRegistry {
@@ -90,7 +91,7 @@ impl ModeRegistry {
             pointer_events,
             keyboard_prompt_supported,
             table: None,
-            temporary_chords: Vec::new(),
+            temporary_chords: None,
         });
         self.indices.insert(id, index);
         index
@@ -161,14 +162,13 @@ impl ModeRegistry {
 
     pub(super) fn temporary_chords(&self, id: &ModeId) -> Option<&[KeyChord]> {
         let index = self.index_of(id)?;
-        let chords = &self.slots.get(index)?.temporary_chords;
-        (!chords.is_empty()).then_some(chords)
+        self.slots.get(index)?.temporary_chords.as_deref()
     }
 
     pub(super) fn clear_routes(&mut self) {
         for slot in &mut self.slots {
             slot.table = None;
-            slot.temporary_chords.clear();
+            slot.temporary_chords = None;
         }
     }
 
@@ -182,7 +182,7 @@ impl ModeRegistry {
             && let Some(slot) = self.slots.get_mut(index)
         {
             slot.table = table;
-            slot.temporary_chords = temporary_chords;
+            slot.temporary_chords = (!temporary_chords.is_empty()).then_some(temporary_chords);
         }
     }
 

@@ -1109,10 +1109,21 @@ fn explicit_release_emits_an_up_edge_even_when_not_tracked() {
 fn repeated_key_send_uses_the_same_interval_as_default_wait() {
     let engine = Engine::new(Config::default(), Appearance::Dark);
     let home = Binding::parse("home").unwrap();
+    let wait = Binding::parse("wait").unwrap();
+    let expected = vec![home.clone(), wait.clone(), home.clone()];
+    for actions in [
+        vec![home.clone(), home.clone()],
+        vec![home.clone(), wait, home.clone()],
+        vec![Binding::Sequence(vec![home.clone(), Binding::Sequence(Vec::new())]), Binding::Sequence(vec![home.clone()])],
+    ] {
+        assert_eq!(engine.flatten_sequence(&actions), expected);
+    }
+    let explicit_wait = Binding::parse("wait 17").unwrap();
     assert_eq!(
-        engine.flatten_sequence(&[home.clone(), home.clone()]),
-        engine.flatten_sequence(&[home.clone(), Binding::parse("wait").unwrap(), home])
+        engine.flatten_sequence(&[home.clone(), Binding::Sequence(vec![explicit_wait.clone(), home.clone()])]),
+        [home.clone(), explicit_wait, home]
     );
+    assert!(engine.flatten_sequence(&[Binding::Sequence(Vec::new())]).is_empty());
 }
 
 #[test]

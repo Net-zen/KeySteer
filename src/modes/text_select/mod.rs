@@ -182,17 +182,21 @@ impl TextSelectMode {
             // Only region queries restore a base selection. Refined selection
             // belongs to Frame and text filtering never changes it.
             self.base_selected = Vec::new();
+            // Reuse formatting storage instead of allocating once per label.
+            let mut number = String::new();
             self.search
                 .search_hints
-                .extend(
-                    (0..self.frame.units.len()).map(|index| labeling::CompactHint {
+                .extend((0..self.frame.units.len()).map(|index| {
+                    number.clear();
+                    let _ = write!(number, "{}", index + 1);
+                    labeling::CompactHint {
                         label: labeling::HintCode(smallvec::SmallVec::from_slice(
-                            (index + 1).to_string().as_bytes(),
+                            number.as_bytes(),
                         )),
                         bounds: Rect::default(),
                         value: index,
-                    }),
-                );
+                    }
+                }));
             // No text index is needed until a refined search is actually entered.
             self.search.search_names_initialized = true;
         }

@@ -5,6 +5,16 @@ outline: 2
 
 # 更新日志 / Release Notes
 
+## 0.12.9
+
+- 优化 Windows 和 macOS 的按键处理与动作序列执行，减少临时内存分配。
+- 减少文字选择分词、编号及窗口模式面板更新的处理开销。
+- 优化 macOS 覆盖层刷新，减少未变化图形的重复更新。
+
+- Reduced temporary allocations during keyboard input handling and action-sequence execution on Windows and macOS.
+- Reduced processing overhead in Text Select segmentation and label numbering, and in Window mode panel updates.
+- Optimized macOS overlay refreshes to avoid updating unchanged shapes.
+
 ## 0.12.8
 
 - 优化文字选择细分为词语时的预览响应，减少重复索引和临时内存分配。

@@ -601,7 +601,7 @@ impl WindowContent {
                         .as_ref()
                         .map_or(old, |retained| retained.scene.as_ref())
                 });
-                self.update_flat_static(old_base, &retained.scene, area);
+                self.update_flat_static(old_base, &retained.scene, area, force);
             } else if let Some(index) = previous
                 .and_then(|old| old.retained.as_ref())
                 .and_then(|old| old.omitted_label)
@@ -675,7 +675,7 @@ impl WindowContent {
                     .as_ref()
                     .map_or(old, |retained| retained.scene.as_ref())
             });
-            self.update_flat_static(old, scene, area);
+            self.update_flat_static(old, scene, area, force);
         }
     }
 
@@ -684,6 +684,7 @@ impl WindowContent {
         previous: Option<&OverlayScene>,
         scene: &OverlayScene,
         area: Rect,
+        force: bool,
     ) {
         let backdrop = scene.backdrop.map(|color| self.color(color));
         self.root_layer
@@ -691,10 +692,11 @@ impl WindowContent {
         self.trim_shapes(scene.shapes.len());
         self.ensure_shapes(scene.shapes.len());
         for (index, shape) in scene.shapes.iter().enumerate() {
-            self.configure_shape(index, shape, area);
-        }
-        for shape in self.shapes.iter().skip(scene.shapes.len()) {
-            shape.setHidden(true);
+            // These slots keep their index across label-only changes. Reuse
+            // native paths and properties unless geometry/scale forced a refresh.
+            if force || previous.and_then(|old| old.shapes.get(index)) != Some(shape) {
+                self.configure_shape_layer(self.shapes[index].clone(), shape, area);
+            }
         }
 
         let previous_labels = previous.map_or(&[][..], |scene| scene.labels.as_slice());
@@ -805,11 +807,6 @@ impl WindowContent {
         // explicitly validated at construction. Retained<NSPanel> remains the
         // sole release owner after AppKit closes its WindowServer resources.
         self.window.close();
-    }
-
-    fn configure_shape(&mut self, index: usize, shape: &OverlayShape, area: Rect) {
-        let layer = self.shapes[index].clone();
-        self.configure_shape_layer(layer, shape, area);
     }
 
     fn configure_shape_layer(

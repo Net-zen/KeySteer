@@ -584,15 +584,6 @@ impl ConfigFile {
         let warnings = compatibility::normalize(&mut value)?;
         let missing_text_select = value.get("text_select").is_none();
         let missing_text_input = value.get("text_input").is_none();
-        // Built-in defaults can opt in, but user documents must explicitly
-        // provide triggers. Resolve this once, before compiling any routes.
-        let configured_temporary_modes: BTreeSet<String> = value
-            .as_table()
-            .into_iter()
-            .flat_map(|table| table.iter())
-            .filter(|(_, section)| section.get("temporary_mode_keys").is_some())
-            .map(|(name, _)| name.clone())
-            .collect();
         let key_aliases = value
             .get("key_aliases")
             .cloned()
@@ -603,11 +594,6 @@ impl ConfigFile {
         let aliases = compile_key_aliases(&key_aliases.effective()?)?;
         let mut config: Self = with_key_aliases(&aliases, || Self::deserialize(value))
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
-        for (name, keys) in config.temporary_key_lists_mut() {
-            if !configured_temporary_modes.contains(name) {
-                keys.clear();
-            }
-        }
         config.resolved_key_aliases = aliases;
         config.apply_configured_key_aliases()?;
         fn enters(binding: &Binding, mode: &ModeId) -> bool {

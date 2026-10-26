@@ -49,11 +49,23 @@ f11 = 'move_left'
             }
         }
     }
-    let mut engine = text_input_engine(Config::parse("").unwrap());
-    for id in engine.registry.keys().cloned().collect::<Vec<_>>() {
-        engine.set_active(id.clone());
-        assert!(engine.registry.temporary_chords(&id).is_none(), "{id}");
-        assert!(!engine.key_may_change_temporary_mode(&Key::new("right_alt").unwrap()), "{id}");
+    for config in [Config::default(), Config::parse("").unwrap()] {
+        let mut engine = text_input_engine(config);
+        for id in engine.registry.keys().cloned().collect::<Vec<_>>() {
+            engine.set_active(id.clone());
+            let route = &engine.registry.routes[&id];
+            assert!(route.temporary_mode.is_none(), "{id}");
+            assert!(route.temporary_keys.is_empty() && route.temporary_passthrough.is_empty(), "{id}");
+            assert!(engine.registry.temporary_chords(&id).is_none(), "{id}");
+            for modifier in ["left_alt", "right_alt", "left_ctrl", "right_ctrl", "left_shift", "right_shift", "left_win", "right_win"] {
+                let key = Key::new(modifier).unwrap();
+                assert!(!engine.key_may_change_temporary_mode(&key), "{id}: {modifier}");
+                engine.input.pressed.insert(key.clone());
+                assert!(!engine.temporary_mode_is_active(&id), "{id}: {modifier}");
+                assert_eq!(engine.display_mode(), id, "{modifier}");
+                engine.input.pressed.remove(&key);
+            }
+        }
     }
 }
 
@@ -254,7 +266,8 @@ fn escape_binding_returns_to_idle() {
 
 #[test]
 fn temporary_modifier_changes_only_the_display_mode() {
-    let config = Config::default();
+    let mut config = Config::default();
+    config.grid.temporary_mode_keys = vec![primary_key(&config)];
     let mut engine = Engine::new(config.clone(), Appearance::Dark);
     for mode in crate::app::mode_catalog::built_in(&config) {
         engine.register(mode);
@@ -278,7 +291,8 @@ fn temporary_modifier_changes_only_the_display_mode() {
 
 #[test]
 fn temporary_modifier_repaints_badge_without_leaving_grid() {
-    let config = Config::default();
+    let mut config = Config::default();
+    config.grid.temporary_mode_keys = vec![primary_key(&config)];
     let mut engine = Engine::new(config.clone(), Appearance::Dark);
     for mode in crate::app::mode_catalog::built_in(&config) {
         engine.register(mode);
@@ -320,7 +334,7 @@ fn temporary_modifier_repaints_badge_without_leaving_grid() {
 fn primary_q_returns_every_configurable_targeting_mode_to_normal() {
     for target in [ModeId::grid(), ModeId::recursive_grid(), ModeId::ui_hint()] {
         let config = Config::default();
-        let primary = Key::new(&config.grid.temporary_mode_keys[0]).unwrap();
+        let primary = Key::new(primary_key(&config)).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut engine = Engine::new(config, Appearance::Dark);
         let mut idle = ProbeMode::new("idle", seen.clone());
@@ -407,6 +421,7 @@ fn ui_hint_overlap_key_wins_over_inheritance_and_temporary_mode() {
     engine.input.pressed.insert(key.clone());
 
     engine.registry.active = ModeId::ui_hint();
+    assert!(engine.registry.temporary_chords(&ModeId::ui_hint()).is_none());
     assert!(
         engine.lookup(&key).is_none(),
         "the configured key must reach UI Hint as a raw hold event"
@@ -685,7 +700,13 @@ fn launch_modifiers_do_not_activate_destination_temporary_layers() {
             // Exercise the configured temporary key on both platforms, not
             // the Windows default's Alt shortcut on every host.
             let primary = primary_key(&config);
-            config.ui_hint.temporary_mode_keys = vec![primary.clone()];
+            match target {
+                "window" => config.window.temporary_mode_keys = vec![primary.clone()],
+                "grid" => config.grid.temporary_mode_keys = vec![primary.clone()],
+                "recursive_grid" => config.recursive_grid.temporary_mode_keys = vec![primary.clone()],
+                "ui_hint" => config.ui_hint.temporary_mode_keys = vec![primary.clone()],
+                _ => unreachable!(),
+            }
             config.hotkeys.insert("alt+w".into(), Binding::Mode(ModeId::new(target).unwrap()));
             let mut engine = Engine::new(config.clone(), Appearance::Dark);
             for mode in crate::app::mode_catalog::built_in(&config) { engine.register(mode); }

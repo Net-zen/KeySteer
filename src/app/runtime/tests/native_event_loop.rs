@@ -7,6 +7,10 @@ fn idle_wait_has_no_deadline_but_scheduled_work_still_wakes_on_time() {
         fires_at: now + Duration::from_millis(10), last_fired: now,
         interval: None, owner: ModeId::idle(),
     });
+    engine.scheduler.timers.insert("later".into(), Timer {
+        fires_at: now + Duration::from_secs(60), last_fired: now,
+        interval: None, owner: ModeId::idle(),
+    });
     assert!(engine.next_timeout() <= Duration::from_millis(10));
     engine.scheduler.timers.get_mut("soon").unwrap().fires_at = now;
     assert_eq!(engine.next_timeout(), Duration::ZERO);

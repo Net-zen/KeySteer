@@ -573,7 +573,7 @@ impl Default for Grid {
             cursor_follow_selection: true,
             inherits: vec!["hotkeys".into(), "normal".into()],
             temporary_mode: Some("normal".into()),
-            temporary_mode_keys: vec!["primary".into()],
+            temporary_mode_keys: Vec::new(),
             temporary_mode_passthrough_keys: Vec::new(),
             lifecycle: TargetingLifecycle {
                 after_finish: LifecycleAction::Mode(ModeId::normal()),
@@ -647,7 +647,7 @@ impl Default for RecursiveGrid {
             cursor_follow_selection: true,
             inherits: vec!["hotkeys".into(), "normal".into()],
             temporary_mode: Some("normal".into()),
-            temporary_mode_keys: vec!["primary".into()],
+            temporary_mode_keys: Vec::new(),
             temporary_mode_passthrough_keys: Vec::new(),
             lifecycle: TargetingLifecycle::default(),
             layers: Vec::new(),

@@ -5,6 +5,12 @@ outline: 2
 
 # Release notes
 
+## 0.12.9
+
+- Reduced temporary allocations during keyboard input handling and action-sequence execution on Windows and macOS.
+- Reduced processing overhead in Text Select segmentation and label numbering, and in Window mode panel updates.
+- Optimized macOS overlay refreshes to avoid updating unchanged shapes.
+
 ## 0.12.8
 
 - Improved preview responsiveness when refining text into words, with less repeated indexing and fewer temporary allocations.

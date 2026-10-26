@@ -372,7 +372,8 @@ fn enter_window(engine: &mut Engine, backend: &mut FakeBackend, log: &Arc<Mutex<
 
 #[test]
 fn window_temporary_normal_hotkey_enters_normal_once_and_exits_with_one_q() {
-    let config = Config::default();
+    let mut config = Config::default();
+    config.window.temporary_mode_keys = vec![primary_key(&config)];
     let primary = primary_key(&config);
     let (mut engine, mut backend, log) = window_test_engine(&config);
     let session = enter_window(&mut engine, &mut backend, &log).session;
@@ -571,6 +572,7 @@ fn window_mode_locks_target_and_uses_normal_movement_and_size() {
 #[test]
 fn window_temporary_normal_uses_custom_movement_and_preserves_size_state() {
     let mut config = Config::default();
+    config.window.temporary_mode_keys = vec![primary_key(&config)];
     config.normal.bindings.insert("a".into(), Binding::Move(Direction::Left));
     let primary = primary_key(&config);
     let (mut engine, mut backend, log) = window_test_engine(&config);
@@ -834,7 +836,8 @@ fn window_tab_cycles_immediately_and_centers_pointer_without_confirmation() {
 
 #[test]
 fn temporary_normal_cancels_pending_window_motion_and_ignores_its_late_pointer() {
-    let config = Config::default();
+    let mut config = Config::default();
+    config.window.temporary_mode_keys = vec![primary_key(&config)];
     let primary = &config.window.temporary_mode_keys[0];
     let (mut engine, mut backend, log) = window_test_engine(&config);
     enter_window(&mut engine, &mut backend, &log);
@@ -1734,6 +1737,7 @@ fn window_targeting_uses_real_grid_lifecycle_and_keeps_window_session() {
     use crate::api::window::{WindowOperation as O, WindowChange, WindowId};
     for (recursive, temporary) in [(false, false), (false, true), (true, true)] {
         let mut config = Config::default();
+        if temporary { config.window.temporary_mode_keys = vec![primary_key(&config)]; }
         // Isolate stripped F -> Recursive Grid. Full Primary+F normally wins
         // in the shared temporary route and opens UI Hint.
         let full_hint_key = config.normal.bindings.iter().find_map(|(key, binding)|
@@ -1890,8 +1894,9 @@ fn window_targeting_waits_for_async_acquire_without_losing_the_latest_point() {
 }
 #[test]
 fn window_targeting_help_shows_temporary_entrances_without_holding_modifier() {
-    let config = Config::default();
+    let mut config = Config::default();
     let primary = KeyChord::parse_with_aliases("primary", config.resolved_key_aliases()).unwrap().canonical();
+    config.window.temporary_mode_keys = vec![primary.clone()];
     let (mut engine, mut backend, log) = window_test_engine(&config);
     enter_window(&mut engine, &mut backend, &log);
     let entries = engine.key_help_entries();
@@ -1955,6 +1960,7 @@ fn window_help_is_precompiled_before_entry_and_reused_across_move_resize_and_ree
 fn window_temporary_normal_screen_binding_beats_size_and_keeps_session() {
     for literal in [false, true] {
         let mut config = Config::default();
+        config.window.temporary_mode_keys = vec![primary_key(&config)];
         config
             .normal
             .bindings
