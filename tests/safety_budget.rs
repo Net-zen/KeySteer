@@ -84,7 +84,7 @@ use std::path::{Path, PathBuf};
 // exchange two complete bundles. No executable bytes are overwritten in place.
 // Removing the optional third-party OCR bridge removes 17 unsafe expressions
 // and one native file; screenshot glyph analysis is entirely safe Rust.
-const MAX_UNSAFE_EXPRESSIONS: usize = 398;
+const MAX_UNSAFE_EXPRESSIONS: usize = 396;
 const MAX_UNSAFE_FILES: usize = 42;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
@@ -123,11 +123,11 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/windows/window_mover.rs", 4),
     ("src/platform/windows/window_manager.rs", 29),
     ("src/platform/windows/window_tabs/mod.rs", 7),
-    ("src/platform/windows/status_item.rs", 14),
+    ("src/platform/windows/status_item.rs", 13),
     ("src/platform/windows/update_installer/candidate.rs", 4),
     ("src/platform/windows/update_installer/mod.rs", 11),
     ("src/platform/windows/update_installer/signature.rs", 9),
-    ("src/platform/windows/native/mod.rs", 35),
+    ("src/platform/windows/native/mod.rs", 34),
     ("src/platform/windows/native/com.rs", 2),
     ("src/platform/windows/native/compositor.rs", 8),
     ("src/platform/windows/native/handles.rs", 1),

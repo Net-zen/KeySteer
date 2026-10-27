@@ -753,39 +753,34 @@ impl Engine {
                 }
             }
             BackendEvent::TextSegmented(mut result) => {
-                if self
+                if let Some((owner, _, original)) = self
                     .scheduler
                     .text_segmentation
-                    .as_ref()
-                    .is_some_and(|(_, id, _)| *id == result.id)
-                    && let Some((owner, _, original)) = self.scheduler.text_segmentation.take()
+                    .take_if(|(_, id, _)| *id == result.id)
                 {
                     result.id = original;
                     self.dispatch_owned_to(&owner, ModeEvent::TextSegmented(result), backend)?;
                 }
             }
             BackendEvent::TextPromptResult { id, value } => {
-                if self
+                if let Some((owner, prompt)) = self
                     .scheduler
                     .text_prompt
-                    .as_ref()
-                    .is_some_and(|(_, prompt)| prompt.id == id)
+                    .take_if(|(_, prompt)| prompt.id == id)
                 {
-                    if let Some((owner, prompt)) = self.scheduler.text_prompt.take() {
-                        self.clear_point_input(backend);
-                        // Retire capture before dropping ownership: a later
-                        // CloseTextPrompt cannot find this already-taken prompt.
-                        backend.set_text_capture(false);
-                        self.scheduler.text_prompt_returning_focus = prompt.live_style.is_none();
-                        let text = match value {
-                            Ok(text) => text,
-                            Err(error) => {
-                                self.report_action_error(error, backend);
-                                None
-                            }
-                        };
-                        self.dispatch_to(&owner, ModeEvent::TextSubmitted(text), backend)?;
-                    }
+                    self.clear_point_input(backend);
+                    // Retire capture before dropping ownership: a later
+                    // CloseTextPrompt cannot find this already-taken prompt.
+                    backend.set_text_capture(false);
+                    self.scheduler.text_prompt_returning_focus = prompt.live_style.is_none();
+                    let text = match value {
+                        Ok(text) => text,
+                        Err(error) => {
+                            self.report_action_error(error, backend);
+                            None
+                        }
+                    };
+                    self.dispatch_to(&owner, ModeEvent::TextSubmitted(text), backend)?;
                 } else {
                     self.finish_layout_note(id, value, backend)?
                 }
@@ -1212,12 +1207,10 @@ impl Engine {
             self.retire_workspace_requests(Some(&self.registry.active.clone()));
             // Native text entry belongs to the outgoing interaction, even when
             // its final layout acknowledgement defers the actual mode switch.
-            if self
+            if let Some(pending) = self
                 .window_presets
                 .pending
-                .as_ref()
-                .is_some_and(|pending| pending.owner == self.registry.active)
-                && let Some(pending) = self.window_presets.pending.take()
+                .take_if(|pending| pending.owner == self.registry.active)
             {
                 backend.cancel_text_prompt(pending.id);
             }

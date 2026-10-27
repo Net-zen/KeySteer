@@ -114,14 +114,6 @@ pub(crate) fn try_activate_window(hwnd: HWND) -> bool {
 }
 
 #[inline(always)]
-pub(crate) fn current_process_id() -> u32 {
-    use windows::Win32::System::Threading::GetCurrentProcessId;
-
-    // SAFETY: this call has no arguments or failure mode.
-    unsafe { GetCurrentProcessId() }
-}
-
-#[inline(always)]
 pub(crate) fn current_thread_id() -> u32 {
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
@@ -295,7 +287,7 @@ pub(crate) fn send_input_failure_context(last_error: u32, input_size: usize) -> 
     } else {
         format!("{}", std::io::Error::from_raw_os_error(last_error as i32))
     };
-    let current_pid = current_process_id();
+    let current_pid = std::process::id();
     let foreground = foreground_window();
     let mut foreground_pid = 0u32;
     let foreground_thread = window_thread_process_id(foreground, Some(&mut foreground_pid));

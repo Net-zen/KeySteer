@@ -446,13 +446,17 @@ fn key_help_narrows_to_held_chord_prefix() {
     for mode in crate::app::mode_catalog::built_in(&config) { engine.register(mode); }
     engine.set_active(ModeId::normal());
     let (mut backend, _) = FakeBackend::new(Vec::new());
-    assert!(engine.key_help_entries().iter().any(|entry| entry.starts_with("h  ")));
+    let initial = engine.key_help_entries();
+    assert!(initial.iter().any(|entry| entry.starts_with("h  ")));
     engine.handle_backend_event(key_down("left_alt"), &mut backend).unwrap();
     engine.handle_backend_event(key_down("x"), &mut backend).unwrap();
     assert!(!engine.input.pending_chords.is_empty());
     let entries = engine.key_help_entries();
     assert!(entries.iter().any(|entry| entry.starts_with("alt+x+y  ")));
     assert!(!entries.iter().any(|entry| entry.starts_with("h  ")));
+    engine.handle_backend_event(key_up("x"), &mut backend).unwrap();
+    engine.handle_backend_event(key_up("left_alt"), &mut backend).unwrap();
+    assert_eq!(engine.key_help_entries(), initial);
 }
 
 #[test]

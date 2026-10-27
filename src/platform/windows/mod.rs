@@ -312,7 +312,7 @@ impl WindowsBackend {
         if !current.is_invalid() {
             let mut process_id = 0;
             native::window_thread_process_id(current, Some(&mut process_id));
-            if process_id == native::current_process_id() {
+            if process_id == std::process::id() {
                 // Tray and overlay windows are implementation details, not an
                 // application-context change. Preserve the previous foreground
                 // handle so restoring it produces no spurious transition.

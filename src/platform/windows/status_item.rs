@@ -283,12 +283,10 @@ fn tray_thread(ready: std::sync::mpsc::SyncSender<Result<(u32, isize), String>>)
             break;
         }
         if status == -1 {
-            // SAFETY: GetLastError has no arguments and is read immediately
-            // after the failed message retrieval.
-            let last_error = unsafe { windows::Win32::Foundation::GetLastError() };
+            let last_error = std::io::Error::last_os_error();
             crate::support::logging::report_error(
                 "windows-tray",
-                format!("GetMessageW failed: {last_error:?}"),
+                format!("GetMessageW failed: {last_error}"),
             );
             break;
         }

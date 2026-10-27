@@ -70,13 +70,35 @@ impl Engine {
             .and_then(|rect| Screen::containing(&self.screens, &rect.center()))
             .or_else(|| Screen::containing(&self.screens, &self.cursor))
     }
-    fn configured_key_help_entries(&self, stable: bool) -> Vec<String> {
-        let mut entries = std::collections::BTreeSet::new();
-        let contextual_keys: Vec<Key> = if stable {
-            Vec::new()
+    fn key_help_binding(
+        &self,
+        chord: &KeyChord,
+        stable: bool,
+        pressed: &mut Vec<Key>,
+    ) -> Option<ResolvedBinding> {
+        // Reuse one scratch buffer per help build, preserving physical key sides.
+        pressed.clear();
+        if !stable {
+            pressed.extend(self.input.pressed.iter().cloned());
+        }
+        for key in chord.keys() {
+            if !pressed
+                .iter()
+                .any(|physical| Self::keys_match(key, physical))
+            {
+                pressed.push(key.clone());
+            }
+        }
+        if stable {
+            self.lookup_for_help(chord.activation_key(), pressed)
         } else {
-            self.input.pressed.iter().cloned().collect()
-        };
+            self.lookup_for_pressed(chord.activation_key(), pressed)
+        }
+    }
+
+    fn configured_key_help_entries(&self) -> Vec<String> {
+        let mut entries = std::collections::BTreeSet::new();
+        let mut pressed = Vec::new();
         for id in self.registry.keys() {
             let Some(table) = self.registry.table(id) else {
                 continue;
@@ -85,28 +107,15 @@ impl Engine {
                 if matches!(entry.binding.as_ref(), Binding::Disabled) {
                     continue;
                 }
-                let mut pressed = contextual_keys.clone();
-                for key in entry.chord.keys() {
-                    if !pressed
-                        .iter()
-                        .any(|physical| Self::keys_match(key, physical))
-                    {
-                        pressed.push(key.clone());
-                    }
-                }
-                let Some(resolved) = (if stable {
-                    self.lookup_for_help(entry.chord.activation_key(), &pressed)
-                } else {
-                    self.lookup_for_pressed(entry.chord.activation_key(), &pressed)
-                }) else {
+                let Some(resolved) = self.key_help_binding(&entry.chord, false, &mut pressed)
+                else {
                     continue;
                 };
                 if resolved.owner != *id || resolved.binding != entry.binding {
                     continue;
                 }
                 // While a non-modifier chord prefix is held, show its continuations.
-                if !stable
-                    && !self.input.pending_chords.is_empty()
+                if !self.input.pending_chords.is_empty()
                     && !self
                         .input
                         .pressed
@@ -134,11 +143,7 @@ impl Engine {
 
     fn extra_key_help_entries(&self, stable: bool) -> Vec<String> {
         let mut entries = std::collections::BTreeSet::new();
-        let contextual_keys: Vec<Key> = if stable {
-            Vec::new()
-        } else {
-            self.input.pressed.iter().cloned().collect()
-        };
+        let mut pressed = Vec::new();
         if self.display_mode() == self.registry.active
             && let Some(mode) = self.registry.get(&self.registry.active)
         {
@@ -167,21 +172,9 @@ impl Engine {
                 let Ok(chord) = KeyChord::parse(&key) else {
                     continue;
                 };
-                let mut pressed = contextual_keys.clone();
-                for key in chord.keys() {
-                    if !pressed
-                        .iter()
-                        .any(|physical| Self::keys_match(key, physical))
-                    {
-                        pressed.push(key.clone());
-                    }
-                }
-                if (if stable {
-                    self.lookup_for_help(chord.activation_key(), &pressed)
-                } else {
-                    self.lookup_for_pressed(chord.activation_key(), &pressed)
-                })
-                .is_none()
+                if self
+                    .key_help_binding(&chord, stable, &mut pressed)
+                    .is_none()
                 {
                     entries.insert(format!("{key}  ·  {action}"));
                 }
@@ -237,7 +230,7 @@ impl Engine {
                 .get(&self.registry.active)
                 .map_or_else(Vec::new, |plan| plan.entries.to_vec())
         } else {
-            self.configured_key_help_entries(false)
+            self.configured_key_help_entries()
         };
         if !self.registry.active.is_window() || self.window_library_help() {
             entries.extend(self.extra_key_help_entries(self.registry.active.is_window()));

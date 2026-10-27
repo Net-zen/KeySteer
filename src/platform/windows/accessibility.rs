@@ -1022,7 +1022,7 @@ pub(super) fn ordinary_window_target(
     }
     let mut process_id = 0;
     super::native::window_thread_process_id(hwnd, Some(&mut process_id));
-    if process_id == 0 || process_id == super::native::current_process_id() {
+    if process_id == 0 || process_id == std::process::id() {
         return None;
     }
     window_bounds(hwnd).map(|bounds| (hwnd, process_id, bounds))
@@ -1310,7 +1310,7 @@ fn scan_windows_in_z_order(
         full_screen,
         scan_bounds,
         screen_bounds: SmallVec::from_slice(screen_bounds),
-        own_process_id: super::native::current_process_id(),
+        own_process_id: std::process::id(),
         scan_windows: SmallVec::new(),
         occluders: SmallVec::new(),
     };
