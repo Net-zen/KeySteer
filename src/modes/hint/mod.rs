@@ -3875,62 +3875,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "response comparison; run in release with --test-threads=1"]
-    fn search_response_comparison_probe() {
-        let env = Env::new();
-        for count in [30, 300] {
-            for queries in [["复制", "fz"], ["fz", "zt"]] {
-                let mut mode = crate::app::mode_catalog::hint(&env.config);
-                activate(&mut mode, &env);
-                deliver(
-                    &mut mode,
-                    &env,
-                    (0..count)
-                        .map(|i| {
-                            let mut item = target(if i % 2 == 0 { "复制" } else { "粘贴" }, 0.0);
-                            item.rect = Rect::new(
-                                (i % 20) as f64 * 45.0,
-                                (i / 20) as f64 * 35.0,
-                                20.0,
-                                15.0,
-                            );
-                            item
-                        })
-                        .collect(),
-                );
-                press(&mut mode, &env, "/");
-                assert_eq!(mode.session.scanned.len(), count);
-                let events = queries.map(|q| ModeEvent::TextChanged(q.into()));
-                for optimized in [false, true, true, false] {
-                    let mut samples = Vec::new();
-                    for round in 0..110 {
-                        let start = std::time::Instant::now();
-                        for event in &events {
-                            if optimized {
-                                std::hint::black_box(mode.handle(event, &env.ctx()));
-                            } else if let ModeEvent::TextChanged(text) = event {
-                                mode.input = Input::Search(text.clone());
-                                mode.relabel(&env.ctx());
-                                let mut commands = mode.redraw();
-                                mode.finish_redraw(&env.ctx(), &mut commands);
-                                std::hint::black_box(commands);
-                            }
-                        }
-                        if round >= 10 {
-                            samples.push(start.elapsed().as_nanos() / 2);
-                        }
-                    }
-                    samples.sort_unstable();
-                    println!(
-                        "targets={count} queries={queries:?} optimized={optimized} p50={}ns p95={}ns",
-                        samples[50], samples[95]
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
     fn space_searches_union_in_input_order_and_copy_returns_to_hints() {
         let env = Env::new();
         let mut mode = crate::app::mode_catalog::hint(&env.config);
@@ -5132,73 +5076,6 @@ mod tests {
             mode.overlap_plan.layer_count(),
             2,
             "disconnected UIA/Vision stacks must reuse global layers"
-        );
-    }
-
-    #[test]
-    #[ignore = "microbenchmark probe; run in release with --test-threads=1"]
-    fn unchanged_terminal_performance_probe() {
-        const WARMUP: usize = 2_000;
-        const SAMPLES: usize = 20_000;
-
-        fn prepared(env: &Env) -> HintMode {
-            let mut mode = crate::app::mode_catalog::hint(&env.config);
-            activate(&mut mode, env);
-            let scan_id = mode.session.scan_id;
-            mode.handle_owned(
-                ModeEvent::UiScanned(UiScanResult {
-                    retired: Vec::new(),
-                    id: scan_id,
-                    targets: vec![target("Save", 0.0), target("Cancel", 200.0)],
-                    status: UiScanStatus::Partial,
-                }),
-                &env.ctx(),
-            );
-            mode
-        }
-
-        fn measure(mut operation: impl FnMut()) -> (u128, u128, u128) {
-            for _ in 0..WARMUP {
-                operation();
-            }
-            let mut samples = Vec::with_capacity(SAMPLES);
-            for _ in 0..SAMPLES {
-                let started = std::time::Instant::now();
-                operation();
-                samples.push(started.elapsed().as_nanos());
-            }
-            samples.sort_unstable();
-            let last = samples.len() - 1;
-            (
-                samples[last * 50 / 100],
-                samples[last * 95 / 100],
-                samples[last * 99 / 100],
-            )
-        }
-
-        let env = Env::new();
-        let mut fast = prepared(&env);
-        let scan_id = fast.session.scan_id;
-        let no_op = measure(|| {
-            std::hint::black_box(fast.handle_owned(
-                ModeEvent::UiScanned(UiScanResult {
-                    retired: Vec::new(),
-                    id: scan_id,
-                    targets: Vec::new(),
-                    status: UiScanStatus::Success,
-                }),
-                &env.ctx(),
-            ));
-        });
-        let mut legacy = prepared(&env);
-        let redraw = measure(|| {
-            let mut commands = legacy.redraw();
-            legacy.finish_redraw(&env.ctx(), &mut commands);
-            std::hint::black_box(commands);
-        });
-        println!(
-            "hint_terminal_probe samples={SAMPLES} no_op_p50={}ns no_op_p95={}ns no_op_p99={}ns redraw_p50={}ns redraw_p95={}ns redraw_p99={}ns",
-            no_op.0, no_op.1, no_op.2, redraw.0, redraw.1, redraw.2,
         );
     }
 
@@ -6627,52 +6504,6 @@ mod tests {
         assert_eq!(
             mode.session.scanned[mode.session.hints[0].value].name,
             "École"
-        );
-    }
-
-    #[test]
-    #[ignore = "microbenchmark probe; run in release with --test-threads=1"]
-    fn normalized_search_query_performance_probe() {
-        const WARMUP: usize = 2_000;
-        const SAMPLES: usize = 20_000;
-        const CALLS_PER_SAMPLE: usize = 100;
-
-        fn measure(mut operation: impl FnMut()) -> (u128, u128, u128) {
-            for _ in 0..WARMUP {
-                operation();
-            }
-            let mut samples = Vec::with_capacity(SAMPLES);
-            for _ in 0..SAMPLES {
-                let started = std::time::Instant::now();
-                for _ in 0..CALLS_PER_SAMPLE {
-                    operation();
-                }
-                samples.push(started.elapsed().as_nanos() / CALLS_PER_SAMPLE as u128);
-            }
-            samples.sort_unstable();
-            let last = samples.len() - 1;
-            (
-                samples[last * 50 / 100],
-                samples[last * 95 / 100],
-                samples[last * 99 / 100],
-            )
-        }
-
-        let query = String::from("école");
-        let borrowed = measure(|| {
-            std::hint::black_box(query.as_str());
-        });
-        let normalized_again = measure(|| {
-            std::hint::black_box(query.to_lowercase());
-        });
-        println!(
-            "hint_search_query_probe samples={SAMPLES} calls_per_sample={CALLS_PER_SAMPLE} borrowed_p50={}ns borrowed_p95={}ns borrowed_p99={}ns normalized_again_p50={}ns normalized_again_p95={}ns normalized_again_p99={}ns",
-            borrowed.0,
-            borrowed.1,
-            borrowed.2,
-            normalized_again.0,
-            normalized_again.1,
-            normalized_again.2,
         );
     }
 

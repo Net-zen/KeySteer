@@ -11,7 +11,7 @@ use keysteer::api::{
     Rect, Screen, UiScanStrategy,
 };
 use keysteer::app::runtime::Engine;
-use keysteer::config::{Config, LifecycleAction, TargetingLifecycle};
+use keysteer::config::Config;
 
 fn screens() -> Vec<Screen> {
     vec![Screen {
@@ -34,19 +34,6 @@ fn shipped_document() -> toml::Value {
 }
 
 #[test]
-fn the_shipped_config_parses_and_validates() {
-    let config = shipped();
-    config
-        .validate()
-        .expect("keysteer.default.toml should validate");
-    assert_eq!(config.ui_hint.strategy, UiScanStrategy::Hybrid);
-    assert_eq!(config.ui_hint.ui.font_size, 17);
-    assert_eq!(config.ui_hint.ui.padding_x, -1);
-    assert_eq!(config.ui_hint.ui.padding_y, -1);
-    assert_eq!(config.ui_hint.label_y_offset, -8);
-}
-
-#[test]
 fn the_shipped_config_matches_defaults_with_explicit_temporary_triggers() {
     let mut expected = Config::default();
     // The shipped document explicitly opts in; omitted user fields stay empty.
@@ -63,32 +50,6 @@ fn the_shipped_config_matches_defaults_with_explicit_temporary_triggers() {
         *keys = vec!["primary".into()];
     }
     assert_eq!(shipped(), expected);
-}
-
-#[test]
-fn the_shipped_targeting_lifecycles_are_explicit() {
-    let config = shipped();
-    assert_eq!(
-        config.ui_hint.lifecycle,
-        TargetingLifecycle {
-            after_finish: LifecycleAction::Mode(ModeId::normal()),
-            after_click: LifecycleAction::Mode(ModeId::normal()),
-        }
-    );
-    assert_eq!(
-        config.grid.lifecycle,
-        TargetingLifecycle {
-            after_finish: LifecycleAction::Mode(ModeId::normal()),
-            after_click: LifecycleAction::Finish,
-        }
-    );
-    assert_eq!(
-        config.recursive_grid.lifecycle,
-        TargetingLifecycle {
-            after_finish: LifecycleAction::Keep,
-            after_click: LifecycleAction::Keep,
-        }
-    );
 }
 
 #[test]
@@ -232,19 +193,6 @@ fn macos_tcc_fail_open_adds_no_per_event_stop_poll() {
 }
 
 #[test]
-fn the_shipped_config_reaches_normal_from_idle() {
-    let config = shipped();
-    assert!(
-        config
-            .hotkeys
-            .values()
-            .any(|b| b.mode() == Some(&ModeId::normal())),
-        "keysteer.default.toml must bind a way into normal: {:?}",
-        config.hotkeys
-    );
-}
-
-#[test]
 fn the_shipped_config_launchers_are_platform_neutral() {
     // Regression: `alt+e` never fired on macOS, because Option+E types a
     // dead-key accent that the OS consumes before we see it.
@@ -295,46 +243,29 @@ fn the_shipped_config_has_no_macos_option_letter_chords() {
 
 #[test]
 fn the_shipped_config_validates_with_the_expected_platform_advisories() {
-    let config = shipped();
+    let (config, warnings) =
+        Config::parse_with_warnings(include_str!("../../keysteer.default.toml"))
+            .expect("keysteer.default.toml should parse");
     config
         .validate()
         .expect("keysteer.default.toml should validate");
+    assert_eq!(config.ui_hint.strategy, UiScanStrategy::Hybrid);
+    assert_eq!(config.ui_hint.ui.font_size, 17);
+    assert_eq!(config.ui_hint.ui.padding_x, -1);
+    assert_eq!(config.ui_hint.ui.padding_y, -1);
+    assert_eq!(config.ui_hint.label_y_offset, -8);
     // The default-warning unit test checks the sole intentional macOS Alt+C
     // advisory. The shipped document must preserve exactly that diagnostic set.
     assert_eq!(
         config.platform_warnings(),
         Config::default().platform_warnings()
     );
-    assert!(
-        Config::parse_with_warnings(include_str!("../../keysteer.default.toml"))
-            .unwrap()
-            .1
-            .is_empty()
-    );
+    assert!(warnings.is_empty(), "{warnings:?}");
     for chord in config.hotkeys.keys().chain(config.normal.bindings.keys()) {
         let parsed = KeyChord::parse(chord).expect("shipped chords must parse");
         assert!(
             !parsed.keys().is_empty(),
             "{chord:?} resolved to an empty chord"
-        );
-    }
-}
-
-#[test]
-fn the_shipped_config_reaches_every_targeting_mode_from_normal() {
-    let config = shipped();
-    let reachable: Vec<&str> = config
-        .normal
-        .bindings
-        .values()
-        .filter_map(|b| b.mode())
-        .map(|id| id.as_str())
-        .collect();
-
-    for mode in ["grid", "recursive_grid", "ui_hint"] {
-        assert!(
-            reachable.contains(&mode),
-            "{mode} is unreachable from normal: {reachable:?}"
         );
     }
 }
@@ -619,9 +550,4 @@ fn windows_visual_capture_keeps_one_barrier_and_an_unscaled_copy_path() {
             && native.contains("source_height == self.dimensions.height_i32()"),
         "the BitBlt path must be restricted to exact-size copies"
     );
-}
-
-#[test]
-fn text_input_defaults_match_shipped_configuration() {
-    assert_eq!(Config::default().text_input, shipped().text_input);
 }

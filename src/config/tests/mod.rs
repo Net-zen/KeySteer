@@ -682,28 +682,22 @@ fn idle_launchers_resolve_the_platform_neutral_primary_modifier() {
 }
 
 #[test]
-fn idle_launchers_avoid_platform_reserved_chords() {
+fn default_bindings_avoid_platform_reserved_chords() {
     // Regression: `alt+e` never fired on macOS because Option+E is a
     // dead key. No default may have that problem on any platform.
-    for chord in Config::default().hotkeys.keys() {
-        let parsed = KeyChord::parse(chord).unwrap();
-        assert_eq!(
-            platform_warning(&parsed),
-            None,
-            "default idle binding {chord:?} is problematic on this platform"
-        );
-    }
-}
-
-#[test]
-fn normal_defaults_avoid_platform_reserved_chords() {
-    for chord in Config::default().normal.bindings.keys() {
-        let parsed = KeyChord::parse(chord).unwrap();
-        assert_eq!(
-            platform_warning(&parsed),
-            None,
-            "default normal binding {chord:?} is problematic on this platform"
-        );
+    let config = Config::default();
+    for (mode, bindings) in [
+        ("idle", &config.hotkeys),
+        ("normal", &config.normal.bindings),
+    ] {
+        for chord in bindings.keys() {
+            let parsed = KeyChord::parse(chord).unwrap();
+            assert_eq!(
+                platform_warning(&parsed),
+                None,
+                "default {mode} binding {chord:?} is problematic on this platform"
+            );
+        }
     }
 }
 

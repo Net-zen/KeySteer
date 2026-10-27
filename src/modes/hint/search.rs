@@ -890,32 +890,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    #[ignore = "search throughput probe; run in release"]
-    fn prepared_search_throughput() {
-        for count in [100, 1000, 10000] {
-            let start = std::time::Instant::now();
-            let index: Vec<_> = (0..count)
-                .map(|i| SearchText::new(&format!("复制文件 设置 {i}"), SemanticRole::Button))
-                .collect();
-            let build = start.elapsed();
-            let mut samples = Vec::new();
-            for _ in 0..200 {
-                let start = std::time::Instant::now();
-                std::hint::black_box(
-                    index
-                        .iter()
-                        .filter(|entry| entry.matches("fzwj an", "aj"))
-                        .count(),
-                );
-                samples.push(start.elapsed());
-            }
-            samples.sort();
-            println!(
-                "search count={count} build={build:?} filter_p50={:?} filter_p99={:?}",
-                samples[100], samples[198]
-            );
-        }
-    }
 }

@@ -57,5 +57,3 @@ pub use theme::{Palette, ThemedColor};
 pub use command::UiScanResult;
 #[cfg(any(target_os = "windows", test))]
 pub use command::UiScanStatus;
-#[cfg(test)]
-pub use input::InputEvent;
