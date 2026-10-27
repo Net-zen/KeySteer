@@ -1,4 +1,25 @@
 #[test]
+#[ignore = "run alone with --test-threads=1 so other tests cannot pollute allocator counts"]
+fn empty_binding_profiles_do_not_allocate() {
+    let plan = crate::app::configuration::compile(&Config::default()).unwrap();
+    let engine = Engine::from_plan(plan, Appearance::Dark).unwrap();
+    let app = FocusedApp {
+        bundle_id: "com.example.editor".into(),
+        window_title: "Document".into(),
+        process_id: 42,
+    };
+    for focused in [Some(&app), None] {
+        let region = Region::new(TEST_ALLOCATOR);
+        let profile = engine.binding_profile_key_for(focused);
+        let stats = region.change();
+        assert!(profile.is_empty());
+        println!("empty binding profile focused={} {stats:?}", focused.is_some());
+        assert_eq!(stats.allocations, 0);
+        assert_eq!(stats.reallocations, 0);
+    }
+}
+
+#[test]
 fn simulator_menu_uses_the_active_config_source() {
     let source = "# current profile\n[normal]\nlong_press_toggle_ms = 777\n";
     let mut engine = Engine::new(Config::parse(source).unwrap(), Appearance::Dark);

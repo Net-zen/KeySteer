@@ -302,10 +302,11 @@ impl GpuOverlay {
     }
 
     pub(super) fn present(&mut self, scene: Arc<OverlayScene>, area: Rect) -> Result<(), String> {
-        if !scene
-            .labels
-            .iter()
-            .any(|label| label.edit.is_some() || label.scroll_to_cursor)
+        if self.edit_layout.is_some()
+            && !scene
+                .labels
+                .iter()
+                .any(|label| label.edit.is_some() || label.scroll_to_cursor)
         {
             self.edit_layout = None;
         }
@@ -714,6 +715,10 @@ impl GpuOverlay {
         let Some(retained) = scene.retained.as_ref() else {
             return self.draw_static(surface, scene, area);
         };
+        let regions = damage(previous, scene, area);
+        if regions.is_empty() {
+            return Ok(());
+        }
         let mut index = self
             .paint_index
             .take()
@@ -724,7 +729,7 @@ impl GpuOverlay {
                 ))
             });
         let result = (|| {
-            for region in damage(previous, scene, area) {
+            for region in regions {
                 let update = RECT {
                     left: (region.x - area.x).floor().max(0.0) as i32,
                     top: (region.y - area.y).floor().max(0.0) as i32,
@@ -1018,8 +1023,6 @@ impl GpuOverlay {
         rect.bottom += text_offset_y;
         let format = self.text_format(style)?;
         let normal = self.brush(style.text_color)?;
-        self.utf16.clear();
-        self.utf16.extend(text.encode_utf16());
         let prefix_utf16_len = analysis.matched_utf16_len;
         let draw_options = if style.text_alignment == crate::api::overlay::TextAlignment::Left {
             D2D1_DRAW_TEXT_OPTIONS_CLIP
@@ -1069,6 +1072,8 @@ impl GpuOverlay {
                         cached.query_width,
                     )
                 } else {
+                    self.utf16.clear();
+                    self.utf16.extend(text.encode_utf16());
                     let layout = self
                         .dwrite
                         .CreateTextLayout(&self.utf16, &format, width, height)
@@ -1217,6 +1222,8 @@ impl GpuOverlay {
                 }
             }
         } else {
+            self.utf16.clear();
+            self.utf16.extend(text.encode_utf16());
             // SAFETY: UTF-16 data, format, brush and layout rectangle remain
             // live for the complete call.
             unsafe {
@@ -1685,6 +1692,21 @@ mod tests {
             );
         }
         let base = Arc::new(base);
+        renderer.present(Arc::clone(&base), area)?;
+        let started = renderer.begin_draws;
+        let mut promoted = OverlayScene::new();
+        promoted.clip = base.clip;
+        promoted.backdrop = base.backdrop;
+        promoted.retained = Some(RetainedOverlay {
+            scene: Arc::clone(&base),
+            omitted_label: None,
+        });
+        renderer.present(Arc::new(promoted), area)?;
+        assert_eq!(renderer.begin_draws, started);
+        assert!(
+            renderer.paint_index.is_none(),
+            "promoting an unchanged background needs no paint index"
+        );
         for (scale, transparent) in [(1.0, false), (1.0, true), (1.5, true), (2.0, true)] {
             let mut dpi = super::super::overlay::DpiSceneCache::default();
             renderer.present(Arc::new(dpi.scene_for_dpi(&base, scale).into_owned()), area)?;
@@ -2113,15 +2135,21 @@ mod tests {
         scene.labels.push(input);
         renderer.present(Arc::new(scene.clone()), area)?;
         let layout = renderer.edit_layout.as_ref().unwrap().layout.clone();
+        renderer.utf16.clear();
         scene.labels[0].edit = Some(crate::api::overlay::LabelEdit::try_from(
             crate::api::text_edit::Selection::default(),
         )?);
         renderer.present(Arc::new(scene.clone()), area)?;
         assert_eq!(renderer.edit_layout.as_ref().unwrap().layout, layout);
+        assert!(
+            renderer.utf16.is_empty(),
+            "cursor updates reuse encoded text"
+        );
         scene.labels[0].edit = None;
         assert!(scene.labels[0].scroll_to_cursor);
         renderer.present(Arc::new(scene.clone()), area)?;
         assert_eq!(renderer.edit_layout.as_ref().unwrap().layout, layout);
+        assert!(renderer.utf16.is_empty(), "Point reuses the editor's text");
         scene.labels[0].text.push_str("0/163");
         scene.labels[0].trailing_text_len = 5;
         renderer.present(Arc::new(scene.clone()), area)?;

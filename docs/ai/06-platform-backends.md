@@ -89,4 +89,4 @@ macOS 取色 filter 与扫描截图复用同一缓存校验：显示器 ID 相�
 
 搜索输入与 Point 显示共用固定文字基线和左对齐布局；`OverlayLabel::scroll_to_cursor` 将完整单行文字交给后端，用已有字形位置保持光标可见，非编辑态显示末尾。`trailing_text_len` 标出右对齐的计数后缀，两段文字共用一次布局，按实际计数宽度裁剪查询；查询裁剪还止于自身文字末尾，避免短输入重复绘制后缀。计数宽度及文字区边界在布局变化时计算并缓存，后缀使用 matched_text_color。Windows 复用 DirectWrite 编辑布局或 GDI advance 缓冲；macOS 复用 CoreText 测量和已有裁剪文字子层，光标／选区跟随同一水平偏移。Windows 输入视口使用不随下伸字符变化的固定偏移，空输入也按对齐方式计算插入位置；macOS 固定面板继续按字体行高居中。
 
-`platform/common/text_segmentation.rs` 维护一个正在执行和一个可替换的分词请求，在有界文本块之间检查取消代数。macOS 使用 Foundation 的本地 ByWords 枚举；Windows 使用 Windows 10 起提供的 `Windows.Data.Text.WordsSegmenter`，中文显式请求 zh-Hans。两端共用原生 UTF-16 范围到 UTF-8 的转换及校验；ASCII 直接校验范围，不构建逐字符转换表，Unicode 仍检查代理对边界。词典不可用时返回空范围，由模式保留标点并按 grapheme 回退，不附带第三方分词字典。工作线程随后端统一停止，不阻塞引擎输入循环。
+`platform/common/text_segmentation.rs` 维护一个正在执行和一个可替换的分词请求，在有界文本块之间检查取消代数。macOS 使用 Foundation 的本地 ByWords 枚举；Windows 使用 Windows 10 起提供的 `Windows.Data.Text.WordsSegmenter`，中文显式请求 zh-Hans。两端共用原生 UTF-16 范围到 UTF-8 的转换及校验；ASCII 直接校验范围，不构建逐字符转换表；Unicode 在原生范围非空时才建立 `usize` 偏移表，以不可能的字节偏移标记代理对内部，继续拒绝非法边界并保留原生范围顺序。词典不可用时返回空范围，由模式保留标点并按 grapheme 回退，不附带第三方分词字典。工作线程随后端统一停止，不阻塞引擎输入循环。

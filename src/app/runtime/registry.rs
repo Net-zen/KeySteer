@@ -509,6 +509,15 @@ impl Engine {
     }
 
     pub(super) fn binding_profile_key_for(&self, app: Option<&FocusedApp>) -> Vec<Bindings> {
+        if app.is_none()
+            || self
+                .registry
+                .routes
+                .values()
+                .all(|route| route.app_overrides.is_empty())
+        {
+            return Vec::new();
+        }
         let ids = self.binding_mode_ids();
         let profile: Vec<Bindings> = ids
             .iter()

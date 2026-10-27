@@ -453,7 +453,9 @@ impl TextSelectMode {
         }
         .into();
         if self.frozen || !self.source.scanned.is_empty() {
-            self.source.defer_update(result.targets, result.retired);
+            if !result.targets.is_empty() || !result.retired.is_empty() {
+                self.source.defer_update(result.targets, result.retired);
+            }
             return if self.frozen {
                 CommandBatch::new()
             } else {

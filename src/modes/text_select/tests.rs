@@ -1226,6 +1226,73 @@ fn pinyin_ranking_and_copy_preview_match_uihint_and_wait_for_copy_acknowledgemen
 }
 
 #[test]
+fn empty_scan_updates_preserve_results_and_search_warmup() {
+    let env = Env::new();
+    let mut mode = mode();
+    let empty = |mode: &mut TextSelectMode, status| {
+        mode.scan(
+            UiScanResult {
+                id: mode.scan_id,
+                targets: Vec::new(),
+                retired: Vec::new(),
+                status,
+            },
+            &env.ctx(),
+        )
+    };
+    mode.start(&env.ctx());
+    assert!(
+        empty(&mut mode, UiScanStatus::Success)
+            .iter()
+            .any(|c| matches!(c, Command::ShowOverlay(_)))
+    );
+    assert_eq!(mode.status, "No text found");
+    assert!(mode.frame.units.is_empty());
+
+    mode.start(&env.ctx());
+    let bounds = Rect::new(10., 10., 300., 20.);
+    mode.scan(
+        UiScanResult {
+            id: mode.scan_id,
+            targets: vec![UiTarget::recognized_text(bounds, "first".into())],
+            retired: Vec::new(),
+            status: UiScanStatus::Partial,
+        },
+        &env.ctx(),
+    );
+    let text = mode.frame.text.clone();
+    assert!(!mode.search.search_names_initialized);
+    for (status, expected) in [
+        (UiScanStatus::Success, "No text found"),
+        (UiScanStatus::TimedOut, "Text recognition timed out"),
+    ] {
+        assert!(
+            empty(&mut mode, status)
+                .iter()
+                .any(|c| matches!(c, Command::SetTimer { .. }))
+        );
+        assert_eq!(mode.status, expected);
+        assert!(!mode.source.pending_relabel);
+        mode.maintain(&env.ctx());
+        assert!(mode.search.search_names_initialized);
+        assert!(Arc::ptr_eq(&mode.frame.text, &text));
+    }
+
+    mode.scan(
+        UiScanResult {
+            id: mode.scan_id,
+            targets: Vec::new(),
+            retired: vec![bounds],
+            status: UiScanStatus::Success,
+        },
+        &env.ctx(),
+    );
+    assert!(mode.source.pending_relabel);
+    settle(&mut mode, &env);
+    assert!(mode.frame.units.is_empty());
+}
+
+#[test]
 fn late_batches_coalesce_and_deactivation_cancels_maintenance() {
     let env = Env::new();
     let mut mode = mode();
@@ -1249,10 +1316,43 @@ fn late_batches_coalesce_and_deactivation_cancels_maintenance() {
             .iter()
             .all(|c| matches!(c, Command::SetTimer { .. }))
     );
+    mode.scan(
+        UiScanResult {
+            id: mode.scan_id,
+            targets: Vec::new(),
+            retired: Vec::new(),
+            status: UiScanStatus::Success,
+        },
+        &env.ctx(),
+    );
+    assert!(mode.source.pending_relabel);
     settle(&mut mode, &env);
     assert_eq!(mode.frame.units.len(), 2);
     mode.action(Action::SelectAll, &env.ctx());
     assert!(!mode.output.is_empty());
+    let snapshot = mode.frame.clone();
+    let commands = mode.scan(
+        UiScanResult {
+            id: mode.scan_id,
+            retired: vec![],
+            status: UiScanStatus::Success,
+            targets: vec![UiTarget::recognized_text(
+                Rect::new(10., 35., 300., 50.),
+                "late row".into(),
+            )],
+        },
+        &env.ctx(),
+    );
+    assert!(commands.is_empty());
+    settle(&mut mode, &env);
+    assert_eq!(mode.frame.text, snapshot.text);
+    assert_eq!(mode.frame.selected, snapshot.selected);
+    assert_eq!(mode.frame.selected_bounds(), snapshot.selected_bounds());
+    mode.navigate(true, &env.ctx());
+    settle(&mut mode, &env);
+    assert_eq!(&*mode.frame.text, "first late row\n\nsecond");
+    assert_eq!(mode.frame.selected, [false, false]);
+    mode.action(Action::SelectAll, &env.ctx());
     let commands = mode.handle(&ModeEvent::Deactivated, &env.ctx());
     assert_eq!(mode.output.capacity(), 0);
     assert_eq!(mode.summary.capacity(), 0);

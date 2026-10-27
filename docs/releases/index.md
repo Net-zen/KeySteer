@@ -10,10 +10,12 @@ outline: 2
 - 优化 Windows 和 macOS 的按键处理与动作序列执行，减少临时内存分配。
 - 减少文字选择分词、编号及窗口模式面板更新的处理开销。
 - 优化 macOS 覆盖层刷新，减少未变化图形的重复更新。
+- 优化 OCR 段落分组、流式结果处理和覆盖层绘制，减少重复计算与临时内存分配。
 
 - Reduced temporary allocations during keyboard input handling and action-sequence execution on Windows and macOS.
 - Reduced processing overhead in Text Select segmentation and label numbering, and in Window mode panel updates.
 - Optimized macOS overlay refreshes to avoid updating unchanged shapes.
+- Optimized OCR paragraph grouping, streamed result handling, and overlay rendering to reduce redundant work and temporary allocations.
 
 ## 0.12.8
 

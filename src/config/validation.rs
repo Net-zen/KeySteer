@@ -2,7 +2,10 @@
 
 use super::*;
 
-fn validate_optional_color(path: &str, color: Option<&ThemedColor>) -> Result<(), ConfigError> {
+fn validate_optional_color(
+    path: impl std::fmt::Display,
+    color: Option<&ThemedColor>,
+) -> Result<(), ConfigError> {
     if color.is_some_and(|value| !value.is_valid()) {
         return Err(ConfigError::Invalid(format!(
             "{path} must use #RRGGBBAA for every appearance"
@@ -11,14 +14,14 @@ fn validate_optional_color(path: &str, color: Option<&ThemedColor>) -> Result<()
     Ok(())
 }
 
-fn validate_label_colors(path: &str, label: &LabelUi) -> Result<(), ConfigError> {
+fn validate_label_colors(path: impl std::fmt::Display, label: &LabelUi) -> Result<(), ConfigError> {
     for (name, value) in [
         ("background_color", label.background_color.as_ref()),
         ("text_color", label.text_color.as_ref()),
         ("matched_text_color", label.matched_text_color.as_ref()),
         ("border_color", label.border_color.as_ref()),
     ] {
-        validate_optional_color(&format!("{path}.{name}"), value)?;
+        validate_optional_color(format_args!("{path}.{name}"), value)?;
     }
     Ok(())
 }
@@ -164,7 +167,7 @@ impl ConfigFile {
                     "{name}.border_width must be finite and 0..=10000"
                 )));
             }
-            validate_label_colors(&format!("{name}.ui"), &mode.ui)?;
+            validate_label_colors(format_args!("{name}.ui"), &mode.ui)?;
         }
 
         {
@@ -218,9 +221,12 @@ impl ConfigFile {
                 card.guide_line_color.as_ref(),
             )?;
             validate_optional_color("window.card.number_color", card.number_color.as_ref())?;
-            validate_optional_color(&format!("{name}.card.app_color"), card.app_color.as_ref())?;
             validate_optional_color(
-                &format!("{name}.card.title_color"),
+                format_args!("{name}.card.app_color"),
+                card.app_color.as_ref(),
+            )?;
+            validate_optional_color(
+                format_args!("{name}.card.title_color"),
                 card.title_color.as_ref(),
             )?;
         }
@@ -311,7 +317,7 @@ impl ConfigFile {
                 self.recursive_grid.ui.sub_key_preview_text_color.as_ref(),
             ),
         ] {
-            validate_optional_color(&format!("recursive_grid.ui.{name}"), value)?;
+            validate_optional_color(format_args!("recursive_grid.ui.{name}"), value)?;
         }
         validate_label_colors("ui_hint.ui", &self.ui_hint.ui)?;
         validate_optional_color(
@@ -391,7 +397,7 @@ impl ConfigFile {
             ("text_color", highlight.text_color.as_ref()),
             ("border_color", highlight.border_color.as_ref()),
         ] {
-            validate_optional_color(&format!("ui_hint.search_highlight.{name}"), color)?;
+            validate_optional_color(format_args!("ui_hint.search_highlight.{name}"), color)?;
         }
         if !highlight.border_width.is_finite() || !(0.0..=20.0).contains(&highlight.border_width) {
             return Err(bad(
@@ -462,7 +468,7 @@ impl ConfigFile {
                 self.mode_indicator.cursor.right_pressed_color.as_ref(),
             ),
         ] {
-            validate_optional_color(&format!("mode_indicator.cursor.{name}"), value)?;
+            validate_optional_color(format_args!("mode_indicator.cursor.{name}"), value)?;
         }
         if self.mode_indicator.cursor.radius <= 0 || self.mode_indicator.cursor.stroke_width < 0 {
             return Err(bad(
@@ -494,7 +500,7 @@ impl ConfigFile {
                 ),
                 ("ui.border_color", entry.ui.border_color.as_ref()),
             ] {
-                validate_optional_color(&format!("mode_indicator.modes.{mode}.{name}"), value)?;
+                validate_optional_color(format_args!("mode_indicator.modes.{mode}.{name}"), value)?;
             }
             if entry.cursor.radius.is_some_and(|value| value <= 0)
                 || entry.cursor.stroke_width.is_some_and(|value| value < 0)

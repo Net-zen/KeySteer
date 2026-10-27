@@ -1135,16 +1135,12 @@ fn parses_style_theme_and_ui_sections() {
 
 #[test]
 fn rejects_non_rgba_component_colors() {
-    let config = Config::parse(
-        r##"
-            [ui_hint.ui]
-            text_color = "#112233"
-            "##,
-    )
-    .unwrap();
-    let error = config.validate().unwrap_err().to_string();
-    assert!(error.contains("ui_hint.ui.text_color"), "{error}");
-    assert!(error.contains("#RRGGBBAA"), "{error}");
+    for path in ["ui_hint.ui", "window.ui", "ui_hint.search_highlight"] {
+        let config = Config::parse(&format!("[{path}]\ntext_color = '#112233'")).unwrap();
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains(&format!("{path}.text_color")), "{error}");
+        assert!(error.contains("#RRGGBBAA for every appearance"), "{error}");
+    }
 }
 
 #[test]

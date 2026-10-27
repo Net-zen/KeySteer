@@ -74,6 +74,8 @@ fn multi_selection_caret_edits_activate_the_preceding_number_without_changing_th
             ("home", "124", 0),
             ("right", "124", 1),
         ] {
+            let unchanged_text = mode.multi_input.as_ref().unwrap().text == expected_text;
+            let previous_selection = mode.multi.clone();
             let out = mode.handle(
                 &crate::api::text_edit::navigation_action(
                     &crate::api::KeyChord::parse(key).unwrap(),
@@ -96,6 +98,9 @@ fn multi_selection_caret_edits_activate_the_preceding_number_without_changing_th
             let input = mode.multi_input.as_ref().unwrap();
             assert_eq!(input.text, expected_text);
             assert_eq!(input.selection.cursor, caret);
+            if unchanged_text {
+                assert_eq!(mode.multi, previous_selection, "caret edit {key}");
+            }
             assert_eq!(mode.target.as_ref().unwrap().id, WindowId(1));
             assert!(!mode.detail().contains("Example"));
             assert!(!mode.detail().contains("First run"));

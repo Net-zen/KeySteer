@@ -1,4 +1,5 @@
 use crate::api::{Rect, UiTarget};
+use smallvec::{SmallVec, smallvec};
 use std::{ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -64,11 +65,27 @@ impl Frame {
         });
         // Join aligned nearby lines, keeping distinct columns separate. This is
         // layout grouping of OCR evidence, not a second recognition pass.
-        let mut groups: Vec<(Rect, Vec<&UiTarget>)> = Vec::new();
+        let max_gap = lines
+            .iter()
+            .map(|line| line.rect.height)
+            .fold(0.0, f64::max)
+            * 0.9;
+        let mut first_active = 0;
+        let mut groups: Vec<(Rect, SmallVec<[&UiTarget; 2]>)> = Vec::new();
         for line in lines {
+            // A later tall row can bridge a gap, so skip only a prefix that
+            // cannot connect even with the tallest row in this input.
+            while groups.get(first_active).is_some_and(|(_, items)| {
+                items
+                    .last()
+                    .is_some_and(|last| line.rect.y - last.rect.bottom() > max_gap)
+            }) {
+                first_active += 1;
+            }
             let candidate = groups
                 .iter()
                 .enumerate()
+                .skip(first_active)
                 .filter_map(|(i, (_, items))| {
                     let last = items.last()?;
                     let gap = line.rect.y - last.rect.bottom();
@@ -87,7 +104,7 @@ impl Frame {
                 groups[index].0 = groups[index].0.union(&line.rect);
                 groups[index].1.push(line);
             } else {
-                groups.push((line.rect, vec![line]));
+                groups.push((line.rect, smallvec![line]));
             }
         }
         groups.sort_by(|a, b| a.0.y.total_cmp(&b.0.y).then(a.0.x.total_cmp(&b.0.x)));
@@ -425,6 +442,80 @@ mod tests {
         ]);
         assert_eq!(frame.units.len(), 2);
         assert_eq!(&frame.text[frame.units[0].clone()], "第一行第二行");
+    }
+
+    #[test]
+    fn paragraph_matching_preserves_ties_tall_rows_and_final_bounds_order() {
+        for (rows, expected, groups) in [
+            // Equal gaps keep the first-created group.
+            (
+                [
+                    Rect::new(0., 0., 100., 20.),
+                    Rect::new(30., 0., 100., 20.),
+                    Rect::new(15., 25., 100., 20.),
+                ],
+                "a c\n\nb",
+                [(0, 2), (1, 1)],
+            ),
+            // A union can move a later group's left edge before an earlier one.
+            (
+                [
+                    Rect::new(0., 0., 100., 15.),
+                    Rect::new(30., 0., 100., 20.),
+                    Rect::new(-5., 25., 100., 20.),
+                ],
+                "b c\n\na",
+                [(1, 2), (0, 0)],
+            ),
+            // The intervening small row must not expire a group a tall row can join.
+            (
+                [
+                    Rect::new(0., 0., 100., 10.),
+                    Rect::new(300., 35., 100., 10.),
+                    Rect::new(0., 40., 100., 50.),
+                ],
+                "a c\n\nb",
+                [(0, 2), (1, 1)],
+            ),
+            // After an expired prefix, candidate indices still address the original groups.
+            (
+                [
+                    Rect::new(0., 0., 100., 10.),
+                    Rect::new(300., 40., 100., 10.),
+                    Rect::new(300., 55., 100., 10.),
+                ],
+                "a\n\nb c",
+                [(0, 0), (1, 2)],
+            ),
+        ] {
+            let targets: Vec<_> = rows
+                .iter()
+                .zip(["a", "b", "c"])
+                .map(|(&bounds, text)| UiTarget::recognized_text(bounds, text.into()))
+                .collect();
+            let mut frame = Frame::from_targets(&targets);
+            assert_eq!(&*frame.text, expected);
+            assert_eq!(
+                frame.region_bounds,
+                groups.map(|(first, last)| rows[first].union(&rows[last]))
+            );
+            assert_eq!(frame.selected, [false, false]);
+            frame.toggle(1);
+            frame.toggle(0);
+            assert_eq!(
+                frame.selected_text(),
+                expected,
+                "regions retain document order"
+            );
+        }
+        // The maximum gap is inclusive; the very next representable y is not.
+        for (y, paragraphs) in [(19.0_f64, 1), (19.0_f64.next_up(), 2)] {
+            let frame = Frame::from_targets(&[
+                UiTarget::recognized_text(Rect::new(0., 0., 100., 10.), "a".into()),
+                UiTarget::recognized_text(Rect::new(0., y, 100., 10.), "b".into()),
+            ]);
+            assert_eq!(frame.units.len(), paragraphs);
+        }
     }
 
     #[test]
