@@ -1,6 +1,6 @@
 import type { ConfigDocument } from '../config-studio/document.ts'
 
-const names: Record<string, string> = { normal: 'Normal', text_input: 'Text Input', quick_switch: 'Quick Switch', text_select: 'Text Select', grid: 'Grid', recursive_grid: 'Recursive Grid', ui_hint: 'UI Hint', window: 'Window', window_quick: 'Quick', window_editor: 'Edit', window_restore: 'Restore', window_tab: 'Tabs', idle: 'Idle' }
+const names: Record<string, string> = { normal: 'Normal', text_input: 'Text Input', quick_switch: 'Quick Switch', text_select: 'Text Select', grid: 'Grid', recursive_grid: 'Recursive Grid', bisect: 'Bisect', ui_hint: 'UI Hint', window: 'Window', window_quick: 'Quick', window_editor: 'Edit', window_restore: 'Restore', window_tab: 'Tabs', idle: 'Idle' }
 const palettes = {
   light: { surface: '#EEF2FFFF', accent: '#465FBCFF', accent_alt: '#0B2377FF', on_accent_alt: '#F8FAFFFF', text: '#17327AFF' },
   dark: { surface: '#0A1338FF', accent: '#6E82D6FF', accent_alt: '#8FA2F0FF', on_accent_alt: '#081022FF', text: '#E8EEFFFF' },
@@ -43,7 +43,7 @@ export function modeIndicatorPreview(document: ConfigDocument, mode: string, app
   const x = Math.max(Math.min(width, canvas.width), Math.min(canvas.width, pointer.x / 100 * canvas.width + offset[0]))
   const y = Math.max(0, Math.min(Math.max(0, canvas.height - height), pointer.y / 100 * canvas.height + offset[1]))
   const theme = { ...palettes[appearance === 'light' ? 'light' : 'dark'], ...document.theme?.[appearance] }
-  const background = ['normal', 'grid', 'ui_hint', 'text_select', 'quick_switch'].includes(mode) ? theme.accent : mode === 'recursive_grid' ? theme.accent_alt : theme.surface.slice(0, 7) + 'F2'
+  const background = ['normal', 'grid', 'ui_hint', 'text_select', 'quick_switch'].includes(mode) ? theme.accent : ['recursive_grid', 'bisect'].includes(mode) ? theme.accent_alt : theme.surface.slice(0, 7) + 'F2'
   const color = (value: any, fallback: string): string => typeof value === 'string' ? value : value?.[appearance] ?? fallback
   return { ...badge, style: {
     position: 'absolute' as const, pointerEvents: 'none' as const, zIndex: 25,

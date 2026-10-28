@@ -27,6 +27,7 @@ use crate::api::overlay::{
     Color, LabelStyle, LabelTextAnalysis, OverlayItems, OverlayLabel, OverlayScene, OverlayShape,
     SharedLabelStyle, normalized_label_scale, scaled_label_geometry,
 };
+use crate::platform::common::overlay_geometry::indicator_layout;
 
 use super::super::native::{
     self, GdiDibSurface, NativeDimensions, OwnedFont, OwnedWindow, OwnedWindowSpec,
@@ -226,33 +227,25 @@ impl Overlay {
             });
         }
         if let Some(indicator) = &scene.indicator {
-            let label_size = |text: &str| {
-                crate::api::overlay::Indicator::label_size(text.chars().count(), &indicator.style)
-            };
-            let (width, height) = label_size(&indicator.text);
+            let layout = indicator_layout(
+                indicator,
+                Point::new(indicator.position.x - area.x, indicator.position.y - area.y),
+                1.0,
+            );
+            let global =
+                |rect: Rect| Rect::new(rect.x + area.x, rect.y + area.y, rect.width, rect.height);
             surface.label_parts(
                 &indicator.text,
-                Rect::new(
-                    indicator.position.x - width,
-                    indicator.position.y,
-                    width,
-                    height,
-                ),
+                global(layout.main),
                 &indicator.style,
                 0,
                 text_rasterizer,
                 (None, false, 0),
             )?;
-            if let Some(held_text) = &indicator.held_text {
-                let (held_width, held_height) = label_size(held_text);
+            if let (Some(held_text), Some(rect)) = (&indicator.held_text, layout.held) {
                 surface.label_parts(
                     held_text,
-                    Rect::new(
-                        indicator.position.x - held_width,
-                        indicator.position.y + height + 4.0,
-                        held_width,
-                        held_height,
-                    ),
+                    global(rect),
                     &indicator.style,
                     0,
                     text_rasterizer,

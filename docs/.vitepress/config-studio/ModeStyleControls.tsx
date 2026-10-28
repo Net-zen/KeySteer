@@ -1,3 +1,4 @@
+import { bisectColors } from '../simulator/bisect.ts'
 import { useStudioI18n } from './i18n'
 import { fieldLocation, type SettingsTab } from './navigation'
 import { percentagePositionRatios } from '../simulator/window-card-position.ts'
@@ -66,6 +67,10 @@ export default defineComponent({
       ((field.path.startsWith('window.card.') || field.path.startsWith('window_editor.card.')) || /^window(?:_\w+)?\.ui\./.test(field.path))
     const fieldValue = (field: StyleField): unknown => {
       const configured = getConfigPath(props.effectiveDocument, field.path)
+      if (configured === undefined && field.kind === 'color' && field.path.startsWith('bisect.ui.')) {
+        const key = field.path.endsWith('line_color') ? 'line_color' : 'highlight_color'
+        return Object.fromEntries((['light', 'dark'] as const).map(appearance => [appearance, bisectColors(props.effectiveDocument, appearance)[key]]))
+      }
       if (configured === undefined && isHighlightField(field)) {
         if (field.kind !== 'color') return field.default
         const key = field.path.endsWith('background_color') ? 'background' : field.path.endsWith('border_color') ? 'border' : 'text'

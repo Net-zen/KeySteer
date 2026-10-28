@@ -35,7 +35,7 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
 
 ## 用网格快速移动
 
-不想一路移动窗口？按 `G` 打开 Grid。窗口自身的 `Primary+F` 绑定为 Recursive Grid；默认临时层会优先使用 Normal 的同名组合键进入 UI Hint。要保留窗口绑定，将 `primary+f` 加入 `temporary_mode_passthrough_keys`。选择网格时，窗口中心会跟着定位点移动，边缘限制在屏幕可用区内。
+不想一路移动窗口？按 `G` 打开 Grid，或按 `Primary+F` 打开 Recursive Grid。窗口自身显式配置的组合键在临时 Normal 层启用时仍然生效。选择网格时，窗口中心会跟着定位点移动，边缘限制在屏幕可用区内。
 
 回退、重选、切屏沿用网格模式的操作。完成定位后回到 Window；配置为 `keep` 时可继续选格。一轮网格定位可以用一次 `Z` 撤销。
 

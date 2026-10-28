@@ -16,9 +16,13 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 架构、日志和 unsafe 护栏分别在 `tests/architecture_dependencies.rs`、`tests/logging_policy.rs`、`tests/safety_budget.rs`。不要为通过检查而直接放宽预算。`safety_budget` 另编译实际 macOS CF owner 源码，用检查空指针的模拟 release 验证空 AX 输出、单次释放与所有权转移；可在非 macOS 宿主运行，但不代替原生实机验证。
 
+macOS 更新器测试覆盖握手、签名、交换与回滚、退出通知及启动状态不确定时保留两份应用包。登录桌面上显式运行 `cargo test --lib launch_services_preserves_arguments_and_handshake_and_stops_failed_startup -- --ignored --test-threads=1`，以临时无界面应用验证旧实例存活时交换应用包、新旧版本的真实 LaunchServices 启动、参数和确认环境传递、失败退出与回滚启动入口，不启动生产应用或请求权限。`cargo test --test macos_capture_permissions` 编译实际截图桥接，仅替换显示器与 ScreenCaptureKit 边界，覆盖预检查失败但实际截图成功、枚举／截图拒绝、普通错误、取消及超时后的恢复；不截图用户桌面。权限跨版本保留仍需同签名正式包的实机升级验收。
+
 跨平台按键测试通过配置别名及 `KeyChord` 解析实际修饰键，再转换为物理按键；内置 `primary` 不一定存在于用户别名表。布局断言沿用后端坐标约定：Windows 检查 DPI 缩放后的矩形，macOS 检查 AppKit 逻辑点，不能把 Retina backing scale 再套入 Windows 几何函数。保留包含、重叠、字号及边距断言，不通过跳过平台或放宽容差修复测试。
 
 覆盖层回归包括位置快路径后返回上次完整场景坐标，以及 macOS 相同矩形的显示刷新、保留当前位置和拔屏。Windows 固定坐标像素回归需关闭系统全屏放大镜，并确认测试图层确实出现在捕获结果中；游标使用与底色不同的不透明色，指示器另行验证可见、移动与恢复，不能以两次相同的桌面背景或只观察一个图层充当渲染一致性证明。macOS overlay 单元测试跳过原生窗口创建，只验证状态转换；交叉 `cargo check --tests` 也不执行这些测试，默认不编译 Objective-C 桥接。AppKit/屏幕取色验收仍需在 Mac 检查混合 Retina 显示、改变主屏／分辨率、静止与连续移动时热插拔、首次搜索背景复用，以及取色失败后的恢复；原生像素和耗时结论不能由其他平台测试替代。
+
+公共 `overlay_geometry` 回归覆盖 Retina 倍率、Windows 100%／125%／150%／200% 预缩放样式、负坐标和连续移动中的固定像素尺寸，以及双行徽标共同右边界；两端另验证原生局部坐标转换。`cargo test --lib platform::macos::display::overlay::tests -- --include-ignored --test-threads=1` 执行离屏 CoreText／Core Animation 检查：字号度量、缩放和尺寸变化时重绘、单纯移动时复用位图。Windows 的 `directcomposition_smoke` ignored 测试还比较小数锚点在同一像素内移动、完整帧及位置快路径的实际画面，并确认不重画表面。交叉编译不能替代这些原生测试或内外屏实际清晰度验收。
 
 正式构建使用 `cargo build --locked --release --bin keysteer --no-default-features`。单元测试由 `cfg(test)` 隔离，测试依赖放在 dev-dependencies。主包不暴露基准接口或对应 feature，`--all-features` 不依赖本地性能目录。性能测试、适配代码、独立锁文件及原始结果只保留本地，不纳入提交；用户要求发布的已核验汇总可用于性能页面。需要访问内部实现时在隔离副本内适配，不能为基准扩大生产 API。
 
@@ -109,3 +113,5 @@ Windows x64 固定三个编译级别：兼容版 Rust `target-cpu=x86-64`、C `/
 `KEYSTEER_CROSS_WINDOWS=1` 在非 Windows 宿主上启用 C 桥接和图标/manifest 编译，需要完整交叉工具链；未设置时保留不依赖 SDK 的跨平台类型检查。MSVC 交叉工作流显式设置 `RC_PATH=llvm-rc` 和空 `CROSS_COMPILE`，避免 winresource 0.1.31 初始化 GNU 前缀时误报 ARM64 未知目标。跨宿主的工具链、SDK、路径和签名时间戳可能改变哈希，不能据此断言行为不一致。
 
 `KEYSTEER_CROSS_MACOS=1` 在非 Apple 宿主显式启用完整 Objective-C 桥接编译，需要 SDKROOT、Clang 与目标链接器；未设置时仍允许不安装 SDK 的跨平台类型检查。
+
+- macOS 撤权回归：`cargo test --lib permission_ -- --test-threads=1` 覆盖无通知不检查、后台检查阻塞时真实处置邮箱仍能交付、拒绝后立即放行、检查期间新通知和退出后的迟到结果；原生循环测试要求终态回合返回前已完成 shutdown。真实系统设置关闭／删除权限仍需实机确认，模拟通知或能力拒绝不能声称验证了 TCC 的通知投递。

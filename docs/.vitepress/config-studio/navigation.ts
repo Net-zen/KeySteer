@@ -11,7 +11,7 @@ export interface SettingsPage { id: string; category: string; label: string; mod
 export const pages: SettingsPage[] = [
   { id: 'text_input', category: 'mouse', label: '文本输入 · Text Input', mode: 'text_input', tabs: ['keys', 'appearance'] },
   { id: 'normal', category: 'mouse', label: '鼠标控制 · Normal', mode: 'normal', tabs: ['keys', 'behavior', 'appearance'] },
-  ...[['grid', '分层网格 · Grid'], ['recursive_grid', '递归网格 · Recursive Grid'], ['ui_hint', '界面定位 · UI Hint'], ['text_select', '文字选择 · Text Select']].map(([id, label]) => ({ id, label, category: 'target', mode: id, tabs: ['keys', 'behavior', 'appearance'] as SettingsTab[] })),
+  ...[['ui_hint', '界面定位 · UI Hint'], ['grid', '分层网格 · Grid'], ['recursive_grid', '递归网格 · Recursive Grid'], ['bisect', '二分定位 · Bisect'], ['text_select', '文字选择 · Text Select']].map(([id, label]) => ({ id, label, category: 'target', mode: id, tabs: ['keys', 'behavior', 'appearance'] as SettingsTab[] })),
   ...[['window', '移动与缩放'], ['window_quick', '快速布局'], ['window_editor', '布局编辑'], ['window_restore', '布局恢复'], ['window_tab', '标签分组']].map(([id, label]) => ({ id, label, category: 'windows', mode: id, tabs: ['keys', 'behavior', 'appearance'] as SettingsTab[] })),
   { id: 'window_card', category: 'windows', label: '共用外观', tabs: ['appearance'] },
   { id: 'hotkeys', category: 'global', label: '全局快捷键', mode: 'hotkeys', tabs: ['keys'] },

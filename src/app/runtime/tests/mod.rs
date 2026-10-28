@@ -151,6 +151,11 @@ impl Backend for FakeBackend {
                 self.events = batch?;
                 while !self.events.is_empty() {
                     if turn(self)?.is_none() {
+                        assert_eq!(
+                            self.log.lock().unwrap().shutdowns,
+                            1,
+                            "a native termination loop cannot return before its shutdown reply"
+                        );
                         return Ok(());
                     }
                 }
@@ -163,6 +168,7 @@ impl Backend for FakeBackend {
             }
             self.events.push(BackendEvent::Quit);
             assert_eq!(turn(self)?, None);
+            assert_eq!(self.log.lock().unwrap().shutdowns, 1);
             Ok(())
         })();
         self.native_loop_running = false;

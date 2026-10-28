@@ -2106,3 +2106,11 @@
 .hero-download-help a { color: var(--vp-c-brand-1); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
 .hero-download-help a:hover { color: var(--vp-c-brand-2); }
 .hero-download-menu { max-height: min(560px, 75vh); overflow-y: auto; }
+
+/* Label-free directional bisection; the screen-sized preview surface is reused. */
+.ks-bisect-region { position: absolute; z-index: 2; background: var(--ks-target-highlight); outline: max(1px, var(--ks-target-line-width)) solid var(--ks-target-accent); outline-offset: -1px; pointer-events: none; }
+.ks-bisect-region.terminal { background: color-mix(in srgb, var(--ks-target-highlight) 55%, transparent); }
+.ks-bisect-region > i { position: absolute; display: block; background: var(--ks-target-accent); }
+.ks-bisect-region > i.vertical { left: 50%; top: 0; bottom: 0; width: var(--ks-target-line-width); }
+.ks-bisect-region > i.horizontal { top: 50%; left: 0; right: 0; height: var(--ks-target-line-width); }
+.ks-bisect-backdrop { position: absolute; inset: 0; z-index: 1; background: #00000040; pointer-events: none; }

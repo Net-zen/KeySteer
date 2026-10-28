@@ -1586,8 +1586,8 @@ impl HintMode {
                 state: KeyState::Down,
                 repeat: false,
             } => self.key_down(key, ctx),
-            // In particular, do not treat the trailing repeat from the
-            // Primary+F activation chord as an `f` hint selection.
+            // In particular, do not treat a repeat from the activation key
+            // as a hint selection.
             ModeEvent::Key { repeat: true, .. } => CommandBatch::new(),
             _ => CommandBatch::new(),
         }

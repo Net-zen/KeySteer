@@ -280,6 +280,23 @@ impl ConfigFile {
             "grid.ui.matched_border_color",
             self.grid.ui.matched_border_color.as_ref(),
         )?;
+        if !(1..=40).contains(&self.bisect.max_depth) {
+            return Err(bad("bisect.max_depth must be 1..=40".into()));
+        }
+        if self.bisect.min_size_width == 0 || self.bisect.min_size_height == 0 {
+            return Err(bad(
+                "bisect minimum width and height must be positive".into()
+            ));
+        }
+        if !(0..=20).contains(&self.bisect.ui.line_width) {
+            return Err(bad("bisect.ui.line_width must be 0..=20".into()));
+        }
+        for (name, value) in [
+            ("line_color", self.bisect.ui.line_color.as_ref()),
+            ("highlight_color", self.bisect.ui.highlight_color.as_ref()),
+        ] {
+            validate_optional_color(format_args!("bisect.ui.{name}"), value)?;
+        }
         validate_label_colors("recursive_grid.ui", &self.recursive_grid.ui.label)?;
         if self.recursive_grid.ui.label_min_font_size <= 0 {
             return Err(bad(
@@ -663,6 +680,7 @@ impl ConfigFile {
             ("text_input", &self.text_input.temporary_mode_keys),
             ("text_select", &self.text_select.temporary_mode_keys),
             ("grid", &self.grid.temporary_mode_keys),
+            ("bisect", &self.bisect.temporary_mode_keys),
             ("recursive_grid", &self.recursive_grid.temporary_mode_keys),
             ("ui_hint", &self.ui_hint.temporary_mode_keys),
             ("window", &self.window.temporary_mode_keys),
@@ -851,6 +869,7 @@ impl ConfigFile {
             ("window_restore", &self.window_restore.lifecycle),
             ("window_tab", &self.window_tab.lifecycle),
             ("grid", &self.grid.lifecycle),
+            ("bisect", &self.bisect.lifecycle),
             ("recursive_grid", &self.recursive_grid.lifecycle),
             ("ui_hint", &self.ui_hint.lifecycle),
         ] {
@@ -962,6 +981,7 @@ impl ConfigFile {
             ("[text_input.bindings]".into(), &self.text_input.bindings),
             ("[text_select.bindings]".into(), &self.text_select.bindings),
             ("[grid.bindings]".into(), &self.grid.bindings),
+            ("[bisect.bindings]".into(), &self.bisect.bindings),
             (
                 "[recursive_grid.bindings]".into(),
                 &self.recursive_grid.bindings,
@@ -989,6 +1009,12 @@ impl ConfigFile {
         for over in &self.normal.app_configs {
             tables.push((
                 format!("[[normal.app_configs]] {:?}", over.bundle_id),
+                &over.bindings,
+            ));
+        }
+        for over in &self.bisect.app_configs {
+            tables.push((
+                format!("[[bisect.app_configs]] {:?}", over.bundle_id),
                 &over.bindings,
             ));
         }
@@ -1029,6 +1055,7 @@ fn validate_inheritance(config: &Config) -> Result<(), String> {
         ("text_input".into(), config.text_input.inherits.clone()),
         ("text_select".into(), config.text_select.inherits.clone()),
         ("grid".into(), config.grid.inherits.clone()),
+        ("bisect".into(), config.bisect.inherits.clone()),
         (
             "recursive_grid".into(),
             config.recursive_grid.inherits.clone(),
@@ -1060,6 +1087,7 @@ fn validate_inheritance(config: &Config) -> Result<(), String> {
         ("text_input", config.text_input.temporary_mode.as_deref()),
         ("text_select", config.text_select.temporary_mode.as_deref()),
         ("grid", config.grid.temporary_mode.as_deref()),
+        ("bisect", config.bisect.temporary_mode.as_deref()),
         ("window", config.window.temporary_mode.as_deref()),
         (
             "window_quick",

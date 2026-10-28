@@ -65,7 +65,7 @@ space = "idle"
 | `[general]` | 排除应用 |
 | `[key_aliases]` | 自定义键名和跨平台修饰键 |
 | `[hotkeys]` | 从 Idle 进入模式的启动键 |
-| `[normal]`、`[grid]`、`[recursive_grid]`、`[ui_hint]` | 鼠标与定位模式的按键和行为 |
+| `[normal]`、`[grid]`、`[recursive_grid]`、`[bisect]`、`[ui_hint]` | 鼠标与定位模式的按键和行为 |
 | `[window]`、`[window_quick]`、`[window_editor]`、`[window_restore]`、`[window_tab]` | 各窗口模式的按键和行为 |
 | `[pointer]`、`[scroll]` | 鼠标速度、滚动距离和速度 |
 | `[theme]`、`[mode_indicator]` | 颜色和模式提示 |
@@ -234,8 +234,9 @@ k = "move_up"
 l = "move_right"
 ";" = "left_click"
 g = "grid"
-f = "recursive_grid"
-"primary+f" = "ui_hint"
+f = "ui_hint"
+"primary+g" = "recursive_grid"
+"primary+f" = "bisect"
 "primary+s" = "screen next"
 
 # 可选：把 Primary+H/J/K/L 发送为应用的方向键。
@@ -256,7 +257,7 @@ f = "recursive_grid"
 
 无参数 `toggle` 可同时锁定多个伙伴键，先按伙伴或先按激活键都可以；单独短按激活键、返回 Normal 或进入 Idle 会全部释放。单独长按激活键会锁定它自身。具体步骤见 [拖拽与长按](/modes/normal#拖拽与长按)。
 
-Grid、Recursive Grid、UI Hint 始终独占键盘；Idle 始终放行未命中的输入。
+Grid、Recursive Grid、Bisect、UI Hint 始终独占键盘；Idle 始终放行未命中的输入。
 
 ### Grid
 
@@ -308,6 +309,33 @@ layers = [
   { depth = 0, grid_cols = 2, grid_rows = 2, keys = "crtn" },
 ]
 ```
+
+### Bisect
+
+从 Normal 按 `Primary+F` 进入 [Bisect 二分定位](/modes/bisect)。h/j/k/l 每次保留左／下／上／右半区，只缩小对应的轴。不显示字母，也不接受字母表、网格行列数或 `layers`。导航、光标跟随和生命周期沿用 Recursive Grid，各项独立配置。
+
+```toml
+[bisect]
+max_depth = 20
+min_size_width = 2
+min_size_height = 2
+cursor_follow_selection = true
+
+[bisect.bindings]
+h = "bisect_left"
+j = "bisect_down"
+k = "bisect_up"
+l = "bisect_right"
+
+[bisect.lifecycle]
+after_finish = "keep"
+after_click = "keep"
+
+[bisect.ui]
+line_width = 1
+```
+
+`max_depth` 允许 1–40 次二分；最小宽高必须为正数。某轴的下一半小于最小尺寸时，该轴停止，另一轴仍可继续。`line_color`、`highlight_color` 支持与递归网格相同的 RGBA／主题颜色；`line_width` 为 0–20 整数，0 隐藏内部参考线并保留区域轮廓。方向键通过 `[bisect.bindings]` 改绑，移除旧键时写 `"none"`；省略的方向绑定与网格导航键一样保留默认值。
 
 ### UI Hint
 
@@ -485,7 +513,7 @@ preserve = true
 inherits = ["hotkeys", "normal"]
 ```
 
-Screen Selector 的 `preserve = true` 会在切屏时保留 Grid／Recursive Grid 的选择路径；false 则在新屏幕重新开始。开发自己的插件见[插件开发](/development/plugin-development)。
+Screen Selector 的 `preserve = true` 会在切屏时保留 Grid／Recursive Grid／Bisect 的选择路径；false 则在新屏幕重新开始。开发自己的插件见[插件开发](/development/plugin-development)。
 
 ## 运行时修改与调试
 
@@ -522,7 +550,7 @@ timers = true
 
 | 设置 | 影响哪些模式 | 默认 |
 | --- | --- | --- |
-| `mouse_key_help` | Normal、Grid、Recursive Grid、UI Hint | false |
+| `mouse_key_help` | Normal、Grid、Recursive Grid、Bisect、UI Hint | false |
 | `window_key_help` | Window、Quick、Editor、Restore、Tabs | true |
 
 例如，想让窗口面板也默认隐藏：
@@ -649,14 +677,15 @@ position = ["44%", "50%", "56%", "50%"]
 
 所有模式共用 `inherits`、`temporary_mode`、`temporary_mode_keys` 和 `temporary_mode_passthrough_keys`，包括 Normal、Quick Switch、Text Input、Text Select、UI Hint、网格、窗口与插件。用户配置未写 `temporary_mode_keys` 或设为 `[]` 时关闭临时层；加载时即确定，输入时跳过临时匹配。发布配置中 UI Hint 显式设置 `temporary_mode_keys = ["primary"]`，按住 Primary 可临时借用 Normal；文字选择默认关闭临时层，默认段不添加这些可选字段。
 
-按住 `temporary_mode_keys` 时，依次查找：
+只有临时层实际激活时才处理激活键；未激活时沿用普通解析。激活期间依次查找：
 
-1. 临时模式的完整组合键。
-2. 当前模式的完整组合键。
-3. 去掉临时激活键后的临时模式绑定。
-4. 去掉临时激活键后的当前模式绑定或标签输入。
+1. 当前模式自身显式配置的完整组合键，不包括继承绑定。
+2. 剔除本次实际生效的激活键后，临时模式的完整组合键。
+3. 剔除激活键后，当前模式的完整组合键。
+4. 使用相同的剩余按键，查找临时模式的其他匹配。
+5. 使用相同的剩余按键，查找当前模式的其他匹配或标签输入。
 
-每一层都包含其继承绑定。完整组合键优先于裸键，例如 Normal 的 `Primary+F` 进入 UI Hint，优先于裸 F 的 Recursive Grid；Grid 的 `Primary+Q` 仍返回 Normal。
+后四项均包含各自的继承绑定，`none` 仍终止匹配。剩余完整组合键优先，同级临时层优先；不会重新带回已消耗的激活键。例如临时 Normal 中 `Primary+H` 使用 `h = "move_left"`，不会触发 Normal 的 `primary+h`；其他修饰键仍保留。Grid 自身显式配置的 `Primary+Q` 仍返回 Normal。若要在临时层中保留 `Primary+S` 切屏等完整快捷键，请在当前模式的 `bindings` 中显式配置。
 
 想让 Q 直接交给当前模式，可声明穿透键：
 

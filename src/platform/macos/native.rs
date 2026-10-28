@@ -78,6 +78,17 @@ pub(crate) fn event_tap_identity(tap: &CFMachPort) -> usize {
     tap.as_concrete_TypeRef() as usize
 }
 
+pub(crate) fn disable_event_tap(tap: &CFMachPort) {
+    // SAFETY: the borrowed Create-owned port is live for this call; both crates
+    // represent the same CFMachPortRef. This does not transfer ownership.
+    unsafe {
+        let tap = &*tap
+            .as_concrete_TypeRef()
+            .cast::<objc2_core_foundation::CFMachPort>();
+        objc2_core_graphics::CGEvent::tap_enable(tap, false);
+    }
+}
+
 extern "C-unwind" fn event_tap_invalidated(
     port: *mut objc2_core_foundation::CFMachPort,
     _info: *mut c_void,

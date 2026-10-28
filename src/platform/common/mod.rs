@@ -17,6 +17,7 @@ pub(crate) mod frame_clock;
 pub(crate) mod image_tiles;
 #[cfg(any(target_os = "windows", test))]
 pub(crate) mod overlay_damage;
+pub(crate) mod overlay_geometry;
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod overlay_reconcile;
 #[cfg(any(target_os = "macos", test))]

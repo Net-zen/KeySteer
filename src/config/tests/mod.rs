@@ -726,12 +726,9 @@ fn normal_defaults_cover_the_requested_controls_and_targeting_modes() {
     assert_eq!(normal["'"], Binding::Click(Button::Right));
     assert_eq!(normal["n"], Binding::Toggle(Vec::new()));
     assert_eq!(normal["g"], Binding::Mode(ModeId::grid()));
-    assert_eq!(normal["f"], Binding::Mode(ModeId::recursive_grid()));
-    assert!(
-        normal
-            .values()
-            .any(|binding| binding == &Binding::Mode(ModeId::ui_hint()))
-    );
+    assert_eq!(normal["f"], Binding::Mode(ModeId::ui_hint()));
+    assert_eq!(normal["primary+g"], Binding::Mode(ModeId::recursive_grid()));
+    assert_eq!(normal["primary+f"], Binding::Mode(ModeId::bisect()));
     assert_eq!(normal["q"], Binding::Mode(ModeId::idle()));
 }
 
@@ -2561,5 +2558,59 @@ fn text_select_uses_one_cyclic_page_action_without_retired_page_bindings() {
     assert!(!config.text_select.bindings.contains_key("page_down"));
     for action in ["text_next_page", "text_previous_page"] {
         assert!(Binding::parse(action).is_err(), "{action}");
+    }
+}
+
+#[test]
+fn bisect_has_independent_validated_config_and_remappable_direction_bindings() {
+    let config = Config::parse(
+        r##"
+[bisect]
+max_depth = 30
+min_size_width = 3
+min_size_height = 4
+[bisect.bindings]
+h = "none"
+"primary+a" = "bisect_left"
+[bisect.ui]
+line_color = "#12345678"
+highlight_color = { light = "#11223344", dark = "#55667788" }
+[[bisect.app_configs]]
+bundle_id = "test.*"
+[bisect.app_configs.bindings]
+f9 = "bisect_down"
+"##,
+    )
+    .unwrap();
+    config.validate().unwrap();
+    assert_eq!(config.bisect.bindings["h"], Binding::Disabled);
+    assert_eq!(
+        config.bisect.bindings["j"],
+        Binding::parse("bisect_down").unwrap()
+    );
+    assert_eq!(config.bisect.bindings["enter"], Binding::SelectionAccept);
+    assert_eq!(config.recursive_grid, Config::default().recursive_grid);
+    assert_eq!(Config::parse(&config.to_toml().unwrap()).unwrap(), config);
+    for source in [
+        "[bisect]\nkeys = 'hjkl'",
+        "[bisect]\ngrid_cols = 2",
+        "[bisect]\nmax_depth = 0",
+        "[bisect]\nmax_depth = 41",
+        "[bisect]\nmin_size_width = 0",
+        "[bisect.ui]\nline_width = -1",
+        "[bisect.ui]\nline_color = 'bad'",
+        "[bisect.lifecycle]\nafter_click = 'left_click'",
+        "[bisect]\ninherits = ['missing']",
+    ] {
+        assert!(
+            Config::parse(source).and_then(|c| c.validate()).is_err(),
+            "{source}"
+        );
+    }
+    for action in ["bisect_left", "bisect_down", "bisect_up", "bisect_right"] {
+        let binding = Binding::parse(action).unwrap();
+        assert_eq!(binding.canonical(), action);
+        assert!(!binding.is_held());
+        assert!(!binding.repeats_on_key_down());
     }
 }

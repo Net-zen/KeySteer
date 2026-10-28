@@ -5,6 +5,14 @@ outline: 2
 
 # Release notes
 
+## 0.12.10
+
+- Added **Bisect mode**: enter from Normal with `Primary+F` and halve the target area using `H/J/K/L` by default. Keys and appearance are customizable.
+- **Default keybindings changed**: Grid and UI Hint are the two modes I use most, so they now use single keys `G` / `F` in Normal. Recursive Grid / Bisect use `Primary+G` / `Primary+F`. If you prefer, restore the old keys or choose your own in `[normal.bindings]`.
+- Fixed temporary-mode shortcut conflicts and movement or scrolling continuing after mode switches.
+- Improved overlay clarity on external macOS displays and with Windows scaling.
+- Fixed macOS update restarts, permission checks, and exit hangs.
+
 ## 0.12.9
 
 - Reduced temporary allocations during keyboard input handling and action-sequence execution on Windows and macOS.

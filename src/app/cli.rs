@@ -163,14 +163,15 @@ MODES:
     idle             Silent resting state; only listens for the keys that
                      launch a mode, so the program stays out of the way
     normal           Move the pointer, click and scroll; entry point to the
-                     three targeting modes below
+                     four targeting modes below
     grid             Full-screen labelled coordinate grid
     recursive_grid   Recursively subdividing grid
+    bisect           Recursively halve the target area with direction keys
     ui_hint          Labels every clickable element
 
 LAUNCHING (from idle):
     Primary+E            normal          Primary is Cmd on macOS,
-                                        Ctrl on Windows and Linux
+                                        left Alt on Windows, Ctrl on Linux
 
 IN NORMAL MODE:
     h j k l          move the pointer
@@ -178,7 +179,10 @@ IN NORMAL MODE:
     ; ' right-shift left / right / middle click
     n                toggle left-button drag
     m ,              scroll down / up
-    g f Primary+F    grid / recursive_grid / ui_hint
+    g                grid
+    f                ui_hint
+    Primary+G        recursive_grid
+    Primary+F        bisect
     t y i u          home / end / page_up / page_down
     q or esc         back to idle
 

@@ -84,7 +84,9 @@ use std::path::{Path, PathBuf};
 // exchange two complete bundles. No executable bytes are overwritten in place.
 // Removing the optional third-party OCR bridge removes 17 unsafe expressions
 // and one native file; screenshot glyph analysis is entirely safe Rust.
-const MAX_UNSAFE_EXPRESSIONS: usize = 396;
+// Permission changes add paired CF notification registration/removal and one
+// borrowed event-tap disable call. Callbacks ignore opaque notification data.
+const MAX_UNSAFE_EXPRESSIONS: usize = 399;
 const MAX_UNSAFE_FILES: usize = 42;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
@@ -99,10 +101,10 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/accessibility/window_manager.rs", 13),
     ("src/platform/macos/autostart.rs", 5),
     ("src/platform/macos/display/display_link.rs", 4),
-    ("src/platform/macos/native.rs", 7),
+    ("src/platform/macos/native.rs", 8),
     ("src/platform/macos/update_installer/native.rs", 4),
     ("src/platform/macos/display/overlay.rs", 7),
-    ("src/platform/macos/permissions.rs", 5),
+    ("src/platform/macos/permissions.rs", 7),
     // Shutdown adds only NSObjectProtocol / NSApplicationDelegate conformance on
     // the retained main-thread status target; no new raw native calls or Send/Sync.
     ("src/platform/macos/status_item.rs", 10),

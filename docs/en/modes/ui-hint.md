@@ -8,7 +8,7 @@ Small button, distant pointer? UI Hint puts short labels on buttons, links, menu
 
 <ModeVideo file="uihint.mp4" title="UI Hint mode demonstration" description="Scanning interface elements, filtering with typed labels, and targeting a control." />
 
-Enter from Normal with `Primary+F`.
+Enter from Normal with `f`.
 
 ::: tip Point, then click
 By default, selecting a label moves the pointer and returns to Normal. Press `;` to left-click when ready.

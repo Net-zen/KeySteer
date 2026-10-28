@@ -1,6 +1,6 @@
 [package]
 name = "keysteer"
-version = "0.12.9"
+version = "0.12.10"
 authors = ["dccif"]
 edition = "2024"
 rust-version = "1.99"
@@ -74,7 +74,7 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
     "CGPath",
     "CGRemoteOperation",
 ] }
-objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFRunLoop", "CFString"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFDictionary", "CFNotificationCenter", "CFRunLoop", "CFString"] }
 objc2-core-text = { version = "0.3.2", default-features = false, features = [
     "std",
     "CTFont",
@@ -84,6 +84,7 @@ objc2-core-text = { version = "0.3.2", default-features = false, features = [
 ] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",
+    "block2",
     "libc",
     "objc2-quartz-core",
     "NSAppearance",

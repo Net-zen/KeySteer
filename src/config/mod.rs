@@ -48,8 +48,8 @@ use aliases::{
 #[cfg(test)]
 pub use settings::GridLayer;
 pub use settings::{
-    Grid, Normal, Pointer, RecursiveGrid, Scroll, TargetingMethod, TargetingReset, TextInput,
-    TextSelect, UiHint,
+    Bisect, Grid, Normal, Pointer, RecursiveGrid, Scroll, TargetingMethod, TargetingReset,
+    TextInput, TextSelect, UiHint,
 };
 pub use store::{ConfigStore, ReplaceFile};
 
@@ -103,6 +103,8 @@ pub struct ConfigFile {
     pub grid: Grid,
     #[serde(default)]
     pub recursive_grid: RecursiveGrid,
+    #[serde(default)]
+    pub bisect: Bisect,
     #[serde(default)]
     pub scroll: Scroll,
     #[serde(default)]
@@ -159,6 +161,7 @@ impl Default for ConfigFile {
             ui_hint: UiHint::default(),
             grid: Grid::default(),
             recursive_grid: RecursiveGrid::default(),
+            bisect: Bisect::default(),
             scroll: Scroll::default(),
             pointer: Pointer::default(),
             mode_indicator: ModeIndicator::default(),
@@ -270,6 +273,7 @@ pub(crate) fn with_control_defaults(
     let mut controls = match mode {
         "grid" => Grid::default().bindings,
         "recursive_grid" => RecursiveGrid::default().bindings,
+        "bisect" => Bisect::default().bindings,
         "ui_hint" => UiHint::default().bindings,
         "window_editor" => WindowEditor::default().bindings.clone(),
         "window_restore" => WindowRestore::default().bindings.clone(),
@@ -285,7 +289,8 @@ pub(crate) fn with_control_defaults(
     controls.retain(|key, binding| {
         matches!(
             binding,
-            Binding::SelectionReset
+            Binding::Bisect(_)
+                | Binding::SelectionReset
                 | Binding::SelectionParent
                 | Binding::SelectionAccept
                 | Binding::SelectionCancel
@@ -641,6 +646,7 @@ impl ConfigFile {
         }
         for (name, table) in [
             ("grid", &mut config.grid.bindings),
+            ("bisect", &mut config.bisect.bindings),
             ("recursive_grid", &mut config.recursive_grid.bindings),
             ("ui_hint", &mut config.ui_hint.bindings),
             ("window_editor", &mut config.window_editor.common.bindings),
@@ -701,6 +707,7 @@ impl ConfigFile {
             normalize_passthrough_keys(&mut mode.temporary_mode_passthrough_keys, &aliases)?;
         }
         normalize_binding_keys(&mut self.grid.bindings, "[grid.bindings]", &aliases)?;
+        normalize_binding_keys(&mut self.bisect.bindings, "[bisect.bindings]", &aliases)?;
         normalize_binding_keys(
             &mut self.recursive_grid.bindings,
             "[recursive_grid.bindings]",
@@ -725,6 +732,7 @@ impl ConfigFile {
             ("[[app_configs]]", &mut self.app_configs),
             ("[[normal.app_configs]]", &mut self.normal.app_configs),
             ("[[grid.app_configs]]", &mut self.grid.app_configs),
+            ("[[bisect.app_configs]]", &mut self.bisect.app_configs),
             (
                 "[[recursive_grid.app_configs]]",
                 &mut self.recursive_grid.app_configs,
@@ -767,6 +775,7 @@ impl ConfigFile {
             &mut self.text_input.temporary_mode_passthrough_keys,
             &mut self.text_select.temporary_mode_passthrough_keys,
             &mut self.grid.temporary_mode_passthrough_keys,
+            &mut self.bisect.temporary_mode_passthrough_keys,
             &mut self.recursive_grid.temporary_mode_passthrough_keys,
             &mut self.ui_hint.temporary_mode_passthrough_keys,
         ] {
@@ -783,13 +792,14 @@ impl ConfigFile {
         &self.resolved_key_aliases
     }
 
-    fn temporary_key_lists_mut(&mut self) -> [(&'static str, &mut Vec<String>); 12] {
+    fn temporary_key_lists_mut(&mut self) -> [(&'static str, &mut Vec<String>); 13] {
         [
             ("normal", &mut self.normal.temporary_mode_keys),
             ("quick_switch", &mut self.quick_switch.temporary_mode_keys),
             ("text_input", &mut self.text_input.temporary_mode_keys),
             ("text_select", &mut self.text_select.temporary_mode_keys),
             ("grid", &mut self.grid.temporary_mode_keys),
+            ("bisect", &mut self.bisect.temporary_mode_keys),
             (
                 "recursive_grid",
                 &mut self.recursive_grid.temporary_mode_keys,

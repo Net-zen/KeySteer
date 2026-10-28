@@ -6,6 +6,7 @@
 
 use crate::api::{Mode, ModeId, Plugin};
 use crate::config::{AppOverride, Bindings, Config, UiHintAppOverride};
+use crate::modes::targeting::{BisectGeometry, GridGeometry, LetterGeometry, RecursiveGeometry};
 use crate::modes::{self, GridMode, HintMode, IdleMode, NormalMode};
 use crate::plugins::BundledSettings;
 
@@ -157,7 +158,7 @@ fn normal_instance(config: &Config) -> Box<dyn Mode> {
             keys: layer.keys.clone(),
         })
         .collect();
-    let controller = TargetingController::new(
+    let grid = GridGeometry::new(
         Layout {
             rows: geometry.grid_rows as usize,
             cols: geometry.grid_cols as usize,
@@ -165,18 +166,36 @@ fn normal_instance(config: &Config) -> Box<dyn Mode> {
         },
         &layers,
         geometry.max_depth,
-        geometry
-            .min_size
-            .map(|(width, height)| (width as f64, height as f64)),
-        true,
-        crate::api::TargetingLifecycle::default(),
     );
-    Box::new(modes::normal_targeting::NormalTargeting::new(
-        normal(config),
-        controller,
-        targeting.reset_on.contains(&TargetingReset::Move),
-        targeting.reset_on.contains(&TargetingReset::Click),
-    ))
+    fn wrap<G: LetterGeometry>(
+        config: &Config,
+        grid: G,
+        depth: u32,
+        reset_move: bool,
+        reset_click: bool,
+    ) -> Box<dyn Mode> {
+        Box::new(modes::normal_targeting::NormalTargeting::new(
+            normal(config),
+            TargetingController::new(grid, depth, true, crate::api::TargetingLifecycle::default()),
+            reset_move,
+            reset_click,
+        ))
+    }
+    let reset_move = targeting.reset_on.contains(&TargetingReset::Move);
+    let reset_click = targeting.reset_on.contains(&TargetingReset::Click);
+    match geometry.min_size {
+        Some((width, height)) => wrap(
+            config,
+            RecursiveGeometry {
+                grid,
+                min_size: (width as f64, height as f64),
+            },
+            geometry.max_depth,
+            reset_move,
+            reset_click,
+        ),
+        None => wrap(config, grid, geometry.max_depth, reset_move, reset_click),
+    }
 }
 
 /// Compile and validate the optional input alphabet once. No registry/runtime
@@ -336,23 +355,25 @@ pub(crate) fn compile_normal_targeting(
 }
 
 #[doc(hidden)]
-pub fn grid(config: &Config) -> GridMode {
+pub fn grid(config: &Config) -> GridMode<GridGeometry> {
     use modes::targeting::{Layout, TargetingController};
     let settings = &config.grid;
     GridMode::new(
         TargetingController::new(
-            Layout {
-                rows: settings.grid_rows.max(1) as usize,
-                cols: settings.grid_cols.max(1) as usize,
-                keys: settings.keys.chars().collect(),
-            },
-            &[],
+            GridGeometry::new(
+                Layout {
+                    rows: settings.grid_rows.max(1) as usize,
+                    cols: settings.grid_cols.max(1) as usize,
+                    keys: settings.keys.chars().collect(),
+                },
+                &[],
+                settings.max_depth,
+            ),
             settings.max_depth,
-            None,
             settings.cursor_follow_selection,
             settings.lifecycle.clone(),
         ),
-        modes::grid::Appearance::Grid(crate::api::presentation::GridStyle {
+        crate::api::presentation::GridStyle {
             label: config.grid.ui.label.compile(),
             matched_background_color: config
                 .grid
@@ -366,12 +387,12 @@ pub fn grid(config: &Config) -> GridMode {
                 .matched_border_color
                 .as_ref()
                 .map(crate::api::theme::CompiledColor::from),
-        }),
+        },
     )
 }
 
 #[doc(hidden)]
-pub fn recursive_grid(config: &Config) -> GridMode {
+pub fn recursive_grid(config: &Config) -> GridMode<RecursiveGeometry> {
     use modes::targeting::{Layout, TargetingController};
     let settings = &config.recursive_grid;
     let layers: Vec<_> = settings
@@ -386,21 +407,26 @@ pub fn recursive_grid(config: &Config) -> GridMode {
         .collect();
     GridMode::new(
         TargetingController::new(
-            Layout {
-                rows: settings.grid_rows.max(1) as usize,
-                cols: settings.grid_cols.max(1) as usize,
-                keys: settings.keys.chars().collect(),
+            RecursiveGeometry {
+                grid: GridGeometry::new(
+                    Layout {
+                        rows: settings.grid_rows.max(1) as usize,
+                        cols: settings.grid_cols.max(1) as usize,
+                        keys: settings.keys.chars().collect(),
+                    },
+                    &layers,
+                    settings.max_depth,
+                ),
+                min_size: (
+                    settings.min_size_width as f64,
+                    settings.min_size_height as f64,
+                ),
             },
-            &layers,
             settings.max_depth,
-            Some((
-                settings.min_size_width as f64,
-                settings.min_size_height as f64,
-            )),
             settings.cursor_follow_selection,
             settings.lifecycle.clone(),
         ),
-        modes::grid::Appearance::Recursive(crate::api::presentation::RecursiveGridStyle {
+        crate::api::presentation::RecursiveGridStyle {
             label: config.recursive_grid.ui.label.compile(),
             line_width: config.recursive_grid.ui.line_width,
             line_color: config
@@ -437,7 +463,38 @@ pub fn recursive_grid(config: &Config) -> GridMode {
                 .recursive_grid
                 .ui
                 .sub_key_preview_autohide_multiplier,
-        }),
+        },
+    )
+}
+
+#[doc(hidden)]
+pub fn bisect(config: &Config) -> GridMode<BisectGeometry> {
+    let settings = &config.bisect;
+    GridMode::new(
+        modes::targeting::TargetingController::new(
+            BisectGeometry {
+                min_size: (
+                    settings.min_size_width as f64,
+                    settings.min_size_height as f64,
+                ),
+            },
+            settings.max_depth,
+            settings.cursor_follow_selection,
+            settings.lifecycle.clone(),
+        ),
+        crate::api::presentation::BisectStyle {
+            line_width: settings.ui.line_width,
+            line_color: settings
+                .ui
+                .line_color
+                .as_ref()
+                .map(crate::api::theme::CompiledColor::from),
+            highlight_color: settings
+                .ui
+                .highlight_color
+                .as_ref()
+                .map(crate::api::theme::CompiledColor::from),
+        },
     )
 }
 
@@ -523,6 +580,9 @@ pub fn built_in(config: &Config) -> Vec<Box<dyn Mode>> {
     }
     if config.recursive_grid.enabled {
         catalog.push(Box::new(recursive_grid(config)));
+    }
+    if config.bisect.enabled {
+        catalog.push(Box::new(bisect(config)));
     }
     if config.ui_hint.enabled {
         catalog.push(Box::new(hint(config)));
@@ -734,6 +794,19 @@ pub(crate) fn built_in_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
             )?,
         ));
     }
+    if config.bisect.enabled {
+        specs.push(ModeSpec::built_in(
+            Box::new(bisect(config)),
+            compile_route(
+                &config.bisect.bindings,
+                &config.bisect.inherits,
+                config.bisect.temporary_mode.as_deref(),
+                &config.bisect.temporary_mode_keys,
+                &config.bisect.temporary_mode_passthrough_keys,
+                app_overrides(&config.bisect.app_configs),
+            )?,
+        ));
+    }
     if config.ui_hint.enabled {
         specs.push(ModeSpec::built_in(
             Box::new(hint(config)),
@@ -898,6 +971,7 @@ mod tests {
             ModeId::normal(),
             ModeId::grid(),
             ModeId::recursive_grid(),
+            ModeId::bisect(),
             ModeId::ui_hint(),
         ] {
             assert!(unique.contains(&expected), "missing {expected}");
@@ -911,6 +985,7 @@ mod tests {
         config.quick_switch.enabled = false;
         config.grid.enabled = false;
         config.recursive_grid.enabled = false;
+        config.bisect.enabled = false;
         config.ui_hint.enabled = false;
         config.window.enabled = false;
         config.window_quick.enabled = false;

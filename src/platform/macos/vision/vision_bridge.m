@@ -436,8 +436,12 @@ static CGImageRef captureRegion(
         return NULL;
     }
     if (captured == NULL) {
-        *status = NMK_VISION_FAILED;
-        *message = captureError.localizedDescription ?: @"ScreenCaptureKit did not return an image";
+        bool denied = [captureError.domain isEqualToString:SCStreamErrorDomain]
+            && captureError.code == SCStreamErrorUserDeclined;
+        *status = denied ? NMK_VISION_PERMISSION : NMK_VISION_FAILED;
+        *message = denied
+            ? @"Screen Recording access was denied. If KeySteer is already enabled in System Settings, quit and reopen KeySteer from Applications."
+            : captureError.localizedDescription ?: @"ScreenCaptureKit did not return an image";
     }
     return captured;
 }
@@ -551,14 +555,10 @@ NmkVisionResult *NmkDetectVisionElements(
         if (!scanIsCurrent(scanID)) {
             return resultWithStatus(NMK_VISION_CONTEXT_CHANGED, nil);
         }
-        if (!CGPreflightScreenCaptureAccess()) {
-            // Scanning is an automatic worker operation, not an explicit
-            // permission UI. Requesting access here can contend with System
-            // Settings while the user is removing a TCC grant. Only preflight
-            // on the worker and let the normal permission guidance handle it.
-            return resultWithStatus(NMK_VISION_PERMISSION, @"Screen Recording permission is required for Vision hints");
-        }
-
+        // This capture follows the user's Hint/Text Select action. Let
+        // ScreenCaptureKit enforce access and report its actual result: the
+        // legacy CG preflight can disagree with capture after an app update.
+        // Do not request/reset TCC here or cache a failed preflight indefinitely.
         int32_t captureStatus = NMK_VISION_OK;
         NSString *captureMessage = nil;
         CGRect capturedBounds = CGRectZero;

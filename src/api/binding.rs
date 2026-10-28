@@ -147,6 +147,8 @@ pub enum Binding {
     },
     /// Move the pointer continuously while held.
     Move(Direction),
+    /// Keep one half of the current Bisect region.
+    Bisect(Direction),
     /// Move the pointer to an absolute screen coordinate.
     Warp {
         x: i32,
@@ -463,6 +465,10 @@ impl Binding {
             "window_activate_next" | "window_activate_previous" => B::ActivateWindow {
                 backwards: word == "window_activate_previous",
             },
+            "bisect_left" => B::Bisect(Direction::Left),
+            "bisect_down" => B::Bisect(Down),
+            "bisect_up" => B::Bisect(Up),
+            "bisect_right" => B::Bisect(Direction::Right),
             "move_left" => B::Move(Direction::Left),
             "move_down" => B::Move(Down),
             "move_up" => B::Move(Up),
@@ -614,6 +620,7 @@ impl Binding {
             B::Mode(id) => id.to_string(),
             B::Invoke { verb, args } if args.is_empty() => format!("call {verb}"),
             B::Invoke { verb, args } => format!("{verb} {}", args.join(" ")),
+            B::Bisect(d) => format!("bisect_{}", direction(d)),
             B::Move(d) => format!("move_{}", direction(d)),
             B::Warp { x, y } => format!("move_mouse {x} {y}"),
             B::Scroll(d, ScrollAmount::Step) => format!("wheel_{}", direction(d)),

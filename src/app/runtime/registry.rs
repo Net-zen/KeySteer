@@ -329,7 +329,7 @@ impl Engine {
         for (owner, table) in self.registry.tables() {
             for entry in table.iter_entries() {
                 if !matches!(entry.binding.as_ref(), Binding::Mode(id)
-                    if *id == ModeId::grid() || *id == ModeId::recursive_grid())
+                    if id.is_grid())
                 {
                     continue;
                 }

@@ -39,6 +39,7 @@ fn the_shipped_config_matches_defaults_with_explicit_temporary_triggers() {
     // The shipped document explicitly opts in; omitted user fields stay empty.
     for keys in [
         &mut expected.grid.temporary_mode_keys,
+        &mut expected.bisect.temporary_mode_keys,
         &mut expected.recursive_grid.temporary_mode_keys,
         &mut expected.ui_hint.temporary_mode_keys,
         &mut expected.window.temporary_mode_keys,
@@ -273,7 +274,7 @@ fn the_shipped_config_validates_with_the_expected_platform_advisories() {
 #[test]
 fn the_shipped_targeting_modes_bind_primary_q_to_normal() {
     let document = shipped_document();
-    for mode in ["grid", "recursive_grid", "ui_hint"] {
+    for mode in ["grid", "recursive_grid", "bisect", "ui_hint"] {
         let table = document[mode]["bindings"].as_table().unwrap();
         assert_eq!(table["primary+q"].as_str(), Some("normal"));
     }
@@ -501,7 +502,14 @@ fn every_mode_has_a_binding_table_including_plugins() {
     );
 
     let plan = keysteer::app::configuration::compile(&config).unwrap();
-    for mode in ["idle", "normal", "grid", "recursive_grid", "ui_hint"] {
+    for mode in [
+        "idle",
+        "normal",
+        "grid",
+        "recursive_grid",
+        "bisect",
+        "ui_hint",
+    ] {
         let id = ModeId::new(mode).unwrap();
         assert!(plan.route(&id).is_some(), "{mode} has no table");
     }

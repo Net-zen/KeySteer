@@ -5,6 +5,20 @@ outline: 2
 
 # 更新日志 / Release Notes
 
+## 0.12.10
+
+- 新增 **Bisect 二分定位模式**：从 Normal 按 `Primary+F` 进入，默认用 `H/J/K/L` 二分定位，按键与样式可自定义。
+- **默认按键变更**：Grid 和 UI Hint 是本人最常用的两个模式，因此在 Normal 中分别用 `G` / `F` 单键触发；Recursive Grid / Bisect 改用 `Primary+G` / `Primary+F`。不习惯可在 `[normal.bindings]` 中改回原来的键位或按喜好自定义。
+- 修复临时模式的组合键冲突及切换后的移动、滚动残留。
+- 改善 macOS 外接屏与 Windows 缩放下的覆盖层清晰度。
+- 修复 macOS 更新重启、权限检测与退出卡顿问题。
+
+- Added **Bisect mode**: enter from Normal with `Primary+F` and halve the target area using `H/J/K/L` by default. Keys and appearance are customizable.
+- **Default keybindings changed**: Grid and UI Hint are the two modes I use most, so they now use single keys `G` / `F` in Normal. Recursive Grid / Bisect use `Primary+G` / `Primary+F`. If you prefer, restore the old keys or choose your own in `[normal.bindings]`.
+- Fixed temporary-mode shortcut conflicts and movement or scrolling continuing after mode switches.
+- Improved overlay clarity on external macOS displays and with Windows scaling.
+- Fixed macOS update restarts, permission checks, and exit hangs.
+
 ## 0.12.9
 
 - 优化 Windows 和 macOS 的按键处理与动作序列执行，减少临时内存分配。

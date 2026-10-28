@@ -60,6 +60,7 @@ impl Presenter for Composer {
             View::Empty => OverlayScene::new(),
             View::Grid(view) => view.scene(context.palette),
             View::RecursiveGrid(view) => view.scene(context.palette),
+            View::Bisect(view) => view.scene(context.palette),
             View::Window(view) => view.scene(context),
             View::ScreenSelector(view) => view.scene(context),
             View::Hints(view) => view.scene(context),

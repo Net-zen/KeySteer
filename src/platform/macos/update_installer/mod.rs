@@ -24,6 +24,28 @@ const READY_ENV: &str = "KEYSTEER_UPDATE_READY_SOCKET";
 const ARM_WAIT: Duration = Duration::from_secs(5);
 const START_WAIT: Duration = Duration::from_secs(15);
 
+#[derive(Debug)]
+struct StartError {
+    message: String,
+    rollback_safe: bool,
+}
+
+impl StartError {
+    fn stopped(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            rollback_safe: true,
+        }
+    }
+
+    fn uncertain(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            rollback_safe: false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct Download {
     pub(super) path: PathBuf,
@@ -87,6 +109,24 @@ struct Plan {
     args: Vec<OsString>,
 }
 
+fn relaunch_arguments(mut args: Vec<OsString>, directory: &Path) -> Vec<OsString> {
+    // LaunchServices does not retain the caller's cwd. Freeze explicit relative
+    // config paths before leaving it, while preserving bare names that resolve
+    // in KeySteer's application-data directory (the public CLI convention).
+    let mut index = 0;
+    while index + 1 < args.len() {
+        if matches!(args[index].to_str(), Some("-c" | "--config")) {
+            let path = Path::new(&args[index + 1]);
+            if path.is_relative() && path.components().count() > 1 {
+                args[index + 1] = directory.join(path).into_os_string();
+            }
+            index += 1;
+        }
+        index += 1;
+    }
+    args
+}
+
 struct Stage(PathBuf, bool);
 impl Drop for Stage {
     fn drop(&mut self) {
@@ -137,7 +177,10 @@ fn prepare(download: &Download, cancel: &AtomicBool) -> Result<(), String> {
         target,
         version: version.to_string(),
         digest: download.sha256.clone(),
-        args: std::env::args_os().skip(1).collect(),
+        args: relaunch_arguments(
+            std::env::args_os().skip(1).collect(),
+            &std::env::current_dir().map_err(|e| e.to_string())?,
+        ),
     };
     let plan_path = root.join("plan.json");
     fs::write(
@@ -170,7 +213,17 @@ fn arm_helper(
     helper: &mut Child,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
-    let mut stream = accept_until(listener, helper, ARM_WAIT, cancel)?;
+    let mut stream = accept_until(
+        listener,
+        || {
+            helper
+                .try_wait()
+                .map(|status| status.is_some())
+                .map_err(|e| e.to_string())
+        },
+        ARM_WAIT,
+        cancel,
+    )?;
     // Darwin inherits O_NONBLOCK from the listener. The handshake must wait
     // for each reply; socket timeouts alone do not clear nonblocking mode.
     stream.set_nonblocking(false).map_err(|e| e.to_string())?;
@@ -220,14 +273,14 @@ fn read_startup_token(stream: &mut UnixStream) -> Result<(), String> {
 
 fn accept_until(
     listener: &UnixListener,
-    child: &mut Child,
+    mut has_exited: impl FnMut() -> Result<bool, String>,
     timeout: Duration,
     cancel: &AtomicBool,
 ) -> Result<UnixStream, String> {
     let deadline = Instant::now() + timeout;
     loop {
         candidate::cancelled(cancel)?;
-        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+        if has_exited()? {
             return Err("update process exited before reporting readiness".into());
         }
         match listener.accept() {
@@ -308,12 +361,12 @@ fn apply(plan_path: &Path) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err((error, restored)) => {
             if restored {
-                let restart = Command::new(plan.target.join("Contents/MacOS/KeySteer"))
-                    .args(&plan.args)
-                    .env_remove(READY_ENV)
-                    .spawn();
+                let restart = native::launch(&plan.target, &plan.args, None, START_WAIT);
                 restart.map_err(|e| {
-                    format!("{error}; previous app restored, but restart failed: {e}")
+                    format!(
+                        "{error}; previous app restored, but restart failed: {}",
+                        e.message
+                    )
                 })?;
                 Err(format!(
                     "{error}\nThe previous application was restored and restarted."
@@ -332,40 +385,53 @@ fn apply(plan_path: &Path) -> Result<(), String> {
 fn exchange_and_start(
     target: &Path,
     staged: &Path,
-    start: impl FnOnce() -> Result<(), String>,
+    start: impl FnOnce() -> Result<(), StartError>,
 ) -> Result<(), (String, bool)> {
     native::exchange(target, staged)
         .map_err(|e| (format!("cannot replace the application: {e}"), true))?;
     if let Err(error) = start() {
+        // A timed-out LaunchServices request may still start the new version.
+        // Likewise, a failed termination must not swap files under a live app.
+        // Keep both bundles recoverable until its process state is known.
+        if !error.rollback_safe {
+            return Err((error.message, false));
+        }
         native::exchange(target, staged).map_err(|e| {
             (
-                format!("{error}; cannot restore the previous application: {e}"),
+                format!(
+                    "{}; cannot restore the previous application: {e}",
+                    error.message
+                ),
                 false,
             )
         })?;
-        return Err((error, true));
+        return Err((error.message, true));
     }
     Ok(())
 }
 
-fn start_and_wait(plan: &Plan, root: &Path) -> Result<(), String> {
+fn start_and_wait(plan: &Plan, root: &Path) -> Result<(), StartError> {
     let socket = root.join("ready.sock");
-    let listener = UnixListener::bind(&socket).map_err(|e| e.to_string())?;
-    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-    let mut child = Command::new(plan.target.join("Contents/MacOS/KeySteer"))
-        .args(&plan.args)
-        .env(READY_ENV, &socket)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    let listener = UnixListener::bind(&socket).map_err(|e| StartError::stopped(e.to_string()))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| StartError::stopped(e.to_string()))?;
+    let app = native::launch(&plan.target, &plan.args, Some(&socket), START_WAIT)?;
     let result = (|| {
-        let mut stream = accept_until(&listener, &mut child, START_WAIT, &AtomicBool::new(false))?;
+        let mut stream = accept_until(
+            &listener,
+            || app.has_exited(),
+            START_WAIT,
+            &AtomicBool::new(false),
+        )?;
         read_startup_token(&mut stream)
     })();
-    if result.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    result
+    result.map_err(|error| match app.stop() {
+        Ok(()) => StartError::stopped(error),
+        Err(stop) => {
+            StartError::uncertain(format!("{error}; cannot confirm application exit: {stop}"))
+        }
+    })
 }
 
 pub(super) fn signal_ready() -> Result<(), String> {
@@ -380,6 +446,25 @@ pub(super) fn signal_ready() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_services_arguments_keep_explicit_configs_independent_of_working_directory() {
+        for flag in ["-c", "--config"] {
+            for (path, expected) in [
+                ("keysteer.work.toml", "keysteer.work.toml"),
+                ("./keysteer.work.toml", "/original/./keysteer.work.toml"),
+                (
+                    "profiles/工作 配置.toml",
+                    "/original/profiles/工作 配置.toml",
+                ),
+                ("/absolute/keysteer.toml", "/absolute/keysteer.toml"),
+            ] {
+                let args =
+                    relaunch_arguments(vec![flag.into(), path.into()], Path::new("/original"));
+                assert_eq!(args, vec![OsString::from(flag), OsString::from(expected)]);
+            }
+        }
+    }
 
     #[test]
     fn update_helper_handshake_waits_for_delayed_acknowledgement() {
@@ -431,6 +516,14 @@ mod tests {
         let notification = native::ProcessExit::watch(child.id()).unwrap();
         notification.wait(Duration::from_secs(2)).unwrap();
         assert!(child.wait().unwrap().success());
+        assert!(notification.poll(Duration::ZERO).unwrap());
+        notification.wait(Duration::ZERO).unwrap();
+        assert!(
+            native::ProcessExit::watch(child.id())
+                .unwrap()
+                .poll(Duration::ZERO)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -453,12 +546,165 @@ mod tests {
         fs::write(staged.join("version"), "new").unwrap();
         let result = exchange_and_start(&target, &staged, || {
             assert_eq!(fs::read_to_string(target.join("version")).unwrap(), "new");
-            Err("injected startup failure".into())
+            Err(StartError::stopped("injected startup failure"))
         });
         assert!(matches!(result, Err((_, true))));
         assert_eq!(fs::read_to_string(target.join("version")).unwrap(), "old");
         exchange_and_start(&target, &staged, || Ok(())).unwrap();
         assert_eq!(fs::read_to_string(target.join("version")).unwrap(), "new");
         assert_eq!(fs::read_to_string(staged.join("version")).unwrap(), "old");
+        // A pending launch or unconfirmed termination must preserve both bundles
+        // without restoring files underneath a possibly running new version.
+        native::exchange(&target, &staged).unwrap();
+        let result = exchange_and_start(&target, &staged, || {
+            Err(StartError::uncertain("launch completion timed out"))
+        });
+        assert!(matches!(result, Err((_, false))));
+        assert_eq!(fs::read_to_string(target.join("version")).unwrap(), "new");
+        assert_eq!(fs::read_to_string(staged.join("version")).unwrap(), "old");
+    }
+
+    #[test]
+    #[ignore = "requires a logged-in macOS desktop; launches only a disposable test application"]
+    fn launch_services_preserves_arguments_and_handshake_and_stops_failed_startup() {
+        // A short path also leaves room for the Unix socket's Darwin path limit.
+        let root = PathBuf::from(format!("/private/tmp/ks-update-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let _cleanup = Stage(root.clone(), true);
+        let app = root.join("更新 fixture.app");
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        candidate::output(
+            Command::new("/usr/bin/clang")
+                .args(["-fobjc-arc", "-fblocks", "-framework", "AppKit"])
+                .arg(
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/macos-update-app.m"),
+                )
+                .arg("-o")
+                .arg(app.join("Contents/MacOS/KeySteer")),
+        )
+        .unwrap();
+        fs::write(
+            app.join("Contents/Info.plist"),
+            format!(
+                r#"<?xml version="1.0"?><plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.keysteer.update-test.p{}</string>
+<key>CFBundleExecutable</key><string>KeySteer</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSUIElement</key><true/>
+</dict></plist>"#,
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        candidate::output(
+            Command::new("/usr/bin/codesign")
+                .args(["--force", "--sign", "-"])
+                .arg(&app),
+        )
+        .unwrap();
+        let staged = root.join("staged.app");
+        candidate::output(Command::new("/usr/bin/ditto").arg(&app).arg(&staged)).unwrap();
+        candidate::output(
+            Command::new("/usr/bin/plutil")
+                .args(["-replace", "CFBundleVersion", "-string", "2"])
+                .arg(staged.join("Contents/Info.plist")),
+        )
+        .unwrap();
+        candidate::output(
+            Command::new("/usr/bin/codesign")
+                .args(["--force", "--sign", "-"])
+                .arg(&staged),
+        )
+        .unwrap();
+        let old_report = root.join("old.plist");
+        let old =
+            native::launch(&app, &[old_report.as_os_str().to_owned()], None, START_WAIT).unwrap();
+        let deadline = Instant::now() + START_WAIT;
+        while !old_report.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(old_report.exists());
+        // Keep the old image alive across the exact atomic replacement used by
+        // the updater. LaunchServices must launch version 2, not reuse version 1.
+        native::exchange(&app, &staged).unwrap();
+        let report = root.join("report.plist");
+        let args = vec![
+            report.as_os_str().to_owned(),
+            OsString::from("空 格 $literal;argument"),
+        ];
+        let socket = root.join("ready.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let launched = native::launch(&app, &args, Some(&socket), START_WAIT).unwrap();
+        let handshake = accept_until(
+            &listener,
+            || launched.has_exited(),
+            START_WAIT,
+            &AtomicBool::new(false),
+        )
+        .and_then(|mut stream| read_startup_token(&mut stream));
+        let stop = launched.stop();
+        let old_still_running = !old.has_exited().unwrap();
+        old.stop().unwrap();
+        handshake.unwrap();
+        stop.unwrap();
+        assert!(old_still_running);
+        let read_report = || -> serde_json::Value {
+            serde_json::from_str(
+                &candidate::output(
+                    Command::new("/usr/bin/plutil")
+                        .args(["-convert", "json", "-o", "-"])
+                        .arg(&report),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let details = read_report();
+        assert_eq!(details["arguments"][2], "空 格 $literal;argument");
+        assert_eq!(details["bundle"], app.to_str().unwrap());
+        assert_eq!(details["version"], "2");
+        assert_eq!(details["ready"], socket.to_str().unwrap());
+        assert_ne!(
+            details["parent"].as_u64().unwrap(),
+            std::process::id() as u64
+        );
+        drop(listener);
+        fs::remove_file(&socket).unwrap();
+        fs::remove_file(&report).unwrap();
+
+        // The rollback route uses the same bundle launcher without a ready env.
+        native::exchange(&app, &staged).unwrap();
+        let launched = native::launch(&app, &args, None, START_WAIT).unwrap();
+        let deadline = Instant::now() + START_WAIT;
+        while !report.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        launched.stop().unwrap();
+        assert_eq!(read_report()["ready"], "");
+        assert_eq!(read_report()["version"], "1");
+
+        let mut plan = Plan {
+            parent: 0,
+            target: app,
+            version: "0.0.0".into(),
+            digest: None,
+            args,
+        };
+        for argument in ["--bad-ready", "--exit"] {
+            plan.args.push(argument.into());
+            let failure = start_and_wait(&plan, &root).unwrap_err();
+            assert!(failure.rollback_safe, "{failure:?}");
+            let pid = read_report()["pid"].as_u64().unwrap() as u32;
+            assert!(
+                native::ProcessExit::watch(pid)
+                    .unwrap()
+                    .poll(Duration::ZERO)
+                    .unwrap()
+            );
+            fs::remove_file(&socket).unwrap();
+            plan.args.pop();
+        }
     }
 }

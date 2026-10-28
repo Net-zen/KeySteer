@@ -24,6 +24,7 @@ Array entries run in written order. Empty arrays are invalid. Arrays do not bloc
 | `normal` | Move, scroll, click, and enter targeting modes. |
 | `grid` | Full-screen coordinate grid. |
 | `recursive_grid` | Repeatedly subdivides the current region. |
+| `bisect` | Keep a directional half of the region, without letter labels. |
 | `text_select` | OCR text selection: regions → words → characters. |
 | `ui_hint` | Shows labels for interactive elements. |
 | `window` | Locks the window under the pointer for movement, centred resizing, layouts, and tiling. |
@@ -36,8 +37,9 @@ Array entries run in written order. Empty arrays are invalid. Arrays do not bloc
 ```toml
 [normal.bindings]
 g = "grid"
-f = "recursive_grid"
-"primary+f" = "ui_hint"
+f = "ui_hint"
+"primary+g" = "recursive_grid"
+"primary+f" = "bisect"
 "primary+s" = "screen next"
 
 # Optional: send directional keys to the focused application.
@@ -128,7 +130,7 @@ g = "grid"
 "primary+f" = "recursive_grid"
 ```
 
-G opens Grid; bare F maximizes/restores. Window binds Primary+F to Recursive Grid, but the enabled temporary layer gives Normal's full chord precedence and opens UI Hint. Add `primary+f` to `temporary_mode_passthrough_keys` to retain Window's binding. Remap them or set `none` to disable; existing custom tables need the entries added. Other window modes do not have these two default entries. Holding Primary also follows temporary-layer rules.
+G opens Grid; bare F maximizes/restores. Window explicitly binds Primary+F to Recursive Grid, and this binding remains available while the temporary layer is active. Remap them or set `none` to disable; existing custom tables need the entries added. Other window modes do not have these two default entries. Holding Primary also follows temporary-layer rules.
 
 ### T: persistent tab groups
 
@@ -207,7 +209,8 @@ macOS app audio is processed in memory without recording or uploading, but adds 
 | `scroll_full_*` | Scroll by `scroll_step_full`. |
 | `precision`, `slow`, `fast` | Change pointer speed while held. |
 | `precision_toggle`, `slow_toggle`, `fast_toggle` | Toggle a speed with a tap; tap the same binding again to clear it. The active speed appears below the mode indicator. |
-| `follow` | Toggle pointer following in Grid or Recursive Grid. |
+| `follow` | Toggle pointer following in Grid, Recursive Grid or Bisect. |
+| `bisect_left` / `bisect_down` / `bisect_up` / `bisect_right` | Keep the left/bottom/top/right half in Bisect; default h/j/k/l. |
 
 `wheel_*` remains a compatibility alias for `scroll_*`. Speed actions are usually paired with a movement key:
 
@@ -648,4 +651,4 @@ space = "none"
 "ctrl+backspace" = "first_level"
 ```
 
-Recursive Grid has its own binding table. Normal blind targeting also accepts reset/parent actions. UIHint and the screen selector plugin expose their controls in their binding tables. Window Editor's backtick uses `window_area_number`; Restore uses `window_previous_page` / `window_next_page`; Window selection input uses `window_multi_cancel` and configurable editing mappings. Defaults remain backtick, PageUp/PageDown, Esc and the existing editing keys. Help follows effective bindings, including disabled keys.
+Recursive Grid and Bisect have independent binding tables. Normal blind targeting also accepts reset/parent actions. UIHint and the screen selector plugin expose their controls in their binding tables. Window Editor's backtick uses `window_area_number`; Restore uses `window_previous_page` / `window_next_page`; Window selection input uses `window_multi_cancel` and configurable editing mappings. Defaults remain backtick, PageUp/PageDown, Esc and the existing editing keys. Help follows effective bindings, including disabled keys.

@@ -65,7 +65,7 @@ Use `left_shift = "slow"` for hold-to-slow, or `shift = "slow_toggle"` for tap-t
 | `[general]` | Excluded apps |
 | `[key_aliases]` | Custom key names and platform modifiers |
 | `[hotkeys]` | Keys that enter a mode from Idle |
-| `[normal]`, `[grid]`, `[recursive_grid]`, `[ui_hint]` | Pointer and targeting mode keys and behavior |
+| `[normal]`, `[grid]`, `[recursive_grid]`, `[bisect]`, `[ui_hint]` | Pointer and targeting mode keys and behavior |
 | `[window]`, `[window_quick]`, `[window_editor]`, `[window_restore]`, `[window_tab]` | Each window mode's keys and behavior |
 | `[pointer]`, `[scroll]` | Pointer speed, scrolling distance and speed |
 | `[theme]`, `[mode_indicator]` | Colors and mode badges |
@@ -234,8 +234,9 @@ k = "move_up"
 l = "move_right"
 ";" = "left_click"
 g = "grid"
-f = "recursive_grid"
-"primary+f" = "ui_hint"
+f = "ui_hint"
+"primary+g" = "recursive_grid"
+"primary+f" = "bisect"
 "primary+s" = "screen next"
 ```
 
@@ -250,7 +251,7 @@ Both time values accept `0–60000` ms. Automatic release applies only to a long
 
 A no-argument `toggle` can lock several partner keys, with either key pressed first. Tap the activation key alone, return to Normal, or enter Idle to release them all. Holding the activation key alone locks that key itself. See [Dragging and holding](/en/modes/normal#dragging-and-holding) for steps.
 
-Grid, Recursive Grid, and UI Hint always capture the keyboard. Idle always forwards unmatched input.
+Grid, Recursive Grid, Bisect, and UI Hint always capture the keyboard. Idle always forwards unmatched input.
 
 ### Grid
 
@@ -302,6 +303,33 @@ layers = [
   { depth = 0, grid_cols = 2, grid_rows = 2, keys = "crtn" },
 ]
 ```
+
+### Bisect
+
+From Normal, `Primary+F` opens [Bisect](/en/modes/bisect). Each h/j/k/l press keeps the left/bottom/top/right half. Only the chosen axis is divided; no label alphabet, grid dimensions, or `layers` are accepted. All other navigation, cursor-follow and lifecycle behavior matches Recursive Grid. Settings are independent.
+
+```toml
+[bisect]
+max_depth = 20
+min_size_width = 2
+min_size_height = 2
+cursor_follow_selection = true
+
+[bisect.bindings]
+h = "bisect_left"
+j = "bisect_down"
+k = "bisect_up"
+l = "bisect_right"
+
+[bisect.lifecycle]
+after_finish = "keep"
+after_click = "keep"
+
+[bisect.ui]
+line_width = 1
+```
+
+`max_depth` accepts 1–40 cuts; minimum dimensions must be positive. An axis stops when its next half would be smaller than its minimum, while the other axis remains available. `line_color` and `highlight_color` accept the same RGBA/theme colors as Recursive Grid. `line_width` accepts integers 0–20; 0 hides interior guides while retaining the region outline. Override direction keys through `[bisect.bindings]`; set the old key to `"none"` when removing it. Like grid navigation controls, omitted direction bindings retain their defaults.
 
 ### UI Hint
 
@@ -479,7 +507,7 @@ preserve = true
 inherits = ["hotkeys", "normal"]
 ```
 
-Screen Selector's `preserve = true` keeps the current Grid/Recursive Grid path across displays. With false, targeting starts again on the new display. See [Plugin development](/en/development/plugin-development) to build your own.
+Screen Selector's `preserve = true` keeps the current Grid/Recursive Grid/Bisect path across displays. With false, targeting starts again on the new display. See [Plugin development](/en/development/plugin-development) to build your own.
 
 ## Runtime changes and debugging
 
@@ -516,7 +544,7 @@ Press `?` to show or hide mode controls without clearing the selection. Keep `"?
 
 | Setting | Modes | Default |
 | --- | --- | --- |
-| `mouse_key_help` | Normal, Grid, Recursive Grid, UI Hint | false |
+| `mouse_key_help` | Normal, Grid, Recursive Grid, Bisect, UI Hint | false |
 | `window_key_help` | Window, Quick, Editor, Restore, Tabs | true |
 
 For example, hide the window panel initially too:
@@ -644,14 +672,15 @@ The input center defaults to 95% of display height. Click, drag a range, or adju
 
 All modes share `inherits`, `temporary_mode`, `temporary_mode_keys`, and `temporary_mode_passthrough_keys`, including Normal, Quick Switch, Text Input, Text Select, UI Hint, grids, windows, and plugins. Omitting `temporary_mode_keys` from a user configuration or setting it to `[]` disables the layer at load time, so input skips temporary matching. The shipped UI Hint configuration explicitly sets `temporary_mode_keys = ["primary"]`: hold Primary to borrow Normal. Text Select disables the layer by default and omits these optional fields.
 
-While `temporary_mode_keys` are held, matching proceeds through:
+Activation keys are consumed only while the temporary layer is active; ordinary routing is unchanged otherwise. Matching proceeds through:
 
-1. Full chords in the temporary mode.
-2. Full chords in the current mode.
-3. Temporary-mode bindings with activation keys removed.
-4. Current-mode bindings or label input with activation keys removed.
+1. Explicit full chords in the current mode's own bindings, excluding inheritance.
+2. Full chords in the temporary mode after removing the activation keys that actually matched.
+3. Full chords in the current mode after removing those activation keys.
+4. Other temporary-mode matches using the same remaining keys.
+5. Other current-mode matches or label input using the same remaining keys.
 
-Each layer includes inherited bindings. Full chords precede bare keys: Normal's `Primary+F` enters UI Hint ahead of bare F's Recursive Grid, and Grid's `Primary+Q` still returns to Normal.
+The last four steps include each layer's inherited bindings, and `none` remains terminal. Remaining full chords take priority, with the temporary layer winning ties. Consumed activation keys are never restored: `Primary+H` in temporary Normal uses `h = "move_left"`, not Normal's `primary+h`. Other modifiers remain available. Grid's own explicit `Primary+Q` still returns to Normal. To retain a full shortcut such as `Primary+S` for switching displays, explicitly configure it in the current mode's `bindings`.
 
 To send Q directly to the current mode, declare it as a passthrough key:
 

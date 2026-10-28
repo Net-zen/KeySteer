@@ -145,8 +145,11 @@ pub trait Backend {
     /// without reentering it, and without holding another backend borrow.
     /// `Some(delay)` schedules the next nonblocking turn; `None` requests exit.
     /// `Duration::MAX` means wait for an event without a deadline.
-    /// Wake promptly for queued input/results even before that deadline. Errors
-    /// must unwind native tracking and return so the engine can clean up.
+    /// Wake promptly for queued input/results even before that deadline. A
+    /// terminal turn performs engine/backend cleanup before returning (native
+    /// termination loops may wait for its shutdown acknowledgement). Retain
+    /// any native dispatch objects needed to unwind, and never reenter a turn.
+    /// Dispatch errors outside a turn return to the engine for cleanup.
     /// Return `None` without calling `turn` to use the ordinary polling loop.
     fn run_event_loop(&mut self, _turn: &mut EventLoopTurn<'_>) -> Option<Result<(), String>> {
         None

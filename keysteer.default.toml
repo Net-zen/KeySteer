@@ -63,9 +63,10 @@ m = "wheel_down"
 right_shift = "middle_click"
 n = "toggle"
 g = "grid"
-f = "recursive_grid"
+f = "ui_hint"
+"primary+g" = "recursive_grid"
+"primary+f" = "bisect"
 c = "text_select"
-"primary+f" = "ui_hint"
 "primary+s" = "screen next"
 "primary+d" = "move_window next"
 u = "page_down"
@@ -523,6 +524,36 @@ label_autohide_multiplier = 1.5
 sub_key_preview = false
 sub_key_preview_font_size = 8
 sub_key_preview_autohide_multiplier = 1.5
+
+# Bisect: choose a half with h/j/k/l; no labels or configurable grid alphabet.
+[bisect]
+enabled = true
+min_size_width = 2
+min_size_height = 2
+max_depth = 20
+cursor_follow_selection = true
+inherits = ["hotkeys", "normal"]
+temporary_mode = "normal"
+temporary_mode_keys = ["primary"]
+
+[bisect.lifecycle]
+after_finish = "keep"
+after_click = "keep"
+
+[bisect.bindings]
+h = "bisect_left"
+j = "bisect_down"
+k = "bisect_up"
+l = "bisect_right"
+enter = "confirm_selection"
+esc = "cancel_selection"
+"tab backspace" = "previous_level"
+space = "first_level"
+"`" = "follow"
+"primary+q" = "normal"
+
+[bisect.ui]
+line_width = 1
 
 # Distances are pixels; speed is pixels/second when held (0 = tap only).
 [scroll]

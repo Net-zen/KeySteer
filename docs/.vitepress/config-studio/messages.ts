@@ -2,6 +2,17 @@ export type StudioLocale = 'zh' | 'en'
 
 /** Display text only. Command values, paths and user content are never localized. */
 export const englishMessages: Record<string, string> = {
+  '二分定位 · Bisect': 'Bisection · Bisect',
+  '二分定位': 'Bisection',
+  '启用 Bisect': 'Enable Bisect',
+  '二分上限': 'Maximum cuts',
+  '最小区域宽度': 'Minimum region width',
+  '最小区域高度': 'Minimum region height',
+  '二分光标跟随': 'Follow Bisect selection',
+  '保留左半区': 'Keep left half',
+  '保留下半区': 'Keep bottom half',
+  '保留上半区': 'Keep top half',
+  '保留右半区': 'Keep right half',
   '清空输入框': 'Clear input',
   "文字选择 · Text Select": "Text selection \u00b7 Text Select",
   "启用文字选择": "Enable text selection",

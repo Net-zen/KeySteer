@@ -521,7 +521,6 @@ fn render_loop(shared: &Shared, events: &EventSender) {
     if let Some(notice) = startup_notice {
         warn(events, notice);
     }
-    let mut scale = 1.0;
     let mut pixel: Option<native::PreparedCapture> = None;
     loop {
         if overlay::take_deferred_callback_error() {
@@ -599,7 +598,6 @@ fn render_loop(shared: &Shared, events: &EventSender) {
         }
 
         if let Some(frame) = frame {
-            scale = frame.scale;
             let scene = match dpi_cache.scene_for_dpi(frame.scene.as_ref(), frame.scale) {
                 std::borrow::Cow::Borrowed(_) => Arc::clone(&frame.scene),
                 std::borrow::Cow::Owned(scene) => Arc::new(scene),
@@ -616,14 +614,7 @@ fn render_loop(shared: &Shared, events: &EventSender) {
                 ),
             }
         }
-        if let Some(mut positions) = positions {
-            if scale.is_finite()
-                && scale.max(1.0) != 1.0
-                && let Some(indicator) = positions.indicator.as_mut()
-            {
-                indicator.x = indicator.x.round();
-                indicator.y = indicator.y.round();
-            }
+        if let Some(positions) = positions {
             match renderer.update_positions(positions.cursor, positions.indicator) {
                 Ok(Some(notice)) => {
                     crate::support::perf_probe::mark("native_presented");

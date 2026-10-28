@@ -33,6 +33,7 @@ use crate::api::overlay::{
 };
 
 use crate::platform::common::display_target::DisplayTargetCache;
+use crate::platform::common::overlay_geometry::{indicator_layout, pixel_aligned_rect};
 use crate::platform::common::overlay_reconcile::{matched_previous_indices, reorder_matched_slots};
 
 const MAX_CACHED_COLORS: usize = 64;
@@ -361,11 +362,7 @@ impl Surface {
                 ));
             }
             if let Some(position) = indicator {
-                let (width, height) = content.indicator_size;
-                content.indicator_root.setFrame(to_window_rect(
-                    Rect::new(position.x - width, position.y, width, height),
-                    area,
-                ));
+                content.position_indicator(position, area);
             }
         }
         self.positions.0 = cursor.or(self.positions.0);
@@ -905,6 +902,7 @@ impl WindowContent {
             layer.configured = false;
             return;
         }
+        let frame = pixel_aligned_text_frame(to_window_rect(spec.rect, area), self.scale);
         let layer = match slot {
             LabelSlot::Static(index) => &self.labels[index],
             LabelSlot::Foreground(index) => &self.foreground_labels[index],
@@ -914,6 +912,7 @@ impl WindowContent {
         // Rebuild on return only if the current text was laid out without them.
         let rebuild_text = rebuild_text
             || !layer.configured
+            || (spec.fixed_bounds && layer.base.bounds().size.height != frame.size.height)
             || (spec.edit.is_some()
                 && !spec.text.is_empty()
                 && layer.metrics.prefix_offsets.is_empty());
@@ -936,7 +935,7 @@ impl WindowContent {
                     spec.fixed_bounds.then_some(if spec.style.wrap {
                         spec.style.font_size * 1.4
                     } else {
-                        spec.rect.height
+                        frame.size.height
                     }),
                     spec.trailing_text_len,
                     spec.edit.is_some() || !spec.scroll_to_cursor,
@@ -954,7 +953,6 @@ impl WindowContent {
             LabelSlot::Foreground(index) => &mut self.foreground_labels[index],
             LabelSlot::Indicator(index) => &mut self.indicator_labels[index],
         };
-        let frame = to_window_rect(spec.rect, area);
         let alignment = match spec.style.text_alignment {
             crate::api::overlay::TextAlignment::Left => ns_string!("left"),
             crate::api::overlay::TextAlignment::Center => ns_string!("center"),
@@ -990,12 +988,8 @@ impl WindowContent {
         layer
             .base
             .setCornerRadius(spec.style.border_radius.max(0.0));
-        layer.base.setContentsScale(self.scale);
+        layer.set_scale(self.scale);
         layer.base.setZPosition(f64::from(spec.z_index) * 2.0 + 1.0);
-        layer
-            .matched
-            .setFrame(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
-        layer.matched.setContentsScale(self.scale);
         if let Some((base, matched, metrics)) = attributed {
             // SAFETY: NSMutableAttributedString is a documented CATextLayer
             // string type. Both setters copy before the autorelease pool
@@ -1054,11 +1048,12 @@ impl WindowContent {
             (cursor_x, anchor_x)
         });
         let scroll = if spec.scroll_to_cursor {
-            crate::api::text_edit::scroll_offset(
+            let offset = crate::api::text_edit::scroll_offset(
                 query_width,
                 spec.style.font_size,
                 offsets.map_or(0.0, |(cursor, _)| cursor),
-            )
+            );
+            (offset * self.scale).round() / self.scale
         } else {
             0.0
         };
@@ -1068,14 +1063,20 @@ impl WindowContent {
                 NSPoint::new(0.0, 0.0),
                 NSSize::new(query_width, frame.size.height),
             ));
-            layer.matched.setFrame(NSRect::new(
-                NSPoint::new(-scroll, 0.0),
-                NSSize::new(
-                    frame.size.width.max(f64::from(layer.metrics.width)),
-                    frame.size.height,
+            layer.matched.setFrame(pixel_aligned_text_frame(
+                NSRect::new(
+                    NSPoint::new(-scroll, 0.0),
+                    NSSize::new(
+                        frame.size.width.max(f64::from(layer.metrics.width)),
+                        frame.size.height,
+                    ),
                 ),
+                self.scale,
             ));
         } else {
+            layer
+                .matched
+                .setFrame(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
             layer.update_matched_prefix(
                 spec.analysis.matched_utf16_len,
                 frame.size,
@@ -1169,17 +1170,17 @@ impl WindowContent {
         };
 
         if content_changed {
-            let (width, height, main, held) = indicator_layout(indicator);
-            self.indicator_size = (width, height);
-            let required = 1 + usize::from(held.is_some());
+            let layout = indicator_layout(indicator, Point::default(), self.scale);
+            self.indicator_size = (layout.bounds.width, layout.bounds.height);
+            let required = 1 + usize::from(layout.held.is_some());
             self.trim_indicator_labels(required);
             self.ensure_indicator_labels(required);
-            let local_area = Rect::new(0.0, 0.0, width, height);
+            let local_area = layout.bounds;
             self.configure_label(
                 LabelSlot::Indicator(0),
                 LabelSpec {
                     text: &indicator.text,
-                    rect: main,
+                    rect: layout.main,
                     style: &indicator.style,
                     analysis: LabelTextAnalysis::analyze(&indicator.text, 0),
                     // Badge height includes padding; center the font's line
@@ -1193,7 +1194,7 @@ impl WindowContent {
                 local_area,
                 true,
             );
-            if let (Some(text), Some(rect)) = (&indicator.held_text, held) {
+            if let (Some(text), Some(rect)) = (&indicator.held_text, layout.held) {
                 self.configure_label(
                     LabelSlot::Indicator(1),
                     LabelSpec {
@@ -1215,14 +1216,16 @@ impl WindowContent {
             self.indicator_root.setHidden(false);
         }
 
+        self.position_indicator(indicator.position, area);
+    }
+
+    fn position_indicator(&self, position: Point, area: Rect) {
         let (width, height) = self.indicator_size;
-        let frame = Rect::new(
-            indicator.position.x - width,
-            indicator.position.y,
-            width,
-            height,
-        );
-        self.indicator_root.setFrame(to_window_rect(frame, area));
+        let frame = Rect::new(position.x - width, position.y, width, height);
+        self.indicator_root.setFrame(pixel_aligned_text_frame(
+            to_window_rect(frame, area),
+            self.scale,
+        ));
     }
 
     fn color(&mut self, color: Color) -> CachedColor {
@@ -1318,6 +1321,9 @@ impl LabelLayers {
         matched.setAlignmentMode(center);
         base.setWrapped(false);
         matched.setWrapped(false);
+        // Resizing a cached text bitmap must rerasterize it, not stretch it.
+        base.setNeedsDisplayOnBoundsChange(true);
+        matched.setNeedsDisplayOnBoundsChange(true);
         base.setContentsScale(scale);
         matched.setContentsScale(scale);
         matched.setBackgroundColor(None);
@@ -1334,6 +1340,17 @@ impl LabelLayers {
             metrics: LabelTextMetrics::default(),
             configured: false,
             edit_layers: None,
+        }
+    }
+
+    fn set_scale(&self, scale: f64) {
+        if self.base.contentsScale() != scale {
+            self.base.setContentsScale(scale);
+            self.matched.setContentsScale(scale);
+            // The attributed string and its metrics can remain cached when
+            // only the display density changes; the bitmap cannot.
+            self.base.setNeedsDisplay();
+            self.matched.setNeedsDisplay();
         }
     }
 
@@ -1632,30 +1649,6 @@ fn effective_label_rect(label: &OverlayLabel) -> Rect {
     )
 }
 
-fn indicator_layout(indicator: &Indicator) -> (f64, f64, Rect, Option<Rect>) {
-    let label_width = |text: &str| Indicator::label_size(text.chars().count(), &indicator.style).0;
-    let line_height = Indicator::label_size(0, &indicator.style).1;
-    let main_width = label_width(&indicator.text);
-    let held_width = indicator
-        .held_text
-        .as_deref()
-        .map(label_width)
-        .unwrap_or_default();
-    let gap = indicator.held_text.as_ref().map_or(0.0, |_| 4.0);
-    let height = line_height + gap + indicator.held_text.as_ref().map_or(0.0, |_| line_height);
-    let width = main_width.max(held_width);
-    let main = Rect::new(width - main_width, 0.0, main_width, line_height);
-    let held = indicator.held_text.as_ref().map(|_| {
-        Rect::new(
-            width - held_width,
-            line_height + gap,
-            held_width,
-            line_height,
-        )
-    });
-    (width, height, main, held)
-}
-
 /// Convert top-left virtual desktop coordinates into AppKit's bottom-left
 /// global window coordinates.
 fn cocoa_frame(area: Rect) -> Result<NSRect, String> {
@@ -1683,6 +1676,24 @@ fn to_window_rect(value: Rect, area: Rect) -> NSRect {
     )
 }
 
+/// Our layer trees have no transforms and use the panel's local point space.
+/// Align the bitmap's origin and size to that panel's backing pixels, including
+/// ancestors of text layers. Fractional translations resample otherwise sharp
+/// glyphs, especially on 1x displays. Round size outward to avoid clipping and
+/// independently of origin to preserve the bitmap during position-only moves.
+fn pixel_aligned_text_frame(frame: NSRect, scale: f64) -> NSRect {
+    let aligned = pixel_aligned_rect(
+        Rect::new(
+            frame.origin.x,
+            frame.origin.y,
+            frame.size.width,
+            frame.size.height,
+        ),
+        scale,
+    );
+    rect(aligned.x, aligned.y, aligned.width, aligned.height)
+}
+
 fn to_window_point(value: Point, area: Rect) -> Point {
     Point::new(value.x - area.x, area.height - (value.y - area.y))
 }
@@ -1697,6 +1708,49 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "native Core Animation backing stores; run on macOS"]
+    fn native_text_bitmaps_redraw_for_density_and_size_but_not_position() {
+        autoreleasepool(|_| {
+            let _transaction = DisabledActions::begin();
+            let root = CALayer::new();
+            let layers = LabelLayers::new(&root, 1.0);
+            let text = NSString::from_str("Normal");
+            for layer in [&layers.base, &layers.matched] {
+                layer.setFrame(rect(0.0, 0.0, 55.0, 15.0));
+                // SAFETY: NSString is a documented CATextLayer string type;
+                // the setter copies it before this pool releases it.
+                unsafe { layer.setString(Some(&text)) };
+                layer.displayIfNeeded();
+                assert!(!layer.needsDisplay());
+            }
+            for scale in [2.0, 1.0] {
+                layers.set_scale(scale);
+                for layer in [&layers.base, &layers.matched] {
+                    assert!(
+                        layer.needsDisplay(),
+                        "density changes invalidate old pixels"
+                    );
+                    layer.displayIfNeeded();
+                    assert!(!layer.needsDisplay());
+                }
+            }
+            for layer in [&layers.base, &layers.matched] {
+                layer.setFrame(rect(0.0, 0.0, 61.0, 16.0));
+                assert!(
+                    layer.needsDisplay(),
+                    "new bounds require fresh glyph rasterization"
+                );
+                layer.displayIfNeeded();
+                layer.setFrame(rect(3.0, 5.0, 61.0, 16.0));
+                assert!(
+                    !layer.needsDisplay(),
+                    "position changes must reuse the bitmap"
+                );
+            }
+        });
+    }
 
     #[test]
     #[ignore = "native CoreText font metrics; run on macOS"]
@@ -1809,6 +1863,66 @@ mod tests {
                 screens[0].bounds.bottom() - frame.origin.y - local.origin.y - local.size.height,
                 global.y
             );
+        }
+    }
+
+    #[test]
+    fn indicator_parent_and_children_align_to_each_displays_pixels() {
+        let mut indicator = Indicator {
+            text: "Normal".into(),
+            held_text: None,
+            position: Point::new(-900.3, 81.7),
+            style: LabelStyle {
+                font_size: 11.0,
+                padding_x: 4.0,
+                padding_y: 2.0,
+                ..LabelStyle::default()
+            },
+        };
+        // The shipped 11-point badge has a fractional 54.2-point width.
+        assert_eq!(
+            indicator_layout(&indicator, Point::default(), 1.0)
+                .bounds
+                .width,
+            55.0
+        );
+        assert_eq!(
+            indicator_layout(&indicator, Point::default(), 2.0)
+                .bounds
+                .width,
+            54.5
+        );
+        indicator.held_text = Some("HELD: SHIFT".into());
+        for screen in displays() {
+            let layout = indicator_layout(&indicator, Point::default(), screen.scale);
+            let (width, height) = (layout.bounds.width, layout.bounds.height);
+            let parent = pixel_aligned_text_frame(
+                to_window_rect(
+                    Rect::new(
+                        indicator.position.x - width,
+                        indicator.position.y,
+                        width,
+                        height,
+                    ),
+                    screen.bounds,
+                ),
+                screen.scale,
+            );
+            let area = layout.bounds;
+            let held = layout.held.unwrap();
+            assert!(held.y >= layout.main.bottom() + 4.0);
+            for badge in [layout.main, held] {
+                let child = pixel_aligned_text_frame(to_window_rect(badge, area), screen.scale);
+                let right = parent.origin.x + child.origin.x + child.size.width;
+                assert!((right - (parent.origin.x + parent.size.width)).abs() < 1e-9);
+                for edge in [
+                    parent.origin.x + child.origin.x,
+                    parent.origin.y + child.origin.y,
+                    right,
+                ] {
+                    assert!((edge * screen.scale - (edge * screen.scale).round()).abs() < 1e-9);
+                }
+            }
         }
     }
 
@@ -2057,21 +2171,6 @@ mod tests {
         assert!(!changes.cursor_position);
         assert!(!changes.indicator_position);
         assert!(!changes.static_content);
-    }
-
-    #[test]
-    fn held_inputs_use_a_second_badge() {
-        let indicator = Indicator {
-            text: "Normal".into(),
-            held_text: Some("HELD: SHIFT".into()),
-            position: Point::new(10.0, 20.0),
-            style: Default::default(),
-        };
-        let (width, height, main, held) = indicator_layout(&indicator);
-        let held = held.expect("held badge should have a layout");
-        assert!(width >= main.width);
-        assert!(height > main.height);
-        assert!(held.y > main.y + main.height);
     }
 
     #[test]

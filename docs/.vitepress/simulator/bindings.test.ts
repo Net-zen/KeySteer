@@ -4,10 +4,10 @@ import { displayedBindings, effectiveBindings, resolveBinding, resolveLayeredPhy
 import { resolveConfigDocument } from '../config-studio/document.ts'
 
 test('all mode layers require explicit triggers and use the same precedence', () => {
-  for (const mode of ['normal', 'quick_switch', 'text_input', 'text_select', 'grid', 'recursive_grid', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab']) {
+  for (const mode of ['normal', 'quick_switch', 'text_input', 'text_select', 'grid', 'recursive_grid', 'bisect', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab']) {
     const borrowed = mode === 'normal' ? 'text_input' : 'normal'
     const defaults = {
-      [borrowed]: { bindings: { f9: 'move_left', 'right_alt+f10': 'move_right', f11: 'move_left' } },
+      [borrowed]: { bindings: { f9: 'move_left', 'right_alt+f9': 'arrow_left', 'right_alt+f10': 'move_right', f11: 'move_left' } },
       [mode]: { temporary_mode: borrowed, temporary_mode_keys: ['right_alt'], temporary_mode_passthrough_keys: ['f11', 'right_alt'], bindings: { 'right_alt+f10': 'move_up', f11: 'move_up', right_alt: 'fast' } },
     }
     for (const document of [{}, { [mode]: {} }, { [mode]: { temporary_mode_keys: [] } }]) {
@@ -16,7 +16,7 @@ test('all mode layers require explicit triggers and use the same precedence', ()
       assert.equal(resolveLayeredPhysicalBinding(effective, mode, ['right_alt', 'f9'], 'f9', false), undefined, mode)
     }
     const enabled = resolveConfigDocument(defaults, { [mode]: { temporary_mode_keys: ['right_alt'] } })
-    for (const [key, action] of [['f9', 'move_left'], ['f10', 'move_right'], ['f11', 'move_up'], ['right_alt', 'fast']]) {
+    for (const [key, action] of [['f9', 'move_left'], ['f10', 'move_up'], ['f11', 'move_up'], ['right_alt', 'fast']]) {
       const pressed = key === 'right_alt' ? [key] : ['right_alt', key]
       assert.equal(resolveLayeredPhysicalBinding(enabled, mode, pressed, key, false)?.value, action, mode)
     }

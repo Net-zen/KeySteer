@@ -1331,15 +1331,7 @@ impl Engine {
                 .collect();
             for (key, gesture) in released {
                 self.input.active_gestures.remove(&key);
-                self.dispatch_to(
-                    &gesture.owner,
-                    ModeEvent::Binding {
-                        binding: gesture.binding,
-                        state: KeyState::Up,
-                        key,
-                    },
-                    backend,
-                )?;
+                self.release_gesture(key, gesture, backend)?;
             }
             self.release_toggle_session_for_safe_mode(backend)?;
         }
@@ -1380,6 +1372,33 @@ impl Engine {
             )
         });
         Ok(())
+    }
+
+    /// Release the actions that the original press started, even after its
+    /// temporary layer has gone away. Modes receive individual actions, not
+    /// the engine's sequence wrapper.
+    pub(super) fn release_gesture(
+        &mut self,
+        key: Key,
+        gesture: ActiveGesture,
+        backend: &mut dyn Backend,
+    ) -> Result<(), String> {
+        self.apply_binding(
+            ResolvedBinding {
+                binding: gesture.binding,
+                owner: gesture.owner,
+            },
+            &crate::api::input::InputEvent {
+                key,
+                character: None,
+                state: KeyState::Up,
+                repeat: false,
+                injected: false,
+                timestamp_millis: 0,
+            },
+            backend,
+        )
+        .map(|_| ())
     }
 
     #[inline]
@@ -2338,9 +2357,34 @@ impl Engine {
                     owner: active.clone(),
                 });
             }
-            // Full physical chords outrank stripped chords. Within each tier,
-            // the temporary layer wins unless this input explicitly passes through.
-            for (keys, exact) in [(pressed, true), (remaining.as_slice(), false)] {
+            // Only the current mode's own explicit chord keeps the trigger.
+            // Inherited chords must not resurrect a consumed activation key.
+            // Explicit passthrough retains the current layer's normal inheritance.
+            let explicit = if passthrough {
+                self.lookup_layer_reference::<HELP>(
+                    active,
+                    active,
+                    key,
+                    pressed,
+                    true,
+                    &mut SmallVec::new(),
+                )
+            } else {
+                active_match()
+                    .filter(|(_, specificity)| *specificity == pressed.len())
+                    .map(|(binding, _)| ResolvedBinding {
+                        binding,
+                        owner: active.clone(),
+                    })
+            };
+            if let Some(resolved) = explicit {
+                return (resolved.binding.as_ref() != &Binding::Disabled
+                    && available(&resolved.binding))
+                .then_some(resolved);
+            }
+            // The trigger is consumed once. Keep the existing exact-chord
+            // precedence and temporary-layer tie breaking on the remaining keys.
+            for exact in [true, false] {
                 for (temporary, source) in [(true, owner), (false, active)] {
                     if temporary && passthrough {
                         continue;
@@ -2349,7 +2393,7 @@ impl Engine {
                         active,
                         source,
                         key,
-                        keys,
+                        &remaining,
                         exact,
                         &mut SmallVec::new(),
                     ) {

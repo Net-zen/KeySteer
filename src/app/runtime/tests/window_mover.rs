@@ -364,7 +364,7 @@ fn temporary_layer_preserves_local_bindings_other_modifiers_and_normal_shortcuts
         &config.normal.bindings["left_alt+s"]
     );
     engine.set_active(ModeId::grid());
-    assert_eq!(engine.lookup_for_pressed(&s, &alt_s).unwrap().binding.as_ref(), &config.normal.bindings["left_alt+s"]);
+    assert!(engine.lookup_for_pressed(&s, &alt_s).is_none(), "the current mode\'s explicit none must remain terminal");
     let q = Key::new("q").unwrap();
     assert_eq!(
         engine
@@ -380,7 +380,7 @@ fn temporary_layer_preserves_local_bindings_other_modifiers_and_normal_shortcuts
             .unwrap()
             .binding
             .as_ref(),
-        &config.normal.bindings["left_alt+s"]
+        &Binding::Move(Direction::Down)
     );
     assert_eq!(
         engine

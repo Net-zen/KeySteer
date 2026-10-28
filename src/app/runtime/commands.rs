@@ -532,12 +532,11 @@ impl Engine {
                     // Normal shortcuts. Retarget it before the pointer crosses
                     // screens, otherwise PointerMoved resets the retained path.
                     // Passthrough shells still target their temporary mode.
-                    let recipient =
-                        if matches!(self.registry.active.as_str(), "grid" | "recursive_grid") {
-                            self.registry.active.clone()
-                        } else {
-                            self.display_mode()
-                        };
+                    let recipient = if self.registry.active.is_grid() {
+                        self.registry.active.clone()
+                    } else {
+                        self.display_mode()
+                    };
                     self.dispatch_to(
                         &recipient,
                         ModeEvent::ScreenRetargeted { screen, preserve },

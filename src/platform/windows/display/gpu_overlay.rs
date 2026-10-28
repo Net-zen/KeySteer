@@ -48,6 +48,9 @@ use crate::api::overlay::{
     Color, CursorMarker, Indicator, LabelStyle, LabelTextAnalysis, OverlayLabel, OverlayScene,
     OverlayShape,
 };
+use crate::platform::common::overlay_geometry::{
+    IndicatorLayout, indicator_layout, pixel_aligned_rect,
+};
 
 use super::super::native::{
     self, NativeDimensions, OwnedWindow, OwnedWindowSpec, create_owned_window,
@@ -418,14 +421,10 @@ impl GpuOverlay {
             if content.indicator_surface.is_none() {
                 return Err("indicator visual surface is unavailable".into());
             }
-            let bounds = indicator_bounds(item, position);
+            let layout = indicator_layout_in_window(item, position, content.area);
+            let bounds = indicator_bounds(&layout);
             content.positions.1 = None;
-            configure_visual(
-                &content.indicator_visual,
-                None,
-                bounds.x - content.area.x,
-                bounds.y - content.area.y,
-            )?;
+            configure_visual(&content.indicator_visual, None, bounds.x, bounds.y)?;
             content.positions.1 = Some(position);
         }
         self.commit(None)
@@ -865,15 +864,8 @@ impl GpuOverlay {
             }
             return Ok(());
         };
-        let first = indicator_rect(&indicator.text, indicator.position, &indicator.style);
-        let held = indicator.held_text.as_deref().map(|text| {
-            indicator_rect(
-                text,
-                Point::new(indicator.position.x, first.bottom() + 4.0),
-                &indicator.style,
-            )
-        });
-        let bounds = indicator_bounds(indicator, indicator.position);
+        let layout = indicator_layout_in_window(indicator, indicator.position, area);
+        let bounds = indicator_bounds(&layout);
         let width = dimension(bounds.width)?;
         let height = dimension(bounds.height)?;
         let surface_to_paint = {
@@ -889,12 +881,7 @@ impl GpuOverlay {
                 .as_ref()
                 .ok_or("DirectComposition indicator surface was not retained")?;
             let bind = recreated.then(|| layer.surface.clone());
-            configure_visual(
-                &content.indicator_visual,
-                bind.as_ref(),
-                bounds.x - area.x,
-                bounds.y - area.y,
-            )?;
+            configure_visual(&content.indicator_visual, bind.as_ref(), bounds.x, bounds.y)?;
             (repaint || recreated).then(|| layer.surface.clone())
         };
         if let Some(surface) = surface_to_paint {
@@ -905,13 +892,13 @@ impl GpuOverlay {
                 |renderer, origin| {
                     renderer.draw_label_parts(
                         &indicator.text,
-                        first,
+                        layout.main,
                         &indicator.style,
                         LabelTextAnalysis::analyze(&indicator.text, 0),
                         origin,
                         (None, false, 0),
                     )?;
-                    if let (Some(text), Some(rect)) = (&indicator.held_text, held) {
+                    if let (Some(text), Some(rect)) = (&indicator.held_text, layout.held) {
                         renderer.draw_label_parts(
                             text,
                             rect,
@@ -1558,25 +1545,22 @@ fn cursor_bounds(marker: &CursorMarker, center: Point) -> Rect {
     )
 }
 
-fn indicator_bounds(indicator: &Indicator, position: Point) -> Rect {
-    let first = indicator_rect(&indicator.text, position, &indicator.style);
-    indicator
-        .held_text
-        .as_deref()
-        .map(|text| {
-            indicator_rect(
-                text,
-                Point::new(position.x, first.bottom() + 4.0),
-                &indicator.style,
-            )
-        })
-        .map_or(first, |held| first.union(&held))
-        .inset(-1.0, -1.0)
+fn indicator_layout_in_window(
+    indicator: &Indicator,
+    position: Point,
+    area: Rect,
+) -> IndicatorLayout {
+    // Windows layout has already applied monitor DPI. Snap in the HWND's
+    // local physical pixels, even when the scene's clip has a fractional origin.
+    indicator_layout(
+        indicator,
+        Point::new(position.x - area.x, position.y - area.y),
+        1.0,
+    )
 }
 
-fn indicator_rect(text: &str, position: Point, style: &LabelStyle) -> Rect {
-    let (width, height) = Indicator::label_size(text.chars().count(), style);
-    Rect::new(position.x - width, position.y, width, height)
+fn indicator_bounds(layout: &IndicatorLayout) -> Rect {
+    pixel_aligned_rect(layout.bounds.inset(-1.0, -1.0), 1.0)
 }
 
 extern "system" fn window_proc(
@@ -1938,6 +1922,46 @@ mod tests {
     }
 
     #[test]
+    fn indicator_surface_geometry_stays_in_local_integer_pixels() {
+        let indicator = Indicator {
+            text: "Normal".into(),
+            held_text: Some("HELD: SHIFT".into()),
+            position: Point::new(-1700.3, 110.2),
+            style: LabelStyle {
+                font_size: 11.0,
+                padding_x: 4.0,
+                padding_y: 2.0,
+                ..LabelStyle::default()
+            },
+        };
+        let area = Rect::new(-1920.25, -200.75, 1920.0, 1080.0);
+        let mut previous_size = None;
+        for delta in [0.0, 0.1, 0.5, 1.0, 30.7] {
+            let position = Point::new(indicator.position.x + delta, indicator.position.y - delta);
+            let layout = indicator_layout_in_window(&indicator, position, area);
+            let bounds = indicator_bounds(&layout);
+            for value in [bounds.x, bounds.y, bounds.width, bounds.height] {
+                assert_eq!(value, value.round());
+            }
+            let size = (
+                dimension(bounds.width).unwrap(),
+                dimension(bounds.height).unwrap(),
+            );
+            if let Some(previous_size) = previous_size {
+                assert_eq!(size, previous_size, "movement must reuse the surface");
+            }
+            previous_size = Some(size);
+            for label in std::iter::once(layout.main).chain(layout.held) {
+                assert!(label.x >= bounds.x + 1.0 && label.y >= bounds.y + 1.0);
+                assert!(label.right() <= bounds.right() - 1.0);
+                assert!(label.bottom() <= bounds.bottom() - 1.0);
+                assert_eq!(label.x - bounds.x, (label.x - bounds.x).round());
+                assert_eq!(label.y - bounds.y, (label.y - bounds.y).round());
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "requires an interactive Windows compositor"]
     fn directcomposition_smoke() -> Result<(), String> {
         super::super::enable_dpi_awareness()?;
@@ -1971,8 +1995,13 @@ mod tests {
         scene.indicator = Some(crate::api::overlay::Indicator {
             text: "DComp".into(),
             held_text: Some("GPU".into()),
-            position: Point::new(248.0, 72.0),
-            style: LabelStyle::default(),
+            position: Point::new(248.1, 72.1),
+            style: LabelStyle {
+                font_size: 11.0,
+                padding_x: 4.0,
+                padding_y: 2.0,
+                ..LabelStyle::default()
+            },
         });
         let scene = Arc::new(scene);
         renderer.present(Arc::clone(&scene), area)?;
@@ -1997,6 +2026,20 @@ mod tests {
             "indicator must be above the static backdrop"
         );
         let draws = renderer.begin_draws;
+        renderer.update_positions(None, Some(Point::new(248.4, 72.4)))?;
+        assert!(
+            read()? == original,
+            "subpixel pointer movement within one pixel must not blur the badge"
+        );
+        let mut same_pixel = scene.as_ref().clone();
+        // A distinct logical anchor forces the complete-frame positioning path
+        // while still selecting the same physical pixel as the fast move.
+        same_pixel.indicator.as_mut().unwrap().position = Point::new(248.2, 72.2);
+        renderer.present(Arc::new(same_pixel), area)?;
+        assert!(
+            read()? == original,
+            "complete and position-only frames must align alike"
+        );
         renderer.update_positions(Some(Point::new(140.0, 52.0)), Some(Point::new(208.0, 92.0)))?;
         let moved = read()?;
         assert_eq!(rgb(&moved, 180, 32), [255, 255, 255]);

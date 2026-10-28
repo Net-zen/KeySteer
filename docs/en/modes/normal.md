@@ -35,7 +35,7 @@ Use Normal for everyday movement, clicking, scrolling, and dragging. Press `Prim
 | `;` / `'` / `Right Shift` | Left / right / middle click |
 | `N` + a click key | Hold a mouse button for dragging; tap `N` alone to release |
 | `T / Y / I / U` | Home / End / Page Up / Page Down |
-| `G` / `F` / `Primary+F` | Grid / Recursive Grid / UI Hint |
+| `G` / `F` / `Primary+G` / `Primary+F` | Grid / UI Hint / Recursive Grid / Bisect |
 | `Primary+S` | Move the pointer to the next display |
 | `Primary+D` | Move the window under the pointer to the next display |
 | `Q` / `Esc` | Return to Idle |

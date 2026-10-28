@@ -342,8 +342,7 @@ impl Engine {
                     };
                     if target == display_mode
                         || (target.is_window() && target != &ModeId::window())
-                        || (*display_mode == ModeId::window()
-                            && (*target == ModeId::grid() || *target == ModeId::recursive_grid()))
+                        || (*display_mode == ModeId::window() && target.is_grid())
                     {
                         return None;
                     }

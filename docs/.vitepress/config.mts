@@ -39,7 +39,7 @@ const englishTheme = {
     { text: 'Get started', items: [{ text: 'Getting started', link: '/en/guide/getting-started' }, { text: 'macOS', link: '/en/guide/macos' }] },
     { text: 'Modes', items: [
       { text: 'Overview', link: '/en/modes/' }, { text: 'Normal', link: '/en/modes/normal' },
-      { text: 'Grid', link: '/en/modes/grid' }, { text: 'Recursive Grid', link: '/en/modes/recursive-grid' },
+      { text: 'Grid', link: '/en/modes/grid' }, { text: 'Recursive Grid', link: '/en/modes/recursive-grid' }, { text: 'Bisect', link: '/en/modes/bisect' },
       { text: 'UI Hint', link: '/en/modes/ui-hint' },
     ] },
     windowSidebar('/en', true),
@@ -72,7 +72,7 @@ const languageStateScript = `(() => {
   const key = 'keysteer-docs-language'
   const englishPages = new Set([
     '', 'guide/getting-started', 'guide/macos', 'modes/', 'modes/grid',
-    'modes/window', 'modes/normal', 'modes/recursive-grid', 'modes/ui-hint', 'reference/configuration',
+    'modes/window', 'modes/normal', 'modes/recursive-grid', 'modes/bisect', 'modes/ui-hint', 'reference/configuration',
     'reference/modes-and-actions', 'editor/', 'simulator', 'releases/', 'performance',
     'window-management/', 'window-management/window', 'window-management/quick',
     'window-management/editor', 'window-management/tabs', 'window-management/restore',
@@ -181,6 +181,7 @@ export default async ({ command }: { command: unknown }) => {
           { text: 'Normal 普通模式', link: '/modes/normal' },
           { text: 'Grid 网格模式', link: '/modes/grid' },
           { text: 'Recursive Grid 递归网格', link: '/modes/recursive-grid' },
+          { text: 'Bisect 二分定位', link: '/modes/bisect' },
           { text: 'UI 标签模式', link: '/modes/ui-hint' },
         ],
       },
@@ -283,7 +284,7 @@ export default async ({ command }: { command: unknown }) => {
               { text: 'Overview', link: '/en/modes/' },
               { text: 'Normal', link: '/en/modes/normal' },
               { text: 'Grid', link: '/en/modes/grid' },
-              { text: 'Recursive Grid', link: '/en/modes/recursive-grid' },
+              { text: 'Recursive Grid', link: '/en/modes/recursive-grid' }, { text: 'Bisect', link: '/en/modes/bisect' },
               { text: 'UI Hint', link: '/en/modes/ui-hint' },
             ],
           },

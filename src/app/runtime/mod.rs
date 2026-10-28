@@ -682,7 +682,20 @@ impl Engine {
     pub fn run(&mut self, backend: &mut dyn Backend) -> Result<(), String> {
         self.start_runtime(backend)?;
 
-        let result = match backend.run_event_loop(&mut |backend| self.run_ready_turns(backend)) {
+        let mut finished = false;
+        let result = match backend.run_event_loop(&mut |backend| {
+            match self.run_ready_turns(backend) {
+                Ok(Some(timeout)) => Ok(Some(timeout)),
+                result => {
+                    // AppKit's TerminateLater runs a nested modal loop until
+                    // shutdown acknowledges termination. Cleanup must happen
+                    // in this final turn, not after that loop returns.
+                    finished = true;
+                    self.finish_runtime(backend, result.map(|_| ()))
+                        .map(|()| None)
+                }
+            }
+        }) {
             Some(result) => result,
             None => (|| {
                 while !self.should_quit {
@@ -692,7 +705,11 @@ impl Engine {
             })(),
         };
 
-        self.finish_runtime(backend, result)
+        if finished {
+            result
+        } else {
+            self.finish_runtime(backend, result)
+        }
     }
 
     pub(crate) fn take_restart(&mut self) -> Option<Box<dyn PreparedRestart>> {
@@ -1180,7 +1197,7 @@ impl Engine {
             return Ok(());
         }
 
-        let grid = target == ModeId::grid() || target == ModeId::recursive_grid();
+        let grid = target.is_grid();
         if grid
             && self
                 .registry
@@ -1260,15 +1277,7 @@ impl Engine {
                     .into_iter()
                     .collect();
             for (key, gesture) in pending {
-                self.dispatch_to(
-                    &gesture.owner,
-                    ModeEvent::Binding {
-                        binding: Arc::clone(&gesture.binding),
-                        state: KeyState::Up,
-                        key,
-                    },
-                    backend,
-                )?;
+                self.release_gesture(key, gesture, backend)?;
             }
 
             let shared_group = self
@@ -1591,30 +1600,37 @@ impl Engine {
             return Ok(true);
         }
 
-        // Stateful gestures and mode-specific discrete actions are owned by
-        // the receiving mode. Transfer the resolved binding's Arc directly;
-        // a held key already stored the one clone needed for its release edge.
-        if matches!(
-            binding,
+        match binding {
+            // These actions always belong to the resolved mode. Only window
+            // actions below can transfer to the active shared window session.
             Binding::Move(_)
-                | Binding::Scroll(..)
-                | Binding::Speed(_)
-                | Binding::SpeedToggle(_)
-                | Binding::ToggleCursorFollowSelection
-                | Binding::TargetingKey(_)
-                | Binding::Window(_)
-                | Binding::RescanUi
-                | Binding::TextSelect(_)
-                | Binding::SelectionReset
-                | Binding::SelectionParent
-                | Binding::SelectionReopen
-                | Binding::SelectionAccept
-                | Binding::SelectionCancel
-                | Binding::SelectionSearch
-        ) {
-            let recipient = self.stateful_binding_owner(&resolved);
-            return self
+            | Binding::Scroll(..)
+            | Binding::Speed(_)
+            | Binding::SpeedToggle(_)
+            | Binding::ToggleCursorFollowSelection
+            | Binding::TargetingKey(_)
+            | Binding::RescanUi
+            | Binding::TextSelect(_)
+            | Binding::SelectionReset
+            | Binding::Bisect(_)
+            | Binding::SelectionParent
+            | Binding::SelectionReopen
+            | Binding::SelectionAccept
+            | Binding::SelectionCancel
+            | Binding::SelectionSearch => self
                 .dispatch_to(
+                    &resolved.owner,
+                    ModeEvent::Binding {
+                        binding: resolved.binding,
+                        state: input.state,
+                        key: input.key.clone(),
+                    },
+                    backend,
+                )
+                .map(|_| true),
+            Binding::Window(_) => {
+                let recipient = self.stateful_binding_owner(&resolved);
+                self.dispatch_to(
                     &recipient,
                     ModeEvent::Binding {
                         binding: resolved.binding,
@@ -1623,10 +1639,8 @@ impl Engine {
                     },
                     backend,
                 )
-                .map(|_| true);
-        }
-
-        match binding {
+                .map(|_| true)
+            }
             Binding::MoveWindowFromToScreen { source, target } => {
                 let owner = self.registry.active.clone();
                 self.execute_for(
@@ -1972,26 +1986,6 @@ impl Engine {
                 Ok(true)
             }
             Binding::Wait { .. } => Ok(true),
-
-            Binding::Move(_)
-            | Binding::Scroll(..)
-            | Binding::Speed(_)
-            | Binding::SpeedToggle(_)
-            | Binding::ToggleCursorFollowSelection
-            | Binding::TargetingKey(_)
-            | Binding::Window(_)
-            | Binding::RescanUi => {
-                Err("stateful binding reached the stateless runtime dispatch boundary".into())
-            }
-            Binding::TextSelect(_)
-            | Binding::SelectionReset
-            | Binding::SelectionParent
-            | Binding::SelectionAccept
-            | Binding::SelectionCancel
-            | Binding::SelectionSearch
-            | Binding::SelectionReopen => {
-                Err("stateful binding reached the stateless runtime dispatch boundary".into())
-            }
 
             // Filtered out when the table was built.
             Binding::Disabled => Ok(false),

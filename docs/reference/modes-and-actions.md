@@ -24,6 +24,7 @@
 | `normal` | 直接移动、滚动、点击，并进入定位模式。 |
 | `grid` | 全屏坐标网格。 |
 | `recursive_grid` | 在当前区域中逐层细分。 |
+| `bisect` | 无字母的二分定位，每次保留一个方向的半区。 |
 | `text_select` | OCR 文字选择：区域 → 词语 → 字符。 |
 | `ui_hint` | 给可交互元素显示标签。 |
 | `window` | 锁定鼠标下的窗口，移动、中心缩放、布局和平铺。 |
@@ -36,8 +37,9 @@
 ```toml
 [normal.bindings]
 g = "grid"
-f = "recursive_grid"
-"primary+f" = "ui_hint"
+f = "ui_hint"
+"primary+g" = "recursive_grid"
+"primary+f" = "bisect"
 "primary+s" = "screen next"
 
 # 可选：向当前应用发送方向键
@@ -128,7 +130,7 @@ g = "grid"
 "primary+f" = "recursive_grid"
 ```
 
-G 进入 Grid，裸 F 最大化／还原。窗口自身的 Primary+F 绑定为 Recursive Grid；默认临时层启用时，Normal 的同名完整组合键优先进入 UI Hint。若要保留窗口绑定，将 `primary+f` 加入 `temporary_mode_passthrough_keys`。可改键或设 `none` 禁用；已有自定义表需补入对应行。其他窗口子模式没有这两个默认入口，按住 Primary 时还会按临时层规则处理。
+G 进入 Grid，裸 F 最大化／还原。窗口自身显式配置的 Primary+F 进入 Recursive Grid，临时层启用时也保留这个绑定。可改键或设 `none` 禁用；已有自定义表需补入对应行。其他窗口子模式没有这两个默认入口，按住 Primary 时还会按临时层规则处理。
 
 ### T：持续存在的标签组合
 
@@ -207,7 +209,8 @@ macOS 应用音频在内存中处理，不保存或上传录音，但会增加�
 | `scroll_full_*` | 按 `scroll_step_full` 滚动。 |
 | `precision`、`slow`、`fast` | 按住时改变移动速度。 |
 | `precision_toggle`、`slow_toggle`、`fast_toggle` | 按一下锁存速度，再按同一键关闭；状态显示在模式指示器下方。 |
-| `follow` | 切换 Grid/Recursive Grid 的鼠标跟随。 |
+| `follow` | 切换 Grid/Recursive Grid/Bisect 的鼠标跟随。 |
+| `bisect_left` / `bisect_down` / `bisect_up` / `bisect_right` | Bisect 中保留左／下／上／右半区，默认 h/j/k/l。 |
 
 `wheel_*` 是 `scroll_*` 的兼容别名。速度动作通常和方向键一起使用：
 

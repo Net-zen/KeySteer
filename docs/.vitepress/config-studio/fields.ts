@@ -1,5 +1,5 @@
 import { fieldLocation } from './navigation.ts'
-export type TargetingMode = 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | 'key_help' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
+export type TargetingMode = 'text_select' | 'grid' | 'recursive_grid' | 'bisect' | 'ui_hint' | 'key_help' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
 export type Appearance = 'dark' | 'light'
 export type ControlKind = 'color' | 'number' | 'text' | 'boolean' | 'select' | 'ratios' | 'percentages' | 'offset' | 'choices' | 'binding' | 'chords' | 'field-modes'
 
@@ -104,6 +104,21 @@ export const fields = {
       { path: 'grid.ui.font_family', label: '字体', kind: 'text' },
       { path: 'grid.ui.border_width', label: '线宽', kind: 'number', min: 0.5, max: 8, step: 0.5 },
     ],
+  },
+  bisect: {
+    colors: [
+      { path: 'bisect.ui.line_color', label: '网格线', kind: 'color' },
+      { path: 'bisect.ui.highlight_color', label: '高亮色', kind: 'color' },
+    ],
+    layout: [
+      { path: 'bisect.enabled', label: '启用 Bisect', kind: 'boolean' },
+      { path: 'bisect.max_depth', label: '二分上限', kind: 'number', min: 1, max: 40, step: 1 },
+      { path: 'bisect.min_size_width', label: '最小区域宽度', kind: 'number', min: 1, step: 1 },
+      { path: 'bisect.min_size_height', label: '最小区域高度', kind: 'number', min: 1, step: 1 },
+      { path: 'bisect.cursor_follow_selection', label: '二分光标跟随', kind: 'boolean' },
+      { path: 'bisect.ui.line_width', label: '线宽', kind: 'number', min: 0, max: 20, step: 1 },
+    ],
+    advanced: [],
   },
   recursive_grid: {
     colors: [
@@ -256,7 +271,7 @@ for (const mode of ['window_quick', 'window_editor', 'window_restore', 'window_t
   if (mode === 'window_editor') own.advanced.push({ path: `${mode}.resize_step`, label: '分割线步长', kind: 'number', min: 0 }, { path: `${mode}.resize_speed`, label: '分割线速度', kind: 'number', min: 0 })
 }
 
-export const lifecycleModes = ['grid', 'recursive_grid', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab'] as const
+export const lifecycleModes = ['grid', 'recursive_grid', 'bisect', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab'] as const
 export const lifecycleClickActions = ['left_click', 'right_click', 'middle_click', 'double_click']
 export function lifecycleOptions(event: 'after_finish' | 'after_click' | 'after_copy', plugins: string[] = []): string[] {
   return ['keep', 'restart', 'return', ...(event === 'after_finish' ? lifecycleClickActions : event === 'after_click' ? ['finish'] : []),

@@ -196,9 +196,10 @@ fn default_normal_bindings() -> Bindings {
         ("n", "toggle"),
         // Targeting modes available directly from normal.
         ("g", "grid"),
-        ("f", "recursive_grid"),
+        ("f", "ui_hint"),
+        ("primary+g", "recursive_grid"),
+        ("primary+f", "bisect"),
         ("c", "text_select"),
-        ("primary+f", "ui_hint"),
         ("primary+s", "screen next"),
         ("primary+d", "move_window next"),
         // Navigation keys sent to the focused application.
@@ -580,15 +581,7 @@ impl Default for Grid {
                 after_click: LifecycleAction::Finish,
             },
             ui,
-            bindings: Bindings::from([
-                ("`".into(), Binding::ToggleCursorFollowSelection),
-                ("enter".into(), Binding::SelectionAccept),
-                ("esc".into(), Binding::SelectionCancel),
-                ("space".into(), Binding::SelectionReset),
-                ("tab".into(), Binding::SelectionParent),
-                ("backspace".into(), Binding::SelectionParent),
-                ("primary+q".into(), Binding::Mode(ModeId::normal())),
-            ]),
+            bindings: default_grid_control_bindings(),
             app_configs: Vec::new(),
         }
     }
@@ -652,16 +645,85 @@ impl Default for RecursiveGrid {
             lifecycle: TargetingLifecycle::default(),
             layers: Vec::new(),
             ui,
-            bindings: Bindings::from([
-                ("`".into(), Binding::ToggleCursorFollowSelection),
-                ("enter".into(), Binding::SelectionAccept),
-                ("esc".into(), Binding::SelectionCancel),
-                ("space".into(), Binding::SelectionReset),
-                ("tab".into(), Binding::SelectionParent),
-                ("backspace".into(), Binding::SelectionParent),
-                ("primary+q".into(), Binding::Mode(ModeId::normal())),
-            ]),
+            bindings: default_grid_control_bindings(),
             app_configs: Vec::new(),
+        }
+    }
+}
+
+fn default_grid_control_bindings() -> Bindings {
+    Bindings::from([
+        ("`".into(), Binding::ToggleCursorFollowSelection),
+        ("enter".into(), Binding::SelectionAccept),
+        ("esc".into(), Binding::SelectionCancel),
+        ("space".into(), Binding::SelectionReset),
+        ("tab".into(), Binding::SelectionParent),
+        ("backspace".into(), Binding::SelectionParent),
+        ("primary+q".into(), Binding::Mode(ModeId::normal())),
+    ])
+}
+
+/// Directional bisection has no label alphabet or per-depth grid layout.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Bisect {
+    pub enabled: bool,
+    pub min_size_width: u32,
+    pub min_size_height: u32,
+    pub max_depth: u32,
+    pub cursor_follow_selection: bool,
+    pub inherits: Vec<String>,
+    pub temporary_mode: Option<String>,
+    pub temporary_mode_keys: Vec<String>,
+    pub temporary_mode_passthrough_keys: Vec<String>,
+    pub lifecycle: TargetingLifecycle,
+    pub ui: BisectUi,
+    pub bindings: Bindings,
+    pub app_configs: Vec<AppOverride>,
+}
+
+impl Default for Bisect {
+    fn default() -> Self {
+        use crate::api::Direction;
+        let mut bindings = default_grid_control_bindings();
+        bindings.extend([
+            ("h".into(), Binding::Bisect(Direction::Left)),
+            ("j".into(), Binding::Bisect(Direction::Down)),
+            ("k".into(), Binding::Bisect(Direction::Up)),
+            ("l".into(), Binding::Bisect(Direction::Right)),
+        ]);
+        Self {
+            enabled: true,
+            min_size_width: 2,
+            min_size_height: 2,
+            max_depth: 20,
+            cursor_follow_selection: true,
+            inherits: vec!["hotkeys".into(), "normal".into()],
+            temporary_mode: Some("normal".into()),
+            temporary_mode_keys: Vec::new(),
+            temporary_mode_passthrough_keys: Vec::new(),
+            lifecycle: TargetingLifecycle::default(),
+            ui: BisectUi::default(),
+            bindings,
+            app_configs: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BisectUi {
+    pub line_width: i32,
+    pub line_color: Option<ThemedColor>,
+    pub highlight_color: Option<ThemedColor>,
+}
+
+impl Default for BisectUi {
+    fn default() -> Self {
+        Self {
+            line_width: 1,
+            line_color: None,
+            highlight_color: None,
         }
     }
 }

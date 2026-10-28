@@ -148,7 +148,7 @@ export function temporaryPhysicalKeys(document: BindingDocument, mode: string, p
   return [...active]
 }
 
-/** Full chords precede trigger-stripped chords; the temporary layer wins ties. */
+/** Local explicit chords keep the trigger; other layers resolve only the remaining keys. */
 export function resolveLayeredPhysicalBinding(document: BindingDocument, mode: string, pressed: string[], key: string, isMac: boolean, entryKeys: ReadonlySet<string> = new Set()): ResolvedBinding | undefined {
   const triggers = temporaryPhysicalKeys(document, mode, pressed, isMac, entryKeys)
   if (!triggers.length) return resolvePhysicalBinding(document, mode, pressed, key, isMac)
@@ -159,9 +159,11 @@ export function resolveLayeredPhysicalBinding(document: BindingDocument, mode: s
     return keys.some(k => keyMatches(k, key)) && [pressed, remaining].some(input => keys.length === input.length && keys.every(k => input.some(p => keyMatches(k, p))))
   })
   if (!passthrough && !remaining.includes(key)) return undefined
-  for (const [input, exact] of [[pressed, true], [remaining, false]] as const) {
+  const explicit = resolvePhysicalBinding(document, mode, pressed, key, isMac, !passthrough, true)
+  if (explicit) return explicit
+  for (const exact of [true, false]) {
     for (const source of passthrough ? [mode] : [String(settings.temporary_mode), mode]) {
-      const resolved = resolvePhysicalBinding(document, source, input, key, isMac, false, exact)
+      const resolved = resolvePhysicalBinding(document, source, remaining, key, isMac, false, exact)
       if (resolved) return resolved
     }
   }

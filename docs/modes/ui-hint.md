@@ -12,7 +12,7 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
   description="展示扫描界面元素、输入标签筛选并把鼠标定位到目标控件。"
 />
 
-从 Normal 按 `Primary+F` 进入。
+从 Normal 按 `f` 进入。
 
 ::: tip 定位后再点击
 默认只移动鼠标，随后回到 Normal；用 `;` 左击确认即可。

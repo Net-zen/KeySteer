@@ -371,9 +371,10 @@ fn enter_window(engine: &mut Engine, backend: &mut FakeBackend, log: &Arc<Mutex<
 }
 
 #[test]
-fn window_temporary_normal_hotkey_enters_normal_once_and_exits_with_one_q() {
+fn window_explicit_normal_shortcut_enters_normal_once_and_exits_with_one_q() {
     let mut config = Config::default();
     config.window.temporary_mode_keys = vec![primary_key(&config)];
+    config.window.bindings.insert("primary+e".into(), Binding::Mode(ModeId::normal()));
     let primary = primary_key(&config);
     let (mut engine, mut backend, log) = window_test_engine(&config);
     let session = enter_window(&mut engine, &mut backend, &log).session;
@@ -1735,28 +1736,30 @@ fn window_help_cache_restores_connectors_with_displaced_labels() {
 #[test]
 fn window_targeting_uses_real_grid_lifecycle_and_keeps_window_session() {
     use crate::api::window::{WindowOperation as O, WindowChange, WindowId};
-    for (recursive, temporary) in [(false, false), (false, true), (true, true)] {
+    for (kind, temporary) in [("grid", false), ("grid", true), ("recursive_grid", true), ("bisect", true)] {
         let mut config = Config::default();
         if temporary { config.window.temporary_mode_keys = vec![primary_key(&config)]; }
-        // Isolate stripped F -> Recursive Grid. Full Primary+F normally wins
-        // in the shared temporary route and opens UI Hint.
-        let full_hint_key = config.normal.bindings.iter().find_map(|(key, binding)|
-            (binding == &Binding::Mode(ModeId::ui_hint())).then(|| key.clone())).unwrap();
-        config.normal.bindings.remove(&full_hint_key);
+        if kind == "bisect" {
+            config.window.bindings.insert("primary+g".into(), Binding::Mode(ModeId::bisect()));
+        }
         config.grid.cursor_follow_selection = true;
         config.grid.lifecycle.after_finish = crate::api::LifecycleAction::Keep;
         config.recursive_grid.cursor_follow_selection = true;
         let primary = primary_key(&config);
         let (mut engine, mut backend, log) = window_test_engine(&config);
         let initial = enter_window(&mut engine, &mut backend, &log);
-        let entrance = if recursive { "f" } else { "g" };
+        let help_entries: Vec<_> = engine.registry.table(&ModeId::window()).unwrap()
+            .iter_entries().map(|entry| format!("{}  ·  {}", entry.chord.canonical(), entry.binding.canonical())).collect();
+        assert_ne!(engine.key_help_return_target_in(&ModeId::window(), &help_entries).as_deref(), Some("bisect"));
+        let entrance = if kind == "recursive_grid" { "f" } else { "g" };
         let keys = if temporary { vec![primary.as_str(), entrance] } else { vec![entrance] };
         for key in &keys { engine.handle_backend_event(key_down(key), &mut backend).unwrap(); }
         for key in keys.iter().rev() { engine.handle_backend_event(key_up(key), &mut backend).unwrap(); }
-        let expected = if recursive { ModeId::recursive_grid() } else { ModeId::grid() };
+        let expected = ModeId::new(kind).unwrap();
         assert_eq!(engine.active_mode(), &expected);
         assert_eq!(engine.registry.modal_stack, vec![ModeId::window()]);
-        for key in ["a", "tab", "a", "space", "a"] {
+        let select = if kind == "bisect" { "h" } else { "a" };
+        for key in [select, "tab", select, "space", select] {
             for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
             assert_eq!(engine.active_mode(), &expected);
         }

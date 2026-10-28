@@ -50,6 +50,7 @@ pub enum View<'a> {
     Empty,
     Grid(GridView<'a>),
     RecursiveGrid(RecursiveGridView<'a>),
+    Bisect(BisectView<'a>),
     Window(WindowView<'a>),
     ScreenSelector(ScreenSelectorView<'a>),
     Hints(HintView<'a>),
@@ -121,6 +122,22 @@ pub struct RecursiveGridView<'a> {
     pub root: Option<Rect>,
     pub terminal: bool,
     pub can_descend: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BisectStyle {
+    pub line_width: i32,
+    pub line_color: Option<ThemedColor>,
+    pub highlight_color: Option<ThemedColor>,
+}
+
+pub struct BisectView<'a> {
+    pub ui: &'a BisectStyle,
+    pub current: Option<Rect>,
+    pub root: Option<Rect>,
+    pub terminal: bool,
+    /// Whether horizontal / vertical narrowing is still possible.
+    pub axes: (bool, bool),
 }
 
 #[derive(Default)]

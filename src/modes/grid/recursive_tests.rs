@@ -7,7 +7,7 @@ use crate::api::geometry::{Point, Screen};
 use crate::config::{Config, GridLayer};
 
 /// Cells of the current area, paired with their keys.
-fn cells(mode: &GridMode) -> Vec<(char, Rect)> {
+fn cells(mode: &GridMode<crate::modes::targeting::RecursiveGeometry>) -> Vec<(char, Rect)> {
     if mode.controller.session.terminal {
         return Vec::new();
     }
@@ -73,13 +73,20 @@ impl Env {
     }
 }
 
-fn activate(mode: &mut GridMode, env: &Env) -> Vec<Command> {
+fn activate(
+    mode: &mut GridMode<crate::modes::targeting::RecursiveGeometry>,
+    env: &Env,
+) -> Vec<Command> {
     mode.handle(&ModeEvent::Activated { previous: None }, &env.ctx())
         .into_iter()
         .collect()
 }
 
-fn press(mode: &mut GridMode, env: &Env, name: &str) -> Vec<Command> {
+fn press(
+    mode: &mut GridMode<crate::modes::targeting::RecursiveGeometry>,
+    env: &Env,
+    name: &str,
+) -> Vec<Command> {
     let key = Key::new(name).unwrap();
     let binding = env.config.recursive_grid.bindings.get(name);
     if let Some(binding) = binding {
@@ -107,7 +114,10 @@ fn press(mode: &mut GridMode, env: &Env, name: &str) -> Vec<Command> {
     .collect()
 }
 
-fn toggle_follow(mode: &mut GridMode, env: &Env) -> Vec<Command> {
+fn toggle_follow(
+    mode: &mut GridMode<crate::modes::targeting::RecursiveGeometry>,
+    env: &Env,
+) -> Vec<Command> {
     mode.handle(
         &ModeEvent::Binding {
             binding: Binding::ToggleCursorFollowSelection.into(),

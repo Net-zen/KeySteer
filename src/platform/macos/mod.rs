@@ -111,6 +111,7 @@ pub struct MacOsBackend {
     frame_clock: DisplayFrameClock,
     scroll_worker: crate::platform::common::scroll_worker::ScrollWorker,
     workspace: workspace::Workspace,
+    _permission_observer: permissions::ChangeObserver,
     status_item: Option<status_item::StatusItem>,
     update_worker: Option<crate::platform::common::update::UpdateWorker>,
     update_ready_signaled: bool,
@@ -157,6 +158,7 @@ impl MacOsBackend {
         };
         let click_tracker = Arc::new(Mutex::new(ClickTracker::new(double_click_interval)));
         let trusted = permissions::is_trusted();
+        let permission_observer = permissions::ChangeObserver::new();
         if !trusted {
             permissions::prompt_for_trust();
         }
@@ -204,6 +206,7 @@ impl MacOsBackend {
             frame_clock,
             scroll_worker,
             workspace,
+            _permission_observer: permission_observer,
             status_item: Some(status_item),
             update_worker: None,
             update_ready_signaled: false,
@@ -386,7 +389,9 @@ impl MacOsBackend {
         let mut errors = crate::support::errors::ErrorBundle::default();
         self.scroll_worker.request_stop();
         self.stop_input_capture();
-        self.status_item.take();
+        if let Some(item) = &self.status_item {
+            item.menu().cancelTrackingWithoutAnimation();
+        }
         if let Some(movement) = self.window_move.get_mut().take()
             && let Err(error) = movement.cancel()
         {
@@ -459,6 +464,9 @@ impl MacOsBackend {
         if errors.is_empty() {
             self.shutdown_complete = true;
         }
+        // Drop may acknowledge AppKit's pending system quit and terminate the
+        // process. All native workers and input must already be cleaned up.
+        self.status_item.take();
         errors.into_result()
     }
 }

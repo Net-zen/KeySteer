@@ -13,7 +13,7 @@ import KeyLayout from '../.vitepress/components/KeyLayout'
   description="展示在当前区域逐层细分、回退和继续定位细小目标。"
 />
 
-从 Normal 按 `f` 进入，默认是 3 × 3：
+从 Normal 按 `Primary+G` 进入，默认是 3 × 3：
 
 <KeyLayout
   layout="qwe/asd/zxc"
@@ -58,3 +58,5 @@ cursor_follow_selection = true
 after_finish = "keep"
 after_click = "keep"
 ```
+
+想用方向键逐次二分且不显示字母，可以从 Normal 按 `Primary+F` 使用 [Bisect](/modes/bisect)。

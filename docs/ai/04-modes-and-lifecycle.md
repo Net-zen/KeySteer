@@ -15,7 +15,7 @@ Mode/Plugin 是平台无关状态机：接收 `ModeEvent` 和 `HostContext`，�
 | 插件 | `src/plugins/` |
 | 注册与生命周期词汇 | `src/app/mode_catalog.rs`、`src/api/lifecycle.rs` |
 
-普通网格与递归网格共用 `GridMode` 的事件、命令和生命周期实现，保留各自的视图、样式和模式身份。catalog 直接装配 `TargetingController` 与样式；几何选择仍由控制器负责，Normal 的静默定位也复用该控制器。
+普通网格、递归网格与 Bisect 二分定位共用泛型 `GridMode<G>` 的事件、命令和生命周期源码；catalog 分别装配 `GridGeometry`、`RecursiveGeometry`、`BisectGeometry`，各自绑定具体样式、视图和模式身份。`targeting/geometry.rs` 定义三种几何，`grid/variants.rs` 将几何和样式静态配对；`TargetingController<G>` 的选择、终态、重置和跨屏重放在编译时分别实例化，不保存模式种类标记或样式枚举。Bisect 不存字母布局；Grid 不存递归最小尺寸。Normal 的静默定位同样在 catalog 选择具体字母几何，普通 Normal 保持原实现。Bisect 通过独立 `bisect_left/down/up/right` 绑定选择半区，无标签字母表与层布局；每次只缩小一个轴，该轴到最小尺寸时仍可切分另一轴。深度上限或两轴均无法继续时沿用网格完成语义，路径记录方向供撤销和跨屏重放。无字母视图复用递归网格的区域填充、描边与终态背景，原生覆盖层资源策略不变；Window 借用定位也将 Bisect 视为网格，保留窗口会话。
 
 Normal 移动与滚动共用原生显示帧时钟，各自维护手势状态并输出独立命令：按下立即执行短步，随后按帧的实际经过时间持续更新，不等待键盘重复延迟；仅在最后一个移动／滚动手势释放后停止时钟。普通滚动使用配置预编译且独立于短按距离的每秒速度，叠加当前速度倍率并保留小数余量；帧到达后忽略 OS 重复，没有显示帧时保留键盘重复回退。连续滚动输出可取消的 `ScrollFrame`，短按保留 `Scroll`；移动按下／释放不取消滚动帧，滚动自身状态改变且已发出连续帧时才作废旧帧；短按和页滚动不取消不存在的帧，页滚动也不重算连续滚动速度，原生执行策略见[平台后端](06-platform-backends.md)。半页／整页动作和普通滚动的仅短按配置不启动滚动帧时钟，也不接受重复滚动。模式借用仍按原 owner 接收帧与释放，会话清理清空全部保持状态。
 
