@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use smallvec::SmallVec;
 use windows::Win32::Foundation::{
-    HWND, LPARAM, POINT, RECT, RPC_E_CALL_COMPLETE, RPC_E_NO_CONTEXT, VARIANT_FALSE, VARIANT_TRUE,
+    HWND, LPARAM, POINT, RECT, RPC_E_CALL_COMPLETE, RPC_E_NO_CONTEXT,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
@@ -21,10 +21,10 @@ use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, HDC, HMONITOR, MONITOR_DEFAULTTONULL, MonitorFromRect,
 };
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCancelCall, CoCreateInstance,
-    CoDisableCallCancellation, CoEnableCallCancellation, CoInitializeEx, CoUninitialize,
+    CLSCTX_INPROC_SERVER, CoCancelCall, CoCreateInstance, CoDisableCallCancellation,
+    CoEnableCallCancellation,
 };
-use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_I4};
+use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
     AutomationElementMode_None, CUIAutomation, IUIAutomation, IUIAutomation2,
     IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
@@ -250,11 +250,8 @@ impl UiAutomationWorker {
         self.stop_until(deadline)
     }
 
-    pub fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
-        if self.worker.is_none() {
-            return Ok(());
-        }
-        let (pending, cancel_active) = {
+    pub(super) fn request_stop(&self) {
+        let pending = {
             let mut state = self
                 .shared
                 .state
@@ -263,15 +260,20 @@ impl UiAutomationWorker {
             state.stopping = true;
             self.shared.stopping.store(true, Ordering::Release);
             let pending = state.pending.take();
-            let cancel_active = state.active.is_some();
+            if state.active.is_some() {
+                // Keep the active worker alive until cancellation is sent, as
+                // cancel() does; finish_job must take this lock before exit.
+                let thread_id = self.thread_id.load(Ordering::Acquire);
+                request_call_cancellation(thread_id);
+            }
             self.shared.ready.notify_all();
-            (pending, cancel_active)
+            pending
         };
         drop(pending);
-        if cancel_active {
-            let thread_id = self.thread_id.load(Ordering::Acquire);
-            request_call_cancellation(thread_id);
-        }
+    }
+
+    pub fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
+        self.request_stop();
         let Some(worker) = self.worker.as_mut() else {
             return Ok(());
         };
@@ -296,23 +298,20 @@ impl Drop for UiAutomationWorker {
     }
 }
 
-struct ComApartment(std::marker::PhantomData<std::rc::Rc<()>>);
+struct ComApartment {
+    _apartment: super::native::ComApartment,
+}
 
 impl ComApartment {
     fn initialise() -> Result<Self, String> {
-        // SAFETY: this constructor runs on the future UIA owner thread. A
-        // successful COM initialization is rolled back immediately if call
-        // cancellation cannot be enabled; otherwise Drop owns both releases.
-        unsafe {
-            CoInitializeEx(None, COINIT_MULTITHREADED)
-                .ok()
-                .map_err(|error| format!("CoInitializeEx failed: {error}"))?;
-            if let Err(error) = CoEnableCallCancellation(None) {
-                CoUninitialize();
-                return Err(format!("CoEnableCallCancellation failed: {error}"));
-            }
-        }
-        Ok(Self(std::marker::PhantomData))
+        let apartment = super::native::ComApartment::initialise()?;
+        // SAFETY: the thread-bound apartment is initialized on this UIA owner
+        // thread. If enabling cancellation fails, the local guard releases it.
+        unsafe { CoEnableCallCancellation(None) }
+            .map_err(|error| format!("CoEnableCallCancellation failed: {error}"))?;
+        Ok(Self {
+            _apartment: apartment,
+        })
     }
 }
 
@@ -326,9 +325,7 @@ impl Drop for ComApartment {
                 "cannot disable UIA call cancellation: {error}"
             );
         }
-        // SAFETY: this balances the successful CoInitializeEx owned by this
-        // thread-bound guard after all COM interfaces were dropped.
-        unsafe { CoUninitialize() };
+        // The apartment field is released after call cancellation is disabled.
     }
 }
 
@@ -718,6 +715,7 @@ pub(super) struct ScanWindow {
 /// role/config vectors or a per-window occluder list.
 pub(super) struct WindowsScanPlan {
     request: UiScanRequest,
+    pub(super) priority: crate::platform::common::scan_priority::ScanPriority,
     target_hwnd: isize,
     target_process_id: u32,
     target_bounds: Rect,
@@ -851,6 +849,7 @@ pub(super) fn test_scan_plan(request: UiScanRequest) -> Arc<WindowsScanPlan> {
         .unwrap_or_else(|| Rect::new(0.0, 0.0, 1_920.0, 1_080.0));
     Arc::new(WindowsScanPlan {
         request,
+        priority: Default::default(),
         target_hwnd: 0,
         target_process_id: 0,
         target_bounds: bounds,
@@ -1327,6 +1326,7 @@ fn scan_windows_in_z_order(
 pub(super) fn build_scan_plan(
     mut request: UiScanRequest,
 ) -> Result<Option<Arc<WindowsScanPlan>>, String> {
+    let pointer = super::input::cursor_position().ok();
     let target = request.scope.resolve_window(|source| match source {
         crate::api::UiScanScope::Window => window_under_pointer().ok().flatten(),
         crate::api::UiScanScope::Active => scannable_target(super::native::foreground_window()),
@@ -1339,10 +1339,20 @@ pub(super) fn build_scan_plan(
         let bounds = request
             .bounds
             .ok_or("screen scan requires display bounds")?;
-        let (windows, occluders) =
+        let (mut windows, occluders) =
             scan_windows_in_z_order(HWND::default(), bounds, &request.screen_bounds)?;
+        let priority = crate::platform::common::scan_priority::ScanPriority::new(
+            pointer,
+            occluders
+                .iter()
+                .copied()
+                .find(|r| pointer.is_some_and(|p| r.contains(&p))),
+        );
+        // Each window keeps its original occluder prefix even after reordering.
+        priority.sort(&mut windows, |w| w.bounds);
         return Ok(Some(Arc::new(WindowsScanPlan {
             request,
+            priority,
             target_hwnd: 0,
             target_process_id: 0,
             target_bounds: bounds,
@@ -1386,8 +1396,12 @@ pub(super) fn build_scan_plan(
         .map(|window| window.bounds)
         .reduce(|left, right| left.union(&right))
         .unwrap_or(target_bounds);
+    let priority =
+        crate::platform::common::scan_priority::ScanPriority::new(pointer, Some(target_bounds));
+    priority.sort(&mut windows, |w| w.bounds);
     Ok(Some(Arc::new(WindowsScanPlan {
         request,
+        priority,
         target_hwnd: target_hwnd.0 as isize,
         target_process_id,
         target_bounds,
@@ -1617,36 +1631,12 @@ fn create_cache_request(
     Ok(cache)
 }
 
-fn variant_bool(value: bool) -> VARIANT {
-    let mut variant = VARIANT::default();
-    // SAFETY: the active VARIANT union field is selected by setting VT_BOOL,
-    // then initialized with the corresponding bool member.
-    unsafe {
-        let inner = &mut variant.Anonymous.Anonymous;
-        inner.vt = VT_BOOL;
-        inner.Anonymous.boolVal = if value { VARIANT_TRUE } else { VARIANT_FALSE };
-    }
-    variant
-}
-
-fn variant_i32(value: i32) -> VARIANT {
-    let mut variant = VARIANT::default();
-    // SAFETY: the active VARIANT union field is selected by setting VT_I4,
-    // then initialized with the corresponding integer member.
-    unsafe {
-        let inner = &mut variant.Anonymous.Anonymous;
-        inner.vt = VT_I4;
-        inner.Anonymous.lVal = value;
-    }
-    variant
-}
-
 /// trees, while the Rust-side role filter still honours user configuration.
 fn create_interactive_condition(
     automation: &IUIAutomation,
 ) -> Result<IUIAutomationCondition, String> {
-    let true_value = variant_bool(true);
-    let false_value = variant_bool(false);
+    let true_value = VARIANT::from(true);
+    let false_value = VARIANT::from(false);
     let focusable = property_condition(
         automation,
         UIA_IsKeyboardFocusablePropertyId,
@@ -1662,7 +1652,7 @@ fn create_interactive_condition(
     let button = property_condition(
         automation,
         UIA_ControlTypePropertyId,
-        &variant_i32(50000),
+        &VARIANT::from(50000_i32),
         "button",
     )?;
     let expandable = property_condition(
@@ -1750,42 +1740,26 @@ fn target_from_element(
     // The bulk query already populated this element. Read cached properties
     // directly: refreshing each element would repeat provider calls and could
     // observe values from a different snapshot or an element that disappeared.
-    // SAFETY: the element came from a cache-populated snapshot and the cached
-    // property call returns a value without retaining Rust data.
-    let control_type = super::native::CachedElement::new(element)
-        .control_type()
-        .ok()?
-        .0;
+    let cached = super::native::CachedElement::new(element);
+    let control_type = cached.control_type().ok()?.0;
     // Windows applications often expose custom controls with a generic UIA
     // control type. Their interaction pattern is more reliable than the type,
     // and also lets shared macOS-oriented role lists work on Windows.
-    let role_matches = allowed.contains(&control_type);
-    let interactive = provider_filters_interactive || is_interactive(element);
-    if !role_matches && !interactive {
-        return None;
-    }
-    // SAFETY: the cached element remains live for this synchronous property
-    // read on the owning MTA thread.
-    let visible = provider_filters_interactive
-        || super::native::CachedElement::new(element)
-            .is_offscreen()
-            .ok()
-            .is_none_or(|offscreen| !offscreen.as_bool());
-    // SAFETY: the cached element remains live for this synchronous property
-    // read on the owning MTA thread.
-    let enabled = provider_filters_interactive
-        || super::native::CachedElement::new(element)
-            .is_enabled()
-            .ok()
-            .is_none_or(|value| value.as_bool());
-    if (request.visible_only && !visible)
-        || (request.clickable_only && (!enabled || (!role_matches && !interactive)))
+    if !allowed.contains(&control_type)
+        && !provider_filters_interactive
+        && !cached.is_focusable().is_ok_and(|value| value.as_bool())
     {
         return None;
     }
-    // SAFETY: the cached element remains live and returns its rectangle by
-    // value on the owning MTA thread.
-    let raw_rect = super::native::CachedElement::new(element).bounds().ok()?;
+    // Query only predicates that can still reject this cached node. The
+    // provider's interactive condition already guarantees both properties.
+    if !provider_filters_interactive
+        && ((request.visible_only && cached.is_offscreen().is_ok_and(|value| value.as_bool()))
+            || (request.clickable_only && cached.is_enabled().is_ok_and(|value| !value.as_bool())))
+    {
+        return None;
+    }
+    let raw_rect = cached.bounds().ok()?;
     let rect = Rect::new(
         raw_rect.left as f64,
         raw_rect.top as f64,
@@ -1795,21 +1769,11 @@ fn target_from_element(
     if !rect_is_usable(&rect, within) {
         return None;
     }
-    // SAFETY: the cached element remains live; the returned BSTR is converted
-    // to an owned Rust String before the COM value is released.
-    let name = super::native::CachedElement::new(element)
+    let name = cached
         .name()
         .map(|name| name.to_string())
         .unwrap_or_default();
     Some(to_target(rect, name, control_type))
-}
-
-fn is_interactive(element: &IUIAutomationElement) -> bool {
-    // SAFETY: the cached element remains live for this synchronous property
-    // read on the owning MTA thread.
-    super::native::CachedElement::new(element)
-        .is_focusable()
-        .is_ok_and(|value| value.as_bool())
 }
 
 /// Map semantic roles to UIA control type ids.
@@ -1961,7 +1925,11 @@ mod tests {
         );
         let source = session.source("UI Automation");
         worker
-            .submit(plan, generation, ScanWork::Preview(source.sink()))
+            .submit(
+                Arc::clone(&plan),
+                generation,
+                ScanWork::Preview(source.sink()),
+            )
             .unwrap();
         worker.cancel(Some(7));
         assert_eq!(
@@ -1985,6 +1953,14 @@ mod tests {
         worker.cancel(Some(8));
         assert_eq!(worker.shared.latest_generation.load(Ordering::Acquire), 0);
         assert!(worker.shared.state.lock().unwrap().pending.is_none());
+        worker.request_stop();
+        assert!(worker.shared.stopping.load(Ordering::Acquire));
+        assert!(next_job(&worker.shared).is_none());
+        assert!(
+            worker
+                .submit(plan, generation, ScanWork::Preview(source.sink()))
+                .is_err()
+        );
         source.finish(UiScanStatus::Success);
     }
 

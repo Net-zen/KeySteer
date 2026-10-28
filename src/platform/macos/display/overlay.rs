@@ -699,9 +699,13 @@ impl WindowContent {
         let previous_labels = previous.map_or(&[][..], |scene| scene.labels.as_slice());
         let previous_indices = self.reconcile_labels(previous_labels, scene.labels.as_slice());
         for (index, label) in scene.labels.iter().enumerate() {
-            let rebuild_text = previous_indices[index]
-                .and_then(|previous_index| previous_labels.get(previous_index))
-                .is_none_or(|previous| !label_text_content_eq(previous, label));
+            let previous = previous_indices[index]
+                .and_then(|previous_index| previous_labels.get(previous_index));
+            if self.labels[index].reuse_unchanged(previous, label, force) {
+                continue;
+            }
+            let rebuild_text =
+                previous.is_none_or(|previous| !label_text_content_eq(previous, label));
             let spec = LabelSpec {
                 text: &label.text,
                 rect: effective_label_rect(label),
@@ -1310,6 +1314,21 @@ impl WindowContent {
 }
 
 impl LabelLayers {
+    fn reuse_unchanged(
+        &self,
+        previous: Option<&OverlayLabel>,
+        current: &OverlayLabel,
+        force: bool,
+    ) -> bool {
+        if force || previous != Some(current) {
+            return false;
+        }
+        // Leaving a retained scene restores its omitted label. Offscreen slots
+        // were never configured and must stay hidden until a geometry refresh.
+        self.base.setHidden(!self.configured);
+        true
+    }
+
     fn new(parent: &CALayer, scale: f64) -> Self {
         let base = CATextLayer::layer();
         let matched_clip = CALayer::new();
@@ -1715,7 +1734,7 @@ mod tests {
         autoreleasepool(|_| {
             let _transaction = DisabledActions::begin();
             let root = CALayer::new();
-            let layers = LabelLayers::new(&root, 1.0);
+            let mut layers = LabelLayers::new(&root, 1.0);
             let text = NSString::from_str("Normal");
             for layer in [&layers.base, &layers.matched] {
                 layer.setFrame(rect(0.0, 0.0, 55.0, 15.0));
@@ -1749,6 +1768,36 @@ mod tests {
                     "position changes must reuse the bitmap"
                 );
             }
+
+            let label = OverlayLabel::new(
+                "Normal",
+                Rect::new(3.0, 5.0, 61.0, 16.0),
+                LabelStyle::default(),
+            );
+            layers.configured = true;
+            // Returning from search must restore an omitted background label
+            // without invalidating either of its already rasterized bitmaps.
+            layers.base.setHidden(true);
+            assert!(layers.reuse_unchanged(Some(&label), &label, false));
+            assert!(!layers.base.isHidden());
+            assert!(!layers.base.needsDisplay());
+            assert!(!layers.matched.needsDisplay());
+            assert!(!layers.reuse_unchanged(Some(&label), &label, true));
+            assert!(!layers.reuse_unchanged(None, &label, false));
+            let mut highlighted = label.clone();
+            highlighted.matched_prefix_len = 1;
+            assert!(!layers.reuse_unchanged(Some(&label), &highlighted, false));
+            highlighted = label.clone();
+            highlighted.style.make_mut().background = Color::rgb(1, 2, 3);
+            assert!(!layers.reuse_unchanged(Some(&label), &highlighted, false));
+
+            // A matching offscreen slot has no valid text yet. Restoring it
+            // must keep it hidden; a later geometry/scale refresh configures it.
+            layers.configured = false;
+            layers.base.setHidden(true);
+            assert!(layers.reuse_unchanged(Some(&label), &label, false));
+            assert!(layers.base.isHidden());
+            assert!(!layers.reuse_unchanged(Some(&label), &label, true));
         });
     }
 

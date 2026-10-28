@@ -279,22 +279,6 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_also_discards_refinement_deltas() {
-        let mailbox = ScanMailbox::default();
-        let generation = mailbox.begin(9);
-        mailbox.publish_update(
-            generation,
-            9,
-            Vec::new(),
-            vec![target("old").rect],
-            UiScanStatus::Partial,
-        );
-        assert!(mailbox.cancel(9));
-        assert!(mailbox.take().is_none());
-        assert!(mailbox.state.lock().unwrap().retired.is_empty());
-    }
-
-    #[test]
     fn a_new_generation_drops_stale_work_even_when_ids_repeat() {
         let mailbox = ScanMailbox::default();
         let old = mailbox.begin(9);
@@ -309,13 +293,23 @@ mod tests {
 
     #[test]
     fn cancellation_drops_ready_data_and_rejects_late_publications() {
-        let mailbox = ScanMailbox::default();
-        let generation = mailbox.begin(3);
-        assert!(mailbox.publish(generation, 3, vec![target("ready")], UiScanStatus::Partial));
-        assert!(mailbox.cancel(3));
-        assert!(mailbox.take().is_none());
-        assert_eq!(mailbox.state.lock().unwrap().targets.capacity(), 0);
-        assert!(!mailbox.publish(generation, 3, vec![target("late")], UiScanStatus::Success));
+        for refinement in [false, true] {
+            let mailbox = ScanMailbox::default();
+            let generation = mailbox.begin(3);
+            let (targets, retired) = if refinement {
+                (Vec::new(), vec![target("old").rect])
+            } else {
+                (vec![target("ready")], Vec::new())
+            };
+            assert!(mailbox.publish_update(generation, 3, targets, retired, UiScanStatus::Partial));
+            assert!(mailbox.cancel(3));
+            assert!(mailbox.take().is_none());
+            let state = mailbox.state.lock().unwrap();
+            assert_eq!(state.targets.capacity(), 0);
+            assert_eq!(state.retired.capacity(), 0);
+            drop(state);
+            assert!(!mailbox.publish(generation, 3, vec![target("late")], UiScanStatus::Success));
+        }
     }
 
     #[test]

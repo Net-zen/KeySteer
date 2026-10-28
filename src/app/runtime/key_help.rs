@@ -300,7 +300,58 @@ impl Engine {
         let source_shapes = scene.shapes.clone();
         let source_annotations = scene.window_annotations.clone();
         let source_clip = scene.clip;
-        self.build_key_help(scene);
+        let window_help = self.window_help_visible();
+        let dynamic_entries;
+        let (entries, return_target, extra_entries) = if let Some(plan) = self
+            .overlay
+            .window_help_plan
+            .as_ref()
+            .filter(|_| self.registry.active.is_window())
+        {
+            (
+                plan.entries.as_ref(),
+                plan.return_target.clone(),
+                if self.window_library_help() {
+                    self.extra_key_help_entries(true)
+                } else {
+                    Vec::new()
+                },
+            )
+        } else {
+            dynamic_entries = self.key_help_entries();
+            let return_target = self.key_help_return_target_in(&display, &dynamic_entries);
+            (dynamic_entries.as_slice(), return_target, Vec::new())
+        };
+        crate::presentation::key_help::compose(
+            scene,
+            crate::presentation::key_help::KeyHelpView {
+                prepared: self
+                    .overlay
+                    .window_help_plan
+                    .as_ref()
+                    .filter(|_| !self.window_library_help())
+                    .map(|plan| {
+                        let resizing = display == ModeId::window()
+                            && mode.is_some_and(|mode| !mode.accepts_window_targeting());
+                        plan.presentations[usize::from(resizing)].as_ref()
+                    }),
+                screen,
+                ui: &self.settings.key_help,
+                palette: &self.palette,
+                entries,
+                extra_entries,
+                return_target,
+                window_help,
+                display_name: mode.map_or_else(|| display.to_string(), |mode| mode.display_name()),
+                ruler: ruler.as_ref(),
+                previews: &previews,
+                detail: if window_help { detail.as_deref() } else { None },
+                anchor,
+                indicator_style: self
+                    .build_indicator(&display)
+                    .map(|(indicator, _)| indicator.style),
+            },
+        );
         self.overlay.key_help_cache = Some(Box::new(KeyHelpCache {
             source_labels,
             source_shapes,
@@ -321,11 +372,6 @@ impl Engine {
             previews,
             ruler,
         }));
-    }
-
-    fn key_help_return_target(&self, entries: &[String]) -> Option<String> {
-        let display_mode = self.display_mode();
-        self.key_help_return_target_in(&display_mode, entries)
     }
 
     pub(super) fn key_help_return_target_in(
@@ -355,72 +401,5 @@ impl Engine {
                 })
                 .min_by_key(|target| (target == "idle", target.clone()))
         })
-    }
-
-    fn build_key_help(&self, scene: &mut OverlayScene) {
-        let window_help = self.window_help_visible();
-        if !self.help_visible() || self.registry.active == ModeId::idle() {
-            return;
-        }
-        let Some(screen) = self.help_screen() else {
-            return;
-        };
-        let display_mode = self.display_mode();
-        let mode = self.registry.get(&display_mode);
-        let (entries, return_target, extra_entries) = if let Some(plan) = self
-            .overlay
-            .window_help_plan
-            .as_ref()
-            .filter(|_| self.registry.active.is_window())
-        {
-            (
-                Arc::clone(&plan.entries),
-                plan.return_target.clone(),
-                if self.window_library_help() {
-                    self.extra_key_help_entries(true)
-                } else {
-                    Vec::new()
-                },
-            )
-        } else {
-            let entries = self.key_help_entries();
-            let return_target = self.key_help_return_target(&entries);
-            (entries.into(), return_target, Vec::new())
-        };
-        crate::presentation::key_help::compose(
-            scene,
-            crate::presentation::key_help::KeyHelpView {
-                prepared: self
-                    .overlay
-                    .window_help_plan
-                    .as_ref()
-                    .filter(|_| !self.window_library_help())
-                    .map(|plan| {
-                        let resizing = display_mode == ModeId::window()
-                            && mode.is_some_and(|mode| !mode.accepts_window_targeting());
-                        Arc::clone(&plan.presentations[usize::from(resizing)])
-                    }),
-                screen,
-                ui: &self.settings.key_help,
-                palette: &self.palette,
-                entries,
-                extra_entries,
-                return_target,
-                window_help,
-                display_name: mode
-                    .map_or_else(|| display_mode.to_string(), |mode| mode.display_name()),
-                ruler: mode.and_then(|mode| mode.quick_ruler()),
-                previews: mode.map_or_else(Vec::new, |mode| mode.help_previews()),
-                detail: if window_help {
-                    mode.and_then(|mode| mode.indicator_detail())
-                } else {
-                    None
-                },
-                anchor: mode.and_then(|mode| mode.help_anchor()),
-                indicator_style: self
-                    .build_indicator(&display_mode)
-                    .map(|(indicator, _)| indicator.style),
-            },
-        );
     }
 }

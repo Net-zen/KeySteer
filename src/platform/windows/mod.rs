@@ -472,6 +472,15 @@ impl WindowsBackend {
         if let Some(worker) = &self.text_segmenter {
             worker.request_stop();
         }
+        // Give every scan and the update check the full shared cleanup window,
+        // even when a window operation takes most of it to finish.
+        self.vision.request_stop();
+        for worker in &self.ui_automation {
+            worker.request_stop();
+        }
+        if let Some(worker) = &self.update_worker {
+            worker.request_cancel();
+        }
         if let Some(worker) = self.window_worker.as_mut() {
             match worker.stop_until(deadline) {
                 Ok(()) => {

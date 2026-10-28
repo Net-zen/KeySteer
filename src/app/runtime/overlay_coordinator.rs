@@ -127,7 +127,7 @@ impl OverlayCoordinator {
 impl Engine {
     pub(super) fn show_overlay(
         &mut self,
-        mut scene: Arc<OverlayScene>,
+        scene: Arc<OverlayScene>,
         backend: &mut dyn Backend,
     ) -> Result<(), String> {
         self.overlay.key_help_cache = None;
@@ -135,18 +135,19 @@ impl Engine {
             self.overlay.pending = Some(PendingOverlay::Show(scene));
             return Ok(());
         }
-        // Static primitives keep their order for the lifetime of the mode
-        // scene. Sort once before sharing them instead of sorting (and
-        // detaching copy-on-write storage) on every cursor refresh.
-        Arc::make_mut(&mut scene).sort_in_place();
         self.show_shared_overlay_now(scene, backend)
     }
 
     fn show_shared_overlay_now(
         &mut self,
-        scene: Arc<OverlayScene>,
+        mut scene: Arc<OverlayScene>,
         backend: &mut dyn Backend,
     ) -> Result<(), String> {
+        // Cached mode scenes are usually already ordered. Inspect the shared
+        // scene before requesting ownership so these submissions keep it intact.
+        if !scene.is_sorted() {
+            Arc::make_mut(&mut scene).sort_in_place();
+        }
         self.overlay.content = Some(Arc::clone(&scene));
         self.present_overlay(scene.as_ref().clone(), backend)
     }
@@ -401,10 +402,7 @@ impl Engine {
         match self.overlay.pending.take() {
             Some(PendingOverlay::Refresh) => self.refresh_overlay_now(backend),
             Some(PendingOverlay::Positions) => self.refresh_overlay_positions(backend),
-            Some(PendingOverlay::Show(mut scene)) => {
-                Arc::make_mut(&mut scene).sort_in_place();
-                self.show_shared_overlay_now(scene, backend)
-            }
+            Some(PendingOverlay::Show(scene)) => self.show_shared_overlay_now(scene, backend),
             Some(PendingOverlay::Hide) => self.hide_overlay_now(backend),
             None => Ok(()),
         }

@@ -1078,19 +1078,16 @@ impl OverlayScene {
         self
     }
 
+    pub(crate) fn is_sorted(&self) -> bool {
+        self.shapes.is_sorted_by_key(OverlayShape::z_index)
+            && self.labels.is_sorted_by_key(|label| label.z_index)
+    }
+
     pub(crate) fn sort_in_place(&mut self) {
-        if !self
-            .shapes
-            .windows(2)
-            .all(|pair| pair[0].z_index() <= pair[1].z_index())
-        {
+        if !self.shapes.is_sorted_by_key(OverlayShape::z_index) {
             self.shapes.sort_by_key(OverlayShape::z_index);
         }
-        if !self
-            .labels
-            .windows(2)
-            .all(|pair| pair[0].z_index <= pair[1].z_index)
-        {
+        if !self.labels.is_sorted_by_key(|label| label.z_index) {
             if let Some(data) = &mut self.window_annotations {
                 // Only Window scenes need an index permutation. Plain-label sorting
                 // and pointer-only updates keep their original allocation behavior.
@@ -1110,8 +1107,19 @@ impl OverlayScene {
                     }
                 });
                 data.placements.sort_unstable_by_key(|(index, _)| *index);
+                // The annotation permutation already describes the stable
+                // label order. Apply it instead of sorting the labels again.
+                let labels = &mut *self.labels;
+                for index in 0..destinations.len() {
+                    while destinations[index] != index {
+                        let destination = destinations[index];
+                        labels.swap(index, destination);
+                        destinations.swap(index, destination);
+                    }
+                }
+            } else {
+                self.labels.sort_by_key(|label| label.z_index);
             }
-            self.labels.sort_by_key(|label| label.z_index);
         }
     }
 }
@@ -1204,6 +1212,37 @@ mod tests {
         let decoded: OverlayScene =
             serde_json::from_str(&serde_json::to_string(&plain).unwrap()).unwrap();
         assert_eq!(decoded, plain);
+
+        for depths in [[2, 1, 0, 1, 2, 0], [1, 2, 3, 4, 5, 0], [5, 4, 3, 2, 1, 0]] {
+            let mut scene = OverlayScene::new();
+            for (index, depth) in depths.into_iter().enumerate() {
+                scene.push_label(
+                    OverlayLabel::new(index.to_string(), Rect::default(), LabelStyle::default())
+                        .with_z_index(depth),
+                );
+                if index % 2 == 0 {
+                    scene.set_label_placement(
+                        index,
+                        LabelPlacement {
+                            group: index as u32,
+                            role: LabelPlacementRole::Fixed,
+                        },
+                    );
+                }
+            }
+            let original = scene.clone();
+            let mut expected = scene.labels.to_vec();
+            expected.sort_by_key(|label| label.z_index);
+            assert!(!scene.is_sorted());
+            scene.sort_in_place();
+            assert!(scene.is_sorted());
+            assert_eq!(scene.labels.as_slice(), expected);
+            for (index, label) in scene.labels.iter().enumerate() {
+                let old = label.text.parse::<usize>().unwrap();
+                assert_eq!(scene.label_placement(index), original.label_placement(old));
+            }
+            assert_eq!(original.labels[0].z_index, depths[0]);
+        }
     }
 
     #[test]

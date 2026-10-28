@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use crate::api::command::{UiScanRequest, UiScanStatus, UiScanStrategy};
 use crate::platform::common::scan_fusion::{Handle, Options, Sink};
 use crate::platform::common::scan_mailbox::ScanMailbox;
+use crate::platform::common::scan_priority::ScanPriority;
 use crate::platform::common::spatial_index::TargetSource;
 use crate::support::errors::ErrorBundle;
 use crate::support::worker::WorkerJoin;
@@ -23,6 +24,12 @@ struct ScanJob {
     mailbox: Arc<ScanMailbox>,
     wake: EventSender,
     fusion: Handle,
+}
+
+struct ScanContext {
+    window: Option<(libc::pid_t, crate::api::Rect)>,
+    visible: Result<Vec<crate::platform::common::window_visibility::Visible>, String>,
+    priority: ScanPriority,
 }
 
 impl ScanJob {
@@ -319,18 +326,23 @@ fn run_scan(mut job: ScanJob, providers: &Workers, captures: &mut vision::Captur
     let pid = original_pid.unwrap_or(0);
     // Resolve metadata once, before either provider starts. Quartz also works
     // when an application exposes no AXFocusedWindow (menus, desktop, etc.).
-    let mut windows = None;
+    let pointer = super::input::cursor_position().ok();
+    let windows = accessibility::window_manager::scan_windows();
+    let priority = ScanPriority::new(
+        pointer,
+        windows.as_ref().ok().and_then(|windows| {
+            windows
+                .iter()
+                .find(|w| pointer.is_some_and(|p| w.bounds.contains(&p)))
+                .map(|w| w.bounds)
+        }),
+    );
     let target = job.request.scope.resolve_window(|source| {
-        let windows = windows.get_or_insert_with(|| {
-            accessibility::window_manager::visible_windows().unwrap_or_default()
-        });
-        let pointer = (source == crate::api::UiScanScope::Window)
-            .then(super::input::cursor_position)
-            .transpose()
-            .ok()
-            .flatten();
         windows
+            .as_ref()
+            .ok()?
             .iter()
+            .filter(|window| window.layer == 0)
             .find(|window| match source {
                 crate::api::UiScanScope::Window => {
                     pointer.is_some_and(|point| window.bounds.contains(&point))
@@ -370,6 +382,11 @@ fn run_scan(mut job: ScanJob, providers: &Workers, captures: &mut vision::Captur
         let request = job.request.clone();
         let generation = job.generation;
         let publisher = publisher.clone();
+        let context = ScanContext {
+            window: target,
+            visible: windows,
+            priority,
+        };
         providers.start_with_resources(
             &[TargetSource::Accessibility],
             move |_, cancelled, resources| {
@@ -377,7 +394,7 @@ fn run_scan(mut job: ScanJob, providers: &Workers, captures: &mut vision::Captur
                     stream_ax(
                         generation,
                         &request,
-                        target,
+                        &context,
                         &publisher,
                         ax_deadline,
                         || !cancelled.load(Ordering::Acquire) && scan_id_is_current(generation),
@@ -394,6 +411,7 @@ fn run_scan(mut job: ScanJob, providers: &Workers, captures: &mut vision::Captur
             &publisher,
             providers,
             captures,
+            priority,
         )
     });
     let ax = ax.map(|batch| {
@@ -426,7 +444,7 @@ fn scan_sources(strategy: UiScanStrategy) -> (bool, bool) {
 fn stream_ax(
     generation: u64,
     request: &UiScanRequest,
-    target: Option<(libc::pid_t, crate::api::Rect)>,
+    context: &ScanContext,
     publisher: &PartialPublisher,
     deadline: Instant,
     is_current: impl Fn() -> bool,
@@ -455,7 +473,7 @@ fn stream_ax(
             .sink
             .progress(TargetSource::Accessibility, progress)
     };
-    let result = if let Some((pid, bounds)) = target {
+    let result = if let Some((pid, bounds)) = context.window {
         progress(crate::platform::common::scan_progress::Progress::Plan(
             vec![bounds],
         ));
@@ -465,7 +483,17 @@ fn stream_ax(
         ));
         result
     } else {
-        plan.scan_screen_stream(request, deadline, current, publish, progress)
+        match &context.visible {
+            Ok(visible) => plan.scan_screen_stream(
+                request,
+                (visible, context.priority),
+                deadline,
+                current,
+                publish,
+                progress,
+            ),
+            Err(error) => Err(error.clone()),
+        }
     };
     crate::log_info!(
         "macos-ui-scan",
@@ -534,10 +562,11 @@ fn scan_vision(
     publisher: &PartialPublisher,
     providers: &Workers,
     captures: &mut vision::CaptureCache,
+    priority: ScanPriority,
 ) -> UiScanStatus {
     vision::detect(
         (generation, captures),
-        request.capture_regions(),
+        (request.capture_regions(), priority),
         &request.vision,
         request.strategy,
         providers,

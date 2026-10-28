@@ -486,17 +486,22 @@ impl QueryPlan {
             on_batch: &mut on_batch,
             is_current: &is_current,
             seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
-            occluders: Vec::new(),
+            occluders: &[],
         };
         scan.visit(root.cast(), 0);
 
         Ok(())
     }
 
-    /// Inspect only on-screen AX windows, in Quartz front-to-back order, under one budget.
+    /// Inspect on-screen AX windows in spatial priority order under one budget.
+    /// Occlusion always uses the original Quartz front-to-back snapshot.
     pub(super) fn scan_screen_stream(
         &self,
         request: &UiScanRequest,
+        (visible, priority): (
+            &[crate::platform::common::window_visibility::Visible],
+            crate::platform::common::scan_priority::ScanPriority,
+        ),
         deadline: Instant,
         is_current: impl Fn() -> bool,
         mut on_batch: impl FnMut(Vec<UiTarget>),
@@ -508,7 +513,6 @@ impl QueryPlan {
         let bounds = request
             .bounds
             .ok_or("screen scan requires display bounds")?;
-        let visible = window_manager::scan_windows()?;
         progress(Progress::Plan(
             visible
                 .iter()
@@ -518,6 +522,11 @@ impl QueryPlan {
         ));
         let attributes = &self.attributes;
         let node_attributes = &self.node_attributes[usize::from(request.visible_only)];
+        let occluders: Vec<_> = visible.iter().map(|w| w.bounds).collect();
+        let mut order: Vec<_> = (0..visible.len())
+            .filter(|&i| visible[i].bounds.intersect(&bounds).is_some())
+            .collect();
+        priority.sort(&mut order, |&i| visible[i].bounds);
         let mut scan = Scan {
             request,
             scan_bounds: Some(bounds),
@@ -529,21 +538,20 @@ impl QueryPlan {
             on_batch: &mut on_batch,
             is_current: &is_current,
             seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
-            occluders: Vec::new(),
+            occluders: &[],
         };
         let mut applications = HashMap::new();
         let minimized_key = CFString::new("AXMinimized");
-        for item in visible
-            .iter()
-            .filter(|w| w.bounds.intersect(&bounds).is_some())
-        {
+        for index in order {
+            let item = &visible[index];
+            scan.occluders = &occluders[..index];
             if !is_current() || Instant::now() >= deadline {
                 break;
             }
             if crate::platform::common::window_visibility::visible_part(
                 item.bounds,
                 bounds,
-                &scan.occluders,
+                scan.occluders,
                 &request.screen_bounds,
             )
             .is_none()
@@ -588,7 +596,7 @@ impl QueryPlan {
                 let matching = crate::platform::common::window_visibility::visible_candidates(
                     &candidates,
                     item,
-                    &visible,
+                    visible,
                 );
                 // An ambiguous AX identity must not expose a covered or off-Space window.
                 if let [index] = matching.as_slice() {
@@ -597,9 +605,6 @@ impl QueryPlan {
                     scan.attribute_reader.reset();
                     scan.visit(window.window.as_ptr(), 0);
                 }
-            }
-            if item.pid as u32 != std::process::id() {
-                scan.occluders.push(item.bounds);
             }
             progress(Progress::Complete(matching_coverage(item.bounds)));
         }
@@ -618,7 +623,7 @@ struct Scan<'a> {
     on_batch: &'a mut dyn FnMut(Vec<UiTarget>),
     is_current: &'a dyn Fn() -> bool,
     seen: NativeTargetDeduper,
-    occluders: Vec<Rect>,
+    occluders: &'a [Rect],
 }
 
 impl Scan<'_> {
@@ -665,7 +670,7 @@ impl Scan<'_> {
             crate::platform::common::window_visibility::visible_part(
                 rect,
                 self.scan_bounds.unwrap_or(rect),
-                &self.occluders,
+                self.occluders,
                 &self.request.screen_bounds,
             )
         });
@@ -1220,7 +1225,7 @@ mod tests {
                     on_batch: &mut publish,
                     is_current: &|| current.get(),
                     seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
-                    occluders: Vec::new(),
+                    occluders: &[],
                 };
                 scan.visit(window.as_ptr(), 0);
                 assert!(

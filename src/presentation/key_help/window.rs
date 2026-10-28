@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 
 type Entry = (String, String);
 
-#[derive(Clone)]
 pub(super) struct Sections {
     pub left: Vec<Entry>,
     pub right: Vec<Entry>,
@@ -13,17 +12,23 @@ pub(super) struct Sections {
 }
 
 impl Sections {
-    pub fn entries(self, columns: usize) -> Vec<Entry> {
-        let mut left = self.left;
-        if columns == 2 {
-            let rows = left.len().max(self.right.len());
-            left.resize(rows, (String::new(), String::new()));
-            left.extend(self.right);
-            left.resize(rows * 2, (String::new(), String::new()));
+    pub fn entries(&self, columns: usize) -> Vec<Entry> {
+        let rows = self.left.len().max(self.right.len());
+        let capacity = if columns == 2 {
+            rows * 2
         } else {
-            left.extend(self.right);
+            self.left.len() + self.right.len()
+        };
+        let mut entries = Vec::with_capacity(capacity);
+        entries.extend(self.left.iter().cloned());
+        if columns == 2 {
+            entries.resize(rows, (String::new(), String::new()));
         }
-        left
+        entries.extend(self.right.iter().cloned());
+        if columns == 2 {
+            entries.resize(capacity, (String::new(), String::new()));
+        }
+        entries
     }
 }
 

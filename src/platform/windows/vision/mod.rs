@@ -203,6 +203,12 @@ impl ScanSignal {
             let _ = sender.send(());
         }
         if let Some(discovery) = self.discovery.upgrade() {
+            // Pair notification with the waiter's lock so cancellation cannot
+            // land between its predicate check and entering the wait.
+            let _state = discovery
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             discovery.ready.notify_all();
         }
     }
@@ -499,7 +505,7 @@ impl VisionWorker {
         self.stop_until(deadline)
     }
 
-    pub(super) fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
+    pub(super) fn request_stop(&self) {
         let (pending, active_cancellation) = {
             let mut state = self
                 .shared
@@ -516,12 +522,17 @@ impl VisionWorker {
         self.shared.latest_generation.store(0, Ordering::Release);
         self.shared.system_ocr.request_stop();
         self.shared.contour.request_stop();
+        self.discovery.request_stop();
         if let Some(cancellation) = active_cancellation {
             cancellation.cancel();
         }
         if let Some(job) = pending {
             finish_cancelled_job(job);
         }
+    }
+
+    pub(super) fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
+        self.request_stop();
         let mut errors = crate::support::errors::ErrorBundle::default();
         errors.record(
             "OCR source shutdown",

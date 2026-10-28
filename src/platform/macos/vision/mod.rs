@@ -385,7 +385,10 @@ impl Drop for ProviderInput {
 
 pub fn detect(
     (scan_id, cache): (u64, &mut CaptureCache),
-    regions: impl IntoIterator<Item = Rect>,
+    regions: (
+        impl IntoIterator<Item = Rect>,
+        crate::platform::common::scan_priority::ScanPriority,
+    ),
     options: &VisionOptions,
     strategy: crate::api::UiScanStrategy,
     workers: &Workers,
@@ -408,7 +411,10 @@ pub fn detect(
 
 fn detect_inner(
     (scan_id, capture_context): (u64, usize),
-    regions: impl IntoIterator<Item = Rect>,
+    (regions, priority): (
+        impl IntoIterator<Item = Rect>,
+        crate::platform::common::scan_priority::ScanPriority,
+    ),
     options: &VisionOptions,
     strategy: crate::api::UiScanStrategy,
     workers: &Workers,
@@ -450,7 +456,8 @@ fn detect_inner(
             MAX_CAPTURE_DIMENSION
         },
     };
-    let regions: smallvec::SmallVec<[Rect; 2]> = regions.into_iter().collect();
+    let mut regions: smallvec::SmallVec<[Rect; 2]> = regions.into_iter().collect();
+    priority.sort(&mut regions, |r| *r);
     static PERFORMANCE_CORES: OnceLock<usize> = OnceLock::new();
     let (frame_workers, request_budget) = ocr_concurrency(
         regions.len(),
@@ -529,8 +536,8 @@ fn detect_inner(
                                 MIN_OCR_TILE_SIDE,
                                 MAX_OCR_IN_FLIGHT,
                             );
-                            let tiles: Vec<_> =
-                                layout.tiles(width, height, OCR_TILE_OVERLAP).collect();
+                            let tiles =
+                                priority.ocr_tiles(layout, width, height, OCR_TILE_OVERLAP, region);
                             progress(Progress::Refine {
                                 region,
                                 children: tiles

@@ -117,14 +117,13 @@ pub(super) fn stream_system_ocr_tiles(
             return Err("captured BGRA byte length does not match system OCR geometry".into());
         }
     }
-    let pending = crate::platform::common::image_tiles::round_robin(frames.iter().map(|frame| {
-        frame.layout.tiles(
-            frame.geometry.width,
-            frame.geometry.height,
-            SYSTEM_OCR_TILE_OVERLAP as usize,
-        )
-    }));
-    let tile_count = frames.iter().map(|frame| frame.layout.tile_count).sum();
+    // Frames and their cores are already ordered by the generation's pointer.
+    // Fill the shared budget with nearby work before more distant displays.
+    let pending = frames
+        .iter()
+        .enumerate()
+        .flat_map(|(index, frame)| frame.tiles.iter().copied().map(move |tile| (index, tile)));
+    let tile_count = frames.iter().map(|frame| frame.tiles.len()).sum();
     if submission
         .sender
         .send(SystemOcrInput::Begin { tile_count })

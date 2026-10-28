@@ -211,7 +211,9 @@ impl ScanAccumulator {
                 if old == rect
                     && let Some(target) = self.search_targets[index].take()
                 {
-                    visible |= !self.deferred.get(index).copied().unwrap_or(false);
+                    // Retired candidates must not keep coverage preparation
+                    // active after their last target has disappeared.
+                    visible |= !self.deferred.get_mut(index).is_some_and(std::mem::take);
                     if preserve_names && !target.name.is_empty() {
                         previous.push((index, target));
                     }
@@ -1392,6 +1394,13 @@ mod tests {
                         let (source, targets) = &sources[lane];
                         for batch in targets.chunks(chunk) {
                             let update = scan.push(*source, batch.to_vec(), 0.5);
+                            assert!(
+                                scan.deferred
+                                    .iter()
+                                    .zip(&scan.search_targets)
+                                    .all(|(pending, target)| !pending || target.is_some()),
+                                "retired candidates must not keep progress work pending"
+                            );
                             if defer {
                                 assert!(
                                     update

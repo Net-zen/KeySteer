@@ -10,6 +10,7 @@
   --ks-diagram-core: #8b6bd1;
   --ks-diagram-platform: #2b9c88;
   --ks-diagram-presentation: #cc9143;
+  --ks-diagram-cyan: #329bb3;
   --ks-diagram-rose: #be6c9b;
 }
 
@@ -100,8 +101,9 @@
 .vp-doc .mermaid .diagram-violet { --diagram-accent: var(--ks-diagram-core); }
 .vp-doc .mermaid .diagram-green { --diagram-accent: var(--ks-diagram-platform); }
 .vp-doc .mermaid .diagram-amber { --diagram-accent: var(--ks-diagram-presentation); }
+.vp-doc .mermaid .diagram-cyan { --diagram-accent: var(--ks-diagram-cyan); }
 .vp-doc .mermaid .diagram-rose { --diagram-accent: var(--ks-diagram-rose); }
-.vp-doc .mermaid .node:is(.diagram-config, .diagram-core, .diagram-platform, .diagram-presentation, .diagram-blue, .diagram-violet, .diagram-green, .diagram-amber, .diagram-rose) > rect {
+.vp-doc .mermaid .node:is(.diagram-config, .diagram-core, .diagram-platform, .diagram-presentation, .diagram-blue, .diagram-violet, .diagram-green, .diagram-amber, .diagram-cyan, .diagram-rose) > rect {
   fill: color-mix(in srgb, var(--diagram-accent) 14%, var(--vp-c-bg)) !important;
   stroke: color-mix(in srgb, var(--diagram-accent) 65%, var(--vp-c-divider)) !important;
 }

@@ -5,13 +5,23 @@ outline: 2
 
 # Release notes
 
-## 0.12.10
+## 0.15.0
 
-- Added **Bisect mode**: enter from Normal with `Primary+F` and halve the target area using `H/J/K/L` by default. Keys and appearance are customizable.
-- **Default keybindings changed**: Grid and UI Hint are the two modes I use most, so they now use single keys `G` / `F` in Normal. Recursive Grid / Bisect use `Primary+G` / `Primary+F`. If you prefer, restore the old keys or choose your own in `[normal.bindings]`.
+> **Shortcut changes (Normal):** `G` Grid · `F` UI Hint · `Primary+G` Recursive Grid · `Primary+F` Bisect. Customize in `[normal.bindings]`.
+
+**Added**
+
+- **Bisect mode**: narrow the target area with `H/J/K/L`, without typing labels.
+
+**Improved**
+
+- **UI Hint** prioritizes labels near the pointer during full-screen and multi-display scans, with less repeated processing.
+- Clearer overlays across displays and scaling settings, with less repeated work and temporary memory use in mode switches, label rendering, and key help.
+
+**Fixed**
+
 - Fixed temporary-mode shortcut conflicts and movement or scrolling continuing after mode switches.
-- Improved overlay clarity on external macOS displays and with Windows scaling.
-- Fixed macOS update restarts, permission checks, and exit hangs.
+- Fixed update restarts, permissions, and exit issues on **macOS**, plus scan cancellation and shutdown cleanup on **Windows**.
 
 ## 0.12.9
 

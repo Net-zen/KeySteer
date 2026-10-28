@@ -1272,11 +1272,7 @@ impl Engine {
             // owned by the outgoing mode and need a synthetic release here.
             // Deliver the release of anything still held, so the outgoing mode
             // can stop its timers rather than moving the pointer forever.
-            let pending: Vec<(Key, ActiveGesture)> =
-                std::mem::take(&mut self.input.active_gestures)
-                    .into_iter()
-                    .collect();
-            for (key, gesture) in pending {
+            for (key, gesture) in std::mem::take(&mut self.input.active_gestures) {
                 self.release_gesture(key, gesture, backend)?;
             }
 

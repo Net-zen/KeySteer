@@ -2,31 +2,6 @@
 
 pub(crate) const MAX_OCR_IN_FLIGHT: usize = 16;
 
-/// Rotate ready frame tiles without creating a separate concurrency budget for
-/// each frame. Empty frames are removed while preserving display order.
-#[cfg(any(windows, test))]
-pub(crate) fn round_robin<I: Iterator>(
-    inputs: impl IntoIterator<Item = I>,
-) -> impl Iterator<Item = (usize, I::Item)> {
-    let mut pending: smallvec::SmallVec<[_; 2]> = inputs.into_iter().enumerate().collect();
-    let mut cursor = 0;
-    std::iter::from_fn(move || {
-        while !pending.is_empty() {
-            if cursor == pending.len() {
-                cursor = 0;
-            }
-            let (frame, input) = &mut pending[cursor];
-            if let Some(tile) = input.next() {
-                let frame = *frame;
-                cursor += 1;
-                return Some((frame, tile));
-            }
-            pending.remove(cursor);
-        }
-        None
-    })
-}
-
 pub(crate) fn partition(value: u32, index: u32, divisions: u32) -> u32 {
     ((u64::from(value) * u64::from(index)) / u64::from(divisions)) as u32
 }
@@ -187,40 +162,6 @@ mod tests {
                 assert!(actual.next().is_none());
             }
         }
-        let frames = [(3840, 2160), (1200, 180), (2160, 3840)];
-        let layouts: Vec<_> = frames
-            .iter()
-            .map(|&(w, h)| OcrLayout::new(w, h, 2, 384, 16))
-            .collect();
-        let actual: Vec<_> = round_robin(
-            frames
-                .iter()
-                .zip(&layouts)
-                .map(|(&(w, h), &layout)| layout.tiles(w, h, 64)),
-        )
-        .collect();
-        assert_eq!(
-            actual
-                .iter()
-                .take(3)
-                .map(|&(frame, _)| frame)
-                .collect::<Vec<_>>(),
-            [0, 1, 2]
-        );
-        for (index, (&(w, h), &layout)) in frames.iter().zip(&layouts).enumerate() {
-            assert_eq!(
-                actual
-                    .iter()
-                    .filter_map(|&(frame, tile)| (frame == index).then_some(tile))
-                    .collect::<Vec<_>>(),
-                layout.tiles(w, h, 64).collect::<Vec<_>>()
-            );
-        }
-        assert!(
-            round_robin(std::iter::empty::<std::iter::Empty<Tile>>())
-                .next()
-                .is_none()
-        );
     }
 
     #[test]

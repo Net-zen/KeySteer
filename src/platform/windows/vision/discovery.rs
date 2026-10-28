@@ -62,7 +62,8 @@ impl DiscoveryHandle {
                 }
                 DiscoveryState::Pending => {}
             }
-            if cancelled() || Instant::now() >= deadline {
+            if self.0.stopping.load(Ordering::Acquire) || cancelled() || Instant::now() >= deadline
+            {
                 return None;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -135,9 +136,18 @@ impl OcrDiscovery {
         Ok(())
     }
 
-    pub(super) fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
+    pub(super) fn request_stop(&self) {
+        let _state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         self.shared.stopping.store(true, Ordering::Release);
         self.shared.ready.notify_all();
+    }
+
+    pub(super) fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
+        self.request_stop();
         if let Some(worker) = self.worker.as_mut() {
             worker.join_until(deadline)?;
         }

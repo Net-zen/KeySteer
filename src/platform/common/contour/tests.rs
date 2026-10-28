@@ -684,19 +684,27 @@ fn row_kernels_match_original_pixels_including_small_frames_and_tile_halos() {
 fn division_free_nearest_offsets_match_reference_mapping() {
     for (source, destination) in [
         (3usize, 2usize),
+        (1, 2),
+        (17, 32),
         (17, 7),
         (100, 100),
         (3_840, 2_560),
         (2_160, 1_440),
     ] {
         assert_eq!(
-            input::nearest_offsets(source, destination),
+            input::nearest_offsets(source, destination).collect::<Vec<_>>(),
             (0..destination)
                 .map(|output| output * source / destination)
                 .collect::<Vec<_>>()
         );
     }
-    for (width, height, padding) in [(7usize, 5usize, 12usize), (3840, 2160, 16), (4096, 2048, 0)] {
+    for (width, height, padding) in [
+        (1usize, 1usize, 4usize),
+        (1, 65, 8),
+        (7, 5, 12),
+        (3840, 2160, 16),
+        (4096, 2048, 0),
+    ] {
         let stride = width * 4 + padding;
         let pixels: Vec<_> = (0..stride * height)
             .map(|index| (index.wrapping_mul(37) >> 3) as u8)
@@ -716,6 +724,28 @@ fn division_free_nearest_offsets_match_reference_mapping() {
                     + u16::from(pixel[0]) * 29)
                     >> 8) as u8;
                 assert_eq!(image.gray[y * image.width + x], expected);
+                if let Some(mean) = &image.frame_gray {
+                    let sx = x * width / image.width;
+                    let sy = y * height / image.height;
+                    let luma = |x: usize, y: usize| {
+                        let pixel = &pixels[y * stride + x * 4..][..4];
+                        (u16::from(pixel[2]) * 77
+                            + u16::from(pixel[1]) * 150
+                            + u16::from(pixel[0]) * 29)
+                            >> 8
+                    };
+                    let right = (sx + 1).min(width - 1);
+                    let bottom = (sy + 1).min(height - 1);
+                    assert_eq!(
+                        mean[y * image.width + x],
+                        ((luma(sx, sy)
+                            + luma(right, sy)
+                            + luma(sx, bottom)
+                            + luma(right, bottom)
+                            + 2)
+                            / 4) as u8
+                    );
+                }
             }
         }
         assert!(

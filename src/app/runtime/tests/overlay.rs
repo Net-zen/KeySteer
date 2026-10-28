@@ -62,6 +62,64 @@ fn visible_dense_overlay() -> (Engine, FakeBackend, Arc<Mutex<Recorder>>) {
 }
 
 #[test]
+fn shared_scene_submission_only_detaches_when_sorting_is_needed() {
+    let (mut engine, mut backend, _) = visible_normal_overlay();
+    for batched in [false, true] {
+        for (labels_ordered, shapes_ordered) in
+            [(true, true), (false, true), (true, false), (false, false)]
+        {
+            let ordered = labels_ordered && shapes_ordered;
+            let mut scene = OverlayScene::new();
+            for depth in [0, 1] {
+                scene.labels.push(
+                    crate::api::overlay::OverlayLabel::new(
+                        depth.to_string(),
+                        Rect::default(),
+                        crate::api::overlay::LabelStyle::default(),
+                    )
+                    .with_z_index(if labels_ordered {
+                        depth
+                    } else {
+                        1 - depth
+                    }),
+                );
+                scene.shapes.push(crate::api::overlay::OverlayShape::Rect {
+                    rect: Rect::default(),
+                    fill: crate::api::Color::rgb(0, 0, 0),
+                    stroke: crate::api::Color::TRANSPARENT,
+                    stroke_width: 0.0,
+                    corner_radius: 0.0,
+                    z_index: if shapes_ordered { depth } else { 1 - depth },
+                });
+            }
+            let source = Arc::new(scene);
+            engine.overlay.command_batch_depth = usize::from(batched);
+            engine
+                .show_overlay(Arc::clone(&source), &mut backend)
+                .unwrap();
+            engine.overlay.command_batch_depth = 0;
+            engine.flush_pending_overlay(&mut backend).unwrap();
+            let content = engine.overlay.content.as_ref().unwrap();
+            assert!(content.is_sorted());
+            assert_eq!(Arc::ptr_eq(content, &source), ordered);
+            assert_eq!(
+                source.is_sorted(),
+                ordered,
+                "submission changed the caller's scene"
+            );
+
+            let submitted = Arc::downgrade(content);
+            drop(source);
+            engine.hide_overlay(&mut backend).unwrap();
+            assert!(
+                submitted.upgrade().is_none(),
+                "dismissed source scene was retained"
+            );
+        }
+    }
+}
+
+#[test]
 fn pointer_motion_uses_position_only_backend_update() {
     let (mut engine, mut backend, log) = visible_normal_overlay();
     backend.accept_position_updates = true;
@@ -552,7 +610,7 @@ fn key_help_cache_reuses_labels_and_releases_on_close() {
 
 #[test]
 fn key_help_cache_rebuilds_on_routes_theme_and_mode_events() {
-    struct ChangingHelp { key: &'static str }
+    struct ChangingHelp { key: &'static str, reads: Arc<std::sync::atomic::AtomicUsize> }
     impl Mode for ChangingHelp {
         fn id(&self) -> ModeId { ModeId::normal() }
         fn handle(&mut self, event: &ModeEvent, _: &HostContext<'_>) -> CommandBatch {
@@ -564,13 +622,20 @@ fn key_help_cache_rebuilds_on_routes_theme_and_mode_events() {
             Command::show_overlay(OverlayScene::new()).into()
         }
         fn available_keys(&self) -> Vec<(String, String)> { vec![(self.key.into(), "dynamic test".into())] }
+        fn help_previews(&self) -> Vec<(String, String, Rect, bool)> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            vec![("1".into(), "Preview".into(), Rect::new(0.0, 0.0, 1.0, 1.0), true)]
+        }
     }
     let (mut engine, mut backend, _) = visible_normal_overlay();
-    engine.register(Box::new(ChangingHelp { key: "f22" }));
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    engine.register(Box::new(ChangingHelp { key: "f22", reads: Arc::clone(&reads) }));
     engine.overlay.key_help_visible = true;
     engine.refresh_overlay(&mut backend).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 1);
     let contains = |engine: &Engine, text: &str| engine.overlay.last_scene.as_ref().unwrap().labels.iter().any(|label| label.text.as_str() == text);
     assert!(contains(&engine, "F22"));
+    assert!(contains(&engine, "1 · Preview"));
     engine.dispatch(ModeEvent::Key { key: Key::new("f21").unwrap(), state: KeyState::Down, repeat: false }, &mut backend).unwrap();
     assert!(contains(&engine, "F23"));
     assert!(!contains(&engine, "F22"));

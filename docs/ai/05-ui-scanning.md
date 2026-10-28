@@ -7,7 +7,7 @@
 - 协议：`src/api/command.rs`；消费端：`src/modes/hint/`。
 - Windows：`src/platform/windows/accessibility.rs`、`src/platform/windows/ui_scan.rs`、`src/platform/windows/vision/`。
 - macOS：`src/platform/macos/accessibility/mod.rs`、`src/platform/macos/ui_scan.rs`、`src/platform/macos/scan_workers.rs`、`src/platform/macos/vision/mod.rs`、`src/platform/macos/vision/vision_ocr_process.h`。
-- 共享调度与算法：`src/platform/common/scan_fusion.rs`、`src/platform/common/scan_progress.rs`、`src/platform/common/scan_mailbox.rs`、`src/platform/common/scan_accumulator.rs`、`src/platform/common/image_tiles.rs`、`src/platform/common/scan_reuse/`、`src/platform/common/spatial_index.rs`、`src/platform/common/contour/`。
+- 共享调度与算法：`src/platform/common/scan_fusion.rs`、`src/platform/common/scan_progress.rs`、`src/platform/common/scan_mailbox.rs`、`src/platform/common/scan_accumulator.rs`、`src/platform/common/image_tiles.rs`、`src/platform/common/scan_priority.rs`、`src/platform/common/scan_reuse/`、`src/platform/common/spatial_index.rs`、`src/platform/common/contour/`。
 
 ## 必须保持
 
@@ -20,6 +20,7 @@
 - AX／UIA 原生控件的前置去重共用 `spatial_index::NativeTargetDeduper`：名称和角色必须一致，矩形还须满足公共融合层相同的 IoU 判定及 `merge_iou_threshold`；8 个后端坐标单位的网格仅缩小候选范围，中心接近不能单独判重，较大偏移仍交给完整融合索引。名称／角色编号参与网格键，新名称跳过候选查询，避免同位置不同名称的目标互相遍历；短名称用已有的 `SmolStr` 内联保存，首个矩形直接随名称／角色保存；只有同身份的后续矩形进入网格及附加矩形数组，避免为唯一名称创建空间桶。首个矩形仍受同一网格邻域限制，较大偏移不会因这项存储合并而提前判重。macOS 不再仅凭半点量化矩形提前丢弃目标，名称在判重前读取，因此重复 AX 节点可能增加名称查询；名称按既有顺序惰性读取，取消及期限检查仍覆盖读取前后。Windows 同样保留原生线程和上下文检查。该前置过滤与跨来源优先级融合职责不同，不查询额外原生身份，也不保存整树快照。
 - `ScanMailbox` 在合并增量时，目标及撤销缓冲为空则直接接管传入存储，已有内容才追加；撤销仍先移除尚未交付的旧目标，保留增量顺序和代次隔离。
 - 每次融合交付一份目标数组和撤销数组，二者作为同一增量发布，不增加多批次外层容器。启用 OCR 的 Hybrid／Vision 扫描保持来源内顺序和原有去重规则融合所有结果，但轮廓碎片及 macOS 原生矩形暂存于现有搜索目标缓存，仅增加对应的待发布标记；原生语义、OCR 文字和轮廓图片流式显示。隐藏候选的撤销和元数据更新不发给 Hint；共享 `scan_progress` 跟踪所有启用来源尚未完成的区域，区域稳定后即可按 Partial 发布剩余候选及其最新名称。原生层在开始交付前声明完整区域计划，窗口／分块完成通知与结果进入同一来源 FIFO，不能越过尚未融合的目标。Windows UIA 主遍历及可选预览分别占有窗口区域；macOS AX 按窗口交付进度，Quartz 计划覆盖 AX 匹配的几何容差；系统 OCR 用含 halo 的分块区域，轮廓和原生矩形按帧。候选必须与所有来源的未完成区域分离；OCR 还对相接的未完成块及同来源活动文字做保守包围闭包，避免后续接缝拼接扩展到已发布区域。未声明、异常或无法验证的区域保持等待；有效终态补入剩余候选，失败／超时也保留已有候选，取消、上下文变化及旧代次直接丢弃。纯 Contour 或关闭 OCR 的 Vision 保持立即显示。不增加固定等待、来源计算屏障、第二份目标缓存或截图持有；终态先发布，随后在同一融合线程当前回合随任务释放扫描证据，不延迟到下一轮扫描。后到 OCR 对已显示目标的元数据替换仍直接交付，不反查空间索引或重复比较完整目标；图片名称仅在变化时复制。
+- 候选撤销时同时清除其待发布标记，避免已无待发布目标时继续准备区域闭包；来源计划及有效终态处理保持原语义。
 - `ScanAccumulator` 在发布前完成替换目标的名称及搜索元数据；继承文字只来自实际撤销的目标，保留原生名称和 OCR 接缝重建规则。先处理同批证据，再按发布顺序处理已缓存证据。邮箱只合并增量，Hint 只应用或延后增量，不再根据各自消费过的 Partial 重建名称；合并频率和输入期间的延后不能改变最终搜索内容。
 - Contour 图片在去重前已完成 OCR 描述及名称补全；本批后续缓存复用这份结果，不再次查询和拼接相同证据。其他目标仍按原流程补全，退休名称继承和后到 OCR 更新保持不变。
 - 首批原生目标尚无 OCR 证据且没有目标撤销时，若发布目标与去重索引的顺序、角色和几何一一对应，且几何匹配能排除同身份重复项，直接复制已建网格来初始化搜索缓存，避免重复查询、哈希与扩容。同位置的独立角色仍分别保留；不满足条件或浮点几何无法自匹配时沿用常规缓存构建。一次性的索引复制与重复执行的融合路径分开，后续来源仍按原顺序增量补全名称，缓存继续随扫描结束释放。
@@ -52,9 +53,9 @@ Windows 视觉 provider 超过退出期限时保留在隔离队列，仍未退�
 
 UIHint 使用 `ui_hint.scan_scope`，文字选择使用独立的 `text_select.scan_scope`，二者默认 `all`；目录装配时复制公共扫描设置并覆盖本模式范围，扫描热路径不解析配置。Screen 为鼠标所在显示器，All 为全部显示器，复用 `Screen::virtual_bounds`；不增加 `ui_hint.screens`。多屏请求另携带真实显示矩形以排除排列空隙，单屏不分配该列表。所有显示器共用一个扫描会话和无前缀冲突的编号空间，不按屏幕重新编号；原生预览重复返回时仍经公共去重。All 内跨屏移动不重启扫描，打开搜索及修改查询保留全部扫描范围的标签裁剪。显示范围使用全局 strategy，应用策略覆盖只用于窗口范围。
 
-显示范围按原生 Z 序枚举一次窗口，跨屏窗口只遍历一次。共享 `window_visibility` 按前方窗口矩形及显示范围排除完全遮挡的窗口，并把原生目标裁剪到可见部分；macOS 在一轮内按 PID 复用 AXWindows 身份。视觉来源读取实际桌面合成结果。Windows 整屏有多个可见窗口时复用两个 UIA worker，各自拥有 COM 上下文、取消代次和期限：一个按窗口顺序交付完整结果，另一个提前提供其余窗口的首个可用控件，不让两个整窗查询竞争而拖慢单窗完成。窗口范围保持单 worker。预览 worker 按需创建，后续单窗或纯视觉请求取消其旧工作，关闭时共用原有总期限。
+显示范围按原生 Z 序枚举一次窗口，跨屏窗口只遍历一次；执行顺序可以按鼠标优先级调整，遮挡关系始终使用原始 Z 序前缀。共享 `window_visibility` 按前方窗口矩形及显示范围排除完全遮挡的窗口，并把原生目标裁剪到可见部分；macOS 在一轮内按 PID 复用 AXWindows 身份。视觉来源读取实际桌面合成结果。Windows 整屏有多个可见窗口时复用两个 UIA worker，各自拥有 COM 上下文、取消代次和期限：一个按窗口顺序交付完整结果，另一个提前提供其余窗口的首个可用控件，不让两个整窗查询竞争而拖慢单窗完成。窗口范围保持单 worker。预览 worker 按需创建，后续单窗或纯视觉请求取消其旧工作，关闭时共用原有总期限。
 
-Windows 在 All 范围按真实显示交集分别捕获，逐屏应用原有 4096px／8MP 预算，因此双屏 4K 各自保留原尺寸，不因联合桌面过宽而一起缩小，也不分配屏幕排列空隙。其他范围及缺少显示列表的请求保持单范围捕获。每屏 DIB 由协调线程拥有，先完成所有屏幕捕获并释放隐藏门，再准备 OCR／轮廓输入；像素仍直接借用原生表面，不增加整帧中间副本。系统 OCR 跨屏轮转提交原有分块，所有屏幕共用 CPU／16 路在途预算，不按屏幕倍增并发。轮廓逐屏发布，整轮只发送一次来源终态。成功扫描的 DIB 和 SoftwareBitmap factory／COM context 进入公共 10 秒空闲缓存；只保留本轮实际显示数量，尺寸不匹配的旧表面先释放。DIB 含上一轮像素字节，下轮必须重新捕获后才能读取；每次识别的 SoftwareBitmap 仍由原 owner 关闭。保留表面会增加短期空闲内存，不能把资源复用描述成没有像素留存；实际延迟与内存取舍需实机测量。
+Windows 在 All 范围按真实显示交集分别捕获，逐屏应用原有 4096px／8MP 预算，因此双屏 4K 各自保留原尺寸，不因联合桌面过宽而一起缩小，也不分配屏幕排列空隙。其他范围及缺少显示列表的请求保持单范围捕获。每屏 DIB 由协调线程拥有，先完成所有屏幕捕获并释放隐藏门，再准备 OCR／轮廓输入；像素仍直接借用原生表面，不增加整帧中间副本。系统 OCR 按共享空间优先级先提交鼠标所在屏幕的就近分块，再处理其他屏幕；所有屏幕共用 CPU／16 路在途预算，不按屏幕倍增并发。轮廓逐屏发布，整轮只发送一次来源终态。成功扫描的 DIB 和 SoftwareBitmap factory／COM context 进入公共 10 秒空闲缓存；只保留本轮实际显示数量，尺寸不匹配的旧表面先释放。DIB 含上一轮像素字节，下轮必须重新捕获后才能读取；每次识别的 SoftwareBitmap 仍由原 owner 关闭。保留表面会增加短期空闲内存，不能把资源复用描述成没有像素留存；实际延迟与内存取舍需实机测量。
 
 macOS 按真实显示交集共用捕获门和同一总期限；截图使用 ScreenCaptureKit 的 pointPixelScale 恢复 Retina/4K 原始像素，再应用既有像素预算，不能把 Quartz 逻辑模式宽高当成物理像素。扫描协调线程保持 ScreenCaptureKit 显示 filter 原有的常驻复用，该缓存仅保留元数据，不缓存整帧或 OCR 模型；按显示位置及物理模式尺寸验证，模式改变或捕获失败时刷新，排除本应用，线程退出时释放，迟到捕获回调自行保留其所需上下文。协调者逐屏截图并立即交付各来源，不等待前一屏的灰度、轮廓、OCR／矩形完成；矩形和轮廓来源在自己的执行槽按捕获顺序消费帧，OCR 执行槽按整轮预算让屏幕帧并行，不为每屏复制一整套 Hybrid。每个来源只持有当前调用的图像，待办只对应本轮实际显示交集；取消可独立排空待办，不等挂起的原生调用。轮廓转换后立即释放对应彩图／CFData owner，检测及交付后释放有界灰度；OCR 像素传输完成即释放父进程对应截图引用。空输入来源不计作截图成功，失败显示不能被未执行的来源掩盖。原有 AX/UIA 与视觉来源并行，已就绪结果立即融合；更多可见内容仍需要更多计算与存储。
 
@@ -76,6 +77,8 @@ ScanMailbox 在激活前保存当前 generation 的 UiScanActivationExpected；�
 | 能力发现／融合 | 已有 OCR 能力快照和融合线程保持原生命周期 | 已有硬件预算快照和融合线程保持原生命周期 |
 
 ## 响应优先的调度
+
+`common/scan_priority.rs` 统一 Windows 与 macOS 的空间调度：每轮固定一次鼠标位置，优先鼠标所在屏幕、鼠标下窗口及邻近区域，再补齐其他区域；移动鼠标不改变正在执行的计划，也不缩小 `screen`／`all` 的范围。两端在原生窗口枚举后排序执行，保留原始遮挡前缀；macOS 协调者把同一 Quartz 快照交给 AX，视觉来源不等待 AX 查询。截图先处理鼠标所在屏幕，OCR 直接复用 `OcrLayout` 原有分块，只按空间优先级调整提交顺序，不新增切分或改变块大小。core、64px halo、原尺寸像素、按中心归属及接缝融合保持不变；区域计划和逐块完成通知使用同一份排序后的分块。provider 的总并发和取消所有权不变，macOS 其他显示器仍可在原有预算内并行。已就绪结果沿原有融合邮箱立即交付，不增加显示等待或来源屏障。
 
 原生来源只移动已经可用的 Rust 数据，不执行公共融合、不等待其他来源或攒满固定条数。UIA／AX 遍历和 Windows 系统 OCR 转换逐项提交；已经完整的视觉候选直接移动整份 buffer。Windows 视觉数据绕过截图／OCR 协调器，其终态仍由协调器负责期限、取消和原生资源清理。
 

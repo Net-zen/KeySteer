@@ -7,7 +7,7 @@ use crate::platform::common::spatial_index::TargetSource;
 pub(super) struct CapturedFrame {
     pub(super) geometry: CaptureGeometry,
     pub(super) capture: crate::platform::windows::native::PreparedCapture,
-    pub(super) layout: SystemOcrLayout,
+    pub(super) tiles: Vec<crate::platform::common::image_tiles::Tile>,
     _ledger: crate::support::perf_probe::ResourceGuard,
 }
 
@@ -164,7 +164,7 @@ fn run_scan_inner(
                 .clamp(250, 30_000),
         );
     let bounds = job.request.scan_bounds();
-    let geometries = match capture_geometries(&job.request, bounds) {
+    let mut geometries = match capture_geometries(&job.request, bounds) {
         Ok(geometries) => geometries,
         Err(error) => {
             let mut errors = crate::support::errors::ErrorBundle::default();
@@ -180,23 +180,34 @@ fn run_scan_inner(
             );
         }
     };
+    job.request
+        .priority
+        .sort(&mut geometries, |g| g.desktop_bounds);
     let parallelism =
         std::thread::available_parallelism().map_or(MAX_SYSTEM_OCR_IN_FLIGHT, usize::from);
-    let layouts: SmallVec<[_; 2]> = geometries
+    let tiles: SmallVec<[_; 2]> = geometries
         .iter()
         .map(|geometry| {
-            SystemOcrLayout::new(
+            let layout = SystemOcrLayout::new(
                 geometry.width,
                 geometry.height,
                 parallelism,
                 MIN_SYSTEM_OCR_TILE_SIDE,
                 MAX_SYSTEM_OCR_IN_FLIGHT,
+            );
+            job.request.priority.ocr_tiles(
+                layout,
+                geometry.width,
+                geometry.height,
+                SYSTEM_OCR_TILE_OVERLAP as usize,
+                geometry.desktop_bounds,
             )
         })
         .collect();
-    let max_in_flight = layouts
+    // Preserve the existing shared budget across all display layouts.
+    let max_in_flight = tiles
         .iter()
-        .map(|layout| layout.tile_count)
+        .map(Vec::len)
         .sum::<usize>()
         .min(parallelism)
         .clamp(1, MAX_SYSTEM_OCR_IN_FLIGHT);
@@ -255,17 +266,13 @@ fn run_scan_inner(
         }
     }
     if system_descriptor.is_some() {
-        for (geometry, layout) in geometries.iter().zip(&layouts) {
+        for (geometry, tiles) in geometries.iter().zip(&tiles) {
             provider_mailbox.progress(
                 TargetSource::SystemOcr,
                 Progress::Refine {
                     region: geometry.desktop_bounds,
-                    children: layout
-                        .tiles(
-                            geometry.width,
-                            geometry.height,
-                            SYSTEM_OCR_TILE_OVERLAP as usize,
-                        )
+                    children: tiles
+                        .iter()
                         .map(|tile| {
                             capture_pixel_rect(
                                 *geometry,
@@ -340,13 +347,13 @@ fn run_scan_inner(
             old.geometry.width == geometry.width && old.geometry.height == geometry.height
         })
     });
-    for (geometry, layout) in geometries.into_iter().zip(layouts) {
+    for (geometry, tiles) in geometries.into_iter().zip(tiles) {
         if let Some(index) = resources.frames.iter().position(|old| {
             old.geometry.width == geometry.width && old.geometry.height == geometry.height
         }) {
             let mut frame = resources.frames.swap_remove(index);
             frame.geometry = geometry;
-            frame.layout = layout;
+            frame.tiles = tiles;
             frames.push(frame);
             continue;
         }
@@ -368,7 +375,7 @@ fn run_scan_inner(
         frames.push(CapturedFrame {
             geometry,
             capture,
-            layout,
+            tiles,
             _ledger: crate::support::perf_probe::ResourceGuard::new(
                 crate::support::perf_probe::ResourceKind::GdiSurface,
             ),

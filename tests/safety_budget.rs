@@ -86,7 +86,8 @@ use std::path::{Path, PathBuf};
 // and one native file; screenshot glyph analysis is entirely safe Rust.
 // Permission changes add paired CF notification registration/removal and one
 // borrowed event-tap disable call. Callbacks ignore opaque notification data.
-const MAX_UNSAFE_EXPRESSIONS: usize = 399;
+// UIA reuses the existing COM owner and safe VARIANT conversions.
+const MAX_UNSAFE_EXPRESSIONS: usize = 396;
 const MAX_UNSAFE_FILES: usize = 42;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
@@ -112,7 +113,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/workspace.rs", 3),
     ("src/platform/windows/text_prompt.rs", 17),
     ("src/platform/macos/vision/mod.rs", 7),
-    ("src/platform/windows/accessibility.rs", 31),
+    ("src/platform/windows/accessibility.rs", 28),
     ("src/platform/windows/autostart.rs", 4),
     ("src/platform/windows/display/gpu_overlay.rs", 28),
     ("src/platform/windows/input/hook.rs", 8),

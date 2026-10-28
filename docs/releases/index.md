@@ -5,19 +5,39 @@ outline: 2
 
 # 更新日志 / Release Notes
 
-## 0.12.10
+## 0.15.0
 
-- 新增 **Bisect 二分定位模式**：从 Normal 按 `Primary+F` 进入，默认用 `H/J/K/L` 二分定位，按键与样式可自定义。
-- **默认按键变更**：Grid 和 UI Hint 是本人最常用的两个模式，因此在 Normal 中分别用 `G` / `F` 单键触发；Recursive Grid / Bisect 改用 `Primary+G` / `Primary+F`。不习惯可在 `[normal.bindings]` 中改回原来的键位或按喜好自定义。
-- 修复临时模式的组合键冲突及切换后的移动、滚动残留。
-- 改善 macOS 外接屏与 Windows 缩放下的覆盖层清晰度。
-- 修复 macOS 更新重启、权限检测与退出卡顿问题。
+**快捷键调整（Normal）**：`G` 网格 · `F` UI Hint · `Primary+G` 递归网格 · `Primary+F` Bisect。可在 `[normal.bindings]` 自定义。
 
-- Added **Bisect mode**: enter from Normal with `Primary+F` and halve the target area using `H/J/K/L` by default. Keys and appearance are customizable.
-- **Default keybindings changed**: Grid and UI Hint are the two modes I use most, so they now use single keys `G` / `F` in Normal. Recursive Grid / Bisect use `Primary+G` / `Primary+F`. If you prefer, restore the old keys or choose your own in `[normal.bindings]`.
+**新增**
+
+- **Bisect 二分定位**：用 `H/J/K/L` 逐次缩小目标区域，无需输入标签。
+
+**优化**
+
+- **UI Hint** 在全屏和多屏识别时优先显示鼠标附近标签，减少识别过程中的重复计算。
+- 改善多屏和缩放下的显示清晰度，减少模式切换、标签绘制和按键帮助的重复处理与临时内存占用。
+
+**修复**
+
+- 修复临时模式的按键冲突和切换后移动、滚动不停的问题。
+- 修复 **macOS** 更新重启、权限及退出问题，以及 **Windows** 取消识别和退出清理问题。
+
+**Shortcut changes (Normal):** `G` Grid · `F` UI Hint · `Primary+G` Recursive Grid · `Primary+F` Bisect. Customize in `[normal.bindings]`.
+
+**Added**
+
+- **Bisect mode**: narrow the target area with `H/J/K/L`, without typing labels.
+
+**Improved**
+
+- **UI Hint** prioritizes labels near the pointer during full-screen and multi-display scans, with less repeated processing.
+- Clearer overlays across displays and scaling settings, with less repeated work and temporary memory use in mode switches, label rendering, and key help.
+
+**Fixed**
+
 - Fixed temporary-mode shortcut conflicts and movement or scrolling continuing after mode switches.
-- Improved overlay clarity on external macOS displays and with Windows scaling.
-- Fixed macOS update restarts, permission checks, and exit hangs.
+- Fixed update restarts, permissions, and exit issues on **macOS**, plus scan cancellation and shutdown cleanup on **Windows**.
 
 ## 0.12.9
 

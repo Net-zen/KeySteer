@@ -377,6 +377,21 @@ fn idle_coordinator_shutdown_wakes_without_waiting_for_the_reuse_deadline() {
         )
         .unwrap(),
     );
+    worker.request_stop();
+    assert_eq!(
+        worker.workers.len(),
+        1,
+        "request_stop must not join the coordinator"
+    );
+    assert!(worker.shared.stopping.load(Ordering::Acquire));
+    assert!(worker.discovery.shared.stopping.load(Ordering::Acquire));
+    assert!(
+        worker
+            .discovery
+            .handle()
+            .wait(Instant::now() + Duration::from_secs(2), || false)
+            .is_none()
+    );
     worker
         .stop_until(Instant::now() + Duration::from_secs(2))
         .unwrap();
@@ -616,6 +631,52 @@ fn vision_resumes_after_quarantined_provider_exits() {
     );
     assert!(frame_restored());
     worker.stop().unwrap();
+}
+
+#[test]
+fn scan_cancellation_cannot_miss_discovery_entering_its_wait() {
+    let shared = Arc::new(SharedQueue::default());
+    shared.latest_generation.store(29, Ordering::Release);
+    let discovery = Arc::new(DiscoveryShared::default());
+    let mailbox = Arc::new(ProviderMailbox::new());
+    let cancellation = ScanCancellation::new(&shared, 29, &mailbox, Arc::downgrade(&discovery));
+    let waiting_cancellation = cancellation.clone();
+    let signal = Arc::clone(&cancellation.signal);
+    let (checked, check_received) = mpsc::channel();
+    let (proceed, proceeding) = mpsc::channel();
+    let (finished, finish_received) = mpsc::channel();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let waiter = std::thread::spawn(move || {
+        let first_check = std::cell::Cell::new(true);
+        let result = DiscoveryHandle(discovery).wait(deadline, || {
+            let cancelled = waiting_cancellation.is_cancelled();
+            if first_check.replace(false) {
+                checked.send(()).unwrap();
+                proceeding.recv_timeout(Duration::from_secs(2)).unwrap();
+            }
+            cancelled
+        });
+        finished.send(result.is_none()).unwrap();
+    });
+    check_received.recv_timeout(Duration::from_secs(1)).unwrap();
+    let (notified, notification_received) = mpsc::channel();
+    let canceller = std::thread::spawn(move || {
+        cancellation.cancel();
+        notified.send(()).unwrap();
+    });
+    while !signal.local.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    // The waiter still owns the state lock after reading the old predicate.
+    // Cancellation must not send its notification until that lock is released.
+    let premature_notification = notification_received.recv_timeout(Duration::from_millis(20));
+    proceed.send(()).unwrap();
+    let finished_promptly = finish_received.recv_timeout(Duration::from_secs(1));
+    waiter.join().unwrap();
+    canceller.join().unwrap();
+    assert!(signal.local.load(Ordering::Acquire));
+    assert_eq!(premature_notification, Err(mpsc::RecvTimeoutError::Timeout));
+    assert_eq!(finished_promptly, Ok(true));
 }
 
 #[test]

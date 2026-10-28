@@ -21,15 +21,15 @@ flowchart LR
     ui("UI Hint<br/>UI 标签"):::mode-step
 
     idle -->|"Primary+E"| normal
-    normal -->|g| grid
+    normal -->|G| grid
+    normal -->|F| ui
     normal -->|"Primary+G"| rg
     normal -->|"Primary+F"| bs
-    normal -->|f| ui
     class idle diagram-blue
     class normal diagram-violet
     class grid diagram-green
     class rg diagram-amber
-    class bs diagram-amber
+    class bs diagram-cyan
     class ui diagram-rose
 ```
 
