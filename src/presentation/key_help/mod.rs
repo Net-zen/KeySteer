@@ -19,8 +19,6 @@ pub(crate) struct PreparedWindowHelp {
 #[derive(Clone)]
 struct PreparedHelpColumns {
     entries: Vec<(String, String)>,
-    key_lines: Vec<Vec<String>>,
-    action_lines: Vec<Vec<String>>,
     char_counts: Vec<(usize, usize)>,
 }
 
@@ -40,11 +38,6 @@ fn prepare_columns(entries: Vec<(String, String)>, columns: usize) -> PreparedHe
         })
         .collect();
     PreparedHelpColumns {
-        key_lines: entries.iter().map(|(key, _)| vec![key.clone()]).collect(),
-        action_lines: entries
-            .iter()
-            .map(|(_, action)| vec![action.clone()])
-            .collect(),
         entries,
         char_counts,
     }
@@ -53,8 +46,8 @@ fn prepare_columns(entries: Vec<(String, String)>, columns: usize) -> PreparedHe
 fn prepare_sections(sections: window::Sections) -> PreparedWindowHelp {
     PreparedWindowHelp {
         columns: [
-            prepare_columns(sections.clone().entries(1), 1),
-            prepare_columns(sections.clone().entries(2), 2),
+            prepare_columns(sections.entries(1), 1),
+            prepare_columns(sections.entries(2), 2),
         ],
         two_columns: !sections.left.is_empty() && !sections.right.is_empty(),
         modes: sections.modes,
@@ -85,18 +78,18 @@ pub(crate) fn compile_window_help(
 }
 
 pub(crate) struct KeyHelpView<'a> {
-    pub prepared: Option<std::sync::Arc<PreparedWindowHelp>>,
+    pub prepared: Option<&'a PreparedWindowHelp>,
     pub screen: &'a Screen,
     pub ui: &'a KeyHelp,
     pub palette: &'a Palette,
-    pub entries: std::sync::Arc<[String]>,
+    pub entries: &'a [String],
     pub extra_entries: Vec<String>,
     pub return_target: Option<String>,
     pub window_help: bool,
     pub display_name: String,
-    pub ruler: Option<crate::api::window_layout::QuickRuler>,
-    pub previews: Vec<(String, String, Rect, bool)>,
-    pub detail: Option<String>,
+    pub ruler: Option<&'a crate::api::window_layout::QuickRuler>,
+    pub previews: &'a [(String, String, Rect, bool)],
+    pub detail: Option<&'a str>,
     pub anchor: Option<Rect>,
     pub indicator_style: Option<LabelStyle>,
 }
@@ -129,10 +122,10 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             }
         }
     }
-    let (mut entries, sections) = if let Some(prepared) = &input.prepared {
+    let (mut entries, sections) = if let Some(prepared) = input.prepared {
         (
             std::borrow::Cow::Borrowed(&[][..]),
-            Some(std::borrow::Cow::Borrowed(prepared.as_ref())),
+            Some(std::borrow::Cow::Borrowed(prepared)),
         )
     } else if window_help {
         (
@@ -143,7 +136,6 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
                 input.return_target.as_deref(),
                 input
                     .detail
-                    .as_deref()
                     .is_some_and(|detail| detail.starts_with("Resize")),
             )))),
         )
@@ -155,18 +147,9 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
         entries.sort_by(|left, right| left.0.cmp(&right.0));
         (std::borrow::Cow::Owned(entries), None)
     };
-    let exit_action = sections
-        .as_ref()
-        .map(|s| s.exit_label.clone())
-        .unwrap_or_default();
-    let mode_entries = sections
-        .as_ref()
-        .map(|s| s.modes.clone())
-        .unwrap_or_default();
-    let exit_keys = sections
-        .as_ref()
-        .map(|s| s.exit.clone())
-        .unwrap_or_default();
+    let exit_action = sections.as_ref().map_or("", |s| s.exit_label.as_str());
+    let mode_entries = sections.as_ref().map_or(&[][..], |s| s.modes.as_slice());
+    let exit_keys = sections.as_ref().map_or("", |s| s.exit.as_str());
     #[cfg(target_os = "windows")]
     let scale = crate::api::overlay::normalized_label_scale(screen.scale);
     #[cfg(not(target_os = "windows"))]
@@ -207,8 +190,9 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
     let rows = entries.len().div_ceil(columns).max(1);
     // Size each column from its own longest key and action, rather than
     // reserving half of a fixed-width panel for each side of every row.
-    let mut widths = Vec::with_capacity(columns);
-    for column in 0..columns {
+    let mut column_widths = [(0.0, 0.0); 2];
+    let widths = &mut column_widths[..columns];
+    for (column, width) in widths.iter_mut().enumerate() {
         let (key_chars, action_chars) = sections.as_ref().map_or_else(
             || {
                 entries.iter().skip(column * rows).take(rows).fold(
@@ -223,17 +207,13 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             },
             |sections| sections.columns[columns - 1].char_counts[column],
         );
-        widths.push((
+        *width = (
             (key_chars as f64 * ui.font_size * 0.75 + key_padding * 2.0) * scale,
             (action_chars as f64 * ui.font_size * 0.75 + ui.font_size * 0.5) * scale,
-        ));
+        );
     }
-    let detail = &input.detail;
-    let (detail_title, detail_status) = detail
-        .as_deref()
-        .unwrap_or("")
-        .split_once('\n')
-        .unwrap_or((detail.as_deref().unwrap_or(""), ""));
+    let detail = input.detail.unwrap_or("");
+    let (detail_title, detail_status) = detail.split_once('\n').unwrap_or((detail, ""));
     let mut detail_status = detail_status.to_owned();
     if window_help
         && matches!(
@@ -282,7 +262,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
         + 16.0
         + exit_keys.chars().count() as f64 * ui.font_size * 0.75
         + key_padding * 2.0
-        + super::text_units(&exit_action) * ui.font_size
+        + super::text_units(exit_action) * ui.font_size
         + 2.0)
         * scale
         + key_gap * 3.0;
@@ -328,7 +308,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
                 .map(|(keys, actions)| keys + actions)
                 .sum::<f64>())
         .clamp(0.01, 1.0);
-    for (keys, actions) in &mut widths {
+    for (keys, actions) in widths.iter_mut() {
         if window_help {
             // Natural column widths preserve every row on one line.
         } else {
@@ -336,28 +316,6 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             *actions *= squeeze;
         }
     }
-    let entry_widths: Vec<_> = entries
-        .iter()
-        .enumerate()
-        .map(|(index, _)| widths[index / rows])
-        .collect();
-    let key_lines: std::borrow::Cow<'_, [Vec<String>]> = sections.as_ref().map_or_else(
-        || std::borrow::Cow::Owned(entries.iter().map(|(keys, _)| vec![keys.clone()]).collect()),
-        |sections| std::borrow::Cow::Borrowed(sections.columns[columns - 1].key_lines.as_slice()),
-    );
-    let action_lines: std::borrow::Cow<'_, [Vec<String>]> = sections.as_ref().map_or_else(
-        || {
-            std::borrow::Cow::Owned(
-                entries
-                    .iter()
-                    .map(|(_, action)| vec![action.clone()])
-                    .collect(),
-            )
-        },
-        |sections| {
-            std::borrow::Cow::Borrowed(sections.columns[columns - 1].action_lines.as_slice())
-        },
-    );
     let previews = input.previews;
     let preview_rows = previews.len().div_ceil(3);
     let preview_height = (preview_rows as f64 * 56.0 * scale).min(area.height * 0.35);
@@ -369,10 +327,9 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             .min(width / scale * 0.42)
             * scale
     };
-    let exit_lines = [exit_keys.clone()];
     let title_height = (ui.font_size * 7.0 / 3.0).max(title_font * 1.4).max(
         if window_help && !exit_keys.is_empty() {
-            exit_lines.len() as f64 * (ui.font_size * 1.4 + 4.0)
+            ui.font_size * 1.4 + 4.0
         } else {
             0.0
         },
@@ -392,9 +349,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
     let header_height =
         title_height + prompt_height + status_lines as f64 * status_height + header_gap;
     let row_height = if window_help {
-        ui.font_size
-            * (1.4 * action_lines.iter().map(Vec::len).max().unwrap_or(1) as f64 + 0.6)
-            * scale
+        ui.font_size * 2.0 * scale
     } else {
         ((ui.font_size * 2.0) * scale).min(
             ((area.height * (if window_help { 1.0 } else { 0.75 })
@@ -406,27 +361,22 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
                 .max(8.0),
         )
     };
-    let row_heights: Vec<_> = entries
-        .iter()
-        .enumerate()
-        .map(|(index, (keys, action))| {
-            if !window_help {
-                return row_height;
-            }
-            if keys.is_empty() && action.is_empty() {
-                return 0.0;
-            }
-            let lines = action_lines[index].len().max(key_lines[index].len());
-            (ui.font_size * (1.4 * lines as f64 + 0.6) + 4.0 * lines.saturating_sub(1) as f64)
-                * scale
-        })
-        .collect();
-    let body_height = row_heights
-        .chunks(rows)
-        .map(|column| column.iter().sum::<f64>())
-        .fold(0.0, f64::max);
-    let ruler_y = row_heights.iter().take(rows).sum::<f64>() + 8.0 * scale;
-    let ruler_plan = input.ruler.as_ref().map(|r| {
+    let height_for = |keys: &str, action: &str| {
+        if window_help && keys.is_empty() && action.is_empty() {
+            0.0
+        } else {
+            row_height
+        }
+    };
+    // Each entry is one already-grouped key/action row. Empty window rows
+    // only pad the two columns; no per-entry line or geometry arrays are needed.
+    let mut column_heights = [0.0_f64; 2];
+    for (index, (keys, action)) in entries.iter().enumerate() {
+        column_heights[index / rows] += height_for(keys, action);
+    }
+    let body_height = column_heights.iter().copied().fold(0.0, f64::max);
+    let ruler_y = column_heights[0] + 8.0 * scale;
+    let ruler_plan = input.ruler.map(|r| {
         ruler::plan(
             r,
             widths[0].0 + key_gap + widths[0].1,
@@ -454,7 +404,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
     for (keys, action) in mode_entries {
         let key_width =
             (keys.chars().count() as f64 * ui.font_size * 0.75 + key_padding * 2.0) * scale;
-        let action_width = (super::text_units(&action) * ui.font_size + 4.0) * scale;
+        let action_width = (super::text_units(action) * ui.font_size + 4.0) * scale;
         let item_width = key_width + key_gap + action_width;
         if footer_x > 0.0 && footer_x + item_width > width - padding * 2.0 {
             footer_x = 0.0;
@@ -574,7 +524,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
     } else {
         format!("{}  Close", close_keys.join(" / "))
     };
-    let exit_action_width = (super::text_units(&exit_action) * ui.font_size + 2.0) * scale;
+    let exit_action_width = (super::text_units(exit_action) * ui.font_size + 2.0) * scale;
     let close_width = if window_help {
         if exit_keys.is_empty() {
             0.0
@@ -723,7 +673,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
     if window_help && !exit_keys.is_empty() {
         push_sized_help_text(
             scene,
-            exit_action,
+            exit_action.to_owned(),
             Rect::new(
                 panel.right() - padding - exit_action_width,
                 panel.y + vertical_padding,
@@ -733,20 +683,18 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             &base,
             scale,
         );
-        for (index, line) in exit_lines.iter().enumerate() {
-            push_sized_help_text(
-                scene,
-                line.clone(),
-                Rect::new(
-                    panel.right() - padding - close_width,
-                    panel.y + vertical_padding + index as f64 * (ui.font_size * 1.4 + 4.0) * scale,
-                    exit_width,
-                    title_height,
-                ),
-                &key_style,
-                scale,
-            );
-        }
+        push_sized_help_text(
+            scene,
+            exit_keys.to_owned(),
+            Rect::new(
+                panel.right() - padding - close_width,
+                panel.y + vertical_padding,
+                exit_width,
+                title_height,
+            ),
+            &key_style,
+            scale,
+        );
     }
     let action_style = LabelStyle {
         font_size: ui.font_size,
@@ -771,7 +719,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
         width - padding * 2.0,
         preview_height,
     );
-    for (index, (key, name, relative, selected)) in previews.into_iter().enumerate() {
+    for (index, (key, name, relative, selected)) in previews.iter().enumerate() {
         let Some(cell) = preview_area.subdivision(3, preview_rows, index) else {
             continue;
         };
@@ -784,8 +732,8 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
         );
         let frame_style = LabelStyle {
             font_size: 1.0,
-            border_width: if selected { 2.0 } else { 1.0 },
-            border_color: foreground.with_opacity(if selected { 1.0 } else { 0.4 }),
+            border_width: if *selected { 2.0 } else { 1.0 },
+            border_color: foreground.with_opacity(if *selected { 1.0 } else { 0.4 }),
             border_radius: 2.0,
             ..base.clone()
         };
@@ -804,7 +752,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
                 "",
                 fill,
                 LabelStyle {
-                    background: foreground.with_opacity(if selected { 0.65 } else { 0.25 }),
+                    background: foreground.with_opacity(if *selected { 0.65 } else { 0.25 }),
                     border_width: 0.0,
                     ..frame_style
                 },
@@ -813,7 +761,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
         );
         push_panel_text(
             scene,
-            format!("{} · {name}", crate::api::input::display_key_chord(&key)),
+            format!("{} · {name}", crate::api::input::display_key_chord(key)),
             Rect::new(
                 cell.x + 4.0 * scale,
                 mini.bottom() + 2.0 * scale,
@@ -821,7 +769,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
                 17.0 * scale,
             ),
             &LabelStyle {
-                bold: selected,
+                bold: *selected,
                 ..base.clone()
             },
             scale,
@@ -833,10 +781,15 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
         .sum::<f64>()
         + (columns - 1) as f64 * column_gap;
     let body_left = panel.x + (panel.width - body_width) / 2.0;
-    for (index, (keys, _action)) in entries.iter().enumerate() {
+    let mut row_offset = 0.0;
+    for (index, (keys, action)) in entries.iter().enumerate() {
         // Read down each column, with one consistent left edge per column.
         let column = index / rows;
-        let (key_width, action_width) = entry_widths[index];
+        let (key_width, action_width) = widths[column];
+        if index % rows == 0 {
+            row_offset = 0.0;
+        }
+        let height = height_for(keys, action);
         let column_offset: f64 = widths
             .iter()
             .take(column)
@@ -844,72 +797,52 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             .sum();
         let cell = Rect::new(
             body_left + column_offset,
-            panel.y
-                + vertical_padding
-                + header_height
-                + preview_height
-                + row_heights[column * rows..index].iter().sum::<f64>(),
+            panel.y + vertical_padding + header_height + preview_height + row_offset,
             key_width + key_gap + action_width,
-            (row_heights[index] - 2.0 * scale).max(1.0),
+            (height - 2.0 * scale).max(1.0),
         );
+        row_offset += height;
         if window_help && keys.is_empty() {
-            if !_action.is_empty() {
-                for (line_index, line) in action_lines[index].iter().enumerate() {
-                    push_sized_help_text(
-                        scene,
-                        line.clone(),
-                        Rect::new(
-                            cell.x,
-                            cell.y + line_index as f64 * ui.font_size * 1.4 * scale,
-                            cell.width,
-                            ui.font_size * 1.8 * scale,
-                        ),
-                        &LabelStyle {
-                            bold: true,
-                            text_color: foreground.with_opacity(0.65),
-                            ..action_style.clone()
-                        },
-                        scale,
-                    );
-                }
+            if !action.is_empty() {
+                push_sized_help_text(
+                    scene,
+                    action.clone(),
+                    Rect::new(cell.x, cell.y, cell.width, ui.font_size * 1.8 * scale),
+                    &LabelStyle {
+                        bold: true,
+                        text_color: foreground.with_opacity(0.65),
+                        ..action_style.clone()
+                    },
+                    scale,
+                );
             }
             continue;
         }
-        for (line_index, line) in key_lines[index].iter().enumerate() {
-            let line_height = (ui.font_size * 1.4 + 4.0) * scale;
-            push_sized_help_text(
-                scene,
-                line.clone(),
-                Rect::new(
-                    cell.x,
-                    cell.center().y - key_lines[index].len() as f64 * line_height / 2.0
-                        + line_index as f64 * line_height,
-                    key_width,
-                    line_height,
-                ),
-                &key_style,
-                scale,
-            );
-        }
-        for (line_index, line) in action_lines[index].iter().enumerate() {
-            push_sized_help_text(
-                scene,
-                line.clone(),
-                Rect::new(
-                    cell.x + key_width + key_gap,
-                    cell.center().y
-                        - action_lines[index].len() as f64
-                            * (action_style.font_size * 1.4 + 1.0)
-                            * scale
-                            / 2.0
-                        + line_index as f64 * (action_style.font_size * 1.4 + 1.0) * scale,
-                    action_width,
-                    (action_style.font_size * 1.4 + 1.0) * scale,
-                ),
-                &action_style,
-                scale,
-            );
-        }
+        let line_height = (ui.font_size * 1.4 + 4.0) * scale;
+        push_sized_help_text(
+            scene,
+            keys.clone(),
+            Rect::new(
+                cell.x,
+                cell.center().y - line_height / 2.0,
+                key_width,
+                line_height,
+            ),
+            &key_style,
+            scale,
+        );
+        push_sized_help_text(
+            scene,
+            action.clone(),
+            Rect::new(
+                cell.x + key_width + key_gap,
+                cell.center().y - (action_style.font_size * 1.4 + 1.0) * scale / 2.0,
+                action_width,
+                (action_style.font_size * 1.4 + 1.0) * scale,
+            ),
+            &action_style,
+            scale,
+        );
     }
     if !footer.is_empty() {
         scene.labels.push(
@@ -940,14 +873,14 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             + y;
         push_sized_help_text(
             scene,
-            keys,
+            keys.clone(),
             Rect::new(panel.x + padding + x, y, key_width, footer_line_height),
             &key_style,
             scale,
         );
         push_sized_help_text(
             scene,
-            action,
+            action.clone(),
             Rect::new(
                 panel.x + padding + x + key_width + key_gap,
                 y,
@@ -978,6 +911,11 @@ fn window_action_label(action: &str) -> Option<&'static str> {
         "normal" => "Normal",
         "grid" => "Grid",
         "recursive_grid" => "Recursive Grid",
+        "bisect" => "Bisect",
+        "bisect_left" => "Keep left half",
+        "bisect_down" => "Keep bottom half",
+        "bisect_up" => "Keep top half",
+        "bisect_right" => "Keep right half",
         "window_save_layout" => "Save layout",
         "window_area_number" => "Area number prefix",
         "window_previous_page" => "Previous page",
@@ -1113,13 +1051,7 @@ mod tests {
             .map(|(key, action)| format!("{key}  ·  {}", action.canonical()))
             .collect();
         entries.extend(["g  ·  grid".into(), "ctrl+f  ·  recursive_grid".into()]);
-        let prepared = std::sync::Arc::new(compile_window_help(
-            &entries,
-            "window",
-            Some("idle"),
-            resizing,
-        ));
-        let entries: std::sync::Arc<[String]> = entries.into();
+        let prepared = compile_window_help(&entries, "window", Some("idle"), resizing);
         let screen = Screen {
             bounds: Rect::new(0.0, 0.0, width, 1200.0),
             work_area: Rect::new(0.0, 0.0, width, 1160.0),
@@ -1132,18 +1064,18 @@ mod tests {
         let render = |compiled: bool| {
             let mut scene = OverlayScene::new();
             let view = KeyHelpView {
-                prepared: compiled.then(|| prepared.clone()),
+                prepared: compiled.then_some(&prepared),
                 screen: &screen,
                 ui: &ui,
                 palette: &palette,
-                entries: entries.clone(),
+                entries: &entries,
                 extra_entries: Vec::new(),
                 return_target: Some("idle".into()),
                 window_help: true,
                 display_name: "window".into(),
                 ruler: None,
-                previews: Vec::new(),
-                detail: Some(if resizing { "Resize" } else { "Move" }.into()),
+                previews: &[],
+                detail: Some(if resizing { "Resize" } else { "Move" }),
                 anchor: None,
                 indicator_style: None,
             };
@@ -1183,13 +1115,12 @@ mod tests {
         for width in [520.0, 1920.0] {
             for scale in [1.0, 1.5, 2.0] {
                 let config = crate::config::Config::default();
-                let entries: std::sync::Arc<[String]> = config
+                let entries: Vec<String> = config
                     .window
                     .bindings
                     .iter()
                     .map(|(key, action)| format!("{key}  ·  {}", action.canonical()))
-                    .collect::<Vec<_>>()
-                    .into();
+                    .collect();
                 let screen = Screen {
                     bounds: Rect::new(0.0, 0.0, width, 2400.0),
                     work_area: Rect::new(0.0, 0.0, width, 2360.0),
@@ -1207,14 +1138,14 @@ mod tests {
                                 screen: &screen,
                                 ui: &KeyHelp::default(),
                                 palette: &Palette::default(),
-                                entries: entries.clone(),
+                                entries: &entries,
                                 extra_entries: Vec::new(),
                                 return_target: Some("idle".into()),
                                 window_help: true,
                                 display_name: "window".into(),
                                 ruler: None,
-                                previews: Vec::new(),
-                                detail: Some(format!("Move\nPlayer\n{title}\n{status}")),
+                                previews: &[],
+                                detail: Some(&format!("Move\nPlayer\n{title}\n{status}")),
                                 anchor,
                                 indicator_style: None,
                             },
@@ -1282,11 +1213,10 @@ mod tests {
                         palette: &Palette::default(),
                         return_target: None,
                         extra_entries: Vec::new(),
-                        entries: vec!["H  ·  window_left".into(), "1  ·  Window number".into()]
-                            .into(),
+                        entries: &["H  ·  window_left".into(), "1  ·  Window number".into()],
                         window_help: true,
                         display_name: "window".into(),
-                        previews: Vec::new(),
+                        previews: &[],
                         ruler: None,
                         detail: None,
                         anchor: Some(anchor),

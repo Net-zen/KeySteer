@@ -38,30 +38,6 @@ fn startup_allocation_profile() {
 
 #[test]
 #[ignore = "run alone with --test-threads=1 so other tests cannot pollute allocator counts"]
-fn key_storage_allocation_profile() {
-    println!(
-        "layout Key={} KeyChord={} InputEvent={} BackendEvent={} Engine={}",
-        std::mem::size_of::<Key>(),
-        std::mem::size_of::<crate::api::KeyChord>(),
-        std::mem::size_of::<crate::api::InputEvent>(),
-        std::mem::size_of::<crate::api::BackendEvent>(),
-        std::mem::size_of::<crate::app::runtime::Engine>()
-    );
-    for name in [
-        "s",
-        "left_ctrl",
-        "abcdefghijklmnopqrstuvwxyz_long_custom_key",
-    ] {
-        let region = Region::new(keysteer::TEST_ALLOCATOR);
-        let key = Key::new(name).unwrap();
-        let cloned = key.clone();
-        black_box((&key, &cloned));
-        println!("key name={name} {:?}", region.change());
-    }
-}
-
-#[test]
-#[ignore = "run alone with --test-threads=1 so other tests cannot pollute allocator counts"]
 fn steady_normal_frames_do_not_allocate() {
     let config = Config::default();
     let palette = config.palette(Appearance::Dark);

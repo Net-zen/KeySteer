@@ -88,7 +88,7 @@ impl ScanSession {
                     sources.push(TargetSource::Accessibility);
                 }
                 if text {
-                    sources.extend([TargetSource::SystemOcr, TargetSource::WechatOcr]);
+                    sources.push(TargetSource::SystemOcr);
                 }
                 if contours {
                     sources.push(TargetSource::Contour);

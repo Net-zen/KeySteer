@@ -91,7 +91,7 @@ fn hint_overlay_search_routes_editing_copy_and_stale_results_by_owner() {
         id: scan_id, status: UiScanStatus::Success, retired: Vec::new(),
         targets: vec![crate::api::UiTarget {
             rect: Rect::new(10.0, 10.0, 50.0, 30.0), name: "复制".into(), role: crate::api::SemanticRole::Button,
-            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr_spans: Vec::new(), ocr: "复制文本".into(), accessibility: "Copy".into(), color: None })),
+            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr: "复制文本".into(), accessibility: "Copy".into(), color: None })),
         }],
     }), &mut backend).unwrap();
     for event in [key_down("/"), key_up("/")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
@@ -570,6 +570,31 @@ fn text_input_default_backslash_leaves_f2_available_to_applications() {
 }
 
 #[test]
+fn live_editors_keep_explicit_temporary_passthrough_chords() {
+    for mode in [ModeId::ui_hint(), ModeId::text_select()] {
+        let mut config = Config::default();
+        config.ui_hint.search_edit_keys.insert(crate::api::text_edit::EditAction::Paste, "right_alt+f8".into());
+        config.ui_hint.temporary_mode_keys = vec!["right_alt".into()];
+        config.ui_hint.temporary_mode_passthrough_keys = vec!["right_alt+f8".into()];
+        config.text_select.temporary_mode = Some("normal".into());
+        config.text_select.temporary_mode_keys = config.ui_hint.temporary_mode_keys.clone();
+        config.text_select.temporary_mode_passthrough_keys = config.ui_hint.temporary_mode_passthrough_keys.clone();
+        config.normal.bindings.insert("f8".into(), Binding::Mode(ModeId::grid()));
+        let mut engine = text_input_engine(config);
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.activate(mode.clone(), Some(ModeId::normal()), &mut backend).unwrap();
+        if mode == ModeId::ui_hint() { point_keys(&mut engine, &mut backend, &["/"]); }
+        let prompt = engine.scheduler.text_prompt.as_ref().unwrap().1.id;
+        log.lock().unwrap().clipboard_input = "hello".into();
+        point_keys(&mut engine, &mut backend, &["right_alt", "f8"]);
+        assert_eq!(engine.active_mode(), &mode);
+        assert_eq!(engine.scheduler.text_prompt.as_ref().unwrap().1.id, prompt);
+        assert!(log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|label| label.edit.is_some() && label.text == "hello"), "{mode}");
+    }
+}
+
+#[test]
 fn overlay_editor_uses_layout_text_custom_paste_and_paired_capture() {
     let mut config = Config::default();
     config.ui_hint.search_edit_keys.insert(crate::api::text_edit::EditAction::Paste, "f8".into());
@@ -776,7 +801,7 @@ fn point_search_fixture(mut config: Config) -> (Engine, FakeBackend, Arc<Mutex<R
         id, status: UiScanStatus::Success, retired: Vec::new(),
         targets: ["alpha$", "bravo"].into_iter().enumerate().map(|(i, name)| crate::api::UiTarget {
             rect: Rect::new(10.0 + i as f64 * 20.0, 10.0, 20.0, 20.0), name: name.into(), role: crate::api::SemanticRole::Button,
-            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr_spans: Vec::new(), ocr: name.into(), accessibility: name.into(), color: None })),
+            details: Some(Box::new(crate::api::geometry::UiTargetDetails { ocr: name.into(), accessibility: name.into(), color: None })),
         }).collect(),
     }), &mut backend).unwrap();
     assert!(log.lock().unwrap().point_requests.is_empty(), "label scanning must not sample pixels");

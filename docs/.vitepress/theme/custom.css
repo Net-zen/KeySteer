@@ -10,6 +10,7 @@
   --ks-diagram-core: #8b6bd1;
   --ks-diagram-platform: #2b9c88;
   --ks-diagram-presentation: #cc9143;
+  --ks-diagram-cyan: #329bb3;
   --ks-diagram-rose: #be6c9b;
 }
 
@@ -100,8 +101,9 @@
 .vp-doc .mermaid .diagram-violet { --diagram-accent: var(--ks-diagram-core); }
 .vp-doc .mermaid .diagram-green { --diagram-accent: var(--ks-diagram-platform); }
 .vp-doc .mermaid .diagram-amber { --diagram-accent: var(--ks-diagram-presentation); }
+.vp-doc .mermaid .diagram-cyan { --diagram-accent: var(--ks-diagram-cyan); }
 .vp-doc .mermaid .diagram-rose { --diagram-accent: var(--ks-diagram-rose); }
-.vp-doc .mermaid .node:is(.diagram-config, .diagram-core, .diagram-platform, .diagram-presentation, .diagram-blue, .diagram-violet, .diagram-green, .diagram-amber, .diagram-rose) > rect {
+.vp-doc .mermaid .node:is(.diagram-config, .diagram-core, .diagram-platform, .diagram-presentation, .diagram-blue, .diagram-violet, .diagram-green, .diagram-amber, .diagram-cyan, .diagram-rose) > rect {
   fill: color-mix(in srgb, var(--diagram-accent) 14%, var(--vp-c-bg)) !important;
   stroke: color-mix(in srgb, var(--diagram-accent) 65%, var(--vp-c-divider)) !important;
 }
@@ -1599,6 +1601,24 @@
 .ks-demo-tabbed-window .ks-demo-tab-bar button.selected { background: #364658; }
 
 /* Window card visual editor */
+.ks-text-geometry-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ks-text-geometry-field { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.ks-text-geometry-field > button:first-child { display: grid; flex: 1; gap: 3px; text-align: left; min-width: 0; padding: 10px; }
+.ks-text-geometry-field output { font: 11px var(--vp-font-family-mono); white-space: nowrap; }
+.ks-text-geometry-field button:disabled { opacity: .45; cursor: default; }
+.ks-text-geometry-canvas { display: block; width: 100%; height: auto; outline: 1px solid var(--vp-c-divider); border-radius: 8px; touch-action: none; cursor: crosshair; user-select: none; }
+.ks-text-geometry-canvas:focus-visible { outline: 2px solid var(--vp-c-brand-1); outline-offset: 3px; }
+.ks-text-geometry-canvas.dragging { cursor: grabbing; }
+.ks-text-geometry-canvas > * { pointer-events: none; }
+.ks-text-geometry-original { fill: color-mix(in srgb, currentColor 6%, transparent); stroke: currentColor; stroke-opacity: .35; stroke-dasharray: 3 3; stroke-width: 1; }
+.ks-text-geometry-sample { fill: currentColor; font: 13px var(--vp-font-family-base); }
+.ks-text-geometry-caption { fill: currentColor; opacity: .65; font: 10px var(--vp-font-family-base); }
+.ks-text-geometry-guide { fill: none; stroke: currentColor; stroke-opacity: .45; stroke-dasharray: 3 3; }
+.ks-text-geometry-origin { fill: currentColor; opacity: .6; }
+.ks-text-geometry-cursor { fill: currentColor; stroke: var(--ks-geometry-background); stroke-width: 1.5; stroke-linejoin: round; }
+.ks-text-geometry-handle { stroke: var(--ks-geometry-background); stroke-width: 1.5; }
+.ks-text-geometry-help { font-size: 11px; }
+@media (max-width: 640px) { .ks-text-geometry-fields { grid-template-columns: 1fr; } }
 .ks-card-editor { display: grid; gap: 16px; }
 .ks-card-preview-caption, .ks-position-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ks-card-preview-caption span, .ks-position-editor p { font-size: 12px; color: var(--vp-c-text-2); }
@@ -2088,3 +2108,11 @@
 .hero-download-help a { color: var(--vp-c-brand-1); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
 .hero-download-help a:hover { color: var(--vp-c-brand-2); }
 .hero-download-menu { max-height: min(560px, 75vh); overflow-y: auto; }
+
+/* Label-free directional bisection; the screen-sized preview surface is reused. */
+.ks-bisect-region { position: absolute; z-index: 2; background: var(--ks-target-highlight); outline: max(1px, var(--ks-target-line-width)) solid var(--ks-target-accent); outline-offset: -1px; pointer-events: none; }
+.ks-bisect-region.terminal { background: color-mix(in srgb, var(--ks-target-highlight) 55%, transparent); }
+.ks-bisect-region > i { position: absolute; display: block; background: var(--ks-target-accent); }
+.ks-bisect-region > i.vertical { left: 50%; top: 0; bottom: 0; width: var(--ks-target-line-width); }
+.ks-bisect-region > i.horizontal { top: 50%; left: 0; right: 0; height: var(--ks-target-line-width); }
+.ks-bisect-backdrop { position: absolute; inset: 0; z-index: 1; background: #00000040; pointer-events: none; }

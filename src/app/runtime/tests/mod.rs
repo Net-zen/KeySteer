@@ -129,6 +129,10 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
+    fn request_text_segmentation(&mut self, _request: crate::api::text_select::Request) -> bool {
+        self.log.lock().unwrap().timeline.push("segment");
+        false
+    }
     fn request_point_sample(&mut self, request: crate::api::point_sample::Request) -> bool {
         self.log.lock().unwrap().point_requests.push(request);
         true
@@ -147,6 +151,11 @@ impl Backend for FakeBackend {
                 self.events = batch?;
                 while !self.events.is_empty() {
                     if turn(self)?.is_none() {
+                        assert_eq!(
+                            self.log.lock().unwrap().shutdowns,
+                            1,
+                            "a native termination loop cannot return before its shutdown reply"
+                        );
                         return Ok(());
                     }
                 }
@@ -159,6 +168,7 @@ impl Backend for FakeBackend {
             }
             self.events.push(BackendEvent::Quit);
             assert_eq!(turn(self)?, None);
+            assert_eq!(self.log.lock().unwrap().shutdowns, 1);
             Ok(())
         })();
         self.native_loop_running = false;

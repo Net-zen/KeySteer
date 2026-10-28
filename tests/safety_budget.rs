@@ -82,8 +82,13 @@ use std::path::{Path, PathBuf};
 // macOS updates add four audited operations in one native owner: create a
 // kqueue, adopt its fd, submit/wait for a process-exit event, and atomically
 // exchange two complete bundles. No executable bytes are overwritten in place.
-const MAX_UNSAFE_EXPRESSIONS: usize = 415;
-const MAX_UNSAFE_FILES: usize = 43;
+// Removing the optional third-party OCR bridge removes 17 unsafe expressions
+// and one native file; screenshot glyph analysis is entirely safe Rust.
+// Permission changes add paired CF notification registration/removal and one
+// borrowed event-tap disable call. Callbacks ignore opaque notification data.
+// UIA reuses the existing COM owner and safe VARIANT conversions.
+const MAX_UNSAFE_EXPRESSIONS: usize = 396;
+const MAX_UNSAFE_FILES: usize = 42;
 const PER_FILE_BUDGET: &[(&str, usize)] = &[
     // macOS audio owns, changes, maintains and destroys native state,
     // with one bounded diagnostic callback into centralized logging.
@@ -97,10 +102,10 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/accessibility/window_manager.rs", 13),
     ("src/platform/macos/autostart.rs", 5),
     ("src/platform/macos/display/display_link.rs", 4),
-    ("src/platform/macos/native.rs", 7),
+    ("src/platform/macos/native.rs", 8),
     ("src/platform/macos/update_installer/native.rs", 4),
     ("src/platform/macos/display/overlay.rs", 7),
-    ("src/platform/macos/permissions.rs", 5),
+    ("src/platform/macos/permissions.rs", 7),
     // Shutdown adds only NSObjectProtocol / NSApplicationDelegate conformance on
     // the retained main-thread status target; no new raw native calls or Send/Sync.
     ("src/platform/macos/status_item.rs", 10),
@@ -108,7 +113,7 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/macos/workspace.rs", 3),
     ("src/platform/windows/text_prompt.rs", 17),
     ("src/platform/macos/vision/mod.rs", 7),
-    ("src/platform/windows/accessibility.rs", 31),
+    ("src/platform/windows/accessibility.rs", 28),
     ("src/platform/windows/autostart.rs", 4),
     ("src/platform/windows/display/gpu_overlay.rs", 28),
     ("src/platform/windows/input/hook.rs", 8),
@@ -121,18 +126,17 @@ const PER_FILE_BUDGET: &[(&str, usize)] = &[
     ("src/platform/windows/window_mover.rs", 4),
     ("src/platform/windows/window_manager.rs", 29),
     ("src/platform/windows/window_tabs/mod.rs", 7),
-    ("src/platform/windows/status_item.rs", 14),
+    ("src/platform/windows/status_item.rs", 13),
     ("src/platform/windows/update_installer/candidate.rs", 4),
     ("src/platform/windows/update_installer/mod.rs", 11),
     ("src/platform/windows/update_installer/signature.rs", 9),
-    ("src/platform/windows/native/mod.rs", 35),
+    ("src/platform/windows/native/mod.rs", 34),
     ("src/platform/windows/native/com.rs", 2),
     ("src/platform/windows/native/compositor.rs", 8),
-    ("src/platform/windows/native/handles.rs", 4),
+    ("src/platform/windows/native/handles.rs", 1),
     ("src/platform/windows/native/message_loop.rs", 8),
-    ("src/platform/windows/native/ocr_bridge.rs", 12),
     ("src/platform/windows/native/window.rs", 4),
-    ("src/platform/windows/native/winrt.rs", 5),
+    ("src/platform/windows/native/winrt.rs", 3),
     ("src/platform/windows/native/gdi.rs", 11),
     ("src/platform/windows/native/uia_cache.rs", 6),
 ];

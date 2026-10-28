@@ -18,27 +18,6 @@ fn system_ocr_grid_for_parallelism(width: u32, height: u32, parallelism: usize) 
 }
 
 #[test]
-fn ocr_execution_kind_uses_only_discovered_providers() {
-    assert_eq!(
-        ocr_execution_kind(false, false, true),
-        OcrExecutionKind::None
-    );
-    assert_eq!(
-        ocr_execution_kind(true, false, true),
-        OcrExecutionKind::SystemOnly
-    );
-    assert_eq!(
-        ocr_execution_kind(false, true, true),
-        OcrExecutionKind::WechatOnly
-    );
-    assert_eq!(ocr_execution_kind(true, true, true), OcrExecutionKind::Dual);
-    assert_eq!(
-        ocr_execution_kind(true, true, false),
-        OcrExecutionKind::None
-    );
-}
-
-#[test]
 fn maps_scaled_negative_desktop_coordinates() {
     let image = CaptureGeometry {
         width: 500,
@@ -231,8 +210,7 @@ fn provider_batches_coalesce_in_the_fixed_mailbox_slot() {
         })
         .collect();
     assert_eq!(
-        send_ocr_batches(&mailbox, "system", Instant::now(), targets)
-            .expect("test mailbox is live"),
+        send_ocr_batches(&mailbox, Instant::now(), targets).expect("test mailbox is live"),
         49
     );
     let mut events = ProviderEvents::new();
@@ -261,38 +239,20 @@ fn provider_mailbox_preserves_a_full_generation_without_blocking() {
             .collect::<Vec<_>>()
     };
     assert_eq!(
-        send_ocr_batches(&mailbox, "system", Instant::now(), targets(0)).unwrap(),
+        send_ocr_batches(&mailbox, Instant::now(), targets(0)).unwrap(),
         OCR_SAMPLE_COUNT
     );
     mailbox
         .publish(ProviderEvent::OcrDone {
-            provider: "system",
             elapsed: Duration::ZERO,
             result: Ok(OCR_SAMPLE_COUNT),
         })
         .unwrap();
-    assert_eq!(
-        send_ocr_batches(
-            &mailbox,
-            "wechat",
-            Instant::now(),
-            targets(OCR_SAMPLE_COUNT),
-        )
-        .unwrap(),
-        OCR_SAMPLE_COUNT
-    );
-    mailbox
-        .publish(ProviderEvent::OcrDone {
-            provider: "wechat",
-            elapsed: Duration::ZERO,
-            result: Ok(OCR_SAMPLE_COUNT),
-        })
-        .unwrap();
-    send_contour_batches(&mailbox, targets(OCR_SAMPLE_COUNT * 2)).unwrap();
+    send_contour_batches(&mailbox, targets(OCR_SAMPLE_COUNT)).unwrap();
 
     let mut events = ProviderEvents::new();
     mailbox.drain_into(&mut events);
-    assert_eq!(events.len(), 6);
+    assert_eq!(events.len(), 4);
     let mut target_count = 0;
     let mut terminal_count = 0;
     for event in events {
@@ -305,8 +265,8 @@ fn provider_mailbox_preserves_a_full_generation_without_blocking() {
             }
         }
     }
-    assert_eq!(target_count, OCR_SAMPLE_COUNT * 3);
-    assert_eq!(terminal_count, 3);
+    assert_eq!(target_count, OCR_SAMPLE_COUNT * 2);
+    assert_eq!(terminal_count, 2);
 }
 
 #[test]
@@ -404,6 +364,42 @@ fn cancellation_does_not_start_an_idle_coordinator() {
 }
 
 #[test]
+fn idle_coordinator_shutdown_wakes_without_waiting_for_the_reuse_deadline() {
+    let mut worker = VisionWorker::start();
+    worker.shared.state.lock().unwrap().running = true;
+    let shared = Arc::clone(&worker.shared);
+    let discovery = worker.discovery.handle();
+    worker.workers.push(
+        WorkerJoin::spawn(
+            "idle vision regression",
+            std::thread::Builder::new(),
+            move || worker_main(shared, discovery),
+        )
+        .unwrap(),
+    );
+    worker.request_stop();
+    assert_eq!(
+        worker.workers.len(),
+        1,
+        "request_stop must not join the coordinator"
+    );
+    assert!(worker.shared.stopping.load(Ordering::Acquire));
+    assert!(worker.discovery.shared.stopping.load(Ordering::Acquire));
+    assert!(
+        worker
+            .discovery
+            .handle()
+            .wait(Instant::now() + Duration::from_secs(2), || false)
+            .is_none()
+    );
+    worker
+        .stop_until(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+    assert!(!worker.shared.state.lock().unwrap().running);
+    assert!(worker.workers.is_empty());
+}
+
+#[test]
 fn completed_discovery_snapshot_is_reused() {
     let shared = Arc::new(DiscoveryShared::default());
     let snapshot = Arc::new(OcrDiscoverySnapshot::default());
@@ -437,7 +433,7 @@ fn provider_group_cancels_and_joins_every_thread() {
     let stopped = Arc::new(AtomicBool::new(false));
     let provider_stopped = Arc::clone(&stopped);
     let mut providers = ProviderThreads::new(cancellation, &shared);
-    providers.spawn("keysteer-cancellation-test", move || {
+    providers.spawn_reused(&shared.contour, "keysteer-cancellation-test", move |_| {
         while !provider_cancellation.is_cancelled() {
             std::thread::yield_now();
         }
@@ -452,9 +448,13 @@ fn quarantine_blocked_provider(worker: &VisionWorker) -> mpsc::Sender<()> {
     let cancellation = ScanCancellation::new(&worker.shared, 1, &mailbox, Weak::new());
     let (release, wait) = mpsc::channel();
     let mut providers = ProviderThreads::new(cancellation, &worker.shared);
-    assert!(providers.spawn("keysteer-quarantine-test", move || {
-        let _ = wait.recv_timeout(Duration::from_secs(5));
-    }));
+    assert!(providers.spawn_reused(
+        &worker.shared.contour,
+        "keysteer-quarantine-test",
+        move |_| {
+            let _ = wait.recv_timeout(Duration::from_secs(5));
+        }
+    ));
     assert!(providers.join_all(Instant::now()).is_err());
     assert!(
         worker
@@ -571,6 +571,7 @@ fn scan_queued_before_quarantine_finishes_without_starting_native_work() {
         },
         &worker.shared,
         &worker.discovery.handle(),
+        &mut CaptureResources::default(),
     );
     session.flush();
     let result = output.take().expect("queued scan must publish a terminal");
@@ -633,6 +634,52 @@ fn vision_resumes_after_quarantined_provider_exits() {
 }
 
 #[test]
+fn scan_cancellation_cannot_miss_discovery_entering_its_wait() {
+    let shared = Arc::new(SharedQueue::default());
+    shared.latest_generation.store(29, Ordering::Release);
+    let discovery = Arc::new(DiscoveryShared::default());
+    let mailbox = Arc::new(ProviderMailbox::new());
+    let cancellation = ScanCancellation::new(&shared, 29, &mailbox, Arc::downgrade(&discovery));
+    let waiting_cancellation = cancellation.clone();
+    let signal = Arc::clone(&cancellation.signal);
+    let (checked, check_received) = mpsc::channel();
+    let (proceed, proceeding) = mpsc::channel();
+    let (finished, finish_received) = mpsc::channel();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let waiter = std::thread::spawn(move || {
+        let first_check = std::cell::Cell::new(true);
+        let result = DiscoveryHandle(discovery).wait(deadline, || {
+            let cancelled = waiting_cancellation.is_cancelled();
+            if first_check.replace(false) {
+                checked.send(()).unwrap();
+                proceeding.recv_timeout(Duration::from_secs(2)).unwrap();
+            }
+            cancelled
+        });
+        finished.send(result.is_none()).unwrap();
+    });
+    check_received.recv_timeout(Duration::from_secs(1)).unwrap();
+    let (notified, notification_received) = mpsc::channel();
+    let canceller = std::thread::spawn(move || {
+        cancellation.cancel();
+        notified.send(()).unwrap();
+    });
+    while !signal.local.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    // The waiter still owns the state lock after reading the old predicate.
+    // Cancellation must not send its notification until that lock is released.
+    let premature_notification = notification_received.recv_timeout(Duration::from_millis(20));
+    proceed.send(()).unwrap();
+    let finished_promptly = finish_received.recv_timeout(Duration::from_secs(1));
+    waiter.join().unwrap();
+    canceller.join().unwrap();
+    assert!(signal.local.load(Ordering::Acquire));
+    assert_eq!(premature_notification, Err(mpsc::RecvTimeoutError::Timeout));
+    assert_eq!(finished_promptly, Ok(true));
+}
+
+#[test]
 fn scan_cancellation_wakes_system_ocr_without_polling() {
     let shared = Arc::new(SharedQueue::default());
     shared.latest_generation.store(29, Ordering::Release);
@@ -641,29 +688,14 @@ fn scan_cancellation_wakes_system_ocr_without_polling() {
     let (system_sender, system_receiver) = mpsc::sync_channel(1);
     let (credit_sender, credit_receiver) = mpsc::channel();
     let credit_sender = Arc::new(credit_sender);
-    let (wechat_credit, wechat_credits) = mpsc::channel();
-    let wechat_credit = Arc::new(wechat_credit);
-    let (wechat_sender, wechat_receiver) = mpsc::sync_channel(1);
     cancellation.register_system_wake(system_sender);
     cancellation.register_credit_wake(&credit_sender);
-    cancellation.register_credit_wake(&wechat_credit);
-    cancellation.register_wechat_wake(wechat_sender);
     cancellation.cancel();
     assert!(matches!(
         system_receiver.try_recv(),
         Ok(SystemOcrInput::CancelWake)
     ));
-    assert!(matches!(
-        wechat_receiver.try_recv(),
-        Ok(WechatInput::CancelWake)
-    ));
     assert_eq!(credit_receiver.try_recv(), Ok(()));
-    assert_eq!(wechat_credits.try_recv(), Ok(()));
-    drop(wechat_credit);
-    assert_eq!(
-        wechat_credits.try_recv(),
-        Err(mpsc::TryRecvError::Disconnected)
-    );
     assert!(matches!(
         mailbox.wait_until_ready(Instant::now()),
         Err(VisionError::Cancelled)
@@ -1018,7 +1050,6 @@ fn early_ocr_and_contour_are_both_published_without_waiting_for_ocr_terminal() {
     };
     mailbox
         .publish(ProviderEvent::OcrBatch {
-            provider: "system",
             elapsed: Duration::ZERO,
             targets: vec![target(10.0, "OCR text")],
         })
@@ -1047,7 +1078,7 @@ fn early_and_late_visual_sources_use_identical_ownership() {
     use crate::platform::common::scan_mailbox::ScanMailbox;
     use crate::platform::common::spatial_index::TargetSource;
     use crate::platform::windows::{EventSender, accessibility, ui_scan::ScanSession};
-    for provider in ["system", "wechat"] {
+    {
         for early_mask in 0..8 {
             for order in [
                 [0, 1, 2],
@@ -1121,7 +1152,6 @@ fn early_and_late_visual_sources_use_identical_ownership() {
                     if early_mask & (1 << i) != 0 {
                         let event = if i == 1 {
                             ProviderEvent::OcrBatch {
-                                provider,
                                 elapsed: Duration::ZERO,
                                 targets: batch,
                             }
@@ -1138,7 +1168,7 @@ fn early_and_late_visual_sources_use_identical_ownership() {
                     } else {
                         source.push_from(
                             if i == 1 {
-                                ocr_source(provider)
+                                TargetSource::SystemOcr
                             } else {
                                 TargetSource::Contour
                             },
@@ -1160,7 +1190,7 @@ fn early_and_late_visual_sources_use_identical_ownership() {
                 assert_eq!(
                     visible.len(),
                     2,
-                    "{provider} mask={early_mask} order={order:?}: {visible:?}"
+                    "system mask={early_mask} order={order:?}: {visible:?}"
                 );
                 assert!(visible.contains(&button));
                 assert!(
@@ -1232,47 +1262,40 @@ fn contour_mailbox_transfers_full_candidate_buffer_without_rebuilding_it() {
 }
 
 #[test]
-fn ocr_word_and_phrase_converge_across_engines_and_batch_order() {
+fn ocr_word_and_phrase_converge_across_tiles_and_batch_order() {
     use crate::platform::common::scan_accumulator::ScanAccumulator;
     use crate::platform::common::spatial_index::TargetSource;
     for reverse in [false, true] {
-        for swap_engines in [false, true] {
-            let phrase = UiTarget {
-                details: None,
-                rect: Rect::new(10., 10., 140., 20.),
-                name: "full phrase".into(),
-                role: SemanticRole::StaticText,
-            };
-            let word = UiTarget {
-                details: None,
-                rect: Rect::new(55., 11., 18., 18.),
-                name: "word".into(),
-                role: SemanticRole::StaticText,
-            };
-            let sources = if swap_engines {
-                [TargetSource::WechatOcr, TargetSource::SystemOcr]
-            } else {
-                [TargetSource::SystemOcr, TargetSource::WechatOcr]
-            };
-            let mut batches = vec![(sources[0], phrase.clone()), (sources[1], word)];
-            if reverse {
-                batches.reverse();
-            }
-            let mut scan = ScanAccumulator::new();
-            let mut visible = Vec::new();
-            for (source, target) in batches {
-                let update = scan.push(source, vec![target], 0.5);
-                crate::api::command::remove_retired_targets(&mut visible, &update.retired);
-                visible.extend(update.targets);
-            }
-            let mut next_row = phrase.clone();
-            next_row.rect.y = 36.;
-            let update = scan.push(sources[1], vec![next_row.clone()], 0.5);
-            visible.extend(update.targets);
-            assert_eq!(visible.len(), 2, "reverse={reverse} swap={swap_engines}");
-            assert!(visible.iter().any(|t| t.rect == phrase.rect));
-            assert!(visible.iter().any(|t| t.rect == next_row.rect));
+        let phrase = UiTarget {
+            details: None,
+            rect: Rect::new(10., 10., 140., 20.),
+            name: "full phrase".into(),
+            role: SemanticRole::StaticText,
+        };
+        let word = UiTarget {
+            details: None,
+            rect: Rect::new(55., 11., 18., 18.),
+            name: "word".into(),
+            role: SemanticRole::StaticText,
+        };
+        let mut batches = vec![phrase.clone(), word];
+        if reverse {
+            batches.reverse();
         }
+        let mut scan = ScanAccumulator::new();
+        let mut visible = Vec::new();
+        for target in batches {
+            let update = scan.push(TargetSource::SystemOcr, vec![target], 0.5);
+            crate::api::command::remove_retired_targets(&mut visible, &update.retired);
+            visible.extend(update.targets);
+        }
+        let mut next_row = phrase.clone();
+        next_row.rect.y = 36.;
+        let update = scan.push(TargetSource::SystemOcr, vec![next_row.clone()], 0.5);
+        visible.extend(update.targets);
+        assert_eq!(visible.len(), 2, "reverse={reverse}");
+        assert!(visible.iter().any(|t| t.rect == phrase.rect));
+        assert!(visible.iter().any(|t| t.rect == next_row.rect));
     }
 }
 
@@ -1287,7 +1310,6 @@ fn ready_visual_data_bypasses_busy_native_coordinator_and_count_gates() {
     let mailbox = ProviderMailbox::with_output(source.sink());
     mailbox
         .publish(ProviderEvent::OcrBatch {
-            provider: "system",
             elapsed: Duration::ZERO,
             targets: Vec::new(),
         })
@@ -1302,7 +1324,7 @@ fn ready_visual_data_bypasses_busy_native_coordinator_and_count_gates() {
             )
         })
         .collect();
-    send_ocr_batches(&mailbox, "system", Instant::now(), targets).unwrap();
+    send_ocr_batches(&mailbox, Instant::now(), targets).unwrap();
     // Deliberately never drain the coordinator mailbox: data must already flow.
     session.flush();
     let ready = output.take().unwrap();
@@ -1317,7 +1339,7 @@ fn ready_visual_data_bypasses_busy_native_coordinator_and_count_gates() {
 #[test]
 fn provider_data_slots_ignore_empty_and_keep_large_buffers_in_full() {
     let mailbox = ProviderMailbox::new();
-    send_ocr_batches(&mailbox, "system", Instant::now(), Vec::new()).unwrap();
+    send_ocr_batches(&mailbox, Instant::now(), Vec::new()).unwrap();
     mailbox
         .publish(ProviderEvent::ContourBatch(Vec::new()))
         .unwrap();
@@ -1330,7 +1352,7 @@ fn provider_data_slots_ignore_empty_and_keep_large_buffers_in_full() {
             .collect()
     };
     assert_eq!(
-        send_ocr_batches(&mailbox, "system", Instant::now(), targets()).unwrap(),
+        send_ocr_batches(&mailbox, Instant::now(), targets()).unwrap(),
         OCR_SAMPLE_COUNT + 2
     );
     send_contour_batches(&mailbox, targets()).unwrap();

@@ -1,5 +1,5 @@
 import { fieldLocation } from './navigation.ts'
-export type TargetingMode = 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | 'key_help' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
+export type TargetingMode = 'text_select' | 'grid' | 'recursive_grid' | 'bisect' | 'ui_hint' | 'key_help' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
 export type Appearance = 'dark' | 'light'
 export type ControlKind = 'color' | 'number' | 'text' | 'boolean' | 'select' | 'ratios' | 'percentages' | 'offset' | 'choices' | 'binding' | 'chords' | 'field-modes'
 
@@ -28,9 +28,20 @@ export const fields = {
   window_editor: { colors: [], layout: [], advanced: [] },
   window_restore: { colors: [], layout: [], advanced: [] },
   window_tab: { colors: [], layout: [], advanced: [] },
-  text_select: { colors: [], layout: [
+  text_select: { colors: [
+    { path: 'text_select.ui.border_color', label: '选中区域包围框颜色', kind: 'color' },
+  ], layout: [
     { path: 'text_select.enabled', label: '启用文字选择', kind: 'boolean' },
-    { path: 'text_select.hint_characters', label: '文字选择标签字符', kind: 'text' },
+    { path: 'text_select.scan_scope', label: '扫描范围', kind: 'select', default: 'all', options: ['window', 'active', 'screen', 'all'], optionLabels: {
+      window: '鼠标下窗口优先', active: '当前激活窗口优先', screen: '当前整屏', all: '全部显示器（默认）',
+    } },
+    { path: 'text_select.hint_characters', label: '区域层标签字符', kind: 'text' },
+    { path: 'text_select.ui.panel_width', label: '文字选择面板宽度', kind: 'number', min: 320, max: 2400, step: 10, default: 800 },
+    { path: 'text_select.ui.pointer_offset', label: '鼠标距区域右下角偏移 [X, Y]', kind: 'offset', default: [12, 12] },
+    { path: 'text_select.ui.border_width', label: '选中区域包围框线宽', kind: 'number', min: 0, max: 20, step: .5, default: 1.5 },
+    { path: 'text_select.ui.padding', label: '包围框外扩边距 [X, Y]', kind: 'offset', min: 0, max: 100, default: [2, 2] },
+    { path: 'text_select.ui.word_min_width', label: '单词卡片最小宽度', kind: 'number', min: 24, max: 240, step: 1, default: 48 },
+    { path: 'text_select.ui.char_min_width', label: '字符卡片最小宽度', kind: 'number', min: 24, max: 240, step: 1, default: 40 },
   ], advanced: [] },
   window: {
     colors: [
@@ -93,6 +104,21 @@ export const fields = {
       { path: 'grid.ui.font_family', label: '字体', kind: 'text' },
       { path: 'grid.ui.border_width', label: '线宽', kind: 'number', min: 0.5, max: 8, step: 0.5 },
     ],
+  },
+  bisect: {
+    colors: [
+      { path: 'bisect.ui.line_color', label: '网格线', kind: 'color' },
+      { path: 'bisect.ui.highlight_color', label: '高亮色', kind: 'color' },
+    ],
+    layout: [
+      { path: 'bisect.enabled', label: '启用 Bisect', kind: 'boolean' },
+      { path: 'bisect.max_depth', label: '二分上限', kind: 'number', min: 1, max: 40, step: 1 },
+      { path: 'bisect.min_size_width', label: '最小区域宽度', kind: 'number', min: 1, step: 1 },
+      { path: 'bisect.min_size_height', label: '最小区域高度', kind: 'number', min: 1, step: 1 },
+      { path: 'bisect.cursor_follow_selection', label: '二分光标跟随', kind: 'boolean' },
+      { path: 'bisect.ui.line_width', label: '线宽', kind: 'number', min: 0, max: 20, step: 1 },
+    ],
+    advanced: [],
   },
   recursive_grid: {
     colors: [
@@ -245,12 +271,15 @@ for (const mode of ['window_quick', 'window_editor', 'window_restore', 'window_t
   if (mode === 'window_editor') own.advanced.push({ path: `${mode}.resize_step`, label: '分割线步长', kind: 'number', min: 0 }, { path: `${mode}.resize_speed`, label: '分割线速度', kind: 'number', min: 0 })
 }
 
-export const lifecycleModes = ['grid', 'recursive_grid', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab'] as const
+export const lifecycleModes = ['grid', 'recursive_grid', 'bisect', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab'] as const
 export const lifecycleClickActions = ['left_click', 'right_click', 'middle_click', 'double_click']
-export function lifecycleOptions(event: 'after_finish' | 'after_click', plugins: string[] = []): string[] {
-  return ['keep', 'restart', 'return', ...(event === 'after_finish' ? lifecycleClickActions : ['finish']),
+export function lifecycleOptions(event: 'after_finish' | 'after_click' | 'after_copy', plugins: string[] = []): string[] {
+  return ['keep', 'restart', 'return', ...(event === 'after_finish' ? lifecycleClickActions : event === 'after_click' ? ['finish'] : []),
     'idle', 'normal', 'text_input', 'text_select', ...lifecycleModes, ...plugins]
 }
+fields.text_select.advanced.push(
+  { path: 'text_select.lifecycle.after_copy', label: '复制后动作', kind: 'select', options: lifecycleOptions('after_copy'), default: 'normal' },
+)
 for (const mode of lifecycleModes) {
   fields[mode].advanced.push(
     { path: `${mode}.lifecycle.after_finish`, label: '完成后动作', kind: 'select', options: lifecycleOptions('after_finish') },
@@ -295,10 +324,10 @@ export const frequentFields: ConfigField[] = [
   { path: 'grid.max_depth', label: 'Grid 层数', description: '确认目标前需要输入的网格层数', kind: 'number', min: 1, max: 20, step: 1 },
   { path: 'recursive_grid.max_depth', label: '递归上限', description: 'Recursive Grid 最大递归次数', kind: 'number', min: 1, max: 20, step: 1 },
   { path: 'ui_hint.scan_scope', label: '扫描范围', description: '窗口不可用时按优先级选择范围，只扫描选定范围；鼠标窗口优先时尝试激活', kind: 'select', options: [
-    { value: 'window', label: '鼠标下窗口（默认）' },
+    { value: 'window', label: '鼠标下窗口优先' },
     { value: 'active', label: '当前激活窗口优先' },
     { value: 'screen', label: '当前整屏' },
-    { value: 'all', label: '全部显示器' },
+    { value: 'all', label: '全部显示器（默认）' },
   ] },
   { path: 'ui_hint.strategy', label: 'UI 扫描', description: '辅助功能、OCR、轮廓检测，或全部并行合并', kind: 'select', options: [
     { value: 'vision', label: 'Vision' },

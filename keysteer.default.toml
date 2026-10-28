@@ -63,9 +63,10 @@ m = "wheel_down"
 right_shift = "middle_click"
 n = "toggle"
 g = "grid"
-f = "recursive_grid"
+f = "ui_hint"
+"primary+g" = "recursive_grid"
+"primary+f" = "bisect"
 c = "text_select"
-"primary+f" = "ui_hint"
 "primary+s" = "screen next"
 "primary+d" = "move_window next"
 u = "page_down"
@@ -82,18 +83,27 @@ y = "end"
 # '\ esc' = "normal"
 # enter = ["send enter", "normal"]
 
-# OCR text selection shares UI Hint's scan scope, OCR and panel appearance.
+# OCR text selection has its own scope; OCR options and panel appearance follow UI Hint.
 [text_select]
 enabled = true
-hint_characters = "asdfghjklqwertyuiopzvbnm" # Bare command keys are excluded.
+scan_scope = "all" # 独立扫描范围，默认全部屏幕 / Independent scope: window / active / screen / all (default).
+hint_characters = "asdfghjklqwertyuiopzvbnm"
+
+[text_select.lifecycle]
+after_copy = "normal"
 
 [text_select.bindings]
-"primary+c" = "text_refine" # Select text, then refine; plain c remains input.
-"ctrl+backspace" = "first_level" # 回到区域层，清空选择；Space 用于输入空格。
-"tab backspace" = "previous_level" # 返回上一层；输入非空时 Backspace 删除文字。
-enter = "text_copy"
-page_down = "text_next_page"
-page_up = "text_previous_page"
+"alt+c" = "text_refine"
+"alt+backspace" = "previous_level"
+"ctrl+backspace" = "first_level"
+tab = "text_cycle_page"
+
+"ctrl+a" = "text_select_all"
+backspace = "text_clear_selection"
+"ctrl+x" = "text_clear_input"
+"mod+c enter" = "text_copy"
+
+"primary+q" = "normal"
 esc = "cancel_selection"
 "?" = "key_help"
 
@@ -360,7 +370,7 @@ font_size = 28
 # Advanced OCR/contour thresholds and roles use built-in defaults; see --dump-config.
 [ui_hint]
 search_copy_keys = ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"] # OCR / accessibility / coordinates / color.
-scan_scope = "window"
+scan_scope = "all"
 enabled = true
 strategy = "hybrid"
 hint_characters = "asdfghjkl"
@@ -514,6 +524,36 @@ label_autohide_multiplier = 1.5
 sub_key_preview = false
 sub_key_preview_font_size = 8
 sub_key_preview_autohide_multiplier = 1.5
+
+# Bisect: choose a half with h/j/k/l; no labels or configurable grid alphabet.
+[bisect]
+enabled = true
+min_size_width = 2
+min_size_height = 2
+max_depth = 20
+cursor_follow_selection = true
+inherits = ["hotkeys", "normal"]
+temporary_mode = "normal"
+temporary_mode_keys = ["primary"]
+
+[bisect.lifecycle]
+after_finish = "keep"
+after_click = "keep"
+
+[bisect.bindings]
+h = "bisect_left"
+j = "bisect_down"
+k = "bisect_up"
+l = "bisect_right"
+enter = "confirm_selection"
+esc = "cancel_selection"
+"tab backspace" = "previous_level"
+space = "first_level"
+"`" = "follow"
+"primary+q" = "normal"
+
+[bisect.ui]
+line_width = 1
 
 # Distances are pixels; speed is pixels/second when held (0 = tap only).
 [scroll]

@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! The five built-in modes.
+//! The built-in modes.
 //!
 //! Each is an ordinary [`Mode`] implementation with no
 //! privileged access: they receive [`ModeEvent`](crate::api::ModeEvent)s and
@@ -10,13 +10,14 @@
 //! The flow between them:
 //!
 //! ```text
-//!   idle ──alt+e──► normal ──g───────► grid ───────────┐
-//!    ▲               │  ▲ ──f───────► recursive_grid  │
-//!    │               │   │  ──Primary+f► ui_hint ──────┤
-//!    └──────esc──────┘   └───────────────────esc/pick───┘
+//!   idle ──Primary+e──► normal ──g─────────► grid
+//!                        │   ──f─────────► ui_hint
+//!                        │   ──Primary+g─► recursive_grid
+//!                        └───Primary+f───► bisect
+//!   Esc returns targeting modes to their source; q/esc returns normal to idle.
 //! ```
 //!
-//! `idle` is silent, `normal` does the work, and the three targeting modes each
+//! `idle` is silent, `normal` does the work, and the four targeting modes each
 //! pick a point and hand control back.
 
 pub mod grid;
@@ -30,7 +31,7 @@ pub mod text_input;
 pub mod text_select;
 pub mod window;
 
-pub use grid::GridMode;
+pub(crate) use grid::GridMode;
 pub use hint::HintMode;
 pub use idle::IdleMode;
 pub use normal::NormalMode;

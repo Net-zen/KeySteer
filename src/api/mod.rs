@@ -42,7 +42,7 @@ pub use command::{
     ButtonAction, Command, CommandBatch, FinishCause, FocusedApp, HostContext, Mode, ModeEvent,
     MouseButton, UiScanRequest, UiScanScope, UiScanStrategy, VisionOptions,
 };
-pub use geometry::{OcrTextSpan, Point, Rect, Screen, SemanticRole, UiTarget};
+pub use geometry::{Point, Rect, Screen, SemanticRole, UiTarget};
 pub use hint::LabelDirection;
 pub use input::{Key, KeyChord, KeyState, ModeId};
 pub use lifecycle::{LifecycleAction, TargetingLifecycle};
@@ -57,5 +57,3 @@ pub use theme::{Palette, ThemedColor};
 pub use command::UiScanResult;
 #[cfg(any(target_os = "windows", test))]
 pub use command::UiScanStatus;
-#[cfg(test)]
-pub use input::InputEvent;

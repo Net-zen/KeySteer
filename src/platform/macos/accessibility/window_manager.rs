@@ -76,7 +76,7 @@ pub(in crate::platform::macos) fn visible_windows() -> Result<Vec<Visible>, Stri
     on_screen_windows(true)
 }
 
-pub(super) fn scan_windows() -> Result<Vec<Visible>, String> {
+pub(in crate::platform::macos) fn scan_windows() -> Result<Vec<Visible>, String> {
     on_screen_windows(false)
 }
 

@@ -2,7 +2,7 @@
 use crate::api::overlay::{
     Color, LabelStyle, OverlayLabel, OverlayScene, OverlayShape, OverlayText, SharedLabelStyle,
 };
-use crate::api::presentation::{GridView, RecursiveGridView};
+use crate::api::presentation::{BisectView, GridView, RecursiveGridView};
 use crate::api::{Palette, Point, Rect};
 
 // Each view decides whether its interior rulings belong in the scene.
@@ -355,29 +355,17 @@ impl RecursiveGridView<'_> {
         // The native overlay remains scoped to the original screen at every depth.
         scene.clip = self.root;
 
+        push_recursive_region(
+            &mut scene,
+            area,
+            highlight,
+            line_color,
+            line_width,
+            self.terminal,
+        );
         if self.terminal {
-            scene.push_shape(OverlayShape::Rect {
-                rect: area,
-                fill: highlight.with_opacity(0.55),
-                stroke: line_color,
-                stroke_width: line_width.max(1.0),
-                corner_radius: 0.0,
-                z_index: 0,
-            });
-            scene.backdrop = Some(Color::rgba(0, 0, 0, 0x40));
             return scene;
         }
-
-        // Highlight the narrowed area and outline it.
-        scene.push_shape(OverlayShape::Rect {
-            rect: area,
-            fill: highlight,
-            stroke: line_color,
-            stroke_width: line_width.max(1.0),
-            corner_radius: 0.0,
-            z_index: 0,
-        });
-
         push_rulings(
             &mut scene,
             area,
@@ -481,5 +469,65 @@ impl RecursiveGridView<'_> {
         }
 
         scene
+    }
+}
+
+/// The label-free Bisect view shares the recursive grid's region styling.
+impl BisectView<'_> {
+    pub(crate) fn scene(&self, palette: &Palette) -> OverlayScene {
+        let Some(area) = self.current else {
+            return OverlayScene::new();
+        };
+        let line = crate::api::style::resolve(
+            self.ui.line_color.as_ref(),
+            palette.appearance,
+            palette.accent,
+        );
+        let highlight = crate::api::style::resolve(
+            self.ui.highlight_color.as_ref(),
+            palette.appearance,
+            palette.highlight(),
+        );
+        let width = self.ui.line_width.max(0) as f64;
+        let mut scene = OverlayScene::with_capacity(3, 0);
+        scene.clip = self.root;
+        push_recursive_region(&mut scene, area, highlight, line, width, self.terminal);
+        if !self.terminal {
+            push_rulings(
+                &mut scene,
+                area,
+                if self.axes.1 { 2 } else { 1 },
+                if self.axes.0 { 2 } else { 1 },
+                line,
+                width,
+                1,
+            );
+        }
+        scene
+    }
+}
+
+fn push_recursive_region(
+    scene: &mut OverlayScene,
+    area: Rect,
+    highlight: Color,
+    line: Color,
+    width: f64,
+    terminal: bool,
+) {
+    scene.push_shape(OverlayShape::Rect {
+        rect: area,
+        fill: if terminal {
+            highlight.with_opacity(0.55)
+        } else {
+            highlight
+        },
+        stroke: line,
+        stroke_width: width.max(1.0),
+        corner_radius: 0.0,
+        z_index: 0,
+    });
+    if terminal {
+        scene.backdrop = Some(Color::rgba(0, 0, 0, 0x40));
     }
 }

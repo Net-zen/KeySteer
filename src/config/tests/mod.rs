@@ -484,9 +484,13 @@ fn invalid_key_aliases_are_rejected() {
 }
 
 #[test]
-fn empty_config_is_valid_and_equals_the_defaults() {
+fn empty_config_preserves_defaults_except_opt_in_temporary_layers() {
     let config = Config::parse("").unwrap();
-    assert_eq!(config, Config::default());
+    let mut defaults = Config::default();
+    for (_, keys) in defaults.temporary_key_lists_mut() {
+        keys.clear();
+    }
+    assert_eq!(config, defaults);
     config.validate().unwrap();
 }
 
@@ -678,28 +682,22 @@ fn idle_launchers_resolve_the_platform_neutral_primary_modifier() {
 }
 
 #[test]
-fn idle_launchers_avoid_platform_reserved_chords() {
+fn default_bindings_avoid_platform_reserved_chords() {
     // Regression: `alt+e` never fired on macOS because Option+E is a
     // dead key. No default may have that problem on any platform.
-    for chord in Config::default().hotkeys.keys() {
-        let parsed = KeyChord::parse(chord).unwrap();
-        assert_eq!(
-            platform_warning(&parsed),
-            None,
-            "default idle binding {chord:?} is problematic on this platform"
-        );
-    }
-}
-
-#[test]
-fn normal_defaults_avoid_platform_reserved_chords() {
-    for chord in Config::default().normal.bindings.keys() {
-        let parsed = KeyChord::parse(chord).unwrap();
-        assert_eq!(
-            platform_warning(&parsed),
-            None,
-            "default normal binding {chord:?} is problematic on this platform"
-        );
+    let config = Config::default();
+    for (mode, bindings) in [
+        ("idle", &config.hotkeys),
+        ("normal", &config.normal.bindings),
+    ] {
+        for chord in bindings.keys() {
+            let parsed = KeyChord::parse(chord).unwrap();
+            assert_eq!(
+                platform_warning(&parsed),
+                None,
+                "default {mode} binding {chord:?} is problematic on this platform"
+            );
+        }
     }
 }
 
@@ -728,12 +726,9 @@ fn normal_defaults_cover_the_requested_controls_and_targeting_modes() {
     assert_eq!(normal["'"], Binding::Click(Button::Right));
     assert_eq!(normal["n"], Binding::Toggle(Vec::new()));
     assert_eq!(normal["g"], Binding::Mode(ModeId::grid()));
-    assert_eq!(normal["f"], Binding::Mode(ModeId::recursive_grid()));
-    assert!(
-        normal
-            .values()
-            .any(|binding| binding == &Binding::Mode(ModeId::ui_hint()))
-    );
+    assert_eq!(normal["f"], Binding::Mode(ModeId::ui_hint()));
+    assert_eq!(normal["primary+g"], Binding::Mode(ModeId::recursive_grid()));
+    assert_eq!(normal["primary+f"], Binding::Mode(ModeId::bisect()));
     assert_eq!(normal["q"], Binding::Mode(ModeId::idle()));
 }
 
@@ -883,18 +878,37 @@ fn bindings_need_no_action_prefix() {
 }
 
 #[test]
-fn whitespace_separates_multiple_single_key_binding_aliases() {
+fn whitespace_separates_single_keys_and_chords_in_binding_groups() {
     let config = Config::parse(
         r#"
             [normal.bindings]
             "v b" = "fast"
+            [text_select.bindings]
+            "mod+c enter" = "text_copy"
             "#,
     )
     .unwrap();
     assert_eq!(config.normal.bindings["v"], Binding::Speed(Speed::Fast));
     assert_eq!(config.normal.bindings["b"], Binding::Speed(Speed::Fast));
     assert!(!config.normal.bindings.contains_key("v b"));
+    let copy_chord = KeyChord::parse("mod+c").unwrap().canonical();
+    let action = Binding::TextSelect(crate::api::text_select::Action::Copy);
+    assert_eq!(config.text_select.bindings[&copy_chord], action);
+    assert_eq!(config.text_select.bindings["enter"], action);
+    assert!(!config.text_select.bindings.contains_key("mod+c enter"));
+    let roundtrip = Config::parse(&config.to_toml().unwrap()).unwrap();
+    assert_eq!(roundtrip.text_select.bindings, config.text_select.bindings);
     config.validate().unwrap();
+    let alias = Config::parse("[key_aliases]\nCopyMod = 'right_ctrl'\n[text_select.bindings]\n'CopyMod+c enter' = 'text_copy'").unwrap();
+    assert_eq!(alias.text_select.bindings["right_ctrl+c"], action);
+    assert_eq!(alias.text_select.bindings["enter"], action);
+    alias.validate().unwrap();
+    for source in [
+        "[text_select.bindings]\n'mod+c enter' = 'text_copy'\nenter = 'text_copy'",
+        "[text_select.bindings]\n'ctrl+shift enter' = 'text_copy'",
+    ] {
+        assert!(Config::parse(source).is_err(), "{source}");
+    }
 }
 
 #[test]
@@ -917,6 +931,19 @@ fn grid_like_modes_do_not_steal_label_keys_with_exit_bindings() {
             "q"
         );
     }
+}
+
+#[test]
+fn all_modes_default_to_empty_temporary_triggers() {
+    let mut defaults = Config::default();
+    for (mode, keys) in defaults.temporary_key_lists_mut() {
+        assert!(keys.is_empty(), "{mode}");
+    }
+    assert!(
+        super::PluginModeConfig::default()
+            .temporary_mode_keys
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1099,16 +1126,12 @@ fn parses_style_theme_and_ui_sections() {
 
 #[test]
 fn rejects_non_rgba_component_colors() {
-    let config = Config::parse(
-        r##"
-            [ui_hint.ui]
-            text_color = "#112233"
-            "##,
-    )
-    .unwrap();
-    let error = config.validate().unwrap_err().to_string();
-    assert!(error.contains("ui_hint.ui.text_color"), "{error}");
-    assert!(error.contains("#RRGGBBAA"), "{error}");
+    for path in ["ui_hint.ui", "window.ui", "ui_hint.search_highlight"] {
+        let config = Config::parse(&format!("[{path}]\ntext_color = '#112233'")).unwrap();
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains(&format!("{path}.text_color")), "{error}");
+        assert!(error.contains("#RRGGBBAA for every appearance"), "{error}");
+    }
 }
 
 #[test]
@@ -1164,6 +1187,176 @@ fn a_binding_typo_is_rejected_at_parse_time() {
 fn none_disables_an_inherited_binding() {
     let config = Config::parse("[normal.bindings]\nh = \"none\"").unwrap();
     assert_eq!(config.normal.bindings["h"], Binding::Disabled);
+}
+
+#[test]
+fn text_select_copy_lifecycle_defaults_roundtrip_and_validate() {
+    for source in [
+        "",
+        "[text_select.lifecycle]",
+        include_str!("../../../keysteer.default.toml"),
+    ] {
+        let config = Config::parse(source).unwrap();
+        let copy = if cfg!(target_os = "macos") {
+            "win+c"
+        } else {
+            "ctrl+c"
+        };
+        assert_eq!(
+            KeyChord::parse_with_aliases("mod+c", config.resolved_key_aliases())
+                .unwrap()
+                .canonical(),
+            copy
+        );
+        for expected in [copy, "enter"] {
+            assert!(config.text_select.bindings.iter().any(|(key, binding)| {
+                KeyChord::parse_with_aliases(key, config.resolved_key_aliases())
+                    .unwrap()
+                    .canonical()
+                    == expected
+                    && *binding == Binding::TextSelect(crate::api::text_select::Action::Copy)
+            }));
+        }
+        assert_eq!(
+            config.text_select.bindings.get("ctrl+x"),
+            Some(&Binding::TextSelect(
+                crate::api::text_select::Action::ClearInput
+            ))
+        );
+        assert_eq!(
+            config.text_select.lifecycle.after_copy,
+            LifecycleAction::Mode(ModeId::normal())
+        );
+    }
+    for action in [
+        "normal",
+        "idle",
+        "keep",
+        "restart",
+        "return",
+        "example:picker",
+    ] {
+        let config = Config::parse(&format!(
+            "[plugin_modes.\"example:picker\"]\n[text_select.lifecycle]\nafter_copy = '{action}'"
+        ))
+        .unwrap();
+        config.validate().unwrap();
+        let roundtrip = Config::parse(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            roundtrip.text_select.lifecycle,
+            config.text_select.lifecycle
+        );
+    }
+    for action in ["finish", "left_click", "double_click", "missing_mode"] {
+        let config =
+            Config::parse(&format!("[text_select.lifecycle]\nafter_copy = '{action}'")).unwrap();
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("text_select.lifecycle.after_copy")
+        );
+    }
+}
+
+#[test]
+fn text_select_copy_binding_can_be_replaced_disabled_and_exported() {
+    let config =
+        Config::parse("[text_select.bindings]\n'mod+c' = 'none'\nf9 = 'text_copy'\n'ctrl+x' = 'none'\nf8 = 'text_clear_input'").unwrap();
+    let restored = Config::parse(&config.to_toml().unwrap()).unwrap();
+    assert_eq!(restored.text_select.bindings, config.text_select.bindings);
+    assert_eq!(
+        restored.text_select.bindings.get("mod+c"),
+        Some(&Binding::Disabled)
+    );
+    assert_eq!(
+        restored.text_select.bindings.get("f9"),
+        Some(&Binding::TextSelect(crate::api::text_select::Action::Copy))
+    );
+    assert!(!restored.text_select.bindings.contains_key("enter"));
+    assert_eq!(
+        restored.text_select.bindings.get("ctrl+x"),
+        Some(&Binding::Disabled)
+    );
+    assert_eq!(
+        restored.text_select.bindings.get("f8"),
+        Some(&Binding::TextSelect(
+            crate::api::text_select::Action::ClearInput
+        ))
+    );
+}
+
+#[test]
+fn text_select_outline_and_pointer_offset_validate_and_roundtrip() {
+    for source in [
+        "",
+        "[text_select.ui]",
+        include_str!("../../../keysteer.default.toml"),
+    ] {
+        let config = Config::parse(source).unwrap();
+        assert_eq!(config.text_select.ui.pointer_offset, [12, 12]);
+        assert_eq!(config.text_select.ui.padding, [2, 2]);
+        assert_eq!(config.text_select.ui.border_width, 1.5);
+        assert_eq!(config.text_select.ui.word_min_width, 48);
+        assert_eq!(config.text_select.ui.char_min_width, 40);
+        assert_eq!(config.text_select.ui.panel_width, 800);
+    }
+    let config = Config::parse(
+        r##"
+[text_select.ui]
+pointer_offset = [20, -8]
+border_color = {light = "#112233FF", dark = "#AABBCCFF"}
+border_width = 2.5
+padding = [5, 3]
+word_min_width = 60
+char_min_width = 32
+panel_width = 960
+"##,
+    )
+    .unwrap();
+    config.validate().unwrap();
+    assert_eq!(
+        Config::parse(&toml::to_string(&config).unwrap())
+            .unwrap()
+            .text_select,
+        config.text_select
+    );
+    for value in ["[1]", "[1, 2, 3]", "[1.5, 2]", "[32768, 0]"] {
+        assert!(Config::parse(&format!("[text_select.ui]\npointer_offset = {value}")).is_err());
+    }
+    for field in [
+        "border_width = -1",
+        "border_width = 21",
+        "border_width = nan",
+        "padding = [-1, 0]",
+        "padding = [101, 0]",
+        "padding = [1]",
+        "padding = [1.5, 2]",
+        "border_color = 'invalid'",
+        "panel_width = 319",
+        "panel_width = 2401",
+        "panel_width = 800.5",
+        "word_min_width = 23",
+        "char_min_width = 241",
+        "char_min_width = 42.5",
+    ] {
+        let parsed = Config::parse(&format!("[text_select.ui]\n{field}"));
+        assert!(
+            parsed.is_err() || parsed.unwrap().validate().is_err(),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn text_select_rejects_unreleased_legacy_appearance_fields() {
+    for source in [
+        "[text_select]\npointer_offset = [12, 12]",
+        "[text_select.selection_outline]\npadding = [2, 2]",
+    ] {
+        assert!(Config::parse(source).is_err(), "{source}");
+    }
 }
 
 #[test]
@@ -1602,6 +1795,9 @@ fn a_flagged_chord_warns_but_still_validates() {
 
             [normal.bindings]
             "alt+e" = "move_left"
+
+            # Isolate this warning from the intentional default Alt+C advisory.
+            [text_select.bindings]
             "#,
     )
     .unwrap();
@@ -1620,10 +1816,26 @@ fn a_flagged_chord_warns_but_still_validates() {
 }
 
 #[test]
-fn the_default_config_produces_no_platform_warnings() {
-    // Nothing we ship may warn on the platform it runs on.
-    let warnings = Config::default().platform_warnings();
-    assert!(warnings.is_empty(), "{warnings:?}");
+fn default_platform_warnings_cover_only_the_intentional_option_refinement_chord() {
+    let config = Config::default();
+    assert_eq!(
+        config.text_select.bindings.get("alt+c"),
+        Some(&Binding::TextSelect(
+            crate::api::text_select::Action::Refine
+        )),
+    );
+    let warnings = config.platform_warnings();
+    // Alt+C is an intentional physical-key binding. Keep the conservative
+    // layout advisory without allowing additional default warnings unnoticed.
+    if cfg!(target_os = "macos") {
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("[text_select.bindings] binding \"alt+c\": on macOS, Option+C"),
+            "{warnings:?}"
+        );
+    } else {
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
 }
 
 #[test]
@@ -1685,10 +1897,80 @@ fn sparse_restore_lifecycle_preserves_default_finish_destination() {
 }
 
 #[test]
+fn text_select_inheritance_and_temporary_mode_use_shared_validation() {
+    let defaults = Config::default();
+    assert!(defaults.text_select.inherits.is_empty());
+    assert!(defaults.text_select.temporary_mode.is_none());
+    assert!(defaults.text_select.temporary_mode_keys.is_empty());
+    assert!(defaults.ui_hint.temporary_mode_keys.is_empty());
+    let config = Config::parse("[key_aliases]\nBorrow = 'right_alt'\n[text_select]\ninherits = ['normal']\ntemporary_mode = 'grid'\ntemporary_mode_keys = ['Borrow']\ntemporary_mode_passthrough_keys = ['Borrow+f8']").unwrap();
+    assert_eq!(config.text_select.temporary_mode_keys, ["right_alt"]);
+    assert_eq!(
+        config.text_select.temporary_mode_passthrough_keys,
+        ["right_alt+f8"]
+    );
+    assert_eq!(
+        Config::parse(&config.to_toml().unwrap())
+            .unwrap()
+            .text_select,
+        config.text_select
+    );
+    for source in [
+        "[text_select]\ninherits = ['missing']",
+        "[text_select]\ninherits = ['text_select']",
+        "[normal]\ninherits = ['text_select']\n[text_select]\ninherits = ['normal']",
+        "[text_select]\ntemporary_mode = 'missing'",
+        "[text_select]\ntemporary_mode_keys = ['h']",
+        "[text_select]\ntemporary_mode_passthrough_keys = ['ctrl+']",
+    ] {
+        assert!(
+            Config::parse(source)
+                .and_then(|config| config.validate())
+                .is_err(),
+            "{source}"
+        );
+    }
+    let disabled = Config::parse("[text_select]\ninherits = []\ntemporary_mode_keys = []").unwrap();
+    assert!(disabled.text_select.inherits.is_empty());
+    assert!(disabled.text_select.temporary_mode_keys.is_empty());
+}
+
+#[test]
+fn text_select_scan_scope_is_independent_and_round_trips() {
+    use crate::api::UiScanScope;
+    assert_eq!(Config::default().text_select.scan_scope, UiScanScope::All);
+    for source in [
+        "[ui_hint]\nscan_scope = 'screen'",
+        "[ui_hint]\nscan_scope = 'screen'\n[text_select]",
+    ] {
+        let config = Config::parse(source).unwrap();
+        assert_eq!(config.text_select.scan_scope, UiScanScope::All);
+        assert_eq!(config.ui_hint.scan_scope, UiScanScope::Screen);
+    }
+    for (value, scope) in [
+        ("window", UiScanScope::Window),
+        ("active", UiScanScope::Active),
+        ("screen", UiScanScope::Screen),
+        ("all", UiScanScope::All),
+    ] {
+        let config = Config::parse(&format!(
+            "[ui_hint]\nscan_scope = 'active'\n[text_select]\nscan_scope = '{value}'"
+        ))
+        .unwrap();
+        let restored = Config::parse(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(restored.text_select.scan_scope, scope);
+        assert_eq!(restored.ui_hint.scan_scope, UiScanScope::Active);
+    }
+    for value in ["'invalid'", "'inherit'", "true", "1", "[]"] {
+        assert!(Config::parse(&format!("[text_select]\nscan_scope = {value}")).is_err());
+    }
+}
+
+#[test]
 fn ui_hint_scan_scope_defaults_and_round_trips() {
     assert_eq!(
         Config::default().ui_hint.scan_scope,
-        crate::api::UiScanScope::Window
+        crate::api::UiScanScope::All
     );
     let config = Config::parse("[ui_hint]\nscan_scope = 'screen'\n").unwrap();
     assert_eq!(config.ui_hint.scan_scope, crate::api::UiScanScope::Screen);
@@ -2216,7 +2498,7 @@ fn older_configs_enable_text_modes_and_supply_unoccupied_default_entrances() {
     assert!(config.text_select.enabled);
     assert_eq!(
         config.text_select.bindings,
-        crate::config::settings::TextSelect::default().bindings
+        Config::default().text_select.bindings
     );
     assert_eq!(
         config.text_input.bindings,
@@ -2260,5 +2542,75 @@ fn upgrade_keeps_explicit_text_mode_disabling_and_remapped_or_occupied_entries()
             Some(&Binding::Mode(ModeId::text_input())),
             "{source}"
         );
+    }
+}
+
+#[test]
+fn text_select_uses_one_cyclic_page_action_without_retired_page_bindings() {
+    let config = Config::default();
+    assert_eq!(
+        config.text_select.bindings.get("tab"),
+        Some(&Binding::TextSelect(
+            crate::api::text_select::Action::CyclePage
+        ))
+    );
+    assert!(!config.text_select.bindings.contains_key("page_up"));
+    assert!(!config.text_select.bindings.contains_key("page_down"));
+    for action in ["text_next_page", "text_previous_page"] {
+        assert!(Binding::parse(action).is_err(), "{action}");
+    }
+}
+
+#[test]
+fn bisect_has_independent_validated_config_and_remappable_direction_bindings() {
+    let config = Config::parse(
+        r##"
+[bisect]
+max_depth = 30
+min_size_width = 3
+min_size_height = 4
+[bisect.bindings]
+h = "none"
+"primary+a" = "bisect_left"
+[bisect.ui]
+line_color = "#12345678"
+highlight_color = { light = "#11223344", dark = "#55667788" }
+[[bisect.app_configs]]
+bundle_id = "test.*"
+[bisect.app_configs.bindings]
+f9 = "bisect_down"
+"##,
+    )
+    .unwrap();
+    config.validate().unwrap();
+    assert_eq!(config.bisect.bindings["h"], Binding::Disabled);
+    assert_eq!(
+        config.bisect.bindings["j"],
+        Binding::parse("bisect_down").unwrap()
+    );
+    assert_eq!(config.bisect.bindings["enter"], Binding::SelectionAccept);
+    assert_eq!(config.recursive_grid, Config::default().recursive_grid);
+    assert_eq!(Config::parse(&config.to_toml().unwrap()).unwrap(), config);
+    for source in [
+        "[bisect]\nkeys = 'hjkl'",
+        "[bisect]\ngrid_cols = 2",
+        "[bisect]\nmax_depth = 0",
+        "[bisect]\nmax_depth = 41",
+        "[bisect]\nmin_size_width = 0",
+        "[bisect.ui]\nline_width = -1",
+        "[bisect.ui]\nline_color = 'bad'",
+        "[bisect.lifecycle]\nafter_click = 'left_click'",
+        "[bisect]\ninherits = ['missing']",
+    ] {
+        assert!(
+            Config::parse(source).and_then(|c| c.validate()).is_err(),
+            "{source}"
+        );
+    }
+    for action in ["bisect_left", "bisect_down", "bisect_up", "bisect_right"] {
+        let binding = Binding::parse(action).unwrap();
+        assert_eq!(binding.canonical(), action);
+        assert!(!binding.is_held());
+        assert!(!binding.repeats_on_key_down());
     }
 }

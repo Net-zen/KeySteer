@@ -70,13 +70,35 @@ impl Engine {
             .and_then(|rect| Screen::containing(&self.screens, &rect.center()))
             .or_else(|| Screen::containing(&self.screens, &self.cursor))
     }
-    fn configured_key_help_entries(&self, stable: bool) -> Vec<String> {
-        let mut entries = std::collections::BTreeSet::new();
-        let contextual_keys: Vec<Key> = if stable {
-            Vec::new()
+    fn key_help_binding(
+        &self,
+        chord: &KeyChord,
+        stable: bool,
+        pressed: &mut Vec<Key>,
+    ) -> Option<ResolvedBinding> {
+        // Reuse one scratch buffer per help build, preserving physical key sides.
+        pressed.clear();
+        if !stable {
+            pressed.extend(self.input.pressed.iter().cloned());
+        }
+        for key in chord.keys() {
+            if !pressed
+                .iter()
+                .any(|physical| Self::keys_match(key, physical))
+            {
+                pressed.push(key.clone());
+            }
+        }
+        if stable {
+            self.lookup_for_help(chord.activation_key(), pressed)
         } else {
-            self.input.pressed.iter().cloned().collect()
-        };
+            self.lookup_for_pressed(chord.activation_key(), pressed)
+        }
+    }
+
+    fn configured_key_help_entries(&self) -> Vec<String> {
+        let mut entries = std::collections::BTreeSet::new();
+        let mut pressed = Vec::new();
         for id in self.registry.keys() {
             let Some(table) = self.registry.table(id) else {
                 continue;
@@ -85,28 +107,15 @@ impl Engine {
                 if matches!(entry.binding.as_ref(), Binding::Disabled) {
                     continue;
                 }
-                let mut pressed = contextual_keys.clone();
-                for key in entry.chord.keys() {
-                    if !pressed
-                        .iter()
-                        .any(|physical| Self::keys_match(key, physical))
-                    {
-                        pressed.push(key.clone());
-                    }
-                }
-                let Some(resolved) = (if stable {
-                    self.lookup_for_help(entry.chord.activation_key(), &pressed)
-                } else {
-                    self.lookup_for_pressed(entry.chord.activation_key(), &pressed)
-                }) else {
+                let Some(resolved) = self.key_help_binding(&entry.chord, false, &mut pressed)
+                else {
                     continue;
                 };
                 if resolved.owner != *id || resolved.binding != entry.binding {
                     continue;
                 }
                 // While a non-modifier chord prefix is held, show its continuations.
-                if !stable
-                    && !self.input.pending_chords.is_empty()
+                if !self.input.pending_chords.is_empty()
                     && !self
                         .input
                         .pressed
@@ -134,11 +143,7 @@ impl Engine {
 
     fn extra_key_help_entries(&self, stable: bool) -> Vec<String> {
         let mut entries = std::collections::BTreeSet::new();
-        let contextual_keys: Vec<Key> = if stable {
-            Vec::new()
-        } else {
-            self.input.pressed.iter().cloned().collect()
-        };
+        let mut pressed = Vec::new();
         if self.display_mode() == self.registry.active
             && let Some(mode) = self.registry.get(&self.registry.active)
         {
@@ -167,21 +172,9 @@ impl Engine {
                 let Ok(chord) = KeyChord::parse(&key) else {
                     continue;
                 };
-                let mut pressed = contextual_keys.clone();
-                for key in chord.keys() {
-                    if !pressed
-                        .iter()
-                        .any(|physical| Self::keys_match(key, physical))
-                    {
-                        pressed.push(key.clone());
-                    }
-                }
-                if (if stable {
-                    self.lookup_for_help(chord.activation_key(), &pressed)
-                } else {
-                    self.lookup_for_pressed(chord.activation_key(), &pressed)
-                })
-                .is_none()
+                if self
+                    .key_help_binding(&chord, stable, &mut pressed)
+                    .is_none()
                 {
                     entries.insert(format!("{key}  ·  {action}"));
                 }
@@ -198,9 +191,15 @@ impl Engine {
         if let Some((owner, prompt)) = &self.scheduler.text_prompt
             && owner == &ModeId::text_select()
             && prompt.live_style.is_some()
+            && !self.temporary_mode_is_active(owner)
             && let Some(mode) = self.registry.keyboard_prompt_mode(owner)
         {
             let mut entries = std::collections::BTreeSet::new();
+            entries.extend(
+                mode.available_keys()
+                    .into_iter()
+                    .map(|(key, action)| format!("{key}  ·  {action}")),
+            );
             if let Some(table) = self.registry.table(owner) {
                 for entry in table.iter_entries() {
                     if let Some(binding) = mode
@@ -231,7 +230,7 @@ impl Engine {
                 .get(&self.registry.active)
                 .map_or_else(Vec::new, |plan| plan.entries.to_vec())
         } else {
-            self.configured_key_help_entries(false)
+            self.configured_key_help_entries()
         };
         if !self.registry.active.is_window() || self.window_library_help() {
             entries.extend(self.extra_key_help_entries(self.registry.active.is_window()));
@@ -250,7 +249,9 @@ impl Engine {
                 .text_prompt
                 .as_ref()
                 .is_some_and(|(owner, prompt)| {
-                    owner != &ModeId::text_select() || prompt.live_style.is_none()
+                    prompt.live_style.is_none()
+                        || (owner != &ModeId::text_select()
+                            && !self.temporary_mode_is_active(owner))
                 })
         {
             self.overlay.key_help_cache = None;
@@ -299,7 +300,58 @@ impl Engine {
         let source_shapes = scene.shapes.clone();
         let source_annotations = scene.window_annotations.clone();
         let source_clip = scene.clip;
-        self.build_key_help(scene);
+        let window_help = self.window_help_visible();
+        let dynamic_entries;
+        let (entries, return_target, extra_entries) = if let Some(plan) = self
+            .overlay
+            .window_help_plan
+            .as_ref()
+            .filter(|_| self.registry.active.is_window())
+        {
+            (
+                plan.entries.as_ref(),
+                plan.return_target.clone(),
+                if self.window_library_help() {
+                    self.extra_key_help_entries(true)
+                } else {
+                    Vec::new()
+                },
+            )
+        } else {
+            dynamic_entries = self.key_help_entries();
+            let return_target = self.key_help_return_target_in(&display, &dynamic_entries);
+            (dynamic_entries.as_slice(), return_target, Vec::new())
+        };
+        crate::presentation::key_help::compose(
+            scene,
+            crate::presentation::key_help::KeyHelpView {
+                prepared: self
+                    .overlay
+                    .window_help_plan
+                    .as_ref()
+                    .filter(|_| !self.window_library_help())
+                    .map(|plan| {
+                        let resizing = display == ModeId::window()
+                            && mode.is_some_and(|mode| !mode.accepts_window_targeting());
+                        plan.presentations[usize::from(resizing)].as_ref()
+                    }),
+                screen,
+                ui: &self.settings.key_help,
+                palette: &self.palette,
+                entries,
+                extra_entries,
+                return_target,
+                window_help,
+                display_name: mode.map_or_else(|| display.to_string(), |mode| mode.display_name()),
+                ruler: ruler.as_ref(),
+                previews: &previews,
+                detail: if window_help { detail.as_deref() } else { None },
+                anchor,
+                indicator_style: self
+                    .build_indicator(&display)
+                    .map(|(indicator, _)| indicator.style),
+            },
+        );
         self.overlay.key_help_cache = Some(Box::new(KeyHelpCache {
             source_labels,
             source_shapes,
@@ -322,11 +374,6 @@ impl Engine {
         }));
     }
 
-    fn key_help_return_target(&self, entries: &[String]) -> Option<String> {
-        let display_mode = self.display_mode();
-        self.key_help_return_target_in(&display_mode, entries)
-    }
-
     pub(super) fn key_help_return_target_in(
         &self,
         display_mode: &ModeId,
@@ -341,8 +388,7 @@ impl Engine {
                     };
                     if target == display_mode
                         || (target.is_window() && target != &ModeId::window())
-                        || (*display_mode == ModeId::window()
-                            && (*target == ModeId::grid() || *target == ModeId::recursive_grid()))
+                        || (*display_mode == ModeId::window() && target.is_grid())
                     {
                         return None;
                     }
@@ -355,72 +401,5 @@ impl Engine {
                 })
                 .min_by_key(|target| (target == "idle", target.clone()))
         })
-    }
-
-    fn build_key_help(&self, scene: &mut OverlayScene) {
-        let window_help = self.window_help_visible();
-        if !self.help_visible() || self.registry.active == ModeId::idle() {
-            return;
-        }
-        let Some(screen) = self.help_screen() else {
-            return;
-        };
-        let display_mode = self.display_mode();
-        let mode = self.registry.get(&display_mode);
-        let (entries, return_target, extra_entries) = if let Some(plan) = self
-            .overlay
-            .window_help_plan
-            .as_ref()
-            .filter(|_| self.registry.active.is_window())
-        {
-            (
-                Arc::clone(&plan.entries),
-                plan.return_target.clone(),
-                if self.window_library_help() {
-                    self.extra_key_help_entries(true)
-                } else {
-                    Vec::new()
-                },
-            )
-        } else {
-            let entries = self.key_help_entries();
-            let return_target = self.key_help_return_target(&entries);
-            (entries.into(), return_target, Vec::new())
-        };
-        crate::presentation::key_help::compose(
-            scene,
-            crate::presentation::key_help::KeyHelpView {
-                prepared: self
-                    .overlay
-                    .window_help_plan
-                    .as_ref()
-                    .filter(|_| !self.window_library_help())
-                    .map(|plan| {
-                        let resizing = display_mode == ModeId::window()
-                            && mode.is_some_and(|mode| !mode.accepts_window_targeting());
-                        Arc::clone(&plan.presentations[usize::from(resizing)])
-                    }),
-                screen,
-                ui: &self.settings.key_help,
-                palette: &self.palette,
-                entries,
-                extra_entries,
-                return_target,
-                window_help,
-                display_name: mode
-                    .map_or_else(|| display_mode.to_string(), |mode| mode.display_name()),
-                ruler: mode.and_then(|mode| mode.quick_ruler()),
-                previews: mode.map_or_else(Vec::new, |mode| mode.help_previews()),
-                detail: if window_help {
-                    mode.and_then(|mode| mode.indicator_detail())
-                } else {
-                    None
-                },
-                anchor: mode.and_then(|mode| mode.help_anchor()),
-                indicator_style: self
-                    .build_indicator(&display_mode)
-                    .map(|(indicator, _)| indicator.style),
-            },
-        );
     }
 }

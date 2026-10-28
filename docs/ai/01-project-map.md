@@ -28,4 +28,6 @@
 
 Windows/macOS 的 `input/` 集中输入捕获、映射和注入，`display/` 集中显示枚举、覆盖层和帧时钟，`vision/` 保存视觉识别实现及所属桥接。平台装配仍在各 OS 的 `mod.rs`；原生资源与线程所有权见 [平台后端](06-platform-backends.md)。
 
+`platform/common/scan_reuse/` 统一扫描空闲缓存、期限等待与任务完成票据；原生资源的创建、有效性检查和销毁继续由来源线程负责。它不替换已有常驻／启动预热资源；各来源及跨模式共享边界见 [UI 扫描](05-ui-scanning.md)。
+
 现有 `app::run_cli` 入口经 `platform::run` 进入所选平台的进程入口，再调用 CLI；平台私有工作模式的参数解析及执行留在对应 OS 目录。

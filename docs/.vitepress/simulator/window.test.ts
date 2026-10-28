@@ -602,7 +602,7 @@ test('closing a window compacts numbers without changing survivor order', () => 
 })
 
 
-test('temporary input uses full chords first and configurable passthrough', () => {
+test('temporary input keeps local explicit chords and consumes activation keys', () => {
   const document = { key_aliases: { primary: 'alt' }, normal: { bindings: { s: 'screen next', q: 'idle', 'primary+x': 'grid' } },
     window: { temporary_mode: 'normal', temporary_mode_keys: ['primary'], temporary_mode_passthrough_keys: [] as string[],
       bindings: { s: 'window_size', q: 'normal', 'primary+q': 'normal', 'primary+x': 'window_quick' } } }

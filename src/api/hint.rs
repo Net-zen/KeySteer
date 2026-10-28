@@ -99,15 +99,18 @@ pub(crate) fn match_label_input<'a, T>(
     if input.is_empty() {
         return LabelMatch::Partial;
     }
-    // Generated labels are prefix-free, so the first prefix match suffices.
-    match labels
-        .into_iter()
-        .find(|(label, _)| label.starts_with(input))
-    {
-        Some((label, value)) if label == input => LabelMatch::Complete(value),
-        Some(_) => LabelMatch::Partial,
-        None => LabelMatch::None,
+    let mut exact = None;
+    for (label, value) in labels {
+        if let Some(suffix) = label.strip_prefix(input) {
+            // Numeric panel labels can share prefixes. An exact label is
+            // complete only when no other displayed candidate shares it.
+            if !suffix.is_empty() || exact.is_some() {
+                return LabelMatch::Partial;
+            }
+            exact = Some(value);
+        }
     }
+    exact.map_or(LabelMatch::None, LabelMatch::Complete)
 }
 
 trait LabelBuffer {
@@ -306,6 +309,34 @@ fn fixed_width_for(count: usize, radix: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panel_label_matching_uses_only_actual_candidates_and_rejects_shared_prefixes() {
+        assert_eq!(
+            match_label_input([("9", 9), ("12", 12)], "9"),
+            LabelMatch::Complete(9)
+        );
+        for labels in [[("9", 9), ("90", 90)], [("90", 90), ("9", 9)]] {
+            assert_eq!(match_label_input(labels, "9"), LabelMatch::Partial);
+            assert_eq!(match_label_input(labels, "90"), LabelMatch::Complete(90));
+        }
+        assert_eq!(
+            match_label_input([("81", 81), ("82", 82)], "8"),
+            LabelMatch::Partial
+        );
+        assert_eq!(
+            match_label_input([("81", 81), ("82", 82)], "9"),
+            LabelMatch::None
+        );
+        assert_eq!(
+            match_label_input([("a", 1), ("sa", 2), ("ss", 3)], "a"),
+            LabelMatch::Complete(1)
+        );
+        assert_eq!(
+            match_label_input([("a", 1), ("sa", 2), ("ss", 3)], "s"),
+            LabelMatch::Partial
+        );
+    }
 
     fn chars(value: &str) -> Vec<char> {
         value.chars().collect()

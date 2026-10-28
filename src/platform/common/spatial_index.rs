@@ -282,8 +282,6 @@ pub(crate) enum TargetSource {
     SystemOcr,
     #[cfg(any(target_os = "macos", test))]
     NativeRectangles,
-    #[cfg(target_os = "windows")]
-    WechatOcr,
     Contour,
 }
 
@@ -688,7 +686,7 @@ fn distinct_field(a: Rect, b: Rect, left: &str, text: &str, threshold: f64) -> b
     }
     let normalize = |text: &str| {
         let mut output = smol_str::SmolStrBuilder::new();
-        let _ = crate::api::presentation::write_ocr_text(&mut output, text);
+        let _ = crate::api::presentation::write_ocr_text(&mut output, text.chars());
         output
     };
     let text = normalize(text);

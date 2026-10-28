@@ -371,8 +371,10 @@ fn enter_window(engine: &mut Engine, backend: &mut FakeBackend, log: &Arc<Mutex<
 }
 
 #[test]
-fn window_temporary_normal_hotkey_enters_normal_once_and_exits_with_one_q() {
-    let config = Config::default();
+fn window_explicit_normal_shortcut_enters_normal_once_and_exits_with_one_q() {
+    let mut config = Config::default();
+    config.window.temporary_mode_keys = vec![primary_key(&config)];
+    config.window.bindings.insert("primary+e".into(), Binding::Mode(ModeId::normal()));
     let primary = primary_key(&config);
     let (mut engine, mut backend, log) = window_test_engine(&config);
     let session = enter_window(&mut engine, &mut backend, &log).session;
@@ -571,6 +573,7 @@ fn window_mode_locks_target_and_uses_normal_movement_and_size() {
 #[test]
 fn window_temporary_normal_uses_custom_movement_and_preserves_size_state() {
     let mut config = Config::default();
+    config.window.temporary_mode_keys = vec![primary_key(&config)];
     config.normal.bindings.insert("a".into(), Binding::Move(Direction::Left));
     let primary = primary_key(&config);
     let (mut engine, mut backend, log) = window_test_engine(&config);
@@ -834,7 +837,8 @@ fn window_tab_cycles_immediately_and_centers_pointer_without_confirmation() {
 
 #[test]
 fn temporary_normal_cancels_pending_window_motion_and_ignores_its_late_pointer() {
-    let config = Config::default();
+    let mut config = Config::default();
+    config.window.temporary_mode_keys = vec![primary_key(&config)];
     let primary = &config.window.temporary_mode_keys[0];
     let (mut engine, mut backend, log) = window_test_engine(&config);
     enter_window(&mut engine, &mut backend, &log);
@@ -1732,22 +1736,30 @@ fn window_help_cache_restores_connectors_with_displaced_labels() {
 #[test]
 fn window_targeting_uses_real_grid_lifecycle_and_keeps_window_session() {
     use crate::api::window::{WindowOperation as O, WindowChange, WindowId};
-    for (recursive, temporary) in [(false, false), (false, true), (true, true)] {
+    for (kind, temporary) in [("grid", false), ("grid", true), ("recursive_grid", true), ("bisect", true)] {
         let mut config = Config::default();
+        if temporary { config.window.temporary_mode_keys = vec![primary_key(&config)]; }
+        if kind == "bisect" {
+            config.window.bindings.insert("primary+g".into(), Binding::Mode(ModeId::bisect()));
+        }
         config.grid.cursor_follow_selection = true;
         config.grid.lifecycle.after_finish = crate::api::LifecycleAction::Keep;
         config.recursive_grid.cursor_follow_selection = true;
         let primary = primary_key(&config);
         let (mut engine, mut backend, log) = window_test_engine(&config);
         let initial = enter_window(&mut engine, &mut backend, &log);
-        let entrance = if recursive { "f" } else { "g" };
+        let help_entries: Vec<_> = engine.registry.table(&ModeId::window()).unwrap()
+            .iter_entries().map(|entry| format!("{}  ·  {}", entry.chord.canonical(), entry.binding.canonical())).collect();
+        assert_ne!(engine.key_help_return_target_in(&ModeId::window(), &help_entries).as_deref(), Some("bisect"));
+        let entrance = if kind == "recursive_grid" { "f" } else { "g" };
         let keys = if temporary { vec![primary.as_str(), entrance] } else { vec![entrance] };
         for key in &keys { engine.handle_backend_event(key_down(key), &mut backend).unwrap(); }
         for key in keys.iter().rev() { engine.handle_backend_event(key_up(key), &mut backend).unwrap(); }
-        let expected = if recursive { ModeId::recursive_grid() } else { ModeId::grid() };
+        let expected = ModeId::new(kind).unwrap();
         assert_eq!(engine.active_mode(), &expected);
         assert_eq!(engine.registry.modal_stack, vec![ModeId::window()]);
-        for key in ["a", "tab", "a", "space", "a"] {
+        let select = if kind == "bisect" { "h" } else { "a" };
+        for key in [select, "tab", select, "space", select] {
             for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
             assert_eq!(engine.active_mode(), &expected);
         }
@@ -1885,8 +1897,9 @@ fn window_targeting_waits_for_async_acquire_without_losing_the_latest_point() {
 }
 #[test]
 fn window_targeting_help_shows_temporary_entrances_without_holding_modifier() {
-    let config = Config::default();
+    let mut config = Config::default();
     let primary = KeyChord::parse_with_aliases("primary", config.resolved_key_aliases()).unwrap().canonical();
+    config.window.temporary_mode_keys = vec![primary.clone()];
     let (mut engine, mut backend, log) = window_test_engine(&config);
     enter_window(&mut engine, &mut backend, &log);
     let entries = engine.key_help_entries();
@@ -1950,6 +1963,7 @@ fn window_help_is_precompiled_before_entry_and_reused_across_move_resize_and_ree
 fn window_temporary_normal_screen_binding_beats_size_and_keeps_session() {
     for literal in [false, true] {
         let mut config = Config::default();
+        config.window.temporary_mode_keys = vec![primary_key(&config)];
         config
             .normal
             .bindings
@@ -2357,10 +2371,42 @@ fn quick_and_restore_clear_multi_selection_without_changing_target_preferences()
 }
 
 #[test]
+fn window_selection_editor_uses_the_common_temporary_route_and_explicit_passthrough() {
+    for passthrough in [false, true] {
+        let mut config = Config::default();
+        config.window.temporary_mode_keys = vec!["right_alt".into()];
+        config.window.multi_select.bindings.insert("right_alt+h".into(), Binding::parse("arrow_left").unwrap());
+        if passthrough {
+            config.window.temporary_mode_passthrough_keys.push("right_alt+h".into());
+        }
+        let (mut engine, mut backend, log) = window_test_engine(&config);
+        enter_window(&mut engine, &mut backend, &log);
+        point_keys(&mut engine, &mut backend, &["left_ctrl"]);
+        point_keys(&mut engine, &mut backend, &["1"]);
+        assert!(engine.registry.get(&ModeId::window()).unwrap().keyboard_prompt_active());
+        let detail = engine.registry.get(&ModeId::window()).unwrap().indicator_detail().unwrap();
+        engine.handle_backend_event(key_down("right_alt"), &mut backend).unwrap();
+        engine.handle_backend_event(key_down("h"), &mut backend).unwrap();
+        if passthrough {
+            assert!(engine.input.active_gestures.iter().all(|(_, gesture)| gesture.owner == ModeId::window()));
+            assert!(engine.registry.get(&ModeId::window()).unwrap().indicator_detail().unwrap().contains("Input: ▏1"));
+        } else {
+            assert_eq!(engine.input.active_gestures.get(&Key::new("h").unwrap()).unwrap().owner, ModeId::normal());
+            assert_eq!(engine.registry.get(&ModeId::window()).unwrap().indicator_detail().unwrap(), detail);
+        }
+        engine.handle_backend_event(key_up("right_alt"), &mut backend).unwrap();
+        engine.handle_backend_event(key_up("h"), &mut backend).unwrap();
+        assert!(engine.input.active_gestures.is_empty());
+        assert_eq!(engine.active_mode(), &ModeId::window());
+    }
+}
+
+#[test]
 fn window_multi_selection_routes_configured_cursor_keys_and_physical_arrows_to_the_input() {
     use crate::api::window::{WindowId, WindowInfo, WindowOperation as O, WindowResult};
     for custom in [false, true] {
         let mut config = Config::default();
+        config.window.temporary_mode_keys.clear();
         if custom {
             config.window.multi_select.bindings = crate::config::Bindings::from([
                 ("ctrl enter".into(), Binding::parse("window_multi_confirm").unwrap()),

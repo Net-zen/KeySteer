@@ -17,6 +17,7 @@ pub(crate) mod frame_clock;
 pub(crate) mod image_tiles;
 #[cfg(any(target_os = "windows", test))]
 pub(crate) mod overlay_damage;
+pub(crate) mod overlay_geometry;
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod overlay_reconcile;
 #[cfg(any(target_os = "macos", test))]
@@ -24,7 +25,9 @@ pub(crate) mod point_sample;
 pub(crate) mod scan_accumulator;
 pub(crate) mod scan_fusion;
 pub(crate) mod scan_mailbox;
+pub(crate) mod scan_priority;
 pub(crate) mod scan_progress;
+pub(crate) mod scan_reuse;
 // Run the safe macOS source-lifecycle regressions on every host.
 #[cfg(all(test, not(target_os = "macos")))]
 #[path = "../macos/scan_workers.rs"]

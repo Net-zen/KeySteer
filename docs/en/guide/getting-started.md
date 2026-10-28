@@ -141,8 +141,9 @@ Window is the starting point for window management. Quick, Editor, and Tabs are 
 | What you want to do | Key | Mode |
 | --- | --- | --- |
 | Reach an approximate area quickly | `g` | [Grid](/en/modes/grid) |
-| Target a very small control precisely | `f` | [Recursive Grid](/en/modes/recursive-grid) |
-| Select a button, link, or input directly | `Primary+F` | [UI Hint](/en/modes/ui-hint) |
+| Target a very small control precisely | `Primary+G` | [Recursive Grid](/en/modes/recursive-grid) |
+| Narrow the area with directional halves | `Primary+F` | [Bisect](/en/modes/bisect) |
+| Select a button, link, or input directly | `f` | [UI Hint](/en/modes/ui-hint) |
 
 Press `Esc` in a targeting mode to return to Normal; press it again to return to Idle.
 
@@ -197,7 +198,7 @@ Open **Configuration & Simulator...** from the tray menu. It opens your browser 
 | Left / right / middle click | `;` / `'` / `Right Shift` | Click keys sit near your right hand |
 | Drag | `N` + a click key | Tap `N` alone to release |
 | Home / End / Page Up / Page Down | `T / Y / I / U` | Send directly to the current application |
-| Open a targeting mode | `G` / `F` / `Primary+F` | Grid / Recursive Grid / UI Hint |
+| Open a targeting mode | `G` / `F` / `Primary+G` / `Primary+F` | Grid / UI Hint / Recursive Grid / Bisect |
 | Move the pointer to the next display | `Primary+S` | For multiple displays |
 | Move the window under the pointer to the next display | `Primary+D` | Keep the pointer's relative position in the window |
 | Return to Idle | `Q` or `Esc` | Resume normal typing |

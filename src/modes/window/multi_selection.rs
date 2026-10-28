@@ -127,8 +127,9 @@ impl WindowSession {
     }
 
     pub(super) fn edit_multi_input(&mut self, action: crate::api::text_edit::EditAction) {
-        if let Some(input) = &mut self.multi_input {
-            input.selection.edit(&mut input.text, action);
+        if let Some(input) = &mut self.multi_input
+            && input.selection.edit(&mut input.text, action)
+        {
             self.recompute_multi_input(false);
         }
     }

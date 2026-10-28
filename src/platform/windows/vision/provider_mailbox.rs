@@ -3,22 +3,12 @@
 use super::*;
 use crate::platform::common::{scan_fusion::Sink, spatial_index::TargetSource};
 
-pub(super) fn ocr_source(provider: &str) -> TargetSource {
-    if provider == "wechat" {
-        TargetSource::WechatOcr
-    } else {
-        TargetSource::SystemOcr
-    }
-}
-
 pub(super) enum ProviderEvent {
     OcrBatch {
-        provider: &'static str,
         elapsed: Duration,
         targets: Vec<UiTarget>,
     },
     OcrDone {
-        provider: &'static str,
         elapsed: Duration,
         result: Result<usize, VisionError>,
     },
@@ -26,13 +16,12 @@ pub(super) enum ProviderEvent {
     ContourDone,
 }
 
-pub(super) type ProviderEvents = SmallVec<[ProviderEvent; 6]>;
-pub(super) type ReadyOcrBatch = (&'static str, Duration, Vec<UiTarget>);
-pub(super) type CompletedOcr = (&'static str, Duration, Result<usize, VisionError>);
+pub(super) type ProviderEvents = SmallVec<[ProviderEvent; 4]>;
+pub(super) type ReadyOcrBatch = (Duration, Vec<UiTarget>);
+pub(super) type CompletedOcr = (Duration, Result<usize, VisionError>);
 
 const SYSTEM_READY: u8 = 1 << 0;
-const WECHAT_READY: u8 = 1 << 1;
-const CONTOUR_READY: u8 = 1 << 2;
+const CONTOUR_READY: u8 = 1 << 1;
 
 /// Generation-owned provider mailbox with one fixed slot per provider.
 ///
@@ -50,7 +39,6 @@ pub(super) struct ProviderMailbox {
 #[derive(Default)]
 struct ProviderMailboxState {
     system: OcrProviderSlot,
-    wechat: OcrProviderSlot,
     contour: ContourProviderSlot,
     ready: u8,
     closed: bool,
@@ -111,18 +99,8 @@ impl ProviderMailbox {
         // Data bypasses screenshot/tile preparation and provider cleanup. Only
         // terminal events need the native coordinator; fusion owns data quotas.
         let event = match (&self.output, event) {
-            (
-                Some(output),
-                ProviderEvent::OcrBatch {
-                    provider, targets, ..
-                },
-            ) => {
-                if !matches!(provider, "system" | "wechat") {
-                    return Err(VisionError::Operational(format!(
-                        "unknown OCR provider {provider}"
-                    )));
-                }
-                output.submit(ocr_source(provider), targets);
+            (Some(output), ProviderEvent::OcrBatch { targets, .. }) => {
+                output.submit(TargetSource::SystemOcr, targets);
                 return Ok(());
             }
             (Some(output), ProviderEvent::ContourBatch(targets)) => {
@@ -186,7 +164,6 @@ impl ProviderMailbox {
     pub(super) fn discard(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.system = OcrProviderSlot::default();
-        state.wechat = OcrProviderSlot::default();
         state.contour = ContourProviderSlot::default();
         state.ready = 0;
         self.ready_flags.store(0, Ordering::Release);
@@ -196,24 +173,18 @@ impl ProviderMailbox {
 impl ProviderMailboxState {
     pub(super) fn publish(&mut self, event: ProviderEvent) -> Result<(), VisionError> {
         match event {
-            ProviderEvent::OcrBatch {
-                provider,
-                elapsed,
-                targets,
-            } => {
-                let (slot, ready) = self.ocr_slot(provider)?;
-                slot.append(provider, elapsed, targets)?;
+            ProviderEvent::OcrBatch { elapsed, targets } => {
+                let slot = &mut self.system;
+                let ready = SYSTEM_READY;
+                slot.append(elapsed, targets)?;
                 if !slot.targets.is_empty() {
                     self.ready |= ready;
                 }
             }
-            ProviderEvent::OcrDone {
-                provider,
-                elapsed,
-                result,
-            } => {
-                let (slot, ready) = self.ocr_slot(provider)?;
-                slot.finish(provider, elapsed, result)?;
+            ProviderEvent::OcrDone { elapsed, result } => {
+                let slot = &mut self.system;
+                let ready = SYSTEM_READY;
+                slot.finish(elapsed, result)?;
                 self.ready |= ready;
             }
             ProviderEvent::ContourBatch(targets) => {
@@ -241,37 +212,8 @@ impl ProviderMailboxState {
         Ok(())
     }
 
-    pub(super) fn ocr_slot(
-        &mut self,
-        provider: &'static str,
-    ) -> Result<(&mut OcrProviderSlot, u8), VisionError> {
-        let slot = match provider {
-            "system" => (&mut self.system, SYSTEM_READY),
-            "wechat" => (&mut self.wechat, WECHAT_READY),
-            _ => {
-                return Err(VisionError::Operational(format!(
-                    "unknown OCR provider {provider}"
-                )));
-            }
-        };
-        Ok(slot)
-    }
-
     pub(super) fn drain_into(&mut self, events: &mut ProviderEvents) {
-        Self::drain_ocr_slot(
-            &mut self.system,
-            "system",
-            SYSTEM_READY,
-            &mut self.ready,
-            events,
-        );
-        Self::drain_ocr_slot(
-            &mut self.wechat,
-            "wechat",
-            WECHAT_READY,
-            &mut self.ready,
-            events,
-        );
+        Self::drain_ocr_slot(&mut self.system, SYSTEM_READY, &mut self.ready, events);
         if self.ready & CONTOUR_READY != 0 {
             if !self.contour.targets.is_empty() {
                 events.push(ProviderEvent::ContourBatch(std::mem::take(
@@ -290,7 +232,6 @@ impl ProviderMailboxState {
 
     pub(super) fn drain_ocr_slot(
         slot: &mut OcrProviderSlot,
-        provider: &'static str,
         ready_bit: u8,
         ready: &mut u8,
         events: &mut ProviderEvents,
@@ -300,17 +241,12 @@ impl ProviderMailboxState {
         }
         if !slot.targets.is_empty() {
             events.push(ProviderEvent::OcrBatch {
-                provider,
                 elapsed: slot.target_elapsed.take().unwrap_or_default(),
                 targets: std::mem::take(&mut slot.targets),
             });
         }
         if let Some((elapsed, result)) = slot.terminal.take() {
-            events.push(ProviderEvent::OcrDone {
-                provider,
-                elapsed,
-                result,
-            });
+            events.push(ProviderEvent::OcrDone { elapsed, result });
         }
         if slot.targets.is_empty() && slot.terminal.is_none() {
             *ready &= !ready_bit;
@@ -321,7 +257,6 @@ impl ProviderMailboxState {
 impl OcrProviderSlot {
     pub(super) fn append(
         &mut self,
-        _provider: &'static str,
         elapsed: Duration,
         targets: Vec<UiTarget>,
     ) -> Result<(), VisionError> {
@@ -340,14 +275,13 @@ impl OcrProviderSlot {
 
     pub(super) fn finish(
         &mut self,
-        provider: &'static str,
         elapsed: Duration,
         result: Result<usize, VisionError>,
     ) -> Result<(), VisionError> {
         if std::mem::replace(&mut self.terminal_published, true) {
-            return Err(VisionError::Operational(format!(
-                "{provider} OCR published duplicate terminal results"
-            )));
+            return Err(VisionError::Operational(
+                "system OCR published duplicate terminal results".into(),
+            ));
         }
         self.terminal = Some((elapsed, result));
         Ok(())
@@ -365,11 +299,7 @@ pub(super) fn drain_early_ocr_events(
     mailbox.drain_into(&mut events);
     for event in events {
         match event {
-            ProviderEvent::OcrBatch {
-                provider,
-                elapsed,
-                targets,
-            } => ready.push((provider, elapsed, targets)),
+            ProviderEvent::OcrBatch { elapsed, targets } => ready.push((elapsed, targets)),
             ProviderEvent::ContourBatch(targets) => {
                 if !context_is_current() {
                     return false;
@@ -379,19 +309,19 @@ pub(super) fn drain_early_ocr_events(
             event => deferred.push(event),
         }
     }
-    ready.sort_by_key(|batch| batch.1);
-    for (provider, _elapsed, targets) in ready {
+    ready.sort_by_key(|batch| batch.0);
+    for (_elapsed, targets) in ready {
         if !context_is_current() {
             return false;
         }
         let count = targets.len();
-        let accepted = source.push_from(ocr_source(provider), targets);
+        let accepted = source.push_from(TargetSource::SystemOcr, targets);
         if accepted != 0 {
             crate::support::perf_probe::mark("vision_targets_accepted");
         }
         crate::log_info!(
             "windows-vision",
-            "{provider} OCR streamed {count} valid targets ({accepted} new)"
+            "system OCR streamed {count} valid targets ({accepted} new)"
         );
     }
     true
@@ -399,13 +329,11 @@ pub(super) fn drain_early_ocr_events(
 
 pub(super) fn send_ocr_batches(
     mailbox: &ProviderMailbox,
-    provider: &'static str,
     started: Instant,
     targets: Vec<UiTarget>,
 ) -> Result<usize, VisionError> {
     let count = targets.len();
     mailbox.publish(ProviderEvent::OcrBatch {
-        provider,
         elapsed: started.elapsed(),
         targets,
     })?;

@@ -35,7 +35,7 @@ Hold `Primary` for Normal movement, scrolling, and clicks. Release it to resume 
 
 ## Move with grid targeting
 
-Want to move a window farther in fewer keystrokes? Press `G` for Grid or `Primary+F` for Recursive Grid. As you select cells, the window center follows the target point within the display's work area.
+Want to move a window farther in fewer keystrokes? Press `G` for Grid or `Primary+F` for Recursive Grid. Window's explicit chord remains available while the temporary Normal layer is active. As you select cells, the window center follows the target point within the display's work area.
 
 Backtracking, restarting, and display switching use the targeting mode's usual controls. Finishing returns to Window; `keep` lets you continue selecting. One `Z` undoes the targeting session.
 

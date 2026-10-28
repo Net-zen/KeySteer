@@ -385,7 +385,10 @@ impl Drop for ProviderInput {
 
 pub fn detect(
     (scan_id, cache): (u64, &mut CaptureCache),
-    regions: impl IntoIterator<Item = Rect>,
+    regions: (
+        impl IntoIterator<Item = Rect>,
+        crate::platform::common::scan_priority::ScanPriority,
+    ),
     options: &VisionOptions,
     strategy: crate::api::UiScanStrategy,
     workers: &Workers,
@@ -408,7 +411,10 @@ pub fn detect(
 
 fn detect_inner(
     (scan_id, capture_context): (u64, usize),
-    regions: impl IntoIterator<Item = Rect>,
+    (regions, priority): (
+        impl IntoIterator<Item = Rect>,
+        crate::platform::common::scan_priority::ScanPriority,
+    ),
     options: &VisionOptions,
     strategy: crate::api::UiScanStrategy,
     workers: &Workers,
@@ -450,7 +456,8 @@ fn detect_inner(
             MAX_CAPTURE_DIMENSION
         },
     };
-    let regions: smallvec::SmallVec<[Rect; 2]> = regions.into_iter().collect();
+    let mut regions: smallvec::SmallVec<[Rect; 2]> = regions.into_iter().collect();
+    priority.sort(&mut regions, |r| *r);
     static PERFORMANCE_CORES: OnceLock<usize> = OnceLock::new();
     let (frame_workers, request_budget) = ocr_concurrency(
         regions.len(),
@@ -472,12 +479,12 @@ fn detect_inner(
             sender: Some(sender),
             receiver: Arc::new(Mutex::new(receiver)),
         };
-        let batch = workers.start(&[source], {
+        let batch = workers.start_with_resources(&[source], {
             let receiver = Arc::clone(&input.receiver);
             let options = options.clone();
             let cancelled = Arc::clone(&cancelled);
             let output = output.clone();
-            move |_, stopped| {
+            move |_, stopped, resources| {
                 if source == TargetSource::SystemOcr {
                     stopped.reuse_processes(frame_workers);
                 }
@@ -491,7 +498,12 @@ fn detect_inner(
                     detect_rectangles: source == TargetSource::NativeRectangles,
                     ..config
                 };
-                let consume = |tile_lanes| {
+                // Only the serial contour branch borrows this workspace. OCR
+                // display helpers receive None and never share mutable scratch.
+                let consume = |tile_lanes,
+                               mut contour: Option<
+                    &mut crate::platform::common::contour::Workspace,
+                >| {
                     let mut statuses = smallvec::SmallVec::<[UiScanStatus; 2]>::new();
                     loop {
                         if let Some(status) =
@@ -524,8 +536,8 @@ fn detect_inner(
                                 MIN_OCR_TILE_SIDE,
                                 MAX_OCR_IN_FLIGHT,
                             );
-                            let tiles: Vec<_> =
-                                layout.tiles(width, height, OCR_TILE_OVERLAP).collect();
+                            let tiles =
+                                priority.ocr_tiles(layout, width, height, OCR_TILE_OVERLAP, region);
                             progress(Progress::Refine {
                                 region,
                                 children: tiles
@@ -559,6 +571,11 @@ fn detect_inner(
                                 (&publish, &progress),
                             )
                         } else if source == TargetSource::Contour {
+                            let Some(workspace) = contour.as_deref_mut() else {
+                                return Some(UiScanStatus::Failed(
+                                    "missing contour workspace".into(),
+                                ));
+                            };
                             recognize_contours(
                                 frame,
                                 scan_id,
@@ -566,6 +583,7 @@ fn detect_inner(
                                 deadline,
                                 &cancelled,
                                 &publish,
+                                workspace,
                             )
                         } else {
                             recognize_image(
@@ -589,7 +607,8 @@ fn detect_inner(
                     (!statuses.is_empty()).then(|| combined_status(&statuses))
                 };
                 if source != TargetSource::SystemOcr || frame_workers == 1 {
-                    return consume(request_budget).unwrap_or(UiScanStatus::Success);
+                    return consume(request_budget, Some(&mut resources.contour))
+                        .unwrap_or(UiScanStatus::Success);
                 }
                 // Split one scan-wide request budget between display workers.
                 // Every worker has at least one lane; the remainder is shared
@@ -603,14 +622,14 @@ fn detect_inner(
                         if let Ok(worker) = std::thread::Builder::new()
                             .name("keysteer-ocr-display".into())
                             .spawn_scoped(scope, move || {
-                                objc2::rc::autoreleasepool(|_| consume(lane_count))
+                                objc2::rc::autoreleasepool(|_| consume(lane_count, None))
                             })
                         {
                             displays.push(worker);
                         }
                     }
                     let mut statuses = smallvec::SmallVec::<[UiScanStatus; 2]>::new();
-                    statuses.extend(consume(lanes(0)));
+                    statuses.extend(consume(lanes(0), None));
                     for display in displays {
                         statuses.extend(display.join().unwrap_or_else(|_| {
                             Some(UiScanStatus::Failed("OCR display worker panicked".into()))
@@ -728,6 +747,7 @@ fn recognize_contours(
     deadline: Instant,
     cancelled: &(impl Fn() -> bool + Sync),
     publish: &impl Fn(Vec<UiTarget>),
+    workspace: &mut crate::platform::common::contour::Workspace,
 ) -> UiScanStatus {
     let started = Instant::now();
     let interrupted = || super::scan_workers::interrupt_status(deadline, cancelled());
@@ -768,15 +788,13 @@ fn recognize_contours(
             return Ok(status);
         }
         let targets = if let Some(input) = &input {
-            crate::platform::common::contour::detect_prepared(input, candidate_limit, || {
-                interrupted().is_some()
-            })
+            workspace.detect_prepared(input, candidate_limit, || interrupted().is_some())
         } else {
             let (pixels, width, height, _) = native
                 .as_ref()
                 .ok_or("missing contour frame")?
                 .contour_pixels()?;
-            crate::platform::common::contour::detect(
+            workspace.detect(
                 pixels,
                 width,
                 height,
@@ -851,17 +869,6 @@ struct OcrRegion {
     height: f64,
     confidence: f64,
     label: String,
-    #[serde(default)]
-    spans: Vec<OcrSpan>,
-}
-
-#[derive(serde::Deserialize)]
-struct OcrSpan {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    label: String,
 }
 
 fn recognize_ocr_image(
@@ -909,7 +916,6 @@ fn recognize_ocr_image(
                 "tiles": crops,
                 "parallelism": parallelism,
                 "minimum_confidence": options.minimum_confidence,
-                "text_positions": options.text_positions,
             }),
         )
         .map_err(|error| format!("cannot send OCR layout: {error}"))?;
@@ -1011,27 +1017,7 @@ fn recognize_ocr_image(
                             continue;
                         }
                         candidates.push(Candidate {
-                            target: UiTarget::recognized_text(rect, region.label).with_ocr_spans(
-                                region
-                                    .spans
-                                    .into_iter()
-                                    .filter_map(|span| {
-                                        let rect = normalized_to_global(
-                                            tile_bounds,
-                                            Rect::new(span.x, span.y, span.width, span.height),
-                                        );
-                                        (!rect.is_empty()
-                                            && rect.x.is_finite()
-                                            && rect.y.is_finite()
-                                            && rect.width.is_finite()
-                                            && rect.height.is_finite())
-                                        .then_some(crate::api::OcrTextSpan {
-                                            text: span.label,
-                                            rect,
-                                        })
-                                    })
-                                    .collect(),
-                            ),
+                            target: UiTarget::recognized_text(rect, region.label),
                             confidence: region.confidence,
                             is_text: true,
                         });

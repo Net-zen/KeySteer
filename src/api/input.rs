@@ -676,6 +676,7 @@ enum ModeName {
     QuickSwitch,
     Grid,
     RecursiveGrid,
+    Bisect,
     UiHint,
     Window,
     WindowQuick,
@@ -705,6 +706,7 @@ impl ModeId {
                 "quick_switch" => ModeName::QuickSwitch,
                 "grid" => ModeName::Grid,
                 "recursive_grid" => ModeName::RecursiveGrid,
+                "bisect" => ModeName::Bisect,
                 "ui_hint" => ModeName::UiHint,
                 "window" => ModeName::Window,
                 "window_quick" => ModeName::WindowQuick,
@@ -720,7 +722,7 @@ impl ModeId {
     }
 
     /// The ids of the built-in modes.
-    pub const BUILT_IN: [&'static str; 13] = [
+    pub const BUILT_IN: [&'static str; 14] = [
         "idle",
         "normal",
         "text_input",
@@ -728,6 +730,7 @@ impl ModeId {
         "quick_switch",
         "grid",
         "recursive_grid",
+        "bisect",
         "ui_hint",
         "window",
         "window_quick",
@@ -766,6 +769,9 @@ impl ModeId {
     pub fn recursive_grid() -> Self {
         Self(ModeName::RecursiveGrid)
     }
+    pub fn bisect() -> Self {
+        Self(ModeName::Bisect)
+    }
     pub fn ui_hint() -> Self {
         Self(ModeName::UiHint)
     }
@@ -784,6 +790,12 @@ impl ModeId {
     }
     pub fn window_tab() -> Self {
         Self(ModeName::WindowTab)
+    }
+    pub fn is_grid(&self) -> bool {
+        matches!(
+            self.0,
+            ModeName::Grid | ModeName::RecursiveGrid | ModeName::Bisect
+        )
     }
     pub fn is_window(&self) -> bool {
         matches!(
@@ -804,6 +816,7 @@ impl ModeId {
             ModeName::QuickSwitch => "quick_switch",
             ModeName::Grid => "grid",
             ModeName::RecursiveGrid => "recursive_grid",
+            ModeName::Bisect => "bisect",
             ModeName::UiHint => "ui_hint",
             ModeName::Window => "window",
             ModeName::WindowQuick => "window_quick",

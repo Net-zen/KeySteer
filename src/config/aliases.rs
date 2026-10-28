@@ -219,14 +219,9 @@ pub(super) fn normalize_binding_keys<T: Clone>(
             } else if text.split_ascii_whitespace().count() > 1 {
                 let chord = KeyChord::parse(name).map_err(|error| {
                     ConfigError::Parse(format!(
-                        "{label} whitespace alias {name:?} is not a single key: {error}"
+                        "{label} binding alternative {name:?} is not a valid key or chord: {error}"
                     ))
                 })?;
-                if chord.keys().len() != 1 {
-                    return Err(ConfigError::Parse(format!(
-                        "{label} whitespace aliases must be single keys; use `+` for a chord: {text:?}"
-                    )));
-                }
                 chord.canonical()
             } else {
                 name.to_string()

@@ -45,10 +45,6 @@ pub fn run_cli() -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    #[cfg(target_os = "windows")]
-    if let Some(exit) = run_internal_wechat_helper() {
-        return exit;
-    }
     let args = if restart_snapshot.is_some() {
         Ok(CliOptions::default())
     } else {
@@ -145,39 +141,6 @@ fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOption
     Ok(args)
 }
 
-#[cfg(target_os = "windows")]
-fn run_internal_wechat_helper() -> Option<ExitCode> {
-    let mut arguments = std::env::args_os().skip(1);
-    if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--internal-wechat-ocr-helper")) {
-        return None;
-    }
-    let Some(bridge) = arguments.next() else {
-        return Some(ExitCode::FAILURE);
-    };
-    let Some(component) = arguments.next() else {
-        return Some(ExitCode::FAILURE);
-    };
-    let Some(runtime) = arguments.next() else {
-        return Some(ExitCode::FAILURE);
-    };
-    if arguments.next().is_some() {
-        return Some(ExitCode::FAILURE);
-    }
-    Some(
-        if crate::platform::run_internal_wechat_ocr_helper(
-            PathBuf::from(bridge),
-            PathBuf::from(component),
-            PathBuf::from(runtime),
-        )
-        .is_ok()
-        {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        },
-    )
-}
-
 fn print_help() {
     println!(
         "\
@@ -200,14 +163,15 @@ MODES:
     idle             Silent resting state; only listens for the keys that
                      launch a mode, so the program stays out of the way
     normal           Move the pointer, click and scroll; entry point to the
-                     three targeting modes below
+                     four targeting modes below
     grid             Full-screen labelled coordinate grid
     recursive_grid   Recursively subdividing grid
+    bisect           Recursively halve the target area with direction keys
     ui_hint          Labels every clickable element
 
 LAUNCHING (from idle):
     Primary+E            normal          Primary is Cmd on macOS,
-                                        Ctrl on Windows and Linux
+                                        left Alt on Windows, Ctrl on Linux
 
 IN NORMAL MODE:
     h j k l          move the pointer
@@ -215,7 +179,10 @@ IN NORMAL MODE:
     ; ' right-shift left / right / middle click
     n                toggle left-button drag
     m ,              scroll down / up
-    g f Primary+F    grid / recursive_grid / ui_hint
+    g                grid
+    f                ui_hint
+    Primary+G        recursive_grid
+    Primary+F        bisect
     t y i u          home / end / page_up / page_down
     q or esc         back to idle
 

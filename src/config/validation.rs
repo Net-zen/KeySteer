@@ -2,7 +2,10 @@
 
 use super::*;
 
-fn validate_optional_color(path: &str, color: Option<&ThemedColor>) -> Result<(), ConfigError> {
+fn validate_optional_color(
+    path: impl std::fmt::Display,
+    color: Option<&ThemedColor>,
+) -> Result<(), ConfigError> {
     if color.is_some_and(|value| !value.is_valid()) {
         return Err(ConfigError::Invalid(format!(
             "{path} must use #RRGGBBAA for every appearance"
@@ -11,14 +14,14 @@ fn validate_optional_color(path: &str, color: Option<&ThemedColor>) -> Result<()
     Ok(())
 }
 
-fn validate_label_colors(path: &str, label: &LabelUi) -> Result<(), ConfigError> {
+fn validate_label_colors(path: impl std::fmt::Display, label: &LabelUi) -> Result<(), ConfigError> {
     for (name, value) in [
         ("background_color", label.background_color.as_ref()),
         ("text_color", label.text_color.as_ref()),
         ("matched_text_color", label.matched_text_color.as_ref()),
         ("border_color", label.border_color.as_ref()),
     ] {
-        validate_optional_color(&format!("{path}.{name}"), value)?;
+        validate_optional_color(format_args!("{path}.{name}"), value)?;
     }
     Ok(())
 }
@@ -164,7 +167,7 @@ impl ConfigFile {
                     "{name}.border_width must be finite and 0..=10000"
                 )));
             }
-            validate_label_colors(&format!("{name}.ui"), &mode.ui)?;
+            validate_label_colors(format_args!("{name}.ui"), &mode.ui)?;
         }
 
         {
@@ -218,9 +221,12 @@ impl ConfigFile {
                 card.guide_line_color.as_ref(),
             )?;
             validate_optional_color("window.card.number_color", card.number_color.as_ref())?;
-            validate_optional_color(&format!("{name}.card.app_color"), card.app_color.as_ref())?;
             validate_optional_color(
-                &format!("{name}.card.title_color"),
+                format_args!("{name}.card.app_color"),
+                card.app_color.as_ref(),
+            )?;
+            validate_optional_color(
+                format_args!("{name}.card.title_color"),
                 card.title_color.as_ref(),
             )?;
         }
@@ -274,6 +280,23 @@ impl ConfigFile {
             "grid.ui.matched_border_color",
             self.grid.ui.matched_border_color.as_ref(),
         )?;
+        if !(1..=40).contains(&self.bisect.max_depth) {
+            return Err(bad("bisect.max_depth must be 1..=40".into()));
+        }
+        if self.bisect.min_size_width == 0 || self.bisect.min_size_height == 0 {
+            return Err(bad(
+                "bisect minimum width and height must be positive".into()
+            ));
+        }
+        if !(0..=20).contains(&self.bisect.ui.line_width) {
+            return Err(bad("bisect.ui.line_width must be 0..=20".into()));
+        }
+        for (name, value) in [
+            ("line_color", self.bisect.ui.line_color.as_ref()),
+            ("highlight_color", self.bisect.ui.highlight_color.as_ref()),
+        ] {
+            validate_optional_color(format_args!("bisect.ui.{name}"), value)?;
+        }
         validate_label_colors("recursive_grid.ui", &self.recursive_grid.ui.label)?;
         if self.recursive_grid.ui.label_min_font_size <= 0 {
             return Err(bad(
@@ -311,7 +334,7 @@ impl ConfigFile {
                 self.recursive_grid.ui.sub_key_preview_text_color.as_ref(),
             ),
         ] {
-            validate_optional_color(&format!("recursive_grid.ui.{name}"), value)?;
+            validate_optional_color(format_args!("recursive_grid.ui.{name}"), value)?;
         }
         validate_label_colors("ui_hint.ui", &self.ui_hint.ui)?;
         validate_optional_color(
@@ -391,7 +414,7 @@ impl ConfigFile {
             ("text_color", highlight.text_color.as_ref()),
             ("border_color", highlight.border_color.as_ref()),
         ] {
-            validate_optional_color(&format!("ui_hint.search_highlight.{name}"), color)?;
+            validate_optional_color(format_args!("ui_hint.search_highlight.{name}"), color)?;
         }
         if !highlight.border_width.is_finite() || !(0.0..=20.0).contains(&highlight.border_width) {
             return Err(bad(
@@ -462,7 +485,7 @@ impl ConfigFile {
                 self.mode_indicator.cursor.right_pressed_color.as_ref(),
             ),
         ] {
-            validate_optional_color(&format!("mode_indicator.cursor.{name}"), value)?;
+            validate_optional_color(format_args!("mode_indicator.cursor.{name}"), value)?;
         }
         if self.mode_indicator.cursor.radius <= 0 || self.mode_indicator.cursor.stroke_width < 0 {
             return Err(bad(
@@ -494,7 +517,7 @@ impl ConfigFile {
                 ),
                 ("ui.border_color", entry.ui.border_color.as_ref()),
             ] {
-                validate_optional_color(&format!("mode_indicator.modes.{mode}.{name}"), value)?;
+                validate_optional_color(format_args!("mode_indicator.modes.{mode}.{name}"), value)?;
             }
             if entry.cursor.radius.is_some_and(|value| value <= 0)
                 || entry.cursor.stroke_width.is_some_and(|value| value < 0)
@@ -505,6 +528,27 @@ impl ConfigFile {
             }
         }
 
+        let outline = &self.text_select.ui;
+        if !(320..=2400).contains(&outline.panel_width) {
+            return Err(bad("text_select.ui.panel_width must be 320..=2400".into()));
+        }
+        for (name, width) in [
+            ("word_min_width", outline.word_min_width),
+            ("char_min_width", outline.char_min_width),
+        ] {
+            if !(24..=240).contains(&width) {
+                return Err(bad(format!("text_select.ui.{name} must be 24..=240")));
+            }
+        }
+        validate_optional_color("text_select.ui.border_color", outline.border_color.as_ref())?;
+        if !outline.border_width.is_finite() || !(0.0..=20.0).contains(&outline.border_width) {
+            return Err(bad("text_select.ui.border_width must be 0..=20".into()));
+        }
+        if outline.padding.iter().any(|&value| value > 100) {
+            return Err(bad(
+                "text_select.ui.padding must be [x, y], each 0..=100".into()
+            ));
+        }
         if self.text_select.enabled {
             let mut characters = BTreeSet::new();
             for character in self.text_select.hint_characters.chars() {
@@ -631,8 +675,12 @@ impl ConfigFile {
             ));
         }
         for (mode, keys) in [
+            ("normal", &self.normal.temporary_mode_keys),
+            ("quick_switch", &self.quick_switch.temporary_mode_keys),
             ("text_input", &self.text_input.temporary_mode_keys),
+            ("text_select", &self.text_select.temporary_mode_keys),
             ("grid", &self.grid.temporary_mode_keys),
+            ("bisect", &self.bisect.temporary_mode_keys),
             ("recursive_grid", &self.recursive_grid.temporary_mode_keys),
             ("ui_hint", &self.ui_hint.temporary_mode_keys),
             ("window", &self.window.temporary_mode_keys),
@@ -640,7 +688,13 @@ impl ConfigFile {
             ("window_editor", &self.window_editor.temporary_mode_keys),
             ("window_restore", &self.window_restore.temporary_mode_keys),
             ("window_tab", &self.window_tab.temporary_mode_keys),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            self.plugin_modes
+                .iter()
+                .map(|(id, mode)| (id.as_str(), &mode.temporary_mode_keys)),
+        ) {
             for key in keys {
                 let key = Key::new(key).map_err(|error| {
                     bad(format!(
@@ -815,6 +869,7 @@ impl ConfigFile {
             ("window_restore", &self.window_restore.lifecycle),
             ("window_tab", &self.window_tab.lifecycle),
             ("grid", &self.grid.lifecycle),
+            ("bisect", &self.bisect.lifecycle),
             ("recursive_grid", &self.recursive_grid.lifecycle),
             ("ui_hint", &self.ui_hint.lifecycle),
         ] {
@@ -848,6 +903,25 @@ impl ConfigFile {
                     )));
                 }
             }
+        }
+
+        match &self.text_select.lifecycle.after_copy {
+            LifecycleAction::Finish | LifecycleAction::Click { .. } => {
+                return Err(bad(
+                    "text_select.lifecycle.after_copy must be keep, restart, return or a mode"
+                        .into(),
+                ));
+            }
+            LifecycleAction::Mode(target)
+                if !ModeId::BUILT_IN.contains(&target.as_str())
+                    && !self.plugin_modes.contains_key(target.as_str()) =>
+            {
+                return Err(bad(format!(
+                    "text_select.lifecycle.after_copy names unknown mode {:?}",
+                    target.as_str()
+                )));
+            }
+            _ => {}
         }
 
         // Every binding chord must parse, or it would silently never fire.
@@ -907,6 +981,7 @@ impl ConfigFile {
             ("[text_input.bindings]".into(), &self.text_input.bindings),
             ("[text_select.bindings]".into(), &self.text_select.bindings),
             ("[grid.bindings]".into(), &self.grid.bindings),
+            ("[bisect.bindings]".into(), &self.bisect.bindings),
             (
                 "[recursive_grid.bindings]".into(),
                 &self.recursive_grid.bindings,
@@ -934,6 +1009,12 @@ impl ConfigFile {
         for over in &self.normal.app_configs {
             tables.push((
                 format!("[[normal.app_configs]] {:?}", over.bundle_id),
+                &over.bindings,
+            ));
+        }
+        for over in &self.bisect.app_configs {
+            tables.push((
+                format!("[[bisect.app_configs]] {:?}", over.bundle_id),
                 &over.bindings,
             ));
         }
@@ -970,9 +1051,11 @@ impl ConfigFile {
 fn validate_inheritance(config: &Config) -> Result<(), String> {
     let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::from([
         ("normal".into(), config.normal.inherits.clone()),
+        ("quick_switch".into(), config.quick_switch.inherits.clone()),
         ("text_input".into(), config.text_input.inherits.clone()),
-        ("text_select".into(), Vec::new()),
+        ("text_select".into(), config.text_select.inherits.clone()),
         ("grid".into(), config.grid.inherits.clone()),
+        ("bisect".into(), config.bisect.inherits.clone()),
         (
             "recursive_grid".into(),
             config.recursive_grid.inherits.clone(),
@@ -996,8 +1079,15 @@ fn validate_inheritance(config: &Config) -> Result<(), String> {
         }
     }
     for (mode, source) in [
+        ("normal", config.normal.temporary_mode.as_deref()),
+        (
+            "quick_switch",
+            config.quick_switch.temporary_mode.as_deref(),
+        ),
         ("text_input", config.text_input.temporary_mode.as_deref()),
+        ("text_select", config.text_select.temporary_mode.as_deref()),
         ("grid", config.grid.temporary_mode.as_deref()),
+        ("bisect", config.bisect.temporary_mode.as_deref()),
         ("window", config.window.temporary_mode.as_deref()),
         (
             "window_quick",
@@ -1017,7 +1107,14 @@ fn validate_inheritance(config: &Config) -> Result<(), String> {
             config.recursive_grid.temporary_mode.as_deref(),
         ),
         ("ui_hint", config.ui_hint.temporary_mode.as_deref()),
-    ] {
+    ]
+    .into_iter()
+    .chain(
+        config
+            .plugin_modes
+            .iter()
+            .map(|(id, mode)| (id.as_str(), mode.temporary_mode.as_deref())),
+    ) {
         if let Some(source) = source
             && !known(source)
         {

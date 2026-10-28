@@ -1,6 +1,5 @@
 //! Owned WinRT imaging and OCR factories; exact ABI calls stay local.
 use super::NativeDimensions;
-use std::path::Path;
 use std::{marker::PhantomData, rc::Rc};
 
 #[must_use = "the factory must stay in its creating COM apartment"]
@@ -20,15 +19,6 @@ impl SoftwareBitmapFactory {
             factory,
             _thread: PhantomData,
         })
-    }
-
-    pub(crate) fn bgra(
-        &self,
-        pixels: &[u8],
-        width: u32,
-        height: u32,
-    ) -> Result<windows::Graphics::Imaging::SoftwareBitmap, String> {
-        self.bgra_region(pixels, width, height, 0, 0, width, height)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -293,58 +283,4 @@ pub(crate) fn probe_system_ocr_factory() -> Result<(u32, Vec<String>), String> {
     }
     drop(engine);
     Ok((maximum, tags))
-}
-
-pub(crate) fn create_png_bitmap_encoder_operation(
-    stream: &windows::Storage::Streams::IRandomAccessStream,
-) -> Result<windows_future::IAsyncOperation<windows::Graphics::Imaging::BitmapEncoder>, String> {
-    use windows::Graphics::Imaging::{BitmapEncoder, IBitmapEncoderStatics};
-
-    let factory = windows::core::imp::load_factory::<BitmapEncoder, IBitmapEncoderStatics>()
-        .map_err(|error| format!("cannot load BitmapEncoder factory: {error}"))?;
-    // SAFETY: the local factory implements `IBitmapEncoderStatics`, the caller
-    // keeps the stream alive through completion, and both output slots use the
-    // exact generated ABI types converted into owned values.
-    let operation: windows_future::IAsyncOperation<BitmapEncoder> = unsafe {
-        let mut result = windows::core::GUID::zeroed();
-        (windows::core::Interface::vtable(&factory).PngEncoderId)(
-            windows::core::Interface::as_raw(&factory),
-            &mut result,
-        )
-        .ok()
-        .map_err(|error| format!("cannot read PNG encoder id: {error}"))?;
-        let encoder_id = result;
-        let mut operation = core::ptr::null_mut();
-        (windows::core::Interface::vtable(&factory).CreateAsync)(
-            windows::core::Interface::as_raw(&factory),
-            encoder_id,
-            windows::core::Interface::as_raw(stream),
-            &mut operation,
-        )
-        .ok()
-        .map_err(|error| format!("cannot start PNG encoder creation: {error}"))?;
-        windows::core::Type::from_abi(operation)
-            .map_err(|error| format!("cannot own PNG encoder operation: {error}"))?
-    };
-    Ok(operation)
-}
-
-pub(crate) fn create_file_random_access_stream(
-    path: &Path,
-) -> Result<windows::Storage::Streams::IRandomAccessStream, String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::Win32::System::Com::{STGM_CREATE, STGM_SHARE_EXCLUSIVE, STGM_WRITE};
-    use windows::Win32::System::WinRT::CreateRandomAccessStreamOnFile;
-    use windows::core::PCWSTR;
-
-    let wide = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let access = STGM_CREATE.0 | STGM_WRITE.0 | STGM_SHARE_EXCLUSIVE.0;
-    // SAFETY: `wide` is a NUL-terminated path retained for this call and the
-    // requested interface type matches the documented WinRT stream factory.
-    unsafe { CreateRandomAccessStreamOnFile(PCWSTR(wide.as_ptr()), access) }
-        .map_err(|error| format!("cannot create random-access file stream: {error}"))
 }

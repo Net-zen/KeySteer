@@ -32,7 +32,7 @@ KeySteer 是 Windows 和 macOS 上的原生键盘操控工具。用键盘移动�
 
 - **UI Hint 界面识别**：跨屏、跨程序显示控件标签，支持文字／简拼搜索、复制信息与取色。
 - **Normal 键盘鼠标**：Vim 风格移动、点击、滚动与拖拽，支持速度调节和跨屏操作。
-- **Grid 与 Recursive Grid**：两键快速定位，或逐层细分到小目标。
+- **Grid、Recursive Grid 与 Bisect**：两键快速定位、逐层细分到小目标，或用 `H/J/K/L` 逐次二分。
 - **Window、Quick 与 Editor**：移动、缩放、分屏和平铺窗口，也能调节音量。
 - **Tabs 与工作区**：把窗口收成标签组，保存布局，下次继续使用。
 - **外观与配置**：自由调整按键、速度与样式，在网页模拟器中预览。
@@ -40,7 +40,7 @@ KeySteer 是 Windows 和 macOS 上的原生键盘操控工具。用键盘移动�
 ## 演示
 
 <details>
-<summary>鼠标与界面定位：Normal、Grid、Recursive Grid、UI Hint</summary>
+<summary>鼠标与界面定位：Normal、Grid、Recursive Grid、Bisect、UI Hint</summary>
 
 ### Normal
 
@@ -53,6 +53,10 @@ https://github.com/user-attachments/assets/4ecb749e-d770-43c1-907a-e55a4144a9ca
 ### Recursive Grid
 
 https://github.com/user-attachments/assets/cb399755-5cde-40a0-ba64-d00c7e581cc6
+
+### Bisect：每次缩小一半
+
+https://github.com/user-attachments/assets/630c7e04-c49b-42fc-aaf5-3fbd55b3cb8e
 
 ### UI Hint
 

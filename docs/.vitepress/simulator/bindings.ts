@@ -34,8 +34,9 @@ export function displayedBindings(
   temporaryHeld: boolean,
 ): Map<string, ResolvedBinding> {
   const bindings = effectiveBindings(document, mode)
-  const borrowed = asRecord(document[mode]).temporary_mode
-  if (!borrowed || temporaryHeld) return bindings
+  const settings = asRecord(document[mode])
+  const borrowed = settings.temporary_mode
+  if (!borrowed || !settings.temporary_mode_keys?.length || temporaryHeld) return bindings
   for (const [chord, binding] of bindings) {
     if (binding.source === borrowed) bindings.delete(chord)
   }
@@ -82,7 +83,7 @@ function asRecord(value: unknown): Record<string, any> {
 function aliasesFor(document: BindingDocument, isMac: boolean): Record<string, string> {
   const source = asRecord(document.key_aliases)
   const platform = asRecord(source[isMac ? 'macos' : 'windows'])
-  const aliases: Record<string, string> = { primary: isMac ? 'cmd' : 'ctrl' }
+  const aliases: Record<string, string> = { primary: isMac ? 'cmd' : 'ctrl', mod: isMac ? 'cmd' : 'ctrl' }
   for (const [key, value] of Object.entries({ ...source, ...platform })) {
     if (typeof value === 'string') aliases[key.toLowerCase()] = value.toLowerCase()
   }
@@ -135,6 +136,10 @@ export function temporaryPhysicalKeys(document: BindingDocument, mode: string, p
   const active = new Set<string>()
   for (const chord of Array.isArray(settings.temporary_mode_keys) ? settings.temporary_mode_keys : []) {
     const keys = chordKeys(String(chord), aliases)
+    if (mode === 'ui_hint' || mode === 'text_select') {
+      const overlap = chordKeys(String(asRecord(document.ui_hint).overlap_cycle_key ?? 'shift'), aliases)
+      if (overlap.some(k => keys.some(t => keyMatches(k, t) || keyMatches(t, k)))) continue
+    }
     if ([...entryKeys].some(p => keys.some(k => keyMatches(k, p)))) continue
     if (keys.every(k => pressed.some(p => keyMatches(k, p)))) {
       pressed.filter(p => keys.some(k => keyMatches(k, p))).forEach(p => active.add(p))
@@ -143,20 +148,22 @@ export function temporaryPhysicalKeys(document: BindingDocument, mode: string, p
   return [...active]
 }
 
-/** Full chords precede trigger-stripped chords; the temporary layer wins ties. */
+/** Local explicit chords keep the trigger; other layers resolve only the remaining keys. */
 export function resolveLayeredPhysicalBinding(document: BindingDocument, mode: string, pressed: string[], key: string, isMac: boolean, entryKeys: ReadonlySet<string> = new Set()): ResolvedBinding | undefined {
   const triggers = temporaryPhysicalKeys(document, mode, pressed, isMac, entryKeys)
   if (!triggers.length) return resolvePhysicalBinding(document, mode, pressed, key, isMac)
   const remaining = pressed.filter(k => !triggers.includes(k))
-  if (!remaining.includes(key)) return undefined
   const settings = asRecord(document[mode]), aliases = aliasesFor(document, isMac)
   const passthrough = (Array.isArray(settings.temporary_mode_passthrough_keys) ? settings.temporary_mode_passthrough_keys : []).some(chord => {
     const keys = chordKeys(String(chord), aliases)
     return keys.some(k => keyMatches(k, key)) && [pressed, remaining].some(input => keys.length === input.length && keys.every(k => input.some(p => keyMatches(k, p))))
   })
-  for (const [input, exact] of [[pressed, true], [remaining, false]] as const) {
-    for (const source of passthrough || exact && (mode === 'window' || mode.startsWith('window_')) ? [mode] : [String(settings.temporary_mode), mode]) {
-      const resolved = resolvePhysicalBinding(document, source, input, key, isMac, false, exact)
+  if (!passthrough && !remaining.includes(key)) return undefined
+  const explicit = resolvePhysicalBinding(document, mode, pressed, key, isMac, !passthrough, true)
+  if (explicit) return explicit
+  for (const exact of [true, false]) {
+    for (const source of passthrough ? [mode] : [String(settings.temporary_mode), mode]) {
+      const resolved = resolvePhysicalBinding(document, source, remaining, key, isMac, false, exact)
       if (resolved) return resolved
     }
   }

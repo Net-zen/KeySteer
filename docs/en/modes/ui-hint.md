@@ -8,7 +8,7 @@ Small button, distant pointer? UI Hint puts short labels on buttons, links, menu
 
 <ModeVideo file="uihint.mp4" title="UI Hint mode demonstration" description="Scanning interface elements, filtering with typed labels, and targeting a control." />
 
-Enter from Normal with `Primary+F`.
+Enter from Normal with `f`.
 
 ::: tip Point, then click
 By default, selecting a label moves the pointer and returns to Normal. Press `;` to left-click when ready.
@@ -35,7 +35,9 @@ Start with the default, `hybrid`. Labels appear in batches; you can type as soon
 | `vision` | Custom interfaces; combines text and outline recognition |
 | `contour` | Outlines only; results have no text names to search |
 
-By default, scanning starts with the **window under the pointer**, then the active window if none is found, then the pointer's display. Set `scan_scope = "active"` to prefer the active window, `"screen"` to scan the pointer's whole display, or `"all"` to scan all displays. Display scopes include visible UI across applications and skip content completely covered by other windows. Empty results do not cause a change of scope.
+The default `scan_scope = "all"` scans **all displays**. Use `"window"` to prefer the pointer's window, `"active"` to prefer the active window, or `"screen"` to scan the pointer's whole display. Window scopes fall back to the other window and then the pointer's display if unavailable. Display scopes include visible UI across applications and skip content completely covered by other windows. Empty results do not cause a change of scope.
+
+On Windows and macOS, scanning prioritizes the display, window, and area around the pointer at scan start. Results appear incrementally while the remaining areas are processed; `screen` and `all` still cover their full scope.
 
 Changing the target window or display starts a new scan; moving between displays within `all` preserves existing labels. All displays share one numbering space, so complete labels do not repeat across displays. Ordinary pointer movement does not keep rescanning. Press `Primary+R` when you need fresh labels. Result storage grows dynamically without truncation at 10,000 targets; more visible content still takes additional time and memory to recognize.
 
@@ -154,5 +156,5 @@ width = 320
 | --- | --- |
 | Custom interface lacks control information | Use `strategy = "vision"` |
 | Too many standard-control labels | Narrow `clickable_roles` |
-| Windows text recognition is poor | Use available system OCR or optional local WeChat OCR; KeySteer does not download WeChat components |
+| Windows text recognition is poor | Check the installed Windows OCR languages; KeySteer uses the system OCR engine |
 | No visual labels or colors on macOS | Check screen-recording permission, then restart KeySteer |

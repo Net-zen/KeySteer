@@ -48,8 +48,8 @@ use aliases::{
 #[cfg(test)]
 pub use settings::GridLayer;
 pub use settings::{
-    Grid, Normal, Pointer, RecursiveGrid, Scroll, TargetingMethod, TargetingReset, TextInput,
-    TextSelect, UiHint,
+    Bisect, Grid, Normal, Pointer, RecursiveGrid, Scroll, TargetingMethod, TargetingReset,
+    TextInput, TextSelect, UiHint,
 };
 pub use store::{ConfigStore, ReplaceFile};
 
@@ -103,6 +103,8 @@ pub struct ConfigFile {
     pub grid: Grid,
     #[serde(default)]
     pub recursive_grid: RecursiveGrid,
+    #[serde(default)]
+    pub bisect: Bisect,
     #[serde(default)]
     pub scroll: Scroll,
     #[serde(default)]
@@ -159,6 +161,7 @@ impl Default for ConfigFile {
             ui_hint: UiHint::default(),
             grid: Grid::default(),
             recursive_grid: RecursiveGrid::default(),
+            bisect: Bisect::default(),
             scroll: Scroll::default(),
             pointer: Pointer::default(),
             mode_indicator: ModeIndicator::default(),
@@ -195,6 +198,14 @@ pub struct ModeUsage {
 #[serde(default, deny_unknown_fields)]
 pub struct QuickSwitch {
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inherits: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporary_mode: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub temporary_mode_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub temporary_mode_passthrough_keys: Vec<String>,
     pub key: String,
     pub hint_characters: String,
     pub bindings: Bindings,
@@ -207,6 +218,10 @@ impl Default for QuickSwitch {
     fn default() -> Self {
         Self {
             enabled: true,
+            inherits: Vec::new(),
+            temporary_mode: None,
+            temporary_mode_keys: Vec::new(),
+            temporary_mode_passthrough_keys: Vec::new(),
             key: "q".into(),
             hint_characters: "wertyuiop".into(),
             bindings: builtin_bindings(&[
@@ -258,6 +273,7 @@ pub(crate) fn with_control_defaults(
     let mut controls = match mode {
         "grid" => Grid::default().bindings,
         "recursive_grid" => RecursiveGrid::default().bindings,
+        "bisect" => Bisect::default().bindings,
         "ui_hint" => UiHint::default().bindings,
         "window_editor" => WindowEditor::default().bindings.clone(),
         "window_restore" => WindowRestore::default().bindings.clone(),
@@ -273,7 +289,8 @@ pub(crate) fn with_control_defaults(
     controls.retain(|key, binding| {
         matches!(
             binding,
-            Binding::SelectionReset
+            Binding::Bisect(_)
+                | Binding::SelectionReset
                 | Binding::SelectionParent
                 | Binding::SelectionAccept
                 | Binding::SelectionCancel
@@ -629,6 +646,7 @@ impl ConfigFile {
         }
         for (name, table) in [
             ("grid", &mut config.grid.bindings),
+            ("bisect", &mut config.bisect.bindings),
             ("recursive_grid", &mut config.recursive_grid.bindings),
             ("ui_hint", &mut config.ui_hint.bindings),
             ("window_editor", &mut config.window_editor.common.bindings),
@@ -648,11 +666,11 @@ impl ConfigFile {
         Ok((config, warnings))
     }
 
-    /// Expand whitespace-separated single-key aliases in a binding key.
+    /// Expand whitespace-separated key or chord alternatives in a binding key.
     ///
     /// For example, `"v b" = "fast"` is stored as the two ordinary bindings
-    /// `v = "fast"` and `b = "fast"`. Chords still use `+`, so
-    /// `primary+f` remains one binding.
+    /// `v = "fast"` and `b = "fast"`. `"mod+c enter"` similarly binds
+    /// both the chord and Enter; `+` combines keys within one alternative.
     fn apply_configured_key_aliases(&mut self) -> Result<(), ConfigError> {
         let aliases = self.resolved_key_aliases.clone();
         normalize_binding_keys(&mut self.hotkeys, "[hotkeys]", &aliases)?;
@@ -686,10 +704,10 @@ impl ConfigFile {
                     &aliases,
                 )?;
             }
-            normalize_key_list(&mut mode.temporary_mode_keys, &aliases)?;
             normalize_passthrough_keys(&mut mode.temporary_mode_passthrough_keys, &aliases)?;
         }
         normalize_binding_keys(&mut self.grid.bindings, "[grid.bindings]", &aliases)?;
+        normalize_binding_keys(&mut self.bisect.bindings, "[bisect.bindings]", &aliases)?;
         normalize_binding_keys(
             &mut self.recursive_grid.bindings,
             "[recursive_grid.bindings]",
@@ -714,6 +732,7 @@ impl ConfigFile {
             ("[[app_configs]]", &mut self.app_configs),
             ("[[normal.app_configs]]", &mut self.normal.app_configs),
             ("[[grid.app_configs]]", &mut self.grid.app_configs),
+            ("[[bisect.app_configs]]", &mut self.bisect.app_configs),
             (
                 "[[recursive_grid.app_configs]]",
                 &mut self.recursive_grid.app_configs,
@@ -747,17 +766,16 @@ impl ConfigFile {
             normalize_key_list(&mut keys, &aliases)?;
             *alternatives = keys.join(" ");
         }
-        for keys in [
-            &mut self.text_input.temporary_mode_keys,
-            &mut self.grid.temporary_mode_keys,
-            &mut self.recursive_grid.temporary_mode_keys,
-            &mut self.ui_hint.temporary_mode_keys,
-        ] {
+        for (_, keys) in self.temporary_key_lists_mut() {
             normalize_key_list(keys, &aliases)?;
         }
         for keys in [
+            &mut self.normal.temporary_mode_passthrough_keys,
+            &mut self.quick_switch.temporary_mode_passthrough_keys,
             &mut self.text_input.temporary_mode_passthrough_keys,
+            &mut self.text_select.temporary_mode_passthrough_keys,
             &mut self.grid.temporary_mode_passthrough_keys,
+            &mut self.bisect.temporary_mode_passthrough_keys,
             &mut self.recursive_grid.temporary_mode_passthrough_keys,
             &mut self.ui_hint.temporary_mode_passthrough_keys,
         ] {
@@ -772,6 +790,39 @@ impl ConfigFile {
 
     pub(crate) fn resolved_key_aliases(&self) -> &BTreeMap<String, String> {
         &self.resolved_key_aliases
+    }
+
+    fn temporary_key_lists_mut(&mut self) -> [(&'static str, &mut Vec<String>); 13] {
+        [
+            ("normal", &mut self.normal.temporary_mode_keys),
+            ("quick_switch", &mut self.quick_switch.temporary_mode_keys),
+            ("text_input", &mut self.text_input.temporary_mode_keys),
+            ("text_select", &mut self.text_select.temporary_mode_keys),
+            ("grid", &mut self.grid.temporary_mode_keys),
+            ("bisect", &mut self.bisect.temporary_mode_keys),
+            (
+                "recursive_grid",
+                &mut self.recursive_grid.temporary_mode_keys,
+            ),
+            ("ui_hint", &mut self.ui_hint.temporary_mode_keys),
+            ("window", &mut self.window.common.temporary_mode_keys),
+            (
+                "window_quick",
+                &mut self.window_quick.common.temporary_mode_keys,
+            ),
+            (
+                "window_editor",
+                &mut self.window_editor.common.temporary_mode_keys,
+            ),
+            (
+                "window_restore",
+                &mut self.window_restore.common.temporary_mode_keys,
+            ),
+            (
+                "window_tab",
+                &mut self.window_tab.common.temporary_mode_keys,
+            ),
+        ]
     }
 
     pub fn to_toml(&self) -> Result<String, ConfigError> {

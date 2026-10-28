@@ -11,18 +11,14 @@ use super::input_router::CompiledKeymap;
 use super::plan::{Bindings, ModeRoute};
 use super::{Engine, RuntimeError, chords_conflict};
 
-pub(super) struct TemporaryChord {
-    pub(super) chord: KeyChord,
-    pub(super) conflicts_with_ui_hint_overlap: bool,
-}
-
 struct ModeSlot {
     id: ModeId,
     mode: Box<dyn Mode>,
     pointer_events: bool,
     keyboard_prompt_supported: bool,
     table: Option<CompiledKeymap>,
-    temporary_chords: Vec<TemporaryChord>,
+    /// None is decided when routes compile, including filtered-out triggers.
+    temporary_chords: Option<Vec<KeyChord>>,
 }
 
 pub(super) struct ModeRegistry {
@@ -95,7 +91,7 @@ impl ModeRegistry {
             pointer_events,
             keyboard_prompt_supported,
             table: None,
-            temporary_chords: Vec::new(),
+            temporary_chords: None,
         });
         self.indices.insert(id, index);
         index
@@ -164,15 +160,15 @@ impl ModeRegistry {
         )
     }
 
-    pub(super) fn temporary_chords(&self, id: &ModeId) -> Option<&[TemporaryChord]> {
+    pub(super) fn temporary_chords(&self, id: &ModeId) -> Option<&[KeyChord]> {
         let index = self.index_of(id)?;
-        Some(&self.slots.get(index)?.temporary_chords)
+        self.slots.get(index)?.temporary_chords.as_deref()
     }
 
     pub(super) fn clear_routes(&mut self) {
         for slot in &mut self.slots {
             slot.table = None;
-            slot.temporary_chords.clear();
+            slot.temporary_chords = None;
         }
     }
 
@@ -180,13 +176,13 @@ impl ModeRegistry {
         &mut self,
         id: &ModeId,
         table: Option<CompiledKeymap>,
-        temporary_chords: Vec<TemporaryChord>,
+        temporary_chords: Vec<KeyChord>,
     ) {
         if let Some(index) = self.index_of(id)
             && let Some(slot) = self.slots.get_mut(index)
         {
             slot.table = table;
-            slot.temporary_chords = temporary_chords;
+            slot.temporary_chords = (!temporary_chords.is_empty()).then_some(temporary_chords);
         }
     }
 
@@ -333,12 +329,12 @@ impl Engine {
         for (owner, table) in self.registry.tables() {
             for entry in table.iter_entries() {
                 if !matches!(entry.binding.as_ref(), Binding::Mode(id)
-                    if *id == ModeId::grid() || *id == ModeId::recursive_grid())
+                    if id.is_grid())
                 {
                     continue;
                 }
                 for trigger in triggers {
-                    let mut pressed = trigger.chord.keys().to_vec();
+                    let mut pressed = trigger.keys().to_vec();
                     for key in entry.chord.keys() {
                         if !pressed.iter().any(|part| Self::keys_match(key, part)) {
                             pressed.push(key.clone());
@@ -513,6 +509,15 @@ impl Engine {
     }
 
     pub(super) fn binding_profile_key_for(&self, app: Option<&FocusedApp>) -> Vec<Bindings> {
+        if app.is_none()
+            || self
+                .registry
+                .routes
+                .values()
+                .all(|route| route.app_overrides.is_empty())
+        {
+            return Vec::new();
+        }
         let ids = self.binding_mode_ids();
         let profile: Vec<Bindings> = ids
             .iter()
@@ -547,12 +552,17 @@ impl Engine {
                         .temporary_keys
                         .iter()
                         .filter_map(|text| {
-                            KeyChord::parse(text).ok().map(|chord| TemporaryChord {
-                                conflicts_with_ui_hint_overlap: ui_hint_overlap_chord
+                            let chord = KeyChord::parse(text).ok()?;
+                            // Hint overlap cycling owns its modifier. Resolve
+                            // that conflict at compilation, not on every key.
+                            if (id == ModeId::ui_hint() || id == ModeId::text_select())
+                                && ui_hint_overlap_chord
                                     .as_ref()
-                                    .is_some_and(|overlap| chords_conflict(overlap, &chord)),
-                                chord,
-                            })
+                                    .is_some_and(|overlap| chords_conflict(overlap, &chord))
+                            {
+                                return None;
+                            }
+                            Some(chord)
                         })
                         .collect::<Vec<_>>()
                 })

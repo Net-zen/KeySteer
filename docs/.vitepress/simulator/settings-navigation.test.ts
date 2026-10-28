@@ -65,3 +65,20 @@ test('lifecycle controls cover supported modes and prevent recursive action choi
     for (const action of lifecycleClickActions) assert.equal(options.includes(action), event === 'after_finish')
   }
 })
+
+test('text selection exposes copy lifecycle without click or finish actions', () => {
+  const path = 'text_select.lifecycle.after_copy'
+  assert.deepEqual(fieldLocation(path), { page: 'text_select', tab: 'behavior' })
+  assert.equal(styleSearchFields.filter(field => field.path === path).length, 1)
+  const options = lifecycleOptions('after_copy', ['plugin:screen-selector'])
+  for (const action of ['keep', 'restart', 'return', 'normal', 'plugin:screen-selector']) assert.ok(options.includes(action))
+  for (const action of ['finish', ...lifecycleClickActions]) assert.ok(!options.includes(action))
+})
+
+test('text selection outline and pointer fields are reachable and searchable', () => {
+  for (const path of ['text_select.ui.border_color', 'text_select.ui.border_width', 'text_select.ui.padding', 'text_select.ui.pointer_offset', 'text_select.ui.word_min_width', 'text_select.ui.char_min_width', 'text_select.ui.panel_width']) {
+    assert.deepEqual(fieldLocation(path), {page: 'text_select', tab: 'appearance'})
+    assert.ok(searchSettings(styleSearchFields, path).some(field => field.path === path))
+  }
+  assert.ok(!styleSearchFields.some(field => field.path.startsWith('text_select.selection_outline.') || field.path === 'text_select.pointer_offset'))
+})

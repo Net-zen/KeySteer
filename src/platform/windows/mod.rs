@@ -52,18 +52,6 @@ const NO_WINDOW_UNDER_POINTER: &str =
 
 pub(crate) use native::{atomic_replace, prepare_console_for_cli};
 
-pub(crate) fn run_internal_wechat_ocr_helper(
-    bridge: std::path::PathBuf,
-    component: std::path::PathBuf,
-    runtime: std::path::PathBuf,
-) -> Result<(), String> {
-    vision::wechat_ocr::run_helper(vision::wechat_ocr::HelperPaths {
-        bridge,
-        component,
-        runtime,
-    })
-}
-
 pub(crate) fn run_internal_update_helper() -> Option<Result<(), String>> {
     update_installer::run_internal_helper()
 }
@@ -324,7 +312,7 @@ impl WindowsBackend {
         if !current.is_invalid() {
             let mut process_id = 0;
             native::window_thread_process_id(current, Some(&mut process_id));
-            if process_id == native::current_process_id() {
+            if process_id == std::process::id() {
                 // Tray and overlay windows are implementation details, not an
                 // application-context change. Preserve the previous foreground
                 // handle so restoring it produces no spurious transition.
@@ -484,6 +472,15 @@ impl WindowsBackend {
         if let Some(worker) = &self.text_segmenter {
             worker.request_stop();
         }
+        // Give every scan and the update check the full shared cleanup window,
+        // even when a window operation takes most of it to finish.
+        self.vision.request_stop();
+        for worker in &self.ui_automation {
+            worker.request_stop();
+        }
+        if let Some(worker) = &self.update_worker {
+            worker.request_cancel();
+        }
         if let Some(worker) = self.window_worker.as_mut() {
             match worker.stop_until(deadline) {
                 Ok(()) => {
@@ -501,8 +498,7 @@ impl WindowsBackend {
             }
         }
         // Stop visual providers before tearing down the hook and overlay. The
-        // vision worker cancels WinRT OCR, terminates the optional WeChat
-        // helper, and joins pure-Rust fallback work before returning.
+        // vision worker cancels WinRT OCR, and joins pure-Rust fallback work before returning.
         if let Err(error) = self.vision.stop_until(deadline) {
             errors.push("vision worker", error);
         }

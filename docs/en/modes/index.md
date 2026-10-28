@@ -17,19 +17,22 @@ flowchart LR
     normal("Normal<br/>Everyday control"):::mode-primary
     grid("Grid<br/>Screen regions"):::mode-step
     rg("Recursive Grid<br/>Precise targeting"):::mode-step
+    bs("Bisect<br/>Directional halves"):::mode-step
     ui("UI Hint<br/>Controls and text"):::mode-step
     idle -->|"Primary+E"| normal
-    normal -->|g| grid
-    normal -->|f| rg
-    normal -->|"Primary+F"| ui
+    normal -->|G| grid
+    normal -->|F| ui
+    normal -->|"Primary+G"| rg
+    normal -->|"Primary+F"| bs
     class idle diagram-blue
     class normal diagram-violet
     class grid diagram-green
     class rg diagram-amber
+    class bs diagram-cyan
     class ui diagram-rose
 ```
 
-All three targeting modes return to Normal with `Esc` or `Primary+Q`. In Normal, press `Esc` or `q` to return to Idle.
+All four targeting modes return to Normal with `Esc` or `Primary+Q`. In Normal, press `Esc` or `q` to return to Idle.
 
 ## Which mode should I choose?
 
@@ -38,6 +41,7 @@ All three targeting modes return to Normal with `Esc` or `Primary+Q`. In Normal,
 | Move, scroll, click, or drag directly | [Normal](/en/modes/normal) | Best for everyday control. |
 | Reach a screen area quickly | [Grid](/en/modes/grid) | Does not rely on application accessibility information. |
 | Precisely target a small button or icon | [Recursive Grid](/en/modes/recursive-grid) | Keeps subdividing the current area. |
+| Narrow with direction keys, without labels | [Bisect](/en/modes/bisect) | Halves only width or height per press. |
 | Find a button, link, menu, or input | [UI Hint](/en/modes/ui-hint) | Labels controls from the accessibility tree or visual recognition. |
 | Arrange windows, group tabs, or restore a workspace | [Window](/en/modes/window) | Move one window or build a reusable layout. |
 
@@ -59,7 +63,7 @@ Keep at least one entry key.
 
 Need a small pointer adjustment while targeting? Hold `Primary` to use Normal movement, scrolling, and clicks. Release it to continue selecting.
 
-These are Grid's default settings. Recursive Grid and UI Hint work the same way:
+These are Grid's default settings. Recursive Grid, Bisect and UI Hint work the same way:
 
 ```toml
 [grid]
@@ -68,7 +72,7 @@ temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
 ```
 
-Full chords take priority. For example, `Primary+S` still switches displays, and `Primary+Q` returns to Normal. See [Temporary input layers](/en/reference/configuration#temporary-input-layers) to change the modifier or resolve conflicts.
+The temporary layer consumes its activation keys: `Primary+H` uses Normal's `H` movement binding. Explicit full chords in the current mode remain available, such as `Primary+Q` to return to Normal. See [Temporary input layers](/en/reference/configuration#temporary-input-layers) to change the modifier or resolve conflicts.
 
 ## End states
 
@@ -94,12 +98,12 @@ after_click = "finish"
 | `left_click` / `right_click` / `middle_click` / `double_click` | Click as soon as targeting finishes; only valid for `after_finish` |
 
 ::: info Default behavior
-Grid and UI Hint return to Normal after locating or clicking. Recursive Grid keeps the current area so you can subdivide it further.
+Grid and UI Hint return to Normal after locating or clicking. Recursive Grid and Bisect keep the current area so you can subdivide it further.
 :::
 
 ## Multiple displays
 
-Grid and Recursive Grid target the display containing the pointer by default. The built-in Screen Selector plugin uses `Primary+S` to move to another display and can preserve the current Grid or Recursive Grid path.
+Grid, Recursive Grid and Bisect target the display containing the pointer by default. The built-in Screen Selector plugin uses `Primary+S` to move to another display and can preserve the current targeting path.
 
 ## Important
 

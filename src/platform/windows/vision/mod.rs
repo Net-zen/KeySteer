@@ -15,26 +15,25 @@ use crate::api::command::UiScanStatus;
 #[cfg(test)]
 use crate::api::geometry::SemanticRole;
 use crate::api::geometry::{Rect, UiTarget};
+use crate::platform::common::scan_reuse::{IdleWorker, JobJoin};
 use crate::support::worker::WorkerJoin;
 
 use super::accessibility::WindowsScanPlan;
 use super::display::overlay_worker::CaptureLease;
 use super::ui_scan::ScanSource;
-use wechat_ocr::{WechatDescriptor, WechatOcr};
 
 mod capture;
 mod discovery;
 mod provider_mailbox;
 mod providers;
 mod system_ocr;
-pub(super) mod wechat_ocr;
 
 use capture::*;
 use discovery::*;
 use provider_mailbox::*;
 use providers::*;
+pub(super) use system_ocr::image_to_desktop;
 use system_ocr::{OcrOperationGuard, stream_system_targets_from_result};
-pub(super) use system_ocr::{image_to_desktop, trim_string_in_place, valid_target_rect};
 
 // Covers a native 3840x2160 desktop so common 4K scans use the BitBlt fast
 // path. Apply this budget to each display in All scope; larger 5K/8K captures
@@ -91,7 +90,7 @@ pub(super) fn diagnostic_lines() -> Vec<String> {
         ),
         Err(error) => format!("system OCR: unavailable ({error})"),
     };
-    vec![system, wechat_ocr::diagnostic_line()]
+    vec![system]
 }
 
 struct ScanJob {
@@ -113,10 +112,13 @@ struct QueueState {
 #[derive(Default)]
 struct SharedQueue {
     state: Mutex<QueueState>,
+    ready: Condvar,
+    contour: IdleWorker<crate::platform::common::contour::Workspace>,
+    system_ocr: IdleWorker<SystemOcrResources>,
     latest_generation: AtomicU64,
     stopping: AtomicBool,
     provider_quarantine_nonempty: AtomicBool,
-    provider_quarantine: Mutex<Vec<WorkerJoin>>,
+    provider_quarantine: Mutex<Vec<JobJoin>>,
 }
 
 #[derive(Clone)]
@@ -131,7 +133,6 @@ struct ScanSignal {
     mailbox: Arc<ProviderMailbox>,
     system_wake: Mutex<Option<mpsc::SyncSender<SystemOcrInput>>>,
     credit_wakes: Mutex<SmallVec<[Weak<mpsc::Sender<()>>; 2]>>,
-    wechat_wake: Mutex<Option<mpsc::SyncSender<WechatInput>>>,
     discovery: Weak<DiscoveryShared>,
 }
 
@@ -150,7 +151,6 @@ impl ScanCancellation {
                 mailbox: Arc::clone(mailbox),
                 system_wake: Mutex::new(None),
                 credit_wakes: Mutex::new(SmallVec::new()),
-                wechat_wake: Mutex::new(None),
                 discovery,
             }),
         }
@@ -172,10 +172,6 @@ impl ScanCancellation {
 
     fn register_system_wake(&self, sender: mpsc::SyncSender<SystemOcrInput>) {
         self.signal.register_system_wake(sender);
-    }
-
-    fn register_wechat_wake(&self, sender: mpsc::SyncSender<WechatInput>) {
-        self.signal.register_wechat_wake(sender);
     }
 
     fn register_credit_wake(&self, sender: &Arc<mpsc::Sender<()>>) {
@@ -206,14 +202,13 @@ impl ScanSignal {
         {
             let _ = sender.send(());
         }
-        let wake = self
-            .wechat_wake
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(sender) = wake.as_ref() {
-            let _ = sender.try_send(WechatInput::CancelWake);
-        }
         if let Some(discovery) = self.discovery.upgrade() {
+            // Pair notification with the waiter's lock so cancellation cannot
+            // land between its predicate check and entering the wait.
+            let _state = discovery
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             discovery.ready.notify_all();
         }
     }
@@ -225,17 +220,6 @@ impl ScanSignal {
             .unwrap_or_else(|error| error.into_inner());
         if self.local.load(Ordering::Acquire) {
             let _ = sender.try_send(SystemOcrInput::CancelWake);
-        }
-        *wake = Some(sender);
-    }
-
-    fn register_wechat_wake(&self, sender: mpsc::SyncSender<WechatInput>) {
-        let mut wake = self
-            .wechat_wake
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if self.local.load(Ordering::Acquire) {
-            let _ = sender.try_send(WechatInput::CancelWake);
         }
         *wake = Some(sender);
     }
@@ -252,13 +236,13 @@ impl ScanSignal {
     }
 }
 
-/// Own every provider thread started for one scan. Dropping a scan first
+/// Own every provider job started for one scan. Dropping a scan first
 /// invalidates its cancellation token and then joins all providers, so leaving
 /// UI Hint cannot strand OCR or pixel-analysis work in normal mode.
 struct ProviderThreads {
     cancellation: ScanCancellation,
     shared: Arc<SharedQueue>,
-    threads: Vec<WorkerJoin>,
+    threads: Vec<JobJoin>,
 }
 
 impl ProviderThreads {
@@ -270,23 +254,23 @@ impl ProviderThreads {
         }
     }
 
-    fn spawn(&mut self, name: &'static str, work: impl FnOnce() + Send + 'static) -> bool {
-        let background_work = move || {
+    fn spawn_reused<T: 'static>(
+        &mut self,
+        worker: &IdleWorker<T>,
+        name: &'static str,
+        work: impl FnOnce(&mut crate::platform::common::scan_reuse::IdleCache<T>) + Send + 'static,
+    ) -> bool {
+        match worker.submit(name, move |idle| {
             if let Err(error) = super::native::prefer_background_work() {
                 crate::report_warning!(
                     "windows-vision",
                     "cannot lower {name} provider priority: {error}"
                 );
             }
-            work();
-        };
-        match WorkerJoin::spawn(
-            name,
-            std::thread::Builder::new().name(name.into()),
-            background_work,
-        ) {
-            Ok(worker) => {
-                self.threads.push(worker);
+            work(idle);
+        }) {
+            Ok(job) => {
+                self.threads.push(job);
                 true
             }
             Err(error) => {
@@ -397,6 +381,7 @@ impl VisionWorker {
             source,
             capture: Some(capture),
         });
+        self.shared.ready.notify_one();
         if !state.running {
             state.running = true;
             let shared = Arc::clone(&self.shared);
@@ -520,7 +505,7 @@ impl VisionWorker {
         self.stop_until(deadline)
     }
 
-    pub(super) fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
+    pub(super) fn request_stop(&self) {
         let (pending, active_cancellation) = {
             let mut state = self
                 .shared
@@ -531,16 +516,32 @@ impl VisionWorker {
             let pending = state.pending.take();
             let active_cancellation = state.active_cancellation.as_ref().and_then(Weak::upgrade);
             self.shared.stopping.store(true, Ordering::Release);
+            self.shared.ready.notify_all();
             (pending, active_cancellation)
         };
         self.shared.latest_generation.store(0, Ordering::Release);
+        self.shared.system_ocr.request_stop();
+        self.shared.contour.request_stop();
+        self.discovery.request_stop();
         if let Some(cancellation) = active_cancellation {
             cancellation.cancel();
         }
         if let Some(job) = pending {
             finish_cancelled_job(job);
         }
+    }
+
+    pub(super) fn stop_until(&mut self, deadline: Instant) -> Result<(), String> {
+        self.request_stop();
         let mut errors = crate::support::errors::ErrorBundle::default();
+        errors.record(
+            "OCR source shutdown",
+            self.shared.system_ocr.stop_until(deadline),
+        );
+        errors.record(
+            "contour source shutdown",
+            self.shared.contour.stop_until(deadline),
+        );
         errors.record(
             "OCR discovery shutdown",
             self.discovery.stop_until(deadline),
@@ -603,29 +604,40 @@ impl Drop for VisionWorker {
 }
 
 fn worker_main(shared: Arc<SharedQueue>, discovery: DiscoveryHandle) {
+    use crate::platform::common::scan_reuse::{IDLE_TIMEOUT, IdleCache, wait_until};
+    let mut idle = IdleCache::<CaptureResources>::default();
+    idle.set_limit(1, Instant::now());
+    let mut idle_until = Instant::now() + IDLE_TIMEOUT;
     loop {
+        drop(idle.take_expired(Instant::now()));
         let job = {
-            let mut state = shared
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if state.stopping {
+            let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.pending.is_none() && !state.stopping && Instant::now() < idle_until {
+                let until = idle
+                    .next_expiration()
+                    .map_or(idle_until, |until| until.min(idle_until));
+                drop(wait_until(&shared.ready, state, Some(until)));
+                continue;
+            }
+            if state.stopping || state.pending.is_none() {
                 state.running = false;
                 return;
             }
             let Some(job) = state.pending.take() else {
-                state.running = false;
-                return;
+                continue;
             };
             state.active_request_id = Some(job.request.id);
             job
         };
         let request_id = job.request.id;
-        run_scan(job, &shared, &discovery);
-        let mut state = shared
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let (cached, expired) = idle.take(Instant::now());
+        drop(expired);
+        let mut resources = cached.unwrap_or_default();
+        if run_scan(job, &shared, &discovery, &mut resources) {
+            drop(idle.retain(resources, Instant::now()));
+        }
+        idle_until = Instant::now() + IDLE_TIMEOUT;
+        let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.active_request_id == Some(request_id) {
             state.active_request_id = None;
             state.active_cancellation = None;

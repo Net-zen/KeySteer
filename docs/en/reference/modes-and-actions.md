@@ -24,6 +24,7 @@ Array entries run in written order. Empty arrays are invalid. Arrays do not bloc
 | `normal` | Move, scroll, click, and enter targeting modes. |
 | `grid` | Full-screen coordinate grid. |
 | `recursive_grid` | Repeatedly subdivides the current region. |
+| `bisect` | Keep a directional half of the region, without letter labels. |
 | `text_select` | OCR text selection: regions → words → characters. |
 | `ui_hint` | Shows labels for interactive elements. |
 | `window` | Locks the window under the pointer for movement, centred resizing, layouts, and tiling. |
@@ -36,8 +37,9 @@ Array entries run in written order. Empty arrays are invalid. Arrays do not bloc
 ```toml
 [normal.bindings]
 g = "grid"
-f = "recursive_grid"
-"primary+f" = "ui_hint"
+f = "ui_hint"
+"primary+g" = "recursive_grid"
+"primary+f" = "bisect"
 "primary+s" = "screen next"
 
 # Optional: send directional keys to the focused application.
@@ -128,7 +130,7 @@ g = "grid"
 "primary+f" = "recursive_grid"
 ```
 
-G opens Grid and Primary+F opens Recursive Grid. Bare F still maximizes/restores. Remap them or set `none` to disable; existing custom tables need the entries added. Other window modes do not have these two default entries. Holding Primary also follows temporary-layer rules.
+G opens Grid; bare F maximizes/restores. Window explicitly binds Primary+F to Recursive Grid, and this binding remains available while the temporary layer is active. Remap them or set `none` to disable; existing custom tables need the entries added. Other window modes do not have these two default entries. Holding Primary also follows temporary-layer rules.
 
 ### T: persistent tab groups
 
@@ -207,7 +209,8 @@ macOS app audio is processed in memory without recording or uploading, but adds 
 | `scroll_full_*` | Scroll by `scroll_step_full`. |
 | `precision`, `slow`, `fast` | Change pointer speed while held. |
 | `precision_toggle`, `slow_toggle`, `fast_toggle` | Toggle a speed with a tap; tap the same binding again to clear it. The active speed appears below the mode indicator. |
-| `follow` | Toggle pointer following in Grid or Recursive Grid. |
+| `follow` | Toggle pointer following in Grid, Recursive Grid or Bisect. |
+| `bisect_left` / `bisect_down` / `bisect_up` / `bisect_right` | Keep the left/bottom/top/right half in Bisect; default h/j/k/l. |
 
 `wheel_*` remains a compatibility alias for `scroll_*`. Speed actions are usually paired with a movement key:
 
@@ -397,17 +400,17 @@ Normal defaults to `"?" = "key_help"`; targeting modes can inherit it. Keep this
 
 ```toml
 [ui_hint]
-scan_scope = "window" # window / active / screen / all
+scan_scope = "all" # window / active / screen / all
 ```
 
 | `scan_scope` | Area |
 | --- | --- |
-| `window` (default) | Pointer's window, then active window if unavailable, then pointer's display |
+| `window` | Pointer's window, then active window if unavailable, then pointer's display |
 | `active` | Active window, then pointer's window, then pointer's display |
 | `screen` | Pointer's whole display, without combining other displays |
-| `all` | Visible windows and UI on all displays; spanning windows are traversed once |
+| `all` (default) | Visible windows and UI on all displays; spanning windows are traversed once |
 
-All strategies use these rules on both platforms. The default attempts to activate the pointer's window. Once selected, empty results, source failure, or activation failure do not change the scope.
+All strategies use these rules on both platforms. The `window` scope attempts to activate the pointer's window. Text Select uses the same four choices through its independent `text_select.scan_scope`, also defaulting to `all`. Once selected, empty results, source failure, or activation failure do not change the scope.
 
 `screen` / `all` use the global `strategy`, without applying the foreground application's `app_configs` strategy to other applications. Visibility checks exclude fully covered windows and retain visible portions of controls; visual sources read the composited desktop. Results grow dynamically with no default 10,000-target ceiling. For visual-only scans, `rectangle_max_candidates = 0` means unlimited; explicit positive values still apply, and Hybrid ignores that option. Timeouts, cancellation and image-size protections remain active.
 
@@ -594,15 +597,47 @@ Position uses a reference and four percentage insets; see [Search panel position
 
 ## Text Select
 
-Press `c` in Normal to enter `text_select`. The input and text panels open immediately, reusing UIHint's scan scope, OCR options and appearance. This mode requests OCR text only.
+Press `c` in Normal to enter `text_select`. The input and original-position hints appear first; the compact text preview appears after input and stays visible during refinement. The mode uses its independent `text_select.scan_scope` (default `all`) and shares UIHint's OCR options and appearance, requesting OCR text only.
 
-Type a region label to select its text and move the pointer to its end without clicking. Press `Primary+C` to refine into system-tokenized words, then Unicode grapheme characters. Ordinary `c` remains input. Missing language rules fall back to characters without a bundled dictionary.
+Type a region label to select its text and move the pointer `[12, 12]` beyond its bottom-right corner without clicking. Press `Alt+C` (Option+C on macOS) to refine into system-tokenized words, then Unicode grapheme characters. Ctrl+C on Windows/Linux and Command+C on macOS always copy the checked OCR text, regardless of query content or input highlighting; ordinary `c` remains input. Missing language rules fall back to characters without a bundled dictionary.
 
-Input uses the same search and multi-selection rules as UIHint: type text, pinyin initials, or space-separated labels such as `a d f`. Use `@a @d` for explicit labels. A trailing space reveals all hints again. Completed labels resolve selections; unresolved text previews the highest-ranked match. Duplicate terms select once. Uppercase is case-insensitive; `adf` is one search term.
+The first level uses UIHint search: type text, pinyin initials, or space-separated labels such as `a d f`; use `@a @d` for explicit labels. Word and character levels start fully checked and use fixed decimal numbers starting at 1, unchanged by filtering or paging. Letters, text and pinyin initials search every item in the current level, including other pages, without changing existing checks. A single number toggles its item; `1-20` selects the inclusive range, and `1-3 4-5` selects two ranges in input order without duplicates. Descending ranges follow their written direction. Numbers resolve immediately when no longer valid ID shares their prefix. With 20 items, `8`, `9` and `12` need no separator; `1` and `2` wait for more digits or confirmation. Ambiguous numbers and range endpoints accept a space, copy or refine action to confirm. After an automatic single-number toggle, a following hyphen still extends it into a range such as `8-9`. Ambiguity uses only the IDs actually displayed on the current page; other pages and filtered-out items cannot delay a visible number. Words, characters, input edits, page changes and arriving search results use the same matching rule. When both `1` and `12` are displayed, `1` still waits for more input or confirmation. Committed numbers leave the input while search text stays. Incomplete, invalid and out-of-bounds ranges do not execute; deleting them does not undo confirmed checks.
 
-Backspace edits nonempty input and updates the selection; with empty input it returns to the parent. Tab always returns to the parent, restoring its selection. Ctrl+Backspace resets to regions; Space separates input terms. Enter copies the preview and returns after clipboard success. PageUp/PageDown page the enlarged characters; Esc exits; `?` shows effective keys. All controls are configurable.
+Backspace edits nonempty input; with empty input it clears all checked items on the current level. Ctrl+A selects the input characters when nonempty, or checks all items across pages when empty. Alt+Backspace restores the parent level. Tab cycles the word/character pages, wrapping from the last to the first; it does not change checked items. The footer shows the current/total pages and the cycle key. Ctrl+Backspace resets to regions. Enter follows the same copy rule. Successful copying triggers `text_select.lifecycle.after_copy`, returning to Normal by default. Ctrl+X clears the entire input without changing the clipboard or level; confirmed word/character checks stay unchanged. `Primary+Q` returns to Normal without copying. Esc exits; `?` shows effective keys. All controls are configurable.
 
-Text is copied in source order. Adjacent selections retain source spacing; disjoint English words get a separator and disjoint letters concatenate. Regions and words keep hints at their original screen positions; only characters are enlarged in the panel. The text-only panel previews up to four lines with paragraph breaks and a selection count, while copying includes all selected text. The standard Text Select indicator shows the level. Initial hints and input paint before cooperative search indexing; refinement does not capture the screen again.
+Regions copy in source order; words and characters combine in selection order for both preview and copying. With empty input, press Backspace to clear the checks, then type numbers or ranges in the desired order. Unchecking removes an item; checking it again appends it to the end. Ctrl+A preserves the existing order and appends missing items in panel order. Paging, clearing input and returning to a parent preserve selection order. OCR rows in the same paragraph are joined and passed through the same whitespace cleanup as UIHint search OCR copying, preserving English word boundaries and paragraph separators. The system font layout wraps the preview to the actual panel width, so wider panels show more text per line; preview and copying use the same cleaned text. Disjoint English words get a separator and disjoint letters concatenate. Only the first level draws hints and selected-region outlines over the original text. Words and characters appear exclusively as checked choices in the panel; refinement neither calculates their screen coordinates nor runs extra character detection. The wider panel (default `text_select.ui.panel_width = 800`) previews up to four lines with paragraph breaks, separating the selection count from compact cards with spacing and a divider; copying includes all checked text. The standard Text Select indicator shows the level. Initial hints and input paint before cooperative first-level search indexing; refinement does not capture the screen again.
+
+Hold Shift on the first level to raise the next overlapping hint layer; release to restore the default, and hold again to cycle further. This reuses `ui_hint.overlap_cycle_key` and accepts either side. Word and character levels do not cycle overlap layers. Word cards wrap by their individual lengths. Set `text_select.ui.word_min_width` / `char_min_width` (defaults 48 / 40, range 24–240) in **Text Select → Appearance** to adjust each grid’s density.
+
+Configure the region outline and pointer landing independently. `padding = [x, y]` expands both horizontal and vertical sides by 0–100 units. `border_width` accepts 0–20; zero hides the outline. Omitting the color follows the theme accent. The pointer offset is relative to the original region's bottom-right corner: positive values move right/down, independently of outline padding.
+
+Backspace and Ctrl+A switch between editing input and changing checked items. Copy always targets checked panel text; Ctrl+X always clears the entire input. Remapping retains these rules. Copy uses `text_copy`, with `mod+c` resolving to Ctrl+C or Command+C independently of the default Primary-to-Alt override and grouped with Enter. Add the group to an existing complete binding table, assign another key, or use `none` to disable it. With no checked panel text, copying leaves the clipboard untouched. Only successful copying of checked OCR text follows `lifecycle.after_copy`. Parent navigation uses a separate Alt+Backspace binding:
+
+```toml
+[text_select.bindings]
+backspace = "text_clear_selection"
+"ctrl+a" = "text_select_all"
+"alt+backspace" = "previous_level"
+tab = "text_cycle_page"
+"alt+c" = "text_refine"
+"ctrl+backspace" = "first_level"
+"mod+c enter" = "text_copy"
+"ctrl+x" = "text_clear_input"
+esc = "cancel_selection"
+"primary+q" = "normal"
+"?" = "key_help"
+```
+
+```toml
+[text_select.ui]
+panel_width = 800
+pointer_offset = [12, 12]
+border_color = { light = "#16856BFF", dark = "#68D9B1FF" }
+border_width = 1.5
+padding = [2, 2]
+word_min_width = 48
+char_min_width = 40
+```
 
 ## Configurable selection controls
 
@@ -616,4 +651,4 @@ space = "none"
 "ctrl+backspace" = "first_level"
 ```
 
-Recursive Grid has its own binding table. Normal blind targeting also accepts reset/parent actions. UIHint and the screen selector plugin expose their controls in their binding tables. Window Editor's backtick uses `window_area_number`; Restore uses `window_previous_page` / `window_next_page`; Window selection input uses `window_multi_cancel` and configurable editing mappings. Defaults remain backtick, PageUp/PageDown, Esc and the existing editing keys. Help follows effective bindings, including disabled keys.
+Recursive Grid and Bisect have independent binding tables. Normal blind targeting also accepts reset/parent actions. UIHint and the screen selector plugin expose their controls in their binding tables. Window Editor's backtick uses `window_area_number`; Restore uses `window_previous_page` / `window_next_page`; Window selection input uses `window_multi_cancel` and configurable editing mappings. Defaults remain backtick, PageUp/PageDown, Esc and the existing editing keys. Help follows effective bindings, including disabled keys.

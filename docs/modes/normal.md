@@ -39,7 +39,7 @@ import KeyLayout from '../.vitepress/components/KeyLayout'
 | `;` / `'` / `右 Shift` | 左键 / 右键 / 中键点击 |
 | `N` + 点击键 | 锁住鼠标按钮，方便拖拽；单独点 `N` 松开 |
 | `T / Y / I / U` | Home / End / Page Up / Page Down |
-| `G` / `F` / `Primary+F` | Grid / Recursive Grid / UI Hint |
+| `G` / `F` / `Primary+G` / `Primary+F` | Grid / UI Hint / Recursive Grid / Bisect |
 | `Primary+S` | 将鼠标切到下一块显示器 |
 | `Primary+D` | 将鼠标下的窗口移到下一块显示器 |
 | `Q` / `Esc` | 返回待机 |

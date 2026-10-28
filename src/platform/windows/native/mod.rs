@@ -5,7 +5,6 @@ mod dimensions;
 mod gdi;
 mod handles;
 mod message_loop;
-mod ocr_bridge;
 mod uia_cache;
 mod window;
 mod winrt;
@@ -17,13 +16,11 @@ pub(crate) use compositor::{
 };
 pub(crate) use dimensions::NativeDimensions;
 pub(crate) use gdi::{GdiDibSurface, OwnedFont, PreparedCapture, ScreenDc};
-pub(crate) use handles::KillOnCloseJob;
 use handles::OwnedHandle;
 pub(crate) use message_loop::{
     SessionNotifications, ThreadTimer, default_window_proc, get_window_message,
     post_thread_message, post_thread_wake, register_window_class,
 };
-pub(crate) use ocr_bridge::WechatBridge;
 use std::path::Path;
 pub(crate) use uia_cache::CachedElement;
 pub(crate) use window::{
@@ -32,10 +29,7 @@ pub(crate) use window::{
 use windows::Win32::Foundation::{HANDLE, HWND};
 #[cfg(test)]
 pub(crate) use winrt::create_system_ocr_engine;
-pub(crate) use winrt::{
-    SoftwareBitmapFactory, SystemOcrFactory, create_file_random_access_stream,
-    create_png_bitmap_encoder_operation, probe_system_ocr_factory,
-};
+pub(crate) use winrt::{SoftwareBitmapFactory, SystemOcrFactory, probe_system_ocr_factory};
 
 #[inline(always)]
 pub(crate) fn window_long(
@@ -117,14 +111,6 @@ pub(crate) fn try_activate_window(hwnd: HWND) -> bool {
     // SAFETY: the system validates the borrowed HWND; no Rust pointer or
     // ownership is transferred, and no foreign input queues are attached.
     unsafe { windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd) }.as_bool()
-}
-
-#[inline(always)]
-pub(crate) fn current_process_id() -> u32 {
-    use windows::Win32::System::Threading::GetCurrentProcessId;
-
-    // SAFETY: this call has no arguments or failure mode.
-    unsafe { GetCurrentProcessId() }
 }
 
 #[inline(always)]
@@ -301,7 +287,7 @@ pub(crate) fn send_input_failure_context(last_error: u32, input_size: usize) -> 
     } else {
         format!("{}", std::io::Error::from_raw_os_error(last_error as i32))
     };
-    let current_pid = current_process_id();
+    let current_pid = std::process::id();
     let foreground = foreground_window();
     let mut foreground_pid = 0u32;
     let foreground_thread = window_thread_process_id(foreground, Some(&mut foreground_pid));

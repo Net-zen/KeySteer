@@ -48,6 +48,9 @@ use crate::api::overlay::{
     Color, CursorMarker, Indicator, LabelStyle, LabelTextAnalysis, OverlayLabel, OverlayScene,
     OverlayShape,
 };
+use crate::platform::common::overlay_geometry::{
+    IndicatorLayout, indicator_layout, pixel_aligned_rect,
+};
 
 use super::super::native::{
     self, NativeDimensions, OwnedWindow, OwnedWindowSpec, create_owned_window,
@@ -152,6 +155,7 @@ struct FontEntry {
     size_bits: u64,
     bold: bool,
     alignment: crate::api::overlay::TextAlignment,
+    wrap: bool,
     format: IDWriteTextFormat,
 }
 
@@ -301,10 +305,11 @@ impl GpuOverlay {
     }
 
     pub(super) fn present(&mut self, scene: Arc<OverlayScene>, area: Rect) -> Result<(), String> {
-        if !scene
-            .labels
-            .iter()
-            .any(|label| label.edit.is_some() || label.scroll_to_cursor)
+        if self.edit_layout.is_some()
+            && !scene
+                .labels
+                .iter()
+                .any(|label| label.edit.is_some() || label.scroll_to_cursor)
         {
             self.edit_layout = None;
         }
@@ -416,14 +421,10 @@ impl GpuOverlay {
             if content.indicator_surface.is_none() {
                 return Err("indicator visual surface is unavailable".into());
             }
-            let bounds = indicator_bounds(item, position);
+            let layout = indicator_layout_in_window(item, position, content.area);
+            let bounds = indicator_bounds(&layout);
             content.positions.1 = None;
-            configure_visual(
-                &content.indicator_visual,
-                None,
-                bounds.x - content.area.x,
-                bounds.y - content.area.y,
-            )?;
+            configure_visual(&content.indicator_visual, None, bounds.x, bounds.y)?;
             content.positions.1 = Some(position);
         }
         self.commit(None)
@@ -713,6 +714,10 @@ impl GpuOverlay {
         let Some(retained) = scene.retained.as_ref() else {
             return self.draw_static(surface, scene, area);
         };
+        let regions = damage(previous, scene, area);
+        if regions.is_empty() {
+            return Ok(());
+        }
         let mut index = self
             .paint_index
             .take()
@@ -723,7 +728,7 @@ impl GpuOverlay {
                 ))
             });
         let result = (|| {
-            for region in damage(previous, scene, area) {
+            for region in regions {
                 let update = RECT {
                     left: (region.x - area.x).floor().max(0.0) as i32,
                     top: (region.y - area.y).floor().max(0.0) as i32,
@@ -859,15 +864,8 @@ impl GpuOverlay {
             }
             return Ok(());
         };
-        let first = indicator_rect(&indicator.text, indicator.position, &indicator.style);
-        let held = indicator.held_text.as_deref().map(|text| {
-            indicator_rect(
-                text,
-                Point::new(indicator.position.x, first.bottom() + 4.0),
-                &indicator.style,
-            )
-        });
-        let bounds = indicator_bounds(indicator, indicator.position);
+        let layout = indicator_layout_in_window(indicator, indicator.position, area);
+        let bounds = indicator_bounds(&layout);
         let width = dimension(bounds.width)?;
         let height = dimension(bounds.height)?;
         let surface_to_paint = {
@@ -883,12 +881,7 @@ impl GpuOverlay {
                 .as_ref()
                 .ok_or("DirectComposition indicator surface was not retained")?;
             let bind = recreated.then(|| layer.surface.clone());
-            configure_visual(
-                &content.indicator_visual,
-                bind.as_ref(),
-                bounds.x - area.x,
-                bounds.y - area.y,
-            )?;
+            configure_visual(&content.indicator_visual, bind.as_ref(), bounds.x, bounds.y)?;
             (repaint || recreated).then(|| layer.surface.clone())
         };
         if let Some(surface) = surface_to_paint {
@@ -899,13 +892,13 @@ impl GpuOverlay {
                 |renderer, origin| {
                     renderer.draw_label_parts(
                         &indicator.text,
-                        first,
+                        layout.main,
                         &indicator.style,
                         LabelTextAnalysis::analyze(&indicator.text, 0),
                         origin,
                         (None, false, 0),
                     )?;
-                    if let (Some(text), Some(rect)) = (&indicator.held_text, held) {
+                    if let (Some(text), Some(rect)) = (&indicator.held_text, layout.held) {
                         renderer.draw_label_parts(
                             text,
                             rect,
@@ -1017,8 +1010,6 @@ impl GpuOverlay {
         rect.bottom += text_offset_y;
         let format = self.text_format(style)?;
         let normal = self.brush(style.text_color)?;
-        self.utf16.clear();
-        self.utf16.extend(text.encode_utf16());
         let prefix_utf16_len = analysis.matched_utf16_len;
         let draw_options = if style.text_alignment == crate::api::overlay::TextAlignment::Left {
             D2D1_DRAW_TEXT_OPTIONS_CLIP
@@ -1068,6 +1059,8 @@ impl GpuOverlay {
                         cached.query_width,
                     )
                 } else {
+                    self.utf16.clear();
+                    self.utf16.extend(text.encode_utf16());
                     let layout = self
                         .dwrite
                         .CreateTextLayout(&self.utf16, &format, width, height)
@@ -1216,6 +1209,8 @@ impl GpuOverlay {
                 }
             }
         } else {
+            self.utf16.clear();
+            self.utf16.extend(text.encode_utf16());
             // SAFETY: UTF-16 data, format, brush and layout rectangle remain
             // live for the complete call.
             unsafe {
@@ -1256,6 +1251,7 @@ impl GpuOverlay {
                 && entry.size_bits == size_bits
                 && entry.bold == style.bold
                 && entry.alignment == style.text_alignment
+                && entry.wrap == style.wrap
         }) {
             return Ok(entry.format.clone());
         }
@@ -1269,26 +1265,26 @@ impl GpuOverlay {
         };
         let mut family_wide: Vec<u16> = family.encode_utf16().chain([0]).collect();
         let locale = w!("en-us");
-        // SAFETY: both strings are NUL-terminated and live through the call;
-        // the shared factory retains all data it needs.
+        // SAFETY: both NUL-terminated strings and resolved dimensions are valid.
+        // The factory owns the newly returned format; configuration uses documented
+        // enums and SetTrimming retains the factory-owned ellipsis sign.
         let format = unsafe {
-            self.dwrite.CreateTextFormat(
-                PCWSTR(family_wide.as_mut_ptr()),
-                None,
-                if style.bold {
-                    DWRITE_FONT_WEIGHT_BOLD
-                } else {
-                    DWRITE_FONT_WEIGHT_NORMAL
-                },
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                style.font_size.max(1.0) as f32,
-                locale,
-            )
-        }
-        .map_err(|error| format!("CreateTextFormat failed: {error}"))?;
-        // SAFETY: the format is newly owned and all enum values are valid.
-        unsafe {
+            let format = self
+                .dwrite
+                .CreateTextFormat(
+                    PCWSTR(family_wide.as_mut_ptr()),
+                    None,
+                    if style.bold {
+                        DWRITE_FONT_WEIGHT_BOLD
+                    } else {
+                        DWRITE_FONT_WEIGHT_NORMAL
+                    },
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    style.font_size.max(1.0) as f32,
+                    locale,
+                )
+                .map_err(|error| format!("CreateTextFormat failed: {error}"))?;
             format
                 .SetTextAlignment(match style.text_alignment {
                     crate::api::overlay::TextAlignment::Left => {
@@ -1299,15 +1295,55 @@ impl GpuOverlay {
                         windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_TRAILING
                     }
                 })
-                .and_then(|()| format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER))
-                .and_then(|()| format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP))
-        }
-        .map_err(|error| format!("cannot configure DirectWrite format: {error}"))?;
+                .and_then(|()| {
+                    format.SetParagraphAlignment(if style.wrap {
+                        windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_NEAR
+                    } else {
+                        DWRITE_PARAGRAPH_ALIGNMENT_CENTER
+                    })
+                })
+                .and_then(|()| {
+                    format.SetWordWrapping(if style.wrap {
+                        windows::Win32::Graphics::DirectWrite::DWRITE_WORD_WRAPPING_WRAP
+                    } else {
+                        DWRITE_WORD_WRAPPING_NO_WRAP
+                    })
+                })
+                .map_err(|error| format!("cannot configure DirectWrite format: {error}"))?;
+            if style.wrap {
+                use windows::Win32::Graphics::DirectWrite::{
+                    DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_TRIMMING,
+                    DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                };
+                format
+                    .SetLineSpacing(
+                        DWRITE_LINE_SPACING_METHOD_UNIFORM,
+                        (style.font_size * 1.4) as f32,
+                        style.font_size as f32,
+                    )
+                    .map_err(|error| format!("Set paragraph spacing failed: {error}"))?;
+                let ellipsis = self
+                    .dwrite
+                    .CreateEllipsisTrimmingSign(&format)
+                    .map_err(|error| format!("Create paragraph ellipsis failed: {error}"))?;
+                format
+                    .SetTrimming(
+                        &DWRITE_TRIMMING {
+                            granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                            ..Default::default()
+                        },
+                        &ellipsis,
+                    )
+                    .map_err(|error| format!("Set paragraph trimming failed: {error}"))?;
+            }
+            format
+        };
         self.formats.push(FontEntry {
             family: style.font_family.clone(),
             size_bits,
             bold: style.bold,
             alignment: style.text_alignment,
+            wrap: style.wrap,
             format: format.clone(),
         });
         Ok(format)
@@ -1509,25 +1545,22 @@ fn cursor_bounds(marker: &CursorMarker, center: Point) -> Rect {
     )
 }
 
-fn indicator_bounds(indicator: &Indicator, position: Point) -> Rect {
-    let first = indicator_rect(&indicator.text, position, &indicator.style);
-    indicator
-        .held_text
-        .as_deref()
-        .map(|text| {
-            indicator_rect(
-                text,
-                Point::new(position.x, first.bottom() + 4.0),
-                &indicator.style,
-            )
-        })
-        .map_or(first, |held| first.union(&held))
-        .inset(-1.0, -1.0)
+fn indicator_layout_in_window(
+    indicator: &Indicator,
+    position: Point,
+    area: Rect,
+) -> IndicatorLayout {
+    // Windows layout has already applied monitor DPI. Snap in the HWND's
+    // local physical pixels, even when the scene's clip has a fractional origin.
+    indicator_layout(
+        indicator,
+        Point::new(position.x - area.x, position.y - area.y),
+        1.0,
+    )
 }
 
-fn indicator_rect(text: &str, position: Point, style: &LabelStyle) -> Rect {
-    let (width, height) = Indicator::label_size(text.chars().count(), style);
-    Rect::new(position.x - width, position.y, width, height)
+fn indicator_bounds(layout: &IndicatorLayout) -> Rect {
+    pixel_aligned_rect(layout.bounds.inset(-1.0, -1.0), 1.0)
 }
 
 extern "system" fn window_proc(
@@ -1549,6 +1582,83 @@ mod tests {
     use std::time::Instant;
 
     #[test]
+    #[ignore = "native DirectWrite layout; initializes a GPU device without displaying windows"]
+    fn native_text_select_paragraph_uses_full_width_and_reuses_fonts() -> Result<(), String> {
+        use windows::Win32::Graphics::DirectWrite::DWRITE_LINE_METRICS;
+        let mut renderer = GpuOverlay::new()?;
+        for scale in [1.0, 1.5, 2.0] {
+            let mut style = LabelStyle {
+                wrap: true,
+                font_size: 14.0 * scale,
+                bold: false,
+                text_alignment: crate::api::overlay::TextAlignment::Left,
+                ..Default::default()
+            };
+            let format = renderer.text_format(&style)?;
+            assert_eq!(format, renderer.text_format(&style)?);
+            for phrase in [
+                "alpha beta gamma delta epsilon ",
+                "中文测试自然换行 ",
+                "iii WWW iii ",
+            ] {
+                let text = phrase.repeat(40);
+                let text: Vec<_> = text.encode_utf16().collect();
+                let mut first_lengths = Vec::new();
+                for width in [400.0, 1000.0] {
+                    let width = (width * scale) as f32;
+                    let mut lines = [DWRITE_LINE_METRICS::default(); 128];
+                    let mut count = 0;
+                    // SAFETY: UTF-16, format and output metrics are owned through
+                    // all synchronous calls; hit-test indices come from this layout.
+                    unsafe {
+                        let layout = renderer
+                            .dwrite
+                            .CreateTextLayout(
+                                &text,
+                                &format,
+                                width,
+                                (style.font_size * 1.4 * 4.0) as f32,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        layout
+                            .GetLineMetrics(Some(&mut lines), &mut count)
+                            .map_err(|e| e.to_string())?;
+                        assert!(count > 1);
+                        let first = lines[0];
+                        first_lengths.push(first.length);
+                        let (mut x, mut y) = (0.0, 0.0);
+                        let mut metrics = DWRITE_HIT_TEST_METRICS::default();
+                        layout
+                            .HitTestTextPosition(
+                                first.length - first.trailingWhitespaceLength - 1,
+                                true,
+                                &mut x,
+                                &mut y,
+                                &mut metrics,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        assert!(
+                            x > width * 0.85 && x <= width + 0.1,
+                            "{phrase}: used {x}/{width}"
+                        );
+                        assert!((first.height - (style.font_size * 1.4) as f32).abs() < 0.01);
+                    }
+                }
+                assert!(first_lengths[1] > first_lengths[0] * 2);
+            }
+            style.wrap = false;
+            assert_ne!(format, renderer.text_format(&style)?);
+            style.wrap = true;
+            assert_eq!(format, renderer.text_format(&style)?);
+        }
+        assert!(
+            renderer.content.is_none(),
+            "font measurement must not create a window"
+        );
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "requires an interactive Windows compositor; disposable overlay pixel comparison"]
     fn native_retained_damage_matches_full_redraw() -> Result<(), String> {
         use crate::api::overlay::RetainedOverlay;
@@ -1566,6 +1676,21 @@ mod tests {
             );
         }
         let base = Arc::new(base);
+        renderer.present(Arc::clone(&base), area)?;
+        let started = renderer.begin_draws;
+        let mut promoted = OverlayScene::new();
+        promoted.clip = base.clip;
+        promoted.backdrop = base.backdrop;
+        promoted.retained = Some(RetainedOverlay {
+            scene: Arc::clone(&base),
+            omitted_label: None,
+        });
+        renderer.present(Arc::new(promoted), area)?;
+        assert_eq!(renderer.begin_draws, started);
+        assert!(
+            renderer.paint_index.is_none(),
+            "promoting an unchanged background needs no paint index"
+        );
         for (scale, transparent) in [(1.0, false), (1.0, true), (1.5, true), (2.0, true)] {
             let mut dpi = super::super::overlay::DpiSceneCache::default();
             renderer.present(Arc::new(dpi.scene_for_dpi(&base, scale).into_owned()), area)?;
@@ -1797,6 +1922,46 @@ mod tests {
     }
 
     #[test]
+    fn indicator_surface_geometry_stays_in_local_integer_pixels() {
+        let indicator = Indicator {
+            text: "Normal".into(),
+            held_text: Some("HELD: SHIFT".into()),
+            position: Point::new(-1700.3, 110.2),
+            style: LabelStyle {
+                font_size: 11.0,
+                padding_x: 4.0,
+                padding_y: 2.0,
+                ..LabelStyle::default()
+            },
+        };
+        let area = Rect::new(-1920.25, -200.75, 1920.0, 1080.0);
+        let mut previous_size = None;
+        for delta in [0.0, 0.1, 0.5, 1.0, 30.7] {
+            let position = Point::new(indicator.position.x + delta, indicator.position.y - delta);
+            let layout = indicator_layout_in_window(&indicator, position, area);
+            let bounds = indicator_bounds(&layout);
+            for value in [bounds.x, bounds.y, bounds.width, bounds.height] {
+                assert_eq!(value, value.round());
+            }
+            let size = (
+                dimension(bounds.width).unwrap(),
+                dimension(bounds.height).unwrap(),
+            );
+            if let Some(previous_size) = previous_size {
+                assert_eq!(size, previous_size, "movement must reuse the surface");
+            }
+            previous_size = Some(size);
+            for label in std::iter::once(layout.main).chain(layout.held) {
+                assert!(label.x >= bounds.x + 1.0 && label.y >= bounds.y + 1.0);
+                assert!(label.right() <= bounds.right() - 1.0);
+                assert!(label.bottom() <= bounds.bottom() - 1.0);
+                assert_eq!(label.x - bounds.x, (label.x - bounds.x).round());
+                assert_eq!(label.y - bounds.y, (label.y - bounds.y).round());
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "requires an interactive Windows compositor"]
     fn directcomposition_smoke() -> Result<(), String> {
         super::super::enable_dpi_awareness()?;
@@ -1830,8 +1995,13 @@ mod tests {
         scene.indicator = Some(crate::api::overlay::Indicator {
             text: "DComp".into(),
             held_text: Some("GPU".into()),
-            position: Point::new(248.0, 72.0),
-            style: LabelStyle::default(),
+            position: Point::new(248.1, 72.1),
+            style: LabelStyle {
+                font_size: 11.0,
+                padding_x: 4.0,
+                padding_y: 2.0,
+                ..LabelStyle::default()
+            },
         });
         let scene = Arc::new(scene);
         renderer.present(Arc::clone(&scene), area)?;
@@ -1856,6 +2026,20 @@ mod tests {
             "indicator must be above the static backdrop"
         );
         let draws = renderer.begin_draws;
+        renderer.update_positions(None, Some(Point::new(248.4, 72.4)))?;
+        assert!(
+            read()? == original,
+            "subpixel pointer movement within one pixel must not blur the badge"
+        );
+        let mut same_pixel = scene.as_ref().clone();
+        // A distinct logical anchor forces the complete-frame positioning path
+        // while still selecting the same physical pixel as the fast move.
+        same_pixel.indicator.as_mut().unwrap().position = Point::new(248.2, 72.2);
+        renderer.present(Arc::new(same_pixel), area)?;
+        assert!(
+            read()? == original,
+            "complete and position-only frames must align alike"
+        );
         renderer.update_positions(Some(Point::new(140.0, 52.0)), Some(Point::new(208.0, 92.0)))?;
         let moved = read()?;
         assert_eq!(rgb(&moved, 180, 32), [255, 255, 255]);
@@ -1994,15 +2178,21 @@ mod tests {
         scene.labels.push(input);
         renderer.present(Arc::new(scene.clone()), area)?;
         let layout = renderer.edit_layout.as_ref().unwrap().layout.clone();
+        renderer.utf16.clear();
         scene.labels[0].edit = Some(crate::api::overlay::LabelEdit::try_from(
             crate::api::text_edit::Selection::default(),
         )?);
         renderer.present(Arc::new(scene.clone()), area)?;
         assert_eq!(renderer.edit_layout.as_ref().unwrap().layout, layout);
+        assert!(
+            renderer.utf16.is_empty(),
+            "cursor updates reuse encoded text"
+        );
         scene.labels[0].edit = None;
         assert!(scene.labels[0].scroll_to_cursor);
         renderer.present(Arc::new(scene.clone()), area)?;
         assert_eq!(renderer.edit_layout.as_ref().unwrap().layout, layout);
+        assert!(renderer.utf16.is_empty(), "Point reuses the editor's text");
         scene.labels[0].text.push_str("0/163");
         scene.labels[0].trailing_text_len = 5;
         renderer.present(Arc::new(scene.clone()), area)?;

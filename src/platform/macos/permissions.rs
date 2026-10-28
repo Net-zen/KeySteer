@@ -11,6 +11,78 @@ use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::string::CFString;
+use objc2_core_foundation::{
+    CFDictionary as NativeDictionary, CFNotificationCenter, CFNotificationSuspensionBehavior,
+    CFRetained, CFString as NativeString,
+};
+
+/// Best-effort, event-driven fallback for macOS releases that revoke access
+/// without disabling/invalidation callbacks on an existing event tap. These
+/// notification names are undocumented; never treat their absence as a grant.
+pub(super) struct ChangeObserver {
+    centers: Vec<CFRetained<CFNotificationCenter>>,
+    identity: Box<u8>,
+}
+
+extern "C-unwind" fn permission_list_changed(
+    _center: *mut CFNotificationCenter,
+    _observer: *mut c_void,
+    _name: *const NativeString,
+    _object: *const c_void,
+    _info: *const NativeDictionary,
+) {
+    // Notifications describe any app/service, not necessarily KeySteer. Only
+    // queue work here: no TCC/WindowServer query on the main thread.
+    super::input::hook::permission_list_changed();
+}
+
+impl ChangeObserver {
+    pub(super) fn new() -> Self {
+        let mut observer = Self {
+            centers: Vec::new(),
+            identity: Box::new(0),
+        };
+        for (center, name) in [
+            (
+                CFNotificationCenter::distributed_center(),
+                "com.apple.accessibility.api",
+            ),
+            (
+                CFNotificationCenter::darwin_notify_center(),
+                "com.apple.tcc.access.changed",
+            ),
+        ] {
+            if let Some(center) = center {
+                // SAFETY: the stable Box is only an identity, never dereferenced
+                // by the callback. The exact ABI ignores all notification data;
+                // Drop removes both registrations before freeing the identity.
+                unsafe {
+                    center.add_observer(
+                        std::ptr::from_ref(observer.identity.as_ref()).cast(),
+                        Some(permission_list_changed),
+                        Some(&NativeString::from_str(name)),
+                        std::ptr::null(),
+                        CFNotificationSuspensionBehavior::DeliverImmediately,
+                    );
+                }
+                observer.centers.push(center);
+            }
+        }
+        observer
+    }
+}
+
+impl Drop for ChangeObserver {
+    fn drop(&mut self) {
+        for center in &self.centers {
+            // SAFETY: same retained centers and still-live identity registered
+            // above. Late callbacks contain no pointer to application state.
+            unsafe {
+                center.remove_every_observer(std::ptr::from_ref(self.identity.as_ref()).cast());
+            }
+        }
+    }
+}
 
 // AX* lives in ApplicationServices, which is not pulled in by core-graphics.
 #[link(name = "ApplicationServices", kind = "framework")]

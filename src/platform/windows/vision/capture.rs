@@ -60,51 +60,6 @@ pub(super) fn capture_pixel_rect(
     )
 }
 
-pub(super) fn wechat_full_frame_from_bgra(
-    pixels: &[u8],
-    geometry: CaptureGeometry,
-    factory: &crate::platform::windows::native::SoftwareBitmapFactory,
-) -> Result<WechatFullFrame, String> {
-    let bitmap = factory.bgra(pixels, geometry.width, geometry.height)?;
-    crate::support::perf_probe::mark("ocr_bitmap_ready");
-    Ok(WechatFullFrame {
-        geometry,
-        bitmap: Some(bitmap),
-        _ledger: crate::support::perf_probe::ResourceGuard::new(
-            crate::support::perf_probe::ResourceKind::Bitmap,
-        ),
-    })
-}
-
-pub(super) fn submit_wechat_full_frame(
-    input: &mut Option<WechatSubmission>,
-    pixels: &[u8],
-    geometry: CaptureGeometry,
-    factory: Option<&crate::platform::windows::native::SoftwareBitmapFactory>,
-    factory_error: Option<&str>,
-    cancellation: &ScanCancellation,
-) -> Result<(), String> {
-    let Some(sender) = input.as_ref() else {
-        return Ok(());
-    };
-    let sent = sender.send(
-        || match factory.map(|factory| wechat_full_frame_from_bgra(pixels, geometry, factory)) {
-            Some(Ok(frame)) => WechatInput::Frame(frame),
-            Some(Err(error)) => WechatInput::Failed(error),
-            None => WechatInput::Failed(
-                factory_error
-                    .unwrap_or("cannot create the COM apartment for the WeChat OCR bitmap")
-                    .into(),
-            ),
-        },
-        cancellation,
-    )?;
-    if !sent {
-        input.take();
-    }
-    Ok(())
-}
-
 pub(super) fn system_ocr_tile_from_bgra(
     pixels: &[u8],
     geometry: CaptureGeometry,
@@ -128,7 +83,6 @@ pub(super) fn system_ocr_tile_from_bgra(
     )?;
     let desktop_bounds = capture_pixel_rect(geometry, bitmap_x, bitmap_y, tile_width, tile_height);
     Ok(SystemOcrTile {
-        text_positions: false,
         geometry: CaptureGeometry {
             width: tile_width,
             height: tile_height,
@@ -155,7 +109,6 @@ pub(super) fn stream_system_ocr_tiles(
     frames: &[CapturedFrame],
     factory: &crate::platform::windows::native::SoftwareBitmapFactory,
     submission: &SystemOcrSubmission,
-    text_positions: bool,
     mut progress: impl FnMut(Option<usize>) -> Result<(), String>,
 ) -> Result<(), String> {
     for frame in frames {
@@ -164,14 +117,13 @@ pub(super) fn stream_system_ocr_tiles(
             return Err("captured BGRA byte length does not match system OCR geometry".into());
         }
     }
-    let pending = crate::platform::common::image_tiles::round_robin(frames.iter().map(|frame| {
-        frame.layout.tiles(
-            frame.geometry.width,
-            frame.geometry.height,
-            SYSTEM_OCR_TILE_OVERLAP as usize,
-        )
-    }));
-    let tile_count = frames.iter().map(|frame| frame.layout.tile_count).sum();
+    // Frames and their cores are already ordered by the generation's pointer.
+    // Fill the shared budget with nearby work before more distant displays.
+    let pending = frames
+        .iter()
+        .enumerate()
+        .flat_map(|(index, frame)| frame.tiles.iter().copied().map(move |tile| (index, tile)));
+    let tile_count = frames.iter().map(|frame| frame.tiles.len()).sum();
     if submission
         .sender
         .send(SystemOcrInput::Begin { tile_count })
@@ -201,9 +153,8 @@ pub(super) fn stream_system_ocr_tiles(
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             }
         }
-        let mut tile =
+        let tile =
             system_ocr_tile_from_bgra(frame.capture.pixels(), frame.geometry, factory, tile)?;
-        tile.text_positions = text_positions;
         if submission.sender.send(SystemOcrInput::Tile(tile)).is_err() {
             return Ok(());
         }

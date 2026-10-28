@@ -1,4 +1,179 @@
 #[test]
+fn every_mode_compiles_optional_temporary_layers_with_the_same_precedence() {
+    for mode in ["normal", "quick_switch", "text_input", "text_select", "grid", "recursive_grid", "bisect", "ui_hint", "window", "window_quick", "window_editor", "window_restore", "window_tab", "plugin:screen-selector"] {
+        let section = if mode.starts_with("plugin:") { format!("plugin_modes.\"{mode}\"") } else { mode.into() };
+        let borrowed = if mode == "normal" { "text_input" } else { "normal" };
+        for triggers in ["", "temporary_mode_keys = []", "temporary_mode_keys = ['right_alt']"] {
+            let config = Config::parse(&format!(r#"
+[hotkeys]
+f12 = 'key_help'
+[{section}]
+inherits = ['hotkeys']
+temporary_mode = '{borrowed}'
+{triggers}
+temporary_mode_passthrough_keys = ['f11', 'right_alt']
+[{section}.bindings]
+f8 = 'move_up'
+'right_alt+f10' = 'move_up'
+'f6+f9' = 'move_down'
+'f7+f9' = 'move_up'
+f11 = 'move_up'
+right_alt = 'fast'
+[{borrowed}.bindings]
+f9 = 'move_left'
+'right_alt+f9' = 'arrow_left'
+'right_alt+f10' = 'move_right'
+'f7+f9' = 'move_right'
+f11 = 'move_left'
+"#)).unwrap();
+            config.validate().unwrap();
+            let mut engine = text_input_engine(config);
+            let id = ModeId::new(mode).unwrap();
+            engine.set_active(id.clone());
+            let route = &engine.registry.routes[&id];
+            let enabled = triggers.contains("right_alt");
+            assert_eq!(route.temporary_mode.is_some(), enabled, "{mode}: {triggers}");
+            assert_eq!(engine.registry.temporary_chords(&id).is_some(), enabled, "{mode}");
+            if !enabled {
+                assert!(route.temporary_keys.is_empty() && route.temporary_passthrough.is_empty());
+            }
+            let resolve = |key: &str, modifier: bool| {
+                let key = Key::new(key).unwrap();
+                let mut pressed = vec![key.clone()];
+                if modifier && key.as_str() != "right_alt" { pressed.push(Key::new("right_alt").unwrap()); }
+                engine.lookup_for_pressed(&key, &pressed).map(|resolved| (*resolved.binding).clone())
+            };
+            assert_eq!(resolve("f8", false), Some(Binding::Move(Direction::Up)), "{mode}");
+            assert_eq!(resolve("f12", false), Some(Binding::parse("key_help").unwrap()), "{mode}");
+            assert_eq!(resolve("f9", true), enabled.then_some(Binding::Move(Direction::Left)), "{mode}");
+            assert_eq!(resolve("f10", true), Some(Binding::Move(Direction::Up)), "{mode}");
+            if enabled {
+                assert_eq!(resolve("f11", true), Some(Binding::Move(Direction::Up)), "{mode}");
+                assert_eq!(resolve("right_alt", true), Some(Binding::parse("fast").unwrap()), "{mode}");
+                for (companion, direction) in [("f6", Direction::Down), ("f7", Direction::Right)] {
+                    let key = Key::new("f9").unwrap();
+                    let pressed = [Key::new("right_alt").unwrap(), Key::new(companion).unwrap(), key.clone()];
+                    for resolved in [engine.lookup_for_pressed(&key, &pressed), engine.lookup_for_help(&key, &pressed)] {
+                        assert_eq!(resolved.unwrap().binding.as_ref(), &Binding::Move(direction), "{mode}: remaining exact chords win; the temporary layer wins ties");
+                    }
+                }
+            }
+        }
+    }
+    for config in [Config::default(), Config::parse("").unwrap()] {
+        let mut engine = text_input_engine(config);
+        for id in engine.registry.keys().cloned().collect::<Vec<_>>() {
+            engine.set_active(id.clone());
+            let route = &engine.registry.routes[&id];
+            assert!(route.temporary_mode.is_none(), "{id}");
+            assert!(route.temporary_keys.is_empty() && route.temporary_passthrough.is_empty(), "{id}");
+            assert!(engine.registry.temporary_chords(&id).is_none(), "{id}");
+            for modifier in ["left_alt", "right_alt", "left_ctrl", "right_ctrl", "left_shift", "right_shift", "left_win", "right_win"] {
+                let key = Key::new(modifier).unwrap();
+                assert!(!engine.key_may_change_temporary_mode(&key), "{id}: {modifier}");
+                engine.input.pressed.insert(key.clone());
+                assert!(!engine.temporary_mode_is_active(&id), "{id}: {modifier}");
+                assert_eq!(engine.display_mode(), id, "{modifier}");
+                engine.input.pressed.remove(&key);
+            }
+        }
+    }
+}
+
+#[test]
+fn ui_hint_labels_and_search_borrow_all_normal_actions_without_restarting() {
+    for search in [false, true] {
+        let mut config = Config::default();
+        config.ui_hint.temporary_mode_keys = vec!["right_alt".into()];
+        config.normal.bindings.insert("f6".into(), Binding::Mode(ModeId::text_input()));
+        let mut engine = text_input_engine(config);
+        let (mut backend, log) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.cursor = Point::new(500.0, 400.0);
+        engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
+        let id = log.lock().unwrap().scan_requests.last().unwrap().id;
+        engine.handle_backend_event(BackendEvent::UiScanned(crate::api::UiScanResult {
+            id, status: UiScanStatus::Success, retired: Vec::new(),
+            targets: vec![crate::api::UiTarget::recognized_text(Rect::new(10., 10., 200., 20.), "hello".into())],
+        }), &mut backend).unwrap();
+        if search { point_keys(&mut engine, &mut backend, &["/"]); }
+        let prompt_id = engine.scheduler.text_prompt.as_ref().map(|(_, prompt)| prompt.id);
+        let rebuilds = engine.registry.table_rebuild_count;
+        for event in [key_down("right_alt"), key_down("h"), BackendEvent::Frame(Duration::from_millis(20))] {
+            engine.handle_backend_event(event, &mut backend).unwrap();
+        }
+        assert_eq!(engine.active_mode(), &ModeId::ui_hint());
+        assert_eq!(engine.display_mode(), ModeId::normal());
+        assert_eq!(engine.input.active_gestures.get(&Key::new("h").unwrap()).unwrap().owner, ModeId::normal());
+        assert!(!log.lock().unwrap().moves.is_empty());
+        engine.handle_backend_event(key_up("right_alt"), &mut backend).unwrap();
+        assert!(engine.input.active_gestures.is_empty());
+        engine.handle_backend_event(key_up("h"), &mut backend).unwrap();
+        assert_eq!(engine.scheduler.text_prompt.as_ref().map(|(_, prompt)| prompt.id), prompt_id);
+        assert_eq!(log.lock().unwrap().scan_requests.len(), 1);
+        assert_eq!(engine.registry.table_rebuild_count, rebuilds);
+        point_keys(&mut engine, &mut backend, &["right_alt", "f6"]);
+        assert_eq!(engine.active_mode(), &ModeId::text_input());
+        assert!(engine.scheduler.text_prompt.is_none());
+    }
+}
+
+#[test]
+fn temporary_layer_releases_compound_actions_before_the_companion_key() {
+    let mut config = Config::default();
+    config.grid.temporary_mode_keys = vec!["right_alt".into()];
+    config.grid.bindings.insert("f8".into(), Binding::parse("right_click").unwrap());
+    config.normal.bindings.insert("right_alt+f8".into(), Binding::parse("move_left").unwrap());
+    let compound = Binding::Sequence(vec![
+        Binding::parse("move_right").unwrap(),
+        Binding::parse("scroll_down").unwrap(),
+    ]);
+    config.normal.bindings.insert("f8".into(), compound.clone());
+    let mut engine = text_input_engine(config);
+    let (mut backend, log) = FakeBackend::new(Vec::new());
+    engine.screens = backend.screens().unwrap();
+    engine.cursor = Point::new(500.0, 400.0);
+    engine.activate(ModeId::grid(), Some(ModeId::normal()), &mut backend).unwrap();
+    for event in [key_down("right_alt"), key_down("f8"), BackendEvent::Frame(Duration::from_millis(20))] {
+        engine.handle_backend_event(event, &mut backend).unwrap();
+    }
+    let gesture = engine.input.active_gestures.get(&Key::new("f8").unwrap()).unwrap();
+    assert_eq!(gesture.owner, ModeId::normal());
+    assert_eq!(gesture.binding.as_ref(), &compound);
+    assert!(matches!(log.lock().unwrap().moves.last(), Some((dx, _)) if *dx > 0.0));
+    assert!(!log.lock().unwrap().scrolls.is_empty());
+    engine.handle_backend_event(key_up("right_alt"), &mut backend).unwrap();
+    assert!(engine.input.active_gestures.is_empty());
+    assert!(engine.scheduler.frame_clock_owner.is_none());
+    let counts = { let log = log.lock().unwrap(); (log.moves.len(), log.scrolls.len(), log.clicks) };
+    for event in [BackendEvent::Frame(Duration::from_millis(20)), key_up("f8")] {
+        engine.handle_backend_event(event, &mut backend).unwrap();
+    }
+    assert_eq!(engine.active_mode(), &ModeId::grid());
+    let after = { let log = log.lock().unwrap(); (log.moves.len(), log.scrolls.len(), log.clicks) };
+    assert_eq!(after, counts, "ending the layer must stop both actions without activating the grid binding");
+    for event in [key_down("f8"), key_up("f8")] { engine.handle_backend_event(event, &mut backend).unwrap(); }
+    assert_eq!(log.lock().unwrap().clicks, counts.2 + 1);
+
+    // Switching the active mode must release the same borrowed sequence too.
+    engine.activate(ModeId::grid(), Some(ModeId::normal()), &mut backend).unwrap();
+    for event in [key_down("right_alt"), key_down("f8")] {
+        engine.handle_backend_event(event, &mut backend).unwrap();
+    }
+    assert_eq!(engine.input.active_gestures.get(&Key::new("f8").unwrap()).unwrap().owner, ModeId::normal());
+    engine.activate(ModeId::bisect(), Some(ModeId::grid()), &mut backend).unwrap();
+    assert_eq!(engine.active_mode(), &ModeId::bisect());
+    assert!(engine.input.active_gestures.is_empty());
+    assert!(engine.scheduler.frame_clock_owner.is_none());
+    let counts = { let log = log.lock().unwrap(); (log.moves.len(), log.scrolls.len(), log.clicks) };
+    for event in [key_up("right_alt"), key_up("f8"), BackendEvent::Frame(Duration::from_millis(20))] {
+        engine.handle_backend_event(event, &mut backend).unwrap();
+    }
+    let after = { let log = log.lock().unwrap(); (log.moves.len(), log.scrolls.len(), log.clicks) };
+    assert_eq!(after, counts);
+}
+
+#[test]
 fn keyboard_prompt_capability_is_generic_and_replaced_with_the_mode_instance() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct PromptMode {
@@ -157,7 +332,8 @@ fn escape_binding_returns_to_idle() {
 
 #[test]
 fn temporary_modifier_changes_only_the_display_mode() {
-    let config = Config::default();
+    let mut config = Config::default();
+    config.grid.temporary_mode_keys = vec![primary_key(&config)];
     let mut engine = Engine::new(config.clone(), Appearance::Dark);
     for mode in crate::app::mode_catalog::built_in(&config) {
         engine.register(mode);
@@ -181,7 +357,8 @@ fn temporary_modifier_changes_only_the_display_mode() {
 
 #[test]
 fn temporary_modifier_repaints_badge_without_leaving_grid() {
-    let config = Config::default();
+    let mut config = Config::default();
+    config.grid.temporary_mode_keys = vec![primary_key(&config)];
     let mut engine = Engine::new(config.clone(), Appearance::Dark);
     for mode in crate::app::mode_catalog::built_in(&config) {
         engine.register(mode);
@@ -223,7 +400,7 @@ fn temporary_modifier_repaints_badge_without_leaving_grid() {
 fn primary_q_returns_every_configurable_targeting_mode_to_normal() {
     for target in [ModeId::grid(), ModeId::recursive_grid(), ModeId::ui_hint()] {
         let config = Config::default();
-        let primary = Key::new(&config.grid.temporary_mode_keys[0]).unwrap();
+        let primary = Key::new(primary_key(&config)).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut engine = Engine::new(config, Appearance::Dark);
         let mut idle = ProbeMode::new("idle", seen.clone());
@@ -310,6 +487,7 @@ fn ui_hint_overlap_key_wins_over_inheritance_and_temporary_mode() {
     engine.input.pressed.insert(key.clone());
 
     engine.registry.active = ModeId::ui_hint();
+    assert!(engine.registry.temporary_chords(&ModeId::ui_hint()).is_none());
     assert!(
         engine.lookup(&key).is_none(),
         "the configured key must reach UI Hint as a raw hold event"
@@ -582,12 +760,20 @@ fn follow_binding_is_dispatched_once_to_the_active_mode() {
 
 #[test]
 fn launch_modifiers_do_not_activate_destination_temporary_layers() {
-    for target in ["window", "grid", "recursive_grid", "ui_hint"] {
+    for target in ["window", "grid", "recursive_grid", "bisect", "ui_hint"] {
         for modifier_first in [false, true] {
             let mut config = Config::default();
             // Exercise the configured temporary key on both platforms, not
             // the Windows default's Alt shortcut on every host.
             let primary = primary_key(&config);
+            match target {
+                "window" => config.window.temporary_mode_keys = vec![primary.clone()],
+                "grid" => config.grid.temporary_mode_keys = vec![primary.clone()],
+                "bisect" => config.bisect.temporary_mode_keys = vec![primary.clone()],
+                "recursive_grid" => config.recursive_grid.temporary_mode_keys = vec![primary.clone()],
+                "ui_hint" => config.ui_hint.temporary_mode_keys = vec![primary.clone()],
+                _ => unreachable!(),
+            }
             config.hotkeys.insert("alt+w".into(), Binding::Mode(ModeId::new(target).unwrap()));
             let mut engine = Engine::new(config.clone(), Appearance::Dark);
             for mode in crate::app::mode_catalog::built_in(&config) { engine.register(mode); }
@@ -647,7 +833,7 @@ fn ui_hint_screen_shortcut_rescans_without_a_native_pointer_callback() {
 }
 
 #[test]
-fn temporary_layers_resolve_full_chords_then_stripped_keys_and_passthrough() {
+fn temporary_layers_keep_local_chords_then_resolve_stripped_keys_and_passthrough() {
     let mut config = Config::default();
     config.grid.temporary_mode_keys = vec!["alt".into()];
     config.grid.inherits.clear();
@@ -696,7 +882,7 @@ fn temporary_layers_resolve_full_chords_then_stripped_keys_and_passthrough() {
     );
     assert_eq!(
         resolve(&engine, "x"),
-        Some(Binding::parse("window").unwrap())
+        Some(Binding::parse("grid").unwrap())
     );
     assert_eq!(resolve(&engine, "z"), None); // `none` is terminal, not transparent.
     config.grid.bindings.remove("alt+q");
@@ -720,4 +906,42 @@ fn temporary_layers_resolve_full_chords_then_stripped_keys_and_passthrough() {
         resolve(&engine, "s"),
         Some(Binding::parse("screen next").unwrap())
     );
+}
+
+#[test]
+fn bisect_default_entry_remapping_and_click_keep_use_the_shared_runtime() {
+    let mut config = Config::parse(r#"
+[bisect.bindings]
+h = "none"
+arrow_left = "bisect_left"
+"#).unwrap();
+    config.normal.long_press_toggle_ms = 0;
+    let primary = primary_key(&config);
+    let (mut engine, mut backend, log) = blind_engine(&config);
+    for event in [key_down(&primary), key_down("f"), key_up("f"), key_up(&primary)] {
+        engine.handle_backend_event(event, &mut backend).unwrap();
+    }
+    assert_eq!(engine.active_mode(), &ModeId::bisect());
+    let initial = engine.cursor;
+    blind_tap(&mut engine, &mut backend, "h");
+    assert_eq!(engine.cursor, initial);
+    blind_tap(&mut engine, &mut backend, "arrow_left");
+    assert_eq!(engine.cursor, Point::new(256., 512.));
+    let clicks = log.lock().unwrap().clicks;
+    blind_tap(&mut engine, &mut backend, ";");
+    assert_eq!(log.lock().unwrap().clicks, clicks + 1);
+    assert_eq!(engine.active_mode(), &ModeId::bisect());
+    blind_tap(&mut engine, &mut backend, "j");
+    assert_eq!(engine.cursor, Point::new(256., 768.));
+    // Repeats and releases do not cut another half.
+    engine.handle_backend_event(BackendEvent::Input(InputEvent { key: Key::new("l").unwrap(), character: None, state: KeyState::Down, repeat: true, injected: false, timestamp_millis: 1 }), &mut backend).unwrap();
+    assert_eq!(engine.cursor, Point::new(256., 768.));
+    blind_tap(&mut engine, &mut backend, "enter");
+    blind_tap(&mut engine, &mut backend, "l");
+    assert_eq!(engine.cursor, Point::new(256., 768.));
+    blind_tap(&mut engine, &mut backend, "tab");
+    blind_tap(&mut engine, &mut backend, "l");
+    assert_eq!(engine.cursor, Point::new(384., 512.));
+    blind_tap(&mut engine, &mut backend, "esc");
+    assert_eq!(engine.active_mode(), &ModeId::normal());
 }

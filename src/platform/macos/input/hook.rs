@@ -122,6 +122,8 @@ type SharedRunLoop = Arc<Mutex<Option<CFRunLoop>>>;
 type SharedHookSignals = Arc<HookSignals>;
 
 struct HookSignals {
+    permission_check_pending: AtomicBool,
+    permission_check_running: AtomicBool,
     capture_loss: AtomicU8,
     drag_modifier_flags: AtomicU8,
     tap_capture_state: AtomicU8,
@@ -131,6 +133,8 @@ struct HookSignals {
 impl HookSignals {
     const fn new() -> Self {
         Self {
+            permission_check_pending: AtomicBool::new(false),
+            permission_check_running: AtomicBool::new(false),
             capture_loss: AtomicU8::new(CAPTURE_LOSS_NONE),
             drag_modifier_flags: AtomicU8::new(0),
             tap_capture_state: AtomicU8::new(TAP_CAPTURE_ARMED),
@@ -630,6 +634,88 @@ pub(in crate::platform::macos) fn event_tap_invalidated(port_key: usize) {
     }
 }
 
+pub(in crate::platform::macos) fn permission_list_changed() {
+    let lifecycle = invalidation_registry()
+        .as_ref()
+        .map(|entry| Arc::clone(&entry.lifecycle));
+    if let Some(lifecycle) = lifecycle {
+        lifecycle.schedule_permission_check();
+    }
+}
+
+impl TapCaptureLifecycle {
+    fn schedule_permission_check(self: &Arc<Self>) {
+        if self.stop.load(Ordering::Acquire) {
+            return;
+        }
+        self.signals
+            .permission_check_pending
+            .store(true, Ordering::Release);
+        if self
+            .signals
+            .permission_check_running
+            .swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        let lifecycle = Arc::clone(self);
+        // Spawn only for a privacy-list change, never for input or a timer.
+        // WindowServer can stall during TCC edits: neither the event tap nor
+        // the main thread may wait for this probe. The closure owns all state
+        // and can finish safely even after the native tap has been destroyed.
+        if let Err(error) = std::thread::Builder::new()
+            .name("keysteer-permission-change".into())
+            .spawn(move || {
+                lifecycle.check_permission_changes(|| {
+                    // Trust reads can stay true when a row is removed. A fresh
+                    // filtering tap tests the capability itself, without prompting.
+                    create_tap(|_, _, _| CallbackResult::Keep).is_ok()
+                })
+            })
+        {
+            self.signals
+                .permission_check_running
+                .store(false, Ordering::Release);
+            crate::support::logging::report_error("macos-permissions", error.to_string());
+        }
+    }
+
+    fn check_permission_changes(self: &Arc<Self>, mut available: impl FnMut() -> bool) {
+        loop {
+            while self
+                .signals
+                .permission_check_pending
+                .swap(false, Ordering::AcqRel)
+            {
+                if self.stop.load(Ordering::Acquire) {
+                    break;
+                }
+                if !available() {
+                    self.signal_capture_loss(CAPTURE_LOSS_TAP_UNAVAILABLE);
+                    break;
+                }
+            }
+            self.signals
+                .permission_check_running
+                .store(false, Ordering::Release);
+            // Close the race with a notification arriving while the previous
+            // probe was finishing. A newly spawned owner wins the same flag.
+            if self.stop.load(Ordering::Acquire)
+                || !self
+                    .signals
+                    .permission_check_pending
+                    .load(Ordering::Acquire)
+                || self
+                    .signals
+                    .permission_check_running
+                    .swap(true, Ordering::AcqRel)
+            {
+                break;
+            }
+        }
+    }
+}
+
 impl Drop for HookThread {
     fn drop(&mut self) {
         if self.stop_failure_returned || self.worker.shutdown_failure_was_returned() {
@@ -763,6 +849,7 @@ fn event_tap_thread(handshake: HookHandshake, context: HookThreadContext) {
     signals.drag_modifier_flags.store(0, Ordering::Relaxed);
     active.store(false, Ordering::Release);
     callback_mailbox.close();
+    native::disable_event_tap(tap.mach_port());
     detach_event_tap_source(&run_loop, &source, &shared_run_loop);
 }
 
@@ -1142,6 +1229,142 @@ mod tests {
     }
     use super::*;
 
+    fn permission_test_lifecycle() -> Arc<TapCaptureLifecycle> {
+        Arc::new(TapCaptureLifecycle {
+            signals: Arc::new(HookSignals::new()),
+            mailbox: Arc::new(
+                crate::platform::common::disposition_mailbox::DispositionMailbox::default(),
+            ),
+            stop: Arc::new(AtomicBool::new(false)),
+            active: Arc::new(AtomicBool::new(true)),
+            run_loop: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    #[test]
+    fn permission_probe_runs_only_for_changes_and_does_not_stop_other_apps_input() {
+        let lifecycle = permission_test_lifecycle();
+        lifecycle.check_permission_changes(|| panic!("no change means no permission query"));
+        lifecycle
+            .signals
+            .permission_check_pending
+            .store(true, Ordering::Release);
+        lifecycle.check_permission_changes(|| true);
+        assert!(lifecycle.active.load(Ordering::Acquire));
+        assert!(!lifecycle.stop.load(Ordering::Acquire));
+        let generation = lifecycle.mailbox.begin();
+        assert!(
+            lifecycle
+                .mailbox
+                .complete(generation, KeyDisposition::Forward)
+        );
+        assert_eq!(
+            lifecycle.signals.capture_loss.load(Ordering::Acquire),
+            CAPTURE_LOSS_NONE
+        );
+    }
+
+    #[test]
+    fn blocked_permission_probe_leaves_input_responsive_and_denial_fails_open() {
+        let lifecycle = permission_test_lifecycle();
+        lifecycle
+            .signals
+            .permission_check_pending
+            .store(true, Ordering::Release);
+        lifecycle
+            .signals
+            .permission_check_running
+            .store(true, Ordering::Release);
+        let (entered, started) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let worker_lifecycle = Arc::clone(&lifecycle);
+        let worker = std::thread::spawn(move || {
+            worker_lifecycle.check_permission_changes(|| {
+                entered.send(()).unwrap();
+                wait.recv().unwrap();
+                false
+            })
+        });
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        // A slow WindowServer probe must not hold the disposition slot or the
+        // native hook thread. Exercise its real rendezvous while still blocked.
+        let (events, received) = mpsc::sync_channel(1);
+        let callback_mailbox = Arc::clone(&lifecycle.mailbox);
+        let callback = std::thread::spawn(move || {
+            matches!(
+                disposition_for(
+                    &events,
+                    &callback_mailbox,
+                    BackendEvent::Input(InputEvent {
+                        key: Key::new("a").unwrap(),
+                        character: None,
+                        state: KeyState::Down,
+                        repeat: false,
+                        injected: false,
+                        timestamp_millis: 0,
+                    })
+                ),
+                CallbackResult::Keep
+            )
+        });
+        let event = received.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            lifecycle
+                .mailbox
+                .complete(event.generation.unwrap(), KeyDisposition::Forward)
+        );
+        assert!(callback.join().unwrap());
+        assert!(lifecycle.active.load(Ordering::Acquire));
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(lifecycle.stop.load(Ordering::Acquire));
+        assert!(!lifecycle.active.load(Ordering::Acquire));
+        assert_eq!(lifecycle.mailbox.try_begin(), None);
+        assert_eq!(
+            lifecycle.signals.capture_loss.load(Ordering::Acquire),
+            CAPTURE_LOSS_TAP_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn permission_change_during_probe_is_not_lost_and_shutdown_rejects_late_denial() {
+        let lifecycle = permission_test_lifecycle();
+        lifecycle
+            .signals
+            .permission_check_pending
+            .store(true, Ordering::Release);
+        let mut calls = 0;
+        lifecycle.check_permission_changes(|| {
+            calls += 1;
+            if calls == 1 {
+                lifecycle
+                    .signals
+                    .permission_check_pending
+                    .store(true, Ordering::Release);
+                true
+            } else {
+                false
+            }
+        });
+        assert_eq!(calls, 2);
+        assert!(lifecycle.stop.load(Ordering::Acquire));
+
+        let lifecycle = permission_test_lifecycle();
+        lifecycle
+            .signals
+            .permission_check_pending
+            .store(true, Ordering::Release);
+        lifecycle.check_permission_changes(|| {
+            lifecycle.signals.disarm_tap_capture();
+            lifecycle.stop.store(true, Ordering::Release);
+            false
+        });
+        assert_eq!(
+            lifecycle.signals.capture_loss.load(Ordering::Acquire),
+            CAPTURE_LOSS_NONE
+        );
+    }
+
     #[test]
     fn only_one_timeout_is_automatically_reenabled() {
         let mut retried = false;
@@ -1274,6 +1497,8 @@ mod tests {
             })
             .unwrap();
         let signals = Arc::new(HookSignals {
+            permission_check_pending: AtomicBool::new(false),
+            permission_check_running: AtomicBool::new(false),
             capture_loss: AtomicU8::new(CAPTURE_LOSS_NONE),
             drag_modifier_flags: AtomicU8::new(
                 input::DRAG_MODIFIER_SHIFT | input::DRAG_MODIFIER_COMMAND,

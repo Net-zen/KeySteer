@@ -1,3 +1,9 @@
+mod geometry;
+pub(crate) use geometry::{
+    BisectGeometry, Geometry, GridGeometry, LetterGeometry, RecursiveGeometry,
+};
+
+use crate::api::binding::Direction;
 use smallvec::SmallVec;
 
 use crate::api::{
@@ -42,91 +48,53 @@ pub(crate) enum Selection {
     Commit(Point),
 }
 
-pub(crate) struct TargetingController {
-    layouts: SmallVec<[Layout; 1]>,
+pub(crate) struct TargetingController<G: Geometry> {
+    pub geometry: G,
     pub session: TargetingSession,
     pub max_depth: u32,
-    min_size: Option<(f64, f64)>,
 }
 
-impl TargetingController {
-    pub fn new(
-        base: Layout,
-        layers: &[LayerSettings],
-        max_depth: u32,
-        min_size: Option<(f64, f64)>,
-        follow: bool,
-        lifecycle: TargetingLifecycle,
-    ) -> Self {
+impl<G: Geometry> TargetingController<G> {
+    pub fn new(geometry: G, max_depth: u32, follow: bool, lifecycle: TargetingLifecycle) -> Self {
         let max_depth = max_depth.max(1);
-        // Uniform grids store exactly one layout. Recursive overrides are
-        // resolved only at construction, never searched on a key/frame event.
-        let layouts = if layers.is_empty() {
-            smallvec::smallvec![base]
-        } else {
-            (0..=max_depth)
-                .map(|depth| {
-                    let mut layout = base.clone();
-                    if let Some(layer) = layers.iter().find(|layer| layer.depth == depth) {
-                        if let Some(cols) = layer.grid_cols {
-                            layout.cols = cols.max(1) as usize;
-                        }
-                        if let Some(rows) = layer.grid_rows {
-                            layout.rows = rows.max(1) as usize;
-                        }
-                        if let Some(keys) = &layer.keys {
-                            layout.keys = keys.chars().collect();
-                        }
-                    }
-                    layout
-                })
-                .collect()
-        };
         let mut session = TargetingSession::new(follow, lifecycle);
-        // The first 12 levels stay inline. Larger configured paths reserve once
-        // so even deep selection/backtracking is allocation-free afterwards.
+        // Reserve deep paths at construction, not on input or backtracking.
         session.stack.reserve(max_depth as usize + 1);
         session.path.reserve(max_depth as usize);
         Self {
-            layouts,
+            geometry,
             session,
             max_depth,
-            min_size,
         }
     }
 
-    pub fn layout_at(&self, depth: u32) -> &Layout {
-        &self.layouts[(depth as usize).min(self.layouts.len() - 1)]
+    pub fn cut(&mut self, direction: Direction) -> Selection {
+        if self.session.terminal || self.session.finished {
+            return Selection::Ignored;
+        }
+        let Some((index, cell)) = self
+            .session
+            .current()
+            .and_then(|area| self.geometry.direction_cell(area, direction))
+        else {
+            return Selection::Ignored;
+        };
+        self.select(index, cell)
     }
 
     pub fn claims_key(&self, key: &Key) -> bool {
-        key.as_char()
-            .is_some_and(|ch| self.layouts.iter().any(|layout| layout.keys.contains(&ch)))
+        self.geometry.claims_key(key)
     }
 
     /// Stateless absolute positioning for a one-level silent grid.
     pub fn root_point(&self, key: &Key, bounds: Rect) -> Option<Point> {
-        let layout = self.layout_at(0);
-        let ch = key.as_char()?;
-        let index = layout.keys.iter().position(|candidate| *candidate == ch)?;
-        bounds
-            .subdivision(layout.rows, layout.cols, index)
-            .map(|cell| cell.center())
+        self.geometry
+            .key_cell(bounds, 0, key)
+            .map(|(_, cell)| cell.center())
     }
 
     pub fn can_descend(&self) -> bool {
-        let Some((min_width, min_height)) = self.min_size else {
-            return self.session.depth() < self.max_depth;
-        };
-        if self.session.depth() + 1 >= self.max_depth {
-            return false;
-        }
-        let Some(area) = self.session.current() else {
-            return false;
-        };
-        let layout = self.layout_at(self.session.depth());
-        area.width / layout.cols as f64 >= min_width
-            && area.height / layout.rows as f64 >= min_height
+        self.geometry.can_descend(&self.session, self.max_depth)
     }
 
     pub fn reset(&mut self, bounds: Rect) {
@@ -143,18 +111,17 @@ impl TargetingController {
             self.session.stack.push(bounds);
             for offset in 0..self.session.path.len() {
                 let index = self.session.path[offset];
-                let layout = self.layout_at(self.session.depth());
                 let Some(cell) = self
                     .session
                     .current()
-                    .and_then(|area| area.subdivision(layout.rows, layout.cols, index))
+                    .and_then(|area| self.geometry.cell_at(area, self.session.depth(), index))
                 else {
                     self.session.path.truncate(offset);
                     break;
                 };
                 self.session.stack.push(cell);
             }
-            self.session.terminal = self.session.depth() >= self.max_depth || !self.can_descend();
+            self.session.terminal = !self.can_descend();
         }
         self.session.current().unwrap_or(bounds).center()
     }
@@ -176,23 +143,24 @@ impl TargetingController {
         if self.session.terminal || self.session.finished {
             return Selection::Ignored;
         }
-        let Some(ch) = key.as_char() else {
-            return Selection::Ignored;
-        };
-        let layout = self.layout_at(self.session.depth());
-        let Some(index) = layout.keys.iter().position(|candidate| *candidate == ch) else {
-            return Selection::Ignored;
-        };
-        let Some(cell) = self
+        let Some((index, cell)) = self
             .session
             .current()
-            .and_then(|area| area.subdivision(layout.rows, layout.cols, index))
+            .and_then(|area| self.geometry.key_cell(area, self.session.depth(), key))
         else {
             return Selection::Ignored;
         };
+        self.select(index, cell)
+    }
+
+    fn select(&mut self, index: usize, cell: Rect) -> Selection {
         self.session.stack.push(cell);
         self.session.path.push(index);
-        self.session.terminal = self.session.depth() >= self.max_depth || !self.can_descend();
+        self.session.terminal = !self.can_descend();
+        self.selection_result(cell)
+    }
+
+    fn selection_result(&self, cell: Rect) -> Selection {
         if self.session.terminal {
             Selection::Commit(cell.center())
         } else if self.session.cursor_follow_selection {
@@ -203,7 +171,7 @@ impl TargetingController {
     }
 }
 
-impl TargetingController {
+impl<G: Geometry> TargetingController<G> {
     pub fn parent(&mut self) -> Selection {
         if self.session.stack.len() <= 1 {
             return Selection::Cancel;
@@ -216,7 +184,7 @@ impl TargetingController {
     }
 
     pub fn reset_selection(&mut self, bounds: Rect) -> Selection {
-        let root = if self.min_size.is_some() {
+        let root = if G::RESET_TO_ACTIVE_SCREEN {
             Some(bounds)
         } else {
             self.session.root()
@@ -226,6 +194,12 @@ impl TargetingController {
         };
         self.reset(root);
         Selection::Changed
+    }
+}
+
+impl<G: LetterGeometry> TargetingController<G> {
+    pub fn layout_at(&self, depth: u32) -> &Layout {
+        self.geometry.layout_at(depth)
     }
 }
 

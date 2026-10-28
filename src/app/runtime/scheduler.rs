@@ -108,8 +108,8 @@ impl Engine {
             )
             .chain(self.input.drag_auto_release.fires_at)
             .chain(self.quick_switch.pending.as_ref().map(|p| p.deadline))
-            .map(|fires_at| fires_at.saturating_duration_since(now))
             .min()
+            .map(|fires_at| fires_at.saturating_duration_since(now))
             .unwrap_or(MAX)
     }
 
@@ -118,15 +118,11 @@ impl Engine {
             return Ok(());
         }
         let now = Instant::now();
-        while self
+        while let Some(sequence) = self
             .scheduler
             .sequences
-            .last()
-            .is_some_and(|sequence| sequence.fires_at <= now)
+            .pop_if(|sequence| sequence.fires_at <= now)
         {
-            let Some(sequence) = self.scheduler.sequences.pop() else {
-                break;
-            };
             if let Err(error) =
                 self.continue_sequence(sequence.actions, sequence.owner, sequence.input, backend)
             {

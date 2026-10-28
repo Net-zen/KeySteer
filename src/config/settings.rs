@@ -23,6 +23,12 @@ use super::{AppOverride, Bindings, UiHintAppOverride, app_override_matches, buil
 #[serde(default, deny_unknown_fields)]
 pub struct Normal {
     pub inherits: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporary_mode: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub temporary_mode_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub temporary_mode_passthrough_keys: Vec<String>,
     /// Opt-in blind positioning. Absence keeps the ordinary Normal runtime.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub targeting: Option<Box<NormalTargeting>>,
@@ -43,6 +49,9 @@ impl Default for Normal {
     fn default() -> Self {
         Self {
             inherits: vec!["hotkeys".into()],
+            temporary_mode: None,
+            temporary_mode_keys: Vec::new(),
+            temporary_mode_passthrough_keys: Vec::new(),
             targeting: None,
             passthrough_unbound_keys: true,
             long_press_toggle_ms: 500,
@@ -187,9 +196,10 @@ fn default_normal_bindings() -> Bindings {
         ("n", "toggle"),
         // Targeting modes available directly from normal.
         ("g", "grid"),
-        ("f", "recursive_grid"),
+        ("f", "ui_hint"),
+        ("primary+g", "recursive_grid"),
+        ("primary+f", "bisect"),
         ("c", "text_select"),
-        ("primary+f", "ui_hint"),
         ("primary+s", "screen next"),
         ("primary+d", "move_window next"),
         // Navigation keys sent to the focused application.
@@ -234,12 +244,23 @@ fn default_text_input_bindings() -> Bindings {
     builtin_bindings(&[("enter", "normal"), ("\\", "normal"), ("esc", "normal")])
 }
 
-/// OCR-only text selection shares UIHint's scan scope, OCR options and styles.
+/// OCR-only text selection has its own scope and shares UIHint's OCR options and styles.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TextSelect {
     pub enabled: bool,
+    pub scan_scope: crate::api::UiScanScope,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inherits: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporary_mode: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub temporary_mode_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub temporary_mode_passthrough_keys: Vec<String>,
     pub hint_characters: String,
+    pub ui: crate::api::text_select::Ui,
+    pub lifecycle: crate::api::text_select::Lifecycle,
     pub bindings: Bindings,
 }
 
@@ -247,17 +268,26 @@ impl Default for TextSelect {
     fn default() -> Self {
         Self {
             enabled: true,
+            scan_scope: crate::api::UiScanScope::All,
+            inherits: Vec::new(),
+            temporary_mode: None,
+            temporary_mode_keys: Vec::new(),
+            temporary_mode_passthrough_keys: Vec::new(),
             hint_characters: "asdfghjklqwertyuiopzvbnm".into(),
+            ui: crate::api::text_select::Ui::default(),
+            lifecycle: crate::api::text_select::Lifecycle::default(),
             bindings: builtin_bindings(&[
-                ("primary+c", "text_refine"),
+                ("alt+c", "text_refine"),
+                ("alt+backspace", "previous_level"),
                 ("ctrl+backspace", "first_level"),
-                ("tab", "previous_level"),
-                ("backspace", "previous_level"),
-                ("enter", "text_copy"),
+                ("tab", "text_cycle_page"),
+                ("ctrl+a", "text_select_all"),
+                ("backspace", "text_clear_selection"),
+                ("ctrl+x", "text_clear_input"),
+                ("mod+c enter", "text_copy"),
+                ("primary+q", "normal"),
                 ("esc", "cancel_selection"),
                 ("?", "key_help"),
-                ("page_down", "text_next_page"),
-                ("page_up", "text_previous_page"),
             ]),
         }
     }
@@ -406,7 +436,7 @@ impl Default for UiHint {
         Self {
             enabled: true,
             strategy: UiScanStrategy::Hybrid,
-            scan_scope: crate::api::UiScanScope::Window,
+            scan_scope: crate::api::UiScanScope::All,
             vision: VisionOptions::default(),
             hint_characters: "asdfghjkl".into(),
             label_direction: LabelDirection::Normal,
@@ -452,7 +482,7 @@ impl Default for UiHint {
             ]),
             inherits: vec!["hotkeys".into(), "normal".into()],
             temporary_mode: Some("normal".into()),
-            temporary_mode_keys: vec!["primary".into()],
+            temporary_mode_keys: Vec::new(),
             temporary_mode_passthrough_keys: Vec::new(),
             lifecycle: TargetingLifecycle {
                 after_finish: LifecycleAction::Mode(ModeId::normal()),
@@ -544,22 +574,14 @@ impl Default for Grid {
             cursor_follow_selection: true,
             inherits: vec!["hotkeys".into(), "normal".into()],
             temporary_mode: Some("normal".into()),
-            temporary_mode_keys: vec!["primary".into()],
+            temporary_mode_keys: Vec::new(),
             temporary_mode_passthrough_keys: Vec::new(),
             lifecycle: TargetingLifecycle {
                 after_finish: LifecycleAction::Mode(ModeId::normal()),
                 after_click: LifecycleAction::Finish,
             },
             ui,
-            bindings: Bindings::from([
-                ("`".into(), Binding::ToggleCursorFollowSelection),
-                ("enter".into(), Binding::SelectionAccept),
-                ("esc".into(), Binding::SelectionCancel),
-                ("space".into(), Binding::SelectionReset),
-                ("tab".into(), Binding::SelectionParent),
-                ("backspace".into(), Binding::SelectionParent),
-                ("primary+q".into(), Binding::Mode(ModeId::normal())),
-            ]),
+            bindings: default_grid_control_bindings(),
             app_configs: Vec::new(),
         }
     }
@@ -618,21 +640,90 @@ impl Default for RecursiveGrid {
             cursor_follow_selection: true,
             inherits: vec!["hotkeys".into(), "normal".into()],
             temporary_mode: Some("normal".into()),
-            temporary_mode_keys: vec!["primary".into()],
+            temporary_mode_keys: Vec::new(),
             temporary_mode_passthrough_keys: Vec::new(),
             lifecycle: TargetingLifecycle::default(),
             layers: Vec::new(),
             ui,
-            bindings: Bindings::from([
-                ("`".into(), Binding::ToggleCursorFollowSelection),
-                ("enter".into(), Binding::SelectionAccept),
-                ("esc".into(), Binding::SelectionCancel),
-                ("space".into(), Binding::SelectionReset),
-                ("tab".into(), Binding::SelectionParent),
-                ("backspace".into(), Binding::SelectionParent),
-                ("primary+q".into(), Binding::Mode(ModeId::normal())),
-            ]),
+            bindings: default_grid_control_bindings(),
             app_configs: Vec::new(),
+        }
+    }
+}
+
+fn default_grid_control_bindings() -> Bindings {
+    Bindings::from([
+        ("`".into(), Binding::ToggleCursorFollowSelection),
+        ("enter".into(), Binding::SelectionAccept),
+        ("esc".into(), Binding::SelectionCancel),
+        ("space".into(), Binding::SelectionReset),
+        ("tab".into(), Binding::SelectionParent),
+        ("backspace".into(), Binding::SelectionParent),
+        ("primary+q".into(), Binding::Mode(ModeId::normal())),
+    ])
+}
+
+/// Directional bisection has no label alphabet or per-depth grid layout.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Bisect {
+    pub enabled: bool,
+    pub min_size_width: u32,
+    pub min_size_height: u32,
+    pub max_depth: u32,
+    pub cursor_follow_selection: bool,
+    pub inherits: Vec<String>,
+    pub temporary_mode: Option<String>,
+    pub temporary_mode_keys: Vec<String>,
+    pub temporary_mode_passthrough_keys: Vec<String>,
+    pub lifecycle: TargetingLifecycle,
+    pub ui: BisectUi,
+    pub bindings: Bindings,
+    pub app_configs: Vec<AppOverride>,
+}
+
+impl Default for Bisect {
+    fn default() -> Self {
+        use crate::api::Direction;
+        let mut bindings = default_grid_control_bindings();
+        bindings.extend([
+            ("h".into(), Binding::Bisect(Direction::Left)),
+            ("j".into(), Binding::Bisect(Direction::Down)),
+            ("k".into(), Binding::Bisect(Direction::Up)),
+            ("l".into(), Binding::Bisect(Direction::Right)),
+        ]);
+        Self {
+            enabled: true,
+            min_size_width: 2,
+            min_size_height: 2,
+            max_depth: 20,
+            cursor_follow_selection: true,
+            inherits: vec!["hotkeys".into(), "normal".into()],
+            temporary_mode: Some("normal".into()),
+            temporary_mode_keys: Vec::new(),
+            temporary_mode_passthrough_keys: Vec::new(),
+            lifecycle: TargetingLifecycle::default(),
+            ui: BisectUi::default(),
+            bindings,
+            app_configs: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BisectUi {
+    pub line_width: i32,
+    pub line_color: Option<ThemedColor>,
+    pub highlight_color: Option<ThemedColor>,
+}
+
+impl Default for BisectUi {
+    fn default() -> Self {
+        Self {
+            line_width: 1,
+            line_color: None,
+            highlight_color: None,
         }
     }
 }

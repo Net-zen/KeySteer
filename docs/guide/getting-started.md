@@ -143,8 +143,9 @@ Window 是窗口管理的基础入口，Quick、Editor 和 Tabs 是按需选用�
 | 你想做什么 | 按键 | 模式 |
 | --- | --- | --- |
 | 快速到达屏幕的大致区域 | `g` | [Grid](/modes/grid) |
-| 精确定位很小的目标 | `f` | [Recursive Grid](/modes/recursive-grid) |
-| 直接选择按钮、链接或输入框 | `Primary+F` | [UI Hint](/modes/ui-hint) |
+| 精确定位很小的目标 | `Primary+G` | [Recursive Grid](/modes/recursive-grid) |
+| 用方向键逐次二分定位 | `Primary+F` | [Bisect](/modes/bisect) |
+| 直接选择按钮、链接或输入框 | `f` | [UI Hint](/modes/ui-hint) |
 
 进入定位模式后按 `Esc` 返回 Normal；再按一次 `Esc` 返回待机。
 
@@ -199,7 +200,7 @@ keysteer --check -c keysteer.user.toml   # 检查配置
 | 左键 / 右键 / 中键点击 | `;` / `'` / `右 Shift` | 点击键在右手附近 |
 | 拖拽 | `N` + 点击键 | 单独点 `N` 松开 |
 | Home / End / Page Up / Page Down | `T / Y / I / U` | 直接发送给当前应用 |
-| 打开定位模式 | `G` / `F` / `Primary+F` | Grid / Recursive Grid / UI Hint |
+| 打开定位模式 | `G` / `F` / `Primary+G` / `Primary+F` | Grid / UI Hint / Recursive Grid / Bisect |
 | 将鼠标切到下一块显示器 | `Primary+S` | 多屏时使用 |
 | 将鼠标下的窗口移到下一块显示器 | `Primary+D` | 保持鼠标在窗口内的相对位置 |
 | 返回待机 | `Q` 或 `Esc` | 恢复正常打字 |

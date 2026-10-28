@@ -17,20 +17,23 @@ flowchart LR
     normal("Normal<br/>日常操作"):::mode-primary
     grid("Grid<br/>网格"):::mode-step
     rg("Recursive Grid<br/>递归网格"):::mode-step
+    bs("Bisect<br/>方向二分"):::mode-step
     ui("UI Hint<br/>UI 标签"):::mode-step
 
     idle -->|"Primary+E"| normal
-    normal -->|g| grid
-    normal -->|f| rg
-    normal -->|"Primary+F"| ui
+    normal -->|G| grid
+    normal -->|F| ui
+    normal -->|"Primary+G"| rg
+    normal -->|"Primary+F"| bs
     class idle diagram-blue
     class normal diagram-violet
     class grid diagram-green
     class rg diagram-amber
+    class bs diagram-cyan
     class ui diagram-rose
 ```
 
-三个定位模式都可以按 `Esc` 或 `Primary+Q` 回到 Normal；Normal 中按 `Esc` 或 `q` 返回 Idle。
+四个定位模式都可以按 `Esc` 或 `Primary+Q` 回到 Normal；Normal 中按 `Esc` 或 `q` 返回 Idle。
 
 ## 选哪个模式？
 
@@ -39,6 +42,7 @@ flowchart LR
 | 直接移动、滚动、点击、拖拽 | [Normal](/modes/normal)                 | 适合日常操作。                           |
 | 快速到达屏幕某个区域       | [Grid](/modes/grid)                     | 不依赖应用无障碍信息 |
 | 精确到细小按钮或图标       | [Recursive Grid](/modes/recursive-grid) | 在当前区域反复细分           |
+| 用方向键二分，不看字母 | [Bisect](/modes/bisect) | 每次只将宽或高减半 |
 | 找按钮、链接、菜单、输入框 | [UI Hint](/modes/ui-hint)               | 根据可访问性树或视觉识别显示标签          |
 | 移动分屏、组合标签、恢复工作区 | [Window](/modes/window) | 从单窗口调整到可复用的布局 |
 
@@ -60,7 +64,7 @@ Idle 是启动时的默认状态，只监听 `[hotkeys]` 中的入口，不会�
 
 定位时还想挪一下鼠标？按住 `Primary`，就能用 Normal 的移动、滚动和点击键；松开后继续选目标。
 
-下面是 Grid 的默认设置，Recursive Grid 和 UI Hint 也采用相同方式：
+下面是 Grid 的默认设置，Recursive Grid、Bisect 和 UI Hint 也采用相同方式：
 
 ```toml
 [grid]
@@ -69,7 +73,7 @@ temporary_mode = "normal"
 temporary_mode_keys = ["primary"]
 ```
 
-完整组合键优先。例如 `Primary+S` 仍可切屏，`Primary+Q` 返回 Normal。需要改临时键或处理冲突时，见 [临时模式按键优先级](/reference/configuration#临时模式按键优先级)。
+临时层消耗激活键，例如 `Primary+H` 使用 Normal 的 `H` 移动。当前模式显式配置的完整组合键仍保留，例如 `Primary+Q` 返回 Normal。需要改临时键或处理冲突时，见 [临时模式按键优先级](/reference/configuration#临时模式按键优先级)。
 
 ## 模式结束状态
 
@@ -95,14 +99,14 @@ after_click = "finish"
 | `left_click` / `right_click` / `middle_click` / `double_click` | 定位完成后直接点击；只用于 `after_finish` |
 
 ::: info 默认结束方式
-Grid 和 UI Hint 定位或点击后回到 Normal；Recursive Grid 保留当前区域，方便继续细分。
+Grid 和 UI Hint 定位或点击后回到 Normal；Recursive Grid 与 Bisect 保留当前区域，方便继续细分。
 :::
 
 ## 多显示器
 
-`Grid` 与 `Recursive Grid` 默认定位鼠标所在的显示器。
+`Grid`、`Recursive Grid` 与 `Bisect` 默认定位鼠标所在的显示器。
 
-内置插件 Screen Selector 默认按键 `Primary+S` 可以切换到其他显示器，并可选择是否保留`Grid`，`Recursive Grid` 当前定位。
+内置插件 Screen Selector 默认按键 `Primary+S` 可以切换到其他显示器，并可选择是否保留`Grid`、`Recursive Grid`、`Bisect` 当前定位。
 
 ## 特别注意
 

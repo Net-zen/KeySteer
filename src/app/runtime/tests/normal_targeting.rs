@@ -449,30 +449,33 @@ fn normal_targeting_ignores_repeat_and_press_release_and_retains_enter_binding()
 
 #[test]
 fn screen_plugin_preserves_grid_path_while_temporary_normal_is_held() {
-    for recursive in [false, true] {
+    for mode in [ModeId::grid(), ModeId::recursive_grid(), ModeId::bisect()] {
         for preserve in [false, true] {
             let mut config = blind_config("grid", "[]");
             config.normal.targeting = None;
             config.grid.cursor_follow_selection = true;
             config.recursive_grid.cursor_follow_selection = true;
-            config.normal.bindings.insert("primary+s".into(), Binding::parse("screen next").unwrap());
+            config.normal.bindings.insert("s".into(), Binding::parse("screen next").unwrap());
             config.plugin_modes.entry("plugin:screen-selector".into()).or_default().settings.insert("preserve".into(), toml::Value::Boolean(preserve));
             let primary = primary_key(&config);
+            config.grid.temporary_mode_keys = vec![primary.clone()];
+            config.recursive_grid.temporary_mode_keys = vec![primary.clone()];
+            config.bisect.temporary_mode_keys = vec![primary.clone()];
             let (mut engine, mut backend, _) = blind_engine(&config);
             let mut second = engine.screens[0].clone();
             second.bounds.x = 1024.0;
             second.work_area.x = 1024.0;
             second.is_primary = false;
             engine.screens.push(second);
-            let mode = if recursive { ModeId::recursive_grid() } else { ModeId::grid() };
             engine.activate(mode.clone(), Some(ModeId::normal()), &mut backend).unwrap();
-            blind_tap(&mut engine, &mut backend, "a");
+            let selection: &[&str] = if mode == ModeId::bisect() { &["h", "k"] } else { &["a"] };
+            for key in selection { blind_tap(&mut engine, &mut backend, key); }
             engine.handle_backend_event(key_down(&primary), &mut backend).unwrap();
             blind_tap(&mut engine, &mut backend, "s");
             engine.handle_backend_event(key_up(&primary), &mut backend).unwrap();
             assert_eq!(engine.active_mode(), &mode);
             assert_eq!(engine.cursor, if preserve { Point::new(1280.0, 256.0) } else { Point::new(1536.0, 512.0) });
-            blind_tap(&mut engine, &mut backend, "a");
+            for key in selection { blind_tap(&mut engine, &mut backend, key); }
             assert_eq!(engine.cursor, if preserve { Point::new(1152.0, 128.0) } else { Point::new(1280.0, 256.0) });
         }
     }

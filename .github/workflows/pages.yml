@@ -109,11 +109,9 @@ jobs:
       - name: Test documentation models
         run: pnpm docs:test
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v6
-
       - name: Build VitePress site
         env:
+          GITHUB_PAGES: 'true'
           KEYSTEER_DOCS_BASE: /KeySteer/
           KEYSTEER_DOCS_RELEASE_TAG: ${{ inputs.release_tag }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -144,6 +142,9 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+        with:
+          # Confirm short deployments sooner; the action still backs off polling.
+          reporting_interval: '1000'
 
       # Reuse the deployment runner; never allocate a cleanup-only runner.
       - name: Clean unused caches
@@ -151,7 +152,7 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          CACHE_MAX_IDLE_DAYS: ${{ vars.ACTIONS_CACHE_MAX_IDLE_DAYS || '7' }}
+          CACHE_MAX_IDLE_DAYS: ${{ vars.ACTIONS_CACHE_MAX_IDLE_DAYS }}
         run: python3 .github/scripts/cleanup_caches.py
 
       - name: Clean entry

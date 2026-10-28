@@ -1,4 +1,4 @@
-//! Ordinary and recursive visible grids share selection and lifecycle handling.
+//! Ordinary, recursive and bisect grids share selection and lifecycle handling.
 //! Their geometry is precompiled by the catalog; each keeps its existing view.
 
 use crate::api::binding::Binding;
@@ -6,66 +6,29 @@ use crate::api::command::{Command, CommandBatch, FinishCause, HostContext, Mode,
 use crate::api::geometry::Rect;
 use crate::api::input::{Key, KeyState, ModeId};
 use crate::api::overlay::Color;
-use crate::api::presentation::{
-    GridLayout, GridStyle, GridView, RecursiveGridStyle, RecursiveGridView, View,
-};
+use crate::api::presentation::View;
 use crate::api::theme::Palette;
 
 use super::targeting::{Selection, TargetingController};
+mod variants;
+pub(crate) use variants::GridPresentation;
 
-pub(crate) enum Appearance {
-    Grid(GridStyle),
-    Recursive(RecursiveGridStyle),
+pub(crate) struct GridMode<G: GridPresentation> {
+    controller: TargetingController<G>,
+    style: G::Style,
 }
 
-pub struct GridMode {
-    controller: TargetingController,
-    appearance: Appearance,
-}
-
-impl GridMode {
-    pub(crate) fn new(controller: TargetingController, appearance: Appearance) -> Self {
-        Self {
-            controller,
-            appearance,
-        }
+impl<G: GridPresentation> GridMode<G> {
+    pub(crate) fn new(controller: TargetingController<G>, style: G::Style) -> Self {
+        Self { controller, style }
     }
 
     fn view(&self) -> View<'_> {
-        let session = &self.controller.session;
-        let layout = self.controller.layout_at(session.depth());
-        let layout = GridLayout {
-            rows: layout.rows,
-            cols: layout.cols,
-            keys: &layout.keys,
-        };
-        match &self.appearance {
-            Appearance::Grid(ui) => View::Grid(GridView {
-                layout,
-                ui,
-                current: session.current(),
-                root: session.root(),
-                terminal: session.terminal,
-                depth: session.depth(),
-                max_depth: self.controller.max_depth,
-            }),
-            Appearance::Recursive(ui) => {
-                let next = self.controller.layout_at(session.depth() + 1);
-                View::RecursiveGrid(RecursiveGridView {
-                    layout,
-                    next_layout: GridLayout {
-                        rows: next.rows,
-                        cols: next.cols,
-                        keys: &next.keys,
-                    },
-                    ui,
-                    current: session.current(),
-                    root: session.root(),
-                    terminal: session.terminal,
-                    can_descend: self.controller.can_descend(),
-                })
-            }
-        }
+        self.controller.geometry.view(
+            &self.controller.session,
+            self.controller.max_depth,
+            &self.style,
+        )
     }
 
     fn redraw(&self, ctx: &HostContext<'_>) -> CommandBatch {
@@ -90,9 +53,7 @@ impl GridMode {
 
     fn retarget(&mut self, bounds: Rect, preserve: bool, ctx: &HostContext<'_>) -> CommandBatch {
         let point = self.controller.retarget(bounds, preserve);
-        let mut commands = CommandBatch::one(Command::warp_to(point));
-        commands.extend(self.redraw(ctx));
-        commands
+        CommandBatch::two(Command::warp_to(point), ctx.present(self.view()))
     }
 
     fn key_down(&mut self, key: &Key, ctx: &HostContext<'_>) -> CommandBatch {
@@ -106,13 +67,11 @@ impl GridMode {
             Selection::Cancel => self.cancel(),
             Selection::Changed => self.redraw(ctx),
             Selection::Follow(point) => {
-                let mut commands = CommandBatch::one(Command::warp_to(point));
-                commands.extend(self.redraw(ctx));
-                commands
+                CommandBatch::two(Command::warp_to(point), ctx.present(self.view()))
             }
             Selection::Commit(point) => {
-                let mut commands = CommandBatch::one(Command::warp_to(point));
-                commands.extend(self.redraw(ctx));
+                let mut commands =
+                    CommandBatch::two(Command::warp_to(point), ctx.present(self.view()));
                 commands.push(Command::FinishMode {
                     cause: FinishCause::Selection,
                 });
@@ -122,20 +81,13 @@ impl GridMode {
     }
 }
 
-impl Mode for GridMode {
+impl<G: GridPresentation> Mode for GridMode<G> {
     fn id(&self) -> ModeId {
-        match self.appearance {
-            Appearance::Grid(_) => ModeId::grid(),
-            Appearance::Recursive(_) => ModeId::recursive_grid(),
-        }
+        G::id()
     }
 
     fn display_name(&self) -> String {
-        match self.appearance {
-            Appearance::Grid(_) => "Grid",
-            Appearance::Recursive(_) => "Recursive Grid",
-        }
-        .into()
+        G::NAME.into()
     }
 
     fn claims_key(&self, key: &Key) -> bool {
@@ -143,10 +95,7 @@ impl Mode for GridMode {
     }
 
     fn indicator_color(&self, palette: &Palette) -> Option<Color> {
-        Some(match self.appearance {
-            Appearance::Grid(_) => palette.accent,
-            Appearance::Recursive(_) => palette.accent_alt,
-        })
+        Some(G::indicator_color(palette))
     }
 
     fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
@@ -215,6 +164,7 @@ impl Mode for GridMode {
                 ..
             } => {
                 let selection = match binding.as_ref() {
+                    Binding::Bisect(direction) => self.controller.cut(*direction),
                     Binding::SelectionReset => self.controller.reset_selection(ctx.active_bounds()),
                     Binding::SelectionParent => self.controller.parent(),
                     Binding::SelectionAccept => self
@@ -245,7 +195,9 @@ mod tests {
     use crate::api::geometry::{Point, Screen};
     use crate::config::Config;
 
-    fn cells(mode: &GridMode) -> Vec<Rect> {
+    fn cells<G: GridPresentation + super::super::targeting::LetterGeometry>(
+        mode: &GridMode<G>,
+    ) -> Vec<Rect> {
         let Some(area) = mode.controller.session.current() else {
             return Vec::new();
         };
@@ -302,13 +254,13 @@ mod tests {
         }
     }
 
-    fn activate(mode: &mut GridMode, env: &Env) -> Vec<Command> {
+    fn activate<G: GridPresentation>(mode: &mut GridMode<G>, env: &Env) -> Vec<Command> {
         mode.handle(&ModeEvent::Activated { previous: None }, &env.ctx())
             .into_iter()
             .collect()
     }
 
-    fn press(mode: &mut GridMode, env: &Env, name: &str) -> Vec<Command> {
+    fn press<G: GridPresentation>(mode: &mut GridMode<G>, env: &Env, name: &str) -> Vec<Command> {
         let key = Key::new(name).unwrap();
         let binding = env.config.grid.bindings.get(name);
         if let Some(binding) = binding {
@@ -336,7 +288,7 @@ mod tests {
         .collect()
     }
 
-    fn toggle_follow(mode: &mut GridMode, env: &Env) -> Vec<Command> {
+    fn toggle_follow<G: GridPresentation>(mode: &mut GridMode<G>, env: &Env) -> Vec<Command> {
         mode.handle(
             &ModeEvent::Binding {
                 binding: Binding::ToggleCursorFollowSelection.into(),
@@ -357,6 +309,152 @@ mod tests {
                 _ => None,
             })
             .expect("expected an overlay")
+    }
+
+    fn bisect_action<G: GridPresentation>(
+        mode: &mut GridMode<G>,
+        env: &Env,
+        action: &str,
+    ) -> Vec<Command> {
+        mode.handle(
+            &ModeEvent::Binding {
+                binding: Binding::parse(action).unwrap().into(),
+                state: KeyState::Down,
+                key: Key::new("f8").unwrap(),
+            },
+            &env.ctx(),
+        )
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn bisect_halves_one_axis_and_shares_unlabelled_region_styling() {
+        let env = Env::new();
+        let mut mode = crate::app::mode_catalog::bisect(&env.config);
+        let out = activate(&mut mode, &env);
+        assert_eq!(mode.id(), ModeId::bisect());
+        assert!(!mode.claims_key(&Key::new("h").unwrap())); // All cuts use bindings.
+        assert!(scene_of(&out).labels.is_empty());
+        assert_eq!(scene_of(&out).shapes.len(), 3);
+        for (action, expected) in [
+            ("bisect_left", Rect::new(0., 0., 500., 600.)),
+            ("bisect_down", Rect::new(0., 300., 500., 300.)),
+            ("bisect_right", Rect::new(250., 300., 250., 300.)),
+            ("bisect_up", Rect::new(250., 300., 250., 150.)),
+        ] {
+            let out = bisect_action(&mut mode, &env, action);
+            assert_eq!(mode.controller.session.current(), Some(expected));
+            assert!(out.contains(&Command::warp_to(expected.center())));
+            assert!(scene_of(&out).labels.is_empty());
+            assert_eq!(scene_of(&out).clip, Some(env.screens[0].bounds));
+        }
+        let mut recursive = crate::app::mode_catalog::recursive_grid(&env.config);
+        activate(&mut recursive, &env);
+        let bisect = mode.redraw(&env.ctx());
+        let recursive = recursive.redraw(&env.ctx());
+        // Same fill/outline style, with only the region geometry differing.
+        match (
+            &scene_of(&bisect).shapes[0],
+            &scene_of(&recursive).shapes[0],
+        ) {
+            (
+                OverlayShape::Rect {
+                    fill: a,
+                    stroke: b,
+                    stroke_width: c,
+                    ..
+                },
+                OverlayShape::Rect {
+                    fill: x,
+                    stroke: y,
+                    stroke_width: z,
+                    ..
+                },
+            ) => assert_eq!((a, b, c), (x, y, z)),
+            _ => panic!("region outline missing"),
+        }
+    }
+
+    #[test]
+    fn bisect_limits_each_axis_and_does_not_record_rejected_cuts() {
+        let mut config = Config::default();
+        config.bisect.min_size_width = 250;
+        config.bisect.min_size_height = 150;
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::bisect(&env.config);
+        activate(&mut mode, &env);
+        bisect_action(&mut mode, &env, "bisect_left");
+        bisect_action(&mut mode, &env, "bisect_right");
+        assert!(bisect_action(&mut mode, &env, "bisect_left").is_empty());
+        assert_eq!(mode.controller.session.depth(), 2);
+        assert_eq!(
+            mode.controller
+                .geometry
+                .axes(&mode.controller.session, mode.controller.max_depth),
+            (false, true)
+        );
+        bisect_action(&mut mode, &env, "bisect_up");
+        let out = bisect_action(&mut mode, &env, "bisect_down");
+        assert!(out.contains(&Command::FinishMode {
+            cause: FinishCause::Selection
+        }));
+        assert!(mode.controller.session.terminal);
+        assert_eq!(
+            mode.controller.session.current(),
+            Some(Rect::new(250., 150., 250., 150.))
+        );
+        assert!(scene_of(&out).labels.is_empty());
+        assert_eq!(scene_of(&out).shapes.len(), 1);
+        bisect_action(&mut mode, &env, "previous_level");
+        assert!(!mode.controller.session.terminal);
+        assert_eq!(mode.controller.session.depth(), 3);
+    }
+
+    #[test]
+    fn bisect_follow_lifecycle_retarget_and_restart_preserve_grid_contracts() {
+        let mut config = Config::default();
+        config.bisect.cursor_follow_selection = false;
+        config.bisect.max_depth = 2;
+        let env = Env::with(config);
+        let mut mode = crate::app::mode_catalog::bisect(&env.config);
+        activate(&mut mode, &env);
+        let out = bisect_action(&mut mode, &env, "bisect_right");
+        assert_eq!(out.len(), 1); // Only redraw when follow is off.
+        assert!(toggle_follow(&mut mode, &env).contains(&Command::warp_to(Point::new(750., 300.))));
+        let out = bisect_action(&mut mode, &env, "bisect_down");
+        assert!(out.contains(&Command::FinishMode {
+            cause: FinishCause::Selection
+        }));
+        mode.handle(
+            &ModeEvent::FinishRequested {
+                cause: FinishCause::Selection,
+            },
+            &env.ctx(),
+        );
+        let current = mode.controller.session.current();
+        assert!(bisect_action(&mut mode, &env, "bisect_left").is_empty());
+        mode.handle(&ModeEvent::Resumed, &env.ctx());
+        assert_eq!(mode.controller.session.current(), current);
+        let bounds = Rect::new(-2000., 100., 2000., 1200.);
+        mode.retarget(bounds, true, &env.ctx());
+        assert_eq!(
+            mode.controller.session.current(),
+            Some(Rect::new(-1000., 700., 1000., 600.))
+        );
+        bisect_action(&mut mode, &env, "previous_level");
+        assert!(!mode.controller.session.finished);
+        assert_eq!(
+            mode.controller.session.current(),
+            Some(Rect::new(-1000., 100., 1000., 1200.))
+        );
+        mode.handle(&ModeEvent::Restarted, &env.ctx());
+        assert_eq!(
+            mode.controller.session.current(),
+            Some(env.screens[0].bounds)
+        );
+        assert!(!mode.controller.session.cursor_follow_selection);
+        assert_eq!(mode.controller.session.depth(), 0);
     }
 
     #[test]

@@ -420,178 +420,210 @@ pub(crate) fn focused_window_bounds(pid: libc::pid_t) -> Result<Rect, String> {
         .ok_or_else(|| "focused window does not expose valid bounds".to_string())
 }
 
-pub(crate) fn scan_process_stream(
-    pid: libc::pid_t,
-    window_bounds: Rect,
-    request: &UiScanRequest,
-    deadline: Instant,
-    is_current: impl Fn() -> bool,
-    mut on_batch: impl FnMut(Vec<UiTarget>),
-) -> Result<(), String> {
-    if !is_current() || Instant::now() >= deadline {
-        return Ok(());
-    }
-    let application = AxApplication::new(pid)?;
-
-    let attributes = AxAttributes::new();
-    let windows = copy_array_attribute(application.as_ptr(), &CFString::new("AXWindows"))
-        .ok_or("selected application does not expose AXWindows")?;
-    let root = windows.iter().find(|raw| {
-        is_ax_element(**raw)
-            && element_rect(**raw, &attributes).is_some_and(|rect| {
-                (rect.x - window_bounds.x).abs() <= 2.0
-                    && (rect.y - window_bounds.y).abs() <= 2.0
-                    && (rect.width - window_bounds.width).abs() <= 2.0
-                    && (rect.height - window_bounds.height).abs() <= 2.0
-            })
-    });
-    let Some(root) = root else {
-        return Ok(());
-    };
-    let Ok(scan_bounds) = visible_scan_bounds(Some(window_bounds), request.bounds) else {
-        return Ok(());
-    };
-    let allowed_roles = ax_roles_for(&request.roles).into_iter().collect();
-    let node_attributes = node_attribute_names(&attributes, request.visible_only);
-    let mut scan = Scan {
-        request,
-        scan_bounds,
-        attributes,
-        node_attributes,
-        attribute_reader: attribute_batch::Reader::default(),
-        allowed_roles,
-        deadline,
-        on_batch: &mut on_batch,
-        is_current: &is_current,
-        seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
-        occluders: Vec::new(),
-    };
-    scan.visit(root.cast(), 0);
-
-    Ok(())
+/// Immutable attribute keys only; AX elements and fallback state stay per scan.
+pub(super) struct QueryPlan {
+    attributes: AxAttributes,
+    node_attributes: [CFArray<CFString>; 2],
 }
 
-/// Inspect only on-screen AX windows, in Quartz front-to-back order, under one budget.
-pub(crate) fn scan_screen_stream(
-    request: &UiScanRequest,
-    deadline: Instant,
-    is_current: impl Fn() -> bool,
-    mut on_batch: impl FnMut(Vec<UiTarget>),
-    progress: impl Fn(crate::platform::common::scan_progress::Progress),
-) -> Result<(), String> {
-    use crate::platform::common::{scan_progress::Progress, window_visibility::matching_coverage};
-    let bounds = request
-        .bounds
-        .ok_or("screen scan requires display bounds")?;
-    let visible = window_manager::scan_windows()?;
-    progress(Progress::Plan(
-        visible
-            .iter()
-            .filter(|w| w.bounds.intersect(&bounds).is_some())
-            .map(|w| matching_coverage(w.bounds))
-            .collect(),
-    ));
-    let attributes = AxAttributes::new();
-    let node_attributes = node_attribute_names(&attributes, request.visible_only);
-    let mut scan = Scan {
-        request,
-        scan_bounds: Some(bounds),
-        attributes,
-        node_attributes,
-        attribute_reader: attribute_batch::Reader::default(),
-        allowed_roles: ax_roles_for(&request.roles).into_iter().collect(),
-        deadline,
-        on_batch: &mut on_batch,
-        is_current: &is_current,
-        seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
-        occluders: Vec::new(),
-    };
-    let mut applications = HashMap::new();
-    let minimized_key = CFString::new("AXMinimized");
-    for item in visible
-        .iter()
-        .filter(|w| w.bounds.intersect(&bounds).is_some())
-    {
-        if !is_current() || Instant::now() >= deadline {
-            break;
+impl Default for QueryPlan {
+    fn default() -> Self {
+        let attributes = AxAttributes::new();
+        let node_attributes = [
+            node_attribute_names(&attributes, false),
+            node_attribute_names(&attributes, true),
+        ];
+        Self {
+            attributes,
+            node_attributes,
         }
-        if crate::platform::common::window_visibility::visible_part(
-            item.bounds,
-            bounds,
-            &scan.occluders,
-            &request.screen_bounds,
-        )
-        .is_none()
-        {
-            progress(Progress::Complete(matching_coverage(item.bounds)));
-            continue;
-        }
-        {
-            let windows = applications.entry(item.pid).or_insert_with(|| {
-                let mut windows = Vec::new();
-                window_manager::application_windows(
-                    item.pid,
-                    NODE_TIMEOUT_SECONDS,
-                    false,
-                    &|| !is_current() || Instant::now() >= deadline,
-                    |window| {
-                        if !is_current()
-                            || Instant::now() >= deadline
-                            || copy_bool_attribute(window.window.as_ptr(), &minimized_key)
-                                == Some(true)
-                        {
-                            return;
-                        }
-                        if let Some(frame) = element_rect(window.window.as_ptr(), &scan.attributes)
-                        {
-                            let title = copy_string_attribute(
-                                window.window.as_ptr(),
-                                &window.attributes.title,
-                            )
-                            .unwrap_or_default();
-                            windows.push((window, frame, title));
-                        }
-                    },
-                );
-                windows
-            });
-            let candidates: smallvec::SmallVec<[(Rect, &str); 8]> = windows
-                .iter()
-                .map(|(_, frame, title)| (*frame, title.as_str()))
-                .collect();
-            let matching = crate::platform::common::window_visibility::visible_candidates(
-                &candidates,
-                item,
-                &visible,
-            );
-            // An ambiguous AX identity must not expose a covered or off-Space window.
-            if let [index] = matching.as_slice() {
-                let (window, frame, _) = &windows[*index];
-                scan.scan_bounds = frame.intersect(&bounds);
-                scan.attribute_reader.reset();
-                scan.visit(window.window.as_ptr(), 0);
-            }
-        }
-        if item.pid as u32 != std::process::id() {
-            scan.occluders.push(item.bounds);
-        }
-        progress(Progress::Complete(matching_coverage(item.bounds)));
     }
-    Ok(())
+}
+
+impl QueryPlan {
+    pub(super) fn scan_process_stream(
+        &self,
+        pid: libc::pid_t,
+        window_bounds: Rect,
+        request: &UiScanRequest,
+        deadline: Instant,
+        is_current: impl Fn() -> bool,
+        mut on_batch: impl FnMut(Vec<UiTarget>),
+    ) -> Result<(), String> {
+        if !is_current() || Instant::now() >= deadline {
+            return Ok(());
+        }
+        let application = AxApplication::new(pid)?;
+
+        let attributes = &self.attributes;
+        let windows = copy_array_attribute(application.as_ptr(), &CFString::new("AXWindows"))
+            .ok_or("selected application does not expose AXWindows")?;
+        let root = windows.iter().find(|raw| {
+            is_ax_element(**raw)
+                && element_rect(**raw, attributes).is_some_and(|rect| {
+                    (rect.x - window_bounds.x).abs() <= 2.0
+                        && (rect.y - window_bounds.y).abs() <= 2.0
+                        && (rect.width - window_bounds.width).abs() <= 2.0
+                        && (rect.height - window_bounds.height).abs() <= 2.0
+                })
+        });
+        let Some(root) = root else {
+            return Ok(());
+        };
+        let Ok(scan_bounds) = visible_scan_bounds(Some(window_bounds), request.bounds) else {
+            return Ok(());
+        };
+        let allowed_roles = ax_roles_for(&request.roles).into_iter().collect();
+        let node_attributes = &self.node_attributes[usize::from(request.visible_only)];
+        let mut scan = Scan {
+            request,
+            scan_bounds,
+            attributes,
+            node_attributes,
+            attribute_reader: attribute_batch::Reader::default(),
+            allowed_roles,
+            deadline,
+            on_batch: &mut on_batch,
+            is_current: &is_current,
+            seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
+            occluders: &[],
+        };
+        scan.visit(root.cast(), 0);
+
+        Ok(())
+    }
+
+    /// Inspect on-screen AX windows in spatial priority order under one budget.
+    /// Occlusion always uses the original Quartz front-to-back snapshot.
+    pub(super) fn scan_screen_stream(
+        &self,
+        request: &UiScanRequest,
+        (visible, priority): (
+            &[crate::platform::common::window_visibility::Visible],
+            crate::platform::common::scan_priority::ScanPriority,
+        ),
+        deadline: Instant,
+        is_current: impl Fn() -> bool,
+        mut on_batch: impl FnMut(Vec<UiTarget>),
+        progress: impl Fn(crate::platform::common::scan_progress::Progress),
+    ) -> Result<(), String> {
+        use crate::platform::common::{
+            scan_progress::Progress, window_visibility::matching_coverage,
+        };
+        let bounds = request
+            .bounds
+            .ok_or("screen scan requires display bounds")?;
+        progress(Progress::Plan(
+            visible
+                .iter()
+                .filter(|w| w.bounds.intersect(&bounds).is_some())
+                .map(|w| matching_coverage(w.bounds))
+                .collect(),
+        ));
+        let attributes = &self.attributes;
+        let node_attributes = &self.node_attributes[usize::from(request.visible_only)];
+        let occluders: Vec<_> = visible.iter().map(|w| w.bounds).collect();
+        let mut order: Vec<_> = (0..visible.len())
+            .filter(|&i| visible[i].bounds.intersect(&bounds).is_some())
+            .collect();
+        priority.sort(&mut order, |&i| visible[i].bounds);
+        let mut scan = Scan {
+            request,
+            scan_bounds: Some(bounds),
+            attributes,
+            node_attributes,
+            attribute_reader: attribute_batch::Reader::default(),
+            allowed_roles: ax_roles_for(&request.roles).into_iter().collect(),
+            deadline,
+            on_batch: &mut on_batch,
+            is_current: &is_current,
+            seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
+            occluders: &[],
+        };
+        let mut applications = HashMap::new();
+        let minimized_key = CFString::new("AXMinimized");
+        for index in order {
+            let item = &visible[index];
+            scan.occluders = &occluders[..index];
+            if !is_current() || Instant::now() >= deadline {
+                break;
+            }
+            if crate::platform::common::window_visibility::visible_part(
+                item.bounds,
+                bounds,
+                scan.occluders,
+                &request.screen_bounds,
+            )
+            .is_none()
+            {
+                progress(Progress::Complete(matching_coverage(item.bounds)));
+                continue;
+            }
+            {
+                let windows = applications.entry(item.pid).or_insert_with(|| {
+                    let mut windows = Vec::new();
+                    window_manager::application_windows(
+                        item.pid,
+                        NODE_TIMEOUT_SECONDS,
+                        false,
+                        &|| !is_current() || Instant::now() >= deadline,
+                        |window| {
+                            if !is_current()
+                                || Instant::now() >= deadline
+                                || copy_bool_attribute(window.window.as_ptr(), &minimized_key)
+                                    == Some(true)
+                            {
+                                return;
+                            }
+                            if let Some(frame) =
+                                element_rect(window.window.as_ptr(), scan.attributes)
+                            {
+                                let title = copy_string_attribute(
+                                    window.window.as_ptr(),
+                                    &window.attributes.title,
+                                )
+                                .unwrap_or_default();
+                                windows.push((window, frame, title));
+                            }
+                        },
+                    );
+                    windows
+                });
+                let candidates: smallvec::SmallVec<[(Rect, &str); 8]> = windows
+                    .iter()
+                    .map(|(_, frame, title)| (*frame, title.as_str()))
+                    .collect();
+                let matching = crate::platform::common::window_visibility::visible_candidates(
+                    &candidates,
+                    item,
+                    visible,
+                );
+                // An ambiguous AX identity must not expose a covered or off-Space window.
+                if let [index] = matching.as_slice() {
+                    let (window, frame, _) = &windows[*index];
+                    scan.scan_bounds = frame.intersect(&bounds);
+                    scan.attribute_reader.reset();
+                    scan.visit(window.window.as_ptr(), 0);
+                }
+            }
+            progress(Progress::Complete(matching_coverage(item.bounds)));
+        }
+        Ok(())
+    }
 }
 
 struct Scan<'a> {
     request: &'a UiScanRequest,
     scan_bounds: Option<Rect>,
-    attributes: AxAttributes,
-    node_attributes: CFArray<CFString>,
+    attributes: &'a AxAttributes,
+    node_attributes: &'a CFArray<CFString>,
     attribute_reader: attribute_batch::Reader,
     allowed_roles: HashSet<String>,
     deadline: Instant,
     on_batch: &'a mut dyn FnMut(Vec<UiTarget>),
     is_current: &'a dyn Fn() -> bool,
     seen: NativeTargetDeduper,
-    occluders: Vec<Rect>,
+    occluders: &'a [Rect],
 }
 
 impl Scan<'_> {
@@ -638,7 +670,7 @@ impl Scan<'_> {
             crate::platform::common::window_visibility::visible_part(
                 rect,
                 self.scan_bounds.unwrap_or(rect),
-                &self.occluders,
+                self.occluders,
                 &self.request.screen_bounds,
             )
         });
@@ -671,7 +703,7 @@ impl Scan<'_> {
             && in_bounds
             && let Some(rect) = rect
         {
-            let name = accessible_name(element, &self.attributes, || !self.expired());
+            let name = accessible_name(element, self.attributes, || !self.expired());
             if self.expired() {
                 return;
             }
@@ -693,7 +725,7 @@ impl Scan<'_> {
             element,
             prefer_visible_rows,
             prefer_visible_children,
-            &self.attributes,
+            self.attributes,
             || !self.expired(),
         ) else {
             return;
@@ -1185,15 +1217,15 @@ mod tests {
                 let mut scan = Scan {
                     request: &request,
                     scan_bounds: Some(bounds),
-                    attributes,
-                    node_attributes,
+                    attributes: &attributes,
+                    node_attributes: &node_attributes,
                     attribute_reader: reader,
                     allowed_roles: HashSet::new(),
                     deadline,
                     on_batch: &mut publish,
                     is_current: &|| current.get(),
                     seen: NativeTargetDeduper::new(request.vision.merge_iou_threshold),
-                    occluders: Vec::new(),
+                    occluders: &[],
                 };
                 scan.visit(window.as_ptr(), 0);
                 assert!(

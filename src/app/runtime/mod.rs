@@ -682,7 +682,20 @@ impl Engine {
     pub fn run(&mut self, backend: &mut dyn Backend) -> Result<(), String> {
         self.start_runtime(backend)?;
 
-        let result = match backend.run_event_loop(&mut |backend| self.run_ready_turns(backend)) {
+        let mut finished = false;
+        let result = match backend.run_event_loop(&mut |backend| {
+            match self.run_ready_turns(backend) {
+                Ok(Some(timeout)) => Ok(Some(timeout)),
+                result => {
+                    // AppKit's TerminateLater runs a nested modal loop until
+                    // shutdown acknowledges termination. Cleanup must happen
+                    // in this final turn, not after that loop returns.
+                    finished = true;
+                    self.finish_runtime(backend, result.map(|_| ()))
+                        .map(|()| None)
+                }
+            }
+        }) {
             Some(result) => result,
             None => (|| {
                 while !self.should_quit {
@@ -692,7 +705,11 @@ impl Engine {
             })(),
         };
 
-        self.finish_runtime(backend, result)
+        if finished {
+            result
+        } else {
+            self.finish_runtime(backend, result)
+        }
     }
 
     pub(crate) fn take_restart(&mut self) -> Option<Box<dyn PreparedRestart>> {
@@ -753,39 +770,34 @@ impl Engine {
                 }
             }
             BackendEvent::TextSegmented(mut result) => {
-                if self
+                if let Some((owner, _, original)) = self
                     .scheduler
                     .text_segmentation
-                    .as_ref()
-                    .is_some_and(|(_, id, _)| *id == result.id)
-                    && let Some((owner, _, original)) = self.scheduler.text_segmentation.take()
+                    .take_if(|(_, id, _)| *id == result.id)
                 {
                     result.id = original;
                     self.dispatch_owned_to(&owner, ModeEvent::TextSegmented(result), backend)?;
                 }
             }
             BackendEvent::TextPromptResult { id, value } => {
-                if self
+                if let Some((owner, prompt)) = self
                     .scheduler
                     .text_prompt
-                    .as_ref()
-                    .is_some_and(|(_, prompt)| prompt.id == id)
+                    .take_if(|(_, prompt)| prompt.id == id)
                 {
-                    if let Some((owner, prompt)) = self.scheduler.text_prompt.take() {
-                        self.clear_point_input(backend);
-                        // Retire capture before dropping ownership: a later
-                        // CloseTextPrompt cannot find this already-taken prompt.
-                        backend.set_text_capture(false);
-                        self.scheduler.text_prompt_returning_focus = prompt.live_style.is_none();
-                        let text = match value {
-                            Ok(text) => text,
-                            Err(error) => {
-                                self.report_action_error(error, backend);
-                                None
-                            }
-                        };
-                        self.dispatch_to(&owner, ModeEvent::TextSubmitted(text), backend)?;
-                    }
+                    self.clear_point_input(backend);
+                    // Retire capture before dropping ownership: a later
+                    // CloseTextPrompt cannot find this already-taken prompt.
+                    backend.set_text_capture(false);
+                    self.scheduler.text_prompt_returning_focus = prompt.live_style.is_none();
+                    let text = match value {
+                        Ok(text) => text,
+                        Err(error) => {
+                            self.report_action_error(error, backend);
+                            None
+                        }
+                    };
+                    self.dispatch_to(&owner, ModeEvent::TextSubmitted(text), backend)?;
                 } else {
                     self.finish_layout_note(id, value, backend)?
                 }
@@ -1185,7 +1197,7 @@ impl Engine {
             return Ok(());
         }
 
-        let grid = target == ModeId::grid() || target == ModeId::recursive_grid();
+        let grid = target.is_grid();
         if grid
             && self
                 .registry
@@ -1212,12 +1224,10 @@ impl Engine {
             self.retire_workspace_requests(Some(&self.registry.active.clone()));
             // Native text entry belongs to the outgoing interaction, even when
             // its final layout acknowledgement defers the actual mode switch.
-            if self
+            if let Some(pending) = self
                 .window_presets
                 .pending
-                .as_ref()
-                .is_some_and(|pending| pending.owner == self.registry.active)
-                && let Some(pending) = self.window_presets.pending.take()
+                .take_if(|pending| pending.owner == self.registry.active)
             {
                 backend.cancel_text_prompt(pending.id);
             }
@@ -1262,20 +1272,8 @@ impl Engine {
             // owned by the outgoing mode and need a synthetic release here.
             // Deliver the release of anything still held, so the outgoing mode
             // can stop its timers rather than moving the pointer forever.
-            let pending: Vec<(Key, ActiveGesture)> =
-                std::mem::take(&mut self.input.active_gestures)
-                    .into_iter()
-                    .collect();
-            for (key, gesture) in pending {
-                self.dispatch_to(
-                    &gesture.owner,
-                    ModeEvent::Binding {
-                        binding: Arc::clone(&gesture.binding),
-                        state: KeyState::Up,
-                        key,
-                    },
-                    backend,
-                )?;
+            for (key, gesture) in std::mem::take(&mut self.input.active_gestures) {
+                self.release_gesture(key, gesture, backend)?;
             }
 
             let shared_group = self
@@ -1488,7 +1486,21 @@ impl Engine {
                         append(action, flattened);
                     }
                 }
-                action => flattened.push(action.clone()),
+                action => {
+                    // Adjacent identical sends are a double tap, including
+                    // sends separated only by a nested sequence boundary.
+                    // An explicit wait already breaks the adjacency.
+                    if matches!(
+                        (flattened.last(), action),
+                        (Some(Binding::Send(previous)), Binding::Send(current)) if previous == current
+                    ) {
+                        flattened.push(Binding::Wait {
+                            min_ms: DEFAULT_WAIT_MS,
+                            max_ms: DEFAULT_WAIT_MS,
+                        });
+                    }
+                    flattened.push(action.clone());
+                }
             }
         }
 
@@ -1496,24 +1508,7 @@ impl Engine {
         for action in actions {
             append(action, &mut flattened);
         }
-
-        // Two identical key sends are a double tap. Give the focused app the
-        // same default interval as an explicit `wait`/`wait 0`, while leaving
-        // an explicitly configured wait untouched.
-        let mut expanded = Vec::with_capacity(flattened.len());
-        for action in flattened {
-            if matches!(
-                (expanded.last(), &action),
-                (Some(Binding::Send(previous)), Binding::Send(current)) if previous == current
-            ) {
-                expanded.push(Binding::Wait {
-                    min_ms: DEFAULT_WAIT_MS,
-                    max_ms: DEFAULT_WAIT_MS,
-                });
-            }
-            expanded.push(action);
-        }
-        expanded
+        flattened
     }
 
     fn continue_sequence(
@@ -1601,30 +1596,37 @@ impl Engine {
             return Ok(true);
         }
 
-        // Stateful gestures and mode-specific discrete actions are owned by
-        // the receiving mode. Transfer the resolved binding's Arc directly;
-        // a held key already stored the one clone needed for its release edge.
-        if matches!(
-            binding,
+        match binding {
+            // These actions always belong to the resolved mode. Only window
+            // actions below can transfer to the active shared window session.
             Binding::Move(_)
-                | Binding::Scroll(..)
-                | Binding::Speed(_)
-                | Binding::SpeedToggle(_)
-                | Binding::ToggleCursorFollowSelection
-                | Binding::TargetingKey(_)
-                | Binding::Window(_)
-                | Binding::RescanUi
-                | Binding::TextSelect(_)
-                | Binding::SelectionReset
-                | Binding::SelectionParent
-                | Binding::SelectionReopen
-                | Binding::SelectionAccept
-                | Binding::SelectionCancel
-                | Binding::SelectionSearch
-        ) {
-            let recipient = self.stateful_binding_owner(&resolved);
-            return self
+            | Binding::Scroll(..)
+            | Binding::Speed(_)
+            | Binding::SpeedToggle(_)
+            | Binding::ToggleCursorFollowSelection
+            | Binding::TargetingKey(_)
+            | Binding::RescanUi
+            | Binding::TextSelect(_)
+            | Binding::SelectionReset
+            | Binding::Bisect(_)
+            | Binding::SelectionParent
+            | Binding::SelectionReopen
+            | Binding::SelectionAccept
+            | Binding::SelectionCancel
+            | Binding::SelectionSearch => self
                 .dispatch_to(
+                    &resolved.owner,
+                    ModeEvent::Binding {
+                        binding: resolved.binding,
+                        state: input.state,
+                        key: input.key.clone(),
+                    },
+                    backend,
+                )
+                .map(|_| true),
+            Binding::Window(_) => {
+                let recipient = self.stateful_binding_owner(&resolved);
+                self.dispatch_to(
                     &recipient,
                     ModeEvent::Binding {
                         binding: resolved.binding,
@@ -1633,10 +1635,8 @@ impl Engine {
                     },
                     backend,
                 )
-                .map(|_| true);
-        }
-
-        match binding {
+                .map(|_| true)
+            }
             Binding::MoveWindowFromToScreen { source, target } => {
                 let owner = self.registry.active.clone();
                 self.execute_for(
@@ -1982,26 +1982,6 @@ impl Engine {
                 Ok(true)
             }
             Binding::Wait { .. } => Ok(true),
-
-            Binding::Move(_)
-            | Binding::Scroll(..)
-            | Binding::Speed(_)
-            | Binding::SpeedToggle(_)
-            | Binding::ToggleCursorFollowSelection
-            | Binding::TargetingKey(_)
-            | Binding::Window(_)
-            | Binding::RescanUi => {
-                Err("stateful binding reached the stateless runtime dispatch boundary".into())
-            }
-            Binding::TextSelect(_)
-            | Binding::SelectionReset
-            | Binding::SelectionParent
-            | Binding::SelectionAccept
-            | Binding::SelectionCancel
-            | Binding::SelectionSearch
-            | Binding::SelectionReopen => {
-                Err("stateful binding reached the stateless runtime dispatch boundary".into())
-            }
 
             // Filtered out when the table was built.
             Binding::Disabled => Ok(false),

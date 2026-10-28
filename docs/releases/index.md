@@ -5,6 +5,90 @@ outline: 2
 
 # 更新日志 / Release Notes
 
+## 0.15.0
+
+**快捷键调整（Normal）**：`G` 网格 · `F` UI Hint · `Primary+G` 递归网格 · `Primary+F` Bisect。可在 `[normal.bindings]` 自定义。
+
+**新增**
+
+- **Bisect 二分定位**：用 `H/J/K/L` 逐次缩小目标区域，无需输入标签。
+
+**优化**
+
+- **UI Hint** 在全屏和多屏识别时优先显示鼠标附近标签，减少识别过程中的重复计算。
+- 改善多屏和缩放下的显示清晰度，减少模式切换、标签绘制和按键帮助的重复处理与临时内存占用。
+
+**修复**
+
+- 修复临时模式的按键冲突和切换后移动、滚动不停的问题。
+- 修复 **macOS** 更新重启、权限及退出问题，以及 **Windows** 取消识别和退出清理问题。
+
+**Shortcut changes (Normal):** `G` Grid · `F` UI Hint · `Primary+G` Recursive Grid · `Primary+F` Bisect. Customize in `[normal.bindings]`.
+
+**Added**
+
+- **Bisect mode**: narrow the target area with `H/J/K/L`, without typing labels.
+
+**Improved**
+
+- **UI Hint** prioritizes labels near the pointer during full-screen and multi-display scans, with less repeated processing.
+- Clearer overlays across displays and scaling settings, with less repeated work and temporary memory use in mode switches, label rendering, and key help.
+
+**Fixed**
+
+- Fixed temporary-mode shortcut conflicts and movement or scrolling continuing after mode switches.
+- Fixed update restarts, permissions, and exit issues on **macOS**, plus scan cancellation and shutdown cleanup on **Windows**.
+
+## 0.12.9
+
+- 优化 Windows 和 macOS 的按键处理与动作序列执行，减少临时内存分配。
+- 减少文字选择分词、编号及窗口模式面板更新的处理开销。
+- 优化 macOS 覆盖层刷新，减少未变化图形的重复更新。
+- 优化 OCR 段落分组、流式结果处理和覆盖层绘制，减少重复计算与临时内存分配。
+
+- Reduced temporary allocations during keyboard input handling and action-sequence execution on Windows and macOS.
+- Reduced processing overhead in Text Select segmentation and label numbering, and in Window mode panel updates.
+- Optimized macOS overlay refreshes to avoid updating unchanged shapes.
+- Optimized OCR paragraph grouping, streamed result handling, and overlay rendering to reduce redundant work and temporary allocations.
+
+## 0.12.8
+
+- 优化文字选择细分为词语时的预览响应，减少重复索引和临时内存分配。
+- 减少 UIHint 与文字选择中 ASCII 文本的搜索索引构建开销。
+
+- Improved preview responsiveness when refining text into words, with less repeated indexing and fewer temporary allocations.
+- Reduced search-index preparation overhead for ASCII text in UIHint and Text Select.
+
+## 0.12.7
+
+UIHint 与文字选择模式的扫描资源复用，减少重复初始化。
+
+Scan resource reuse for UIHint and Text Select to reduce repeated initialization.
+
+## 0.12.6
+
+新增 **文字选择（Text Select）模式**，用键盘选择并复制屏幕文字，支持逐级细分到词语、字符。
+
+Added **Text Select mode** to select and copy on-screen text, with refinement into words and characters.
+
+```toml
+[normal.bindings]
+c = "text_select"                  # 进入文字选择 / Enter Text Select
+
+[text_select.bindings]
+"alt+c" = "text_refine"            # 细分为词语、字符 / Refine into words, then characters
+"alt+backspace" = "previous_level" # 返回上层 / Previous level
+"ctrl+backspace" = "first_level"   # 重新识别 / Rescan
+tab = "text_cycle_page"            # 循环翻页 / Cycle pages
+"ctrl+a" = "text_select_all"       # 空输入时全选 / Select all when input is empty
+backspace = "text_clear_selection" # 空输入时清空勾选 / Clear selection when input is empty
+"ctrl+x" = "text_clear_input"      # 清空输入 / Clear input
+"mod+c enter" = "text_copy"        # Ctrl+C（macOS 为 Cmd+C）或 Enter 复制 / Ctrl+C (Cmd+C on macOS) or Enter to copy
+"primary+q" = "normal"             # 返回 Normal / Return to Normal
+esc = "cancel_selection"           # 返回来源模式 / Return to previous mode
+"?" = "key_help"                   # 按键帮助 / Key help
+```
+
 ## 0.12.5
 
 - 优化 Windows 和 macOS 的网格与 UIHint 绘制和标签切换，修复部分覆盖层刷新异常。

@@ -233,6 +233,23 @@ fn prepare_hint_plan(
 }
 
 impl HintView<'_> {
+    fn current_hint(&self) -> Option<&CompactHint<usize>> {
+        self.highlighted_hint.or_else(|| {
+            self.info.as_ref().and_then(|info| {
+                if info.multiple {
+                    self.point.as_ref().and_then(|point| {
+                        point
+                            .position
+                            .checked_sub(1)
+                            .and_then(|i| info.hints.get(i))
+                    })
+                } else {
+                    info.hints.first()
+                }
+            })
+        })
+    }
+
     pub(crate) fn scene(&self, ctx: &HostContext<'_>) -> OverlayScene {
         if let Some(cache) = self.cache
             && (self.content.search.is_some() || self.point.is_some())
@@ -283,7 +300,7 @@ impl HintView<'_> {
         // This highlight belongs specifically to UI Hint's typed-prefix
         // interaction. Keep the generic overlay/config defaults unchanged.
         if self.content.style.ui.matched_text_color.is_none() {
-            label_style.matched_text_color = Color::rgb(0xE4, 0xB4, 0x00);
+            label_style.matched_text_color = crate::api::style::HINT_MATCHED_TEXT_COLOR;
         }
         let uniform_width = self
             .content
@@ -348,18 +365,7 @@ impl HintView<'_> {
         } else {
             None
         };
-        let current = self.info.as_ref().and_then(|info| {
-            if info.multiple {
-                self.point.as_ref().and_then(|point| {
-                    point
-                        .position
-                        .checked_sub(1)
-                        .and_then(|index| info.hints.get(index))
-                })
-            } else {
-                info.hints.first()
-            }
-        });
+        let current = self.current_hint();
         if let Some(current) = current.filter(|_| self.cache.is_none()) {
             self.append_highlighted_labels(
                 labels,
@@ -500,18 +506,7 @@ impl HintView<'_> {
         let state = cache.state.borrow();
         let base = state.scene.as_ref()?;
         let highlighted = state.highlighted.as_ref()?;
-        let current = self.info.as_ref().and_then(|info| {
-            if info.multiple {
-                self.point.as_ref().and_then(|point| {
-                    point
-                        .position
-                        .checked_sub(1)
-                        .and_then(|i| info.hints.get(i))
-                })
-            } else {
-                info.hints.first()
-            }
-        });
+        let current = self.current_hint();
         let index = current.and_then(|hint| {
             if !state.draw_slots.is_empty() {
                 let index = state.draw_slots.get(hint.value).copied().filter(|&index| {

@@ -76,6 +76,9 @@ impl Engine {
                     }
                 }
                 Command::SegmentText(mut request) => {
+                    // Submit the waiting scene before starting native work;
+                    // batch coalescing would otherwise defer it until afterward.
+                    self.flush_pending_overlay(backend)?;
                     self.scheduler.text_segmentation_serial =
                         self.scheduler.text_segmentation_serial.wrapping_add(1);
                     let id = self.scheduler.text_segmentation_serial;
@@ -529,12 +532,11 @@ impl Engine {
                     // Normal shortcuts. Retarget it before the pointer crosses
                     // screens, otherwise PointerMoved resets the retained path.
                     // Passthrough shells still target their temporary mode.
-                    let recipient =
-                        if matches!(self.registry.active.as_str(), "grid" | "recursive_grid") {
-                            self.registry.active.clone()
-                        } else {
-                            self.display_mode()
-                        };
+                    let recipient = if self.registry.active.is_grid() {
+                        self.registry.active.clone()
+                    } else {
+                        self.display_mode()
+                    };
                     self.dispatch_to(
                         &recipient,
                         ModeEvent::ScreenRetargeted { screen, preserve },
@@ -548,8 +550,11 @@ impl Engine {
                     repeating,
                 } => {
                     let now = Instant::now();
+                    self.trace_lazy(self.settings.debug.timers, "timer", || {
+                        format!("set id={id:?} owner={owner} delay={delay:?} repeating={repeating}")
+                    });
                     self.scheduler.timers.insert(
-                        id.clone(),
+                        id,
                         Timer {
                             fires_at: now + delay,
                             last_fired: now,
@@ -557,9 +562,6 @@ impl Engine {
                             owner: owner.clone(),
                         },
                     );
-                    self.trace_lazy(self.settings.debug.timers, "timer", || {
-                        format!("set id={id:?} owner={owner} delay={delay:?} repeating={repeating}")
-                    });
                 }
                 Command::CancelTimer { id } => {
                     self.scheduler.timers.remove(&id);

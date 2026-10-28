@@ -7,20 +7,20 @@ use crate::api::theme::Palette;
 use crate::api::{Binding, Command, CommandBatch, HostContext, KeyState, Mode, ModeEvent, ModeId};
 
 use super::NormalMode;
-use super::targeting::{Selection, TargetingController};
+use super::targeting::{LetterGeometry, Selection, TargetingController};
 
-pub(crate) struct NormalTargeting {
+pub(crate) struct NormalTargeting<G: LetterGeometry> {
     normal: NormalMode,
-    grid: TargetingController,
+    grid: TargetingController<G>,
     reset_after_move: bool,
     reset_after_click: bool,
     pending_reset: bool,
 }
 
-impl NormalTargeting {
+impl<G: LetterGeometry> NormalTargeting<G> {
     pub(crate) fn new(
         normal: NormalMode,
-        grid: TargetingController,
+        grid: TargetingController<G>,
         reset_after_move: bool,
         reset_after_click: bool,
     ) -> Self {
@@ -45,7 +45,7 @@ impl NormalTargeting {
     }
 }
 
-impl Mode for NormalTargeting {
+impl<G: LetterGeometry> Mode for NormalTargeting<G> {
     fn id(&self) -> ModeId {
         self.normal.id()
     }
@@ -138,7 +138,7 @@ impl Mode for NormalTargeting {
 mod tests {
     use super::*;
     use crate::api::{Key, Point, Rect, Screen, TargetingLifecycle};
-    use crate::modes::targeting::Layout;
+    use crate::modes::targeting::{GridGeometry, Layout, RecursiveGeometry};
     use stats_alloc::Region;
     use std::time::Duration;
 
@@ -172,10 +172,71 @@ mod tests {
 
     #[test]
     fn normal_targeting_deep_selection_navigation_and_motion_do_not_allocate_or_render() {
-        let config = crate::config::Config::default();
-        let mut mode = NormalTargeting::new(
-            crate::app::mode_catalog::normal(&config),
-            TargetingController::new(
+        fn check<G: LetterGeometry>(controller: TargetingController<G>) {
+            let config = crate::config::Config::default();
+            let mut mode = NormalTargeting::new(
+                crate::app::mode_catalog::normal(&config),
+                controller,
+                true,
+                true,
+            );
+            let palette = Palette::default();
+            let screens = [Screen {
+                bounds: Rect::new(0.0, 0.0, 1024.0, 1024.0),
+                work_area: Rect::new(0.0, 0.0, 1024.0, 1024.0),
+                is_primary: true,
+                scale: 1.0,
+                name: None,
+            }];
+            let ctx = HostContext {
+                presenter: &NoGridPresenter,
+                screens: &screens,
+                cursor: Point::new(512.0, 512.0),
+                focused_app: None,
+                palette: &palette,
+            };
+            let events = ["a", "tab", "space"].map(|name| ModeEvent::Binding {
+                binding: Binding::TargetingKey(Key::new(name).unwrap()).into(),
+                key: Key::new(name).unwrap(),
+                state: KeyState::Down,
+            });
+            let movement = ModeEvent::Binding {
+                binding: Binding::Move(crate::api::Direction::Left).into(),
+                key: Key::new("h").unwrap(),
+                state: KeyState::Down,
+            };
+            let frame = ModeEvent::Frame {
+                elapsed: Duration::from_millis(16),
+            };
+            let region = Region::new(crate::TEST_ALLOCATOR);
+            for _ in 0..100 {
+                for _ in 0..20 {
+                    mode.handle(&events[0], &ctx);
+                }
+                for _ in 0..20 {
+                    mode.handle(&events[1], &ctx);
+                }
+                mode.handle(&events[2], &ctx);
+                mode.handle(
+                    &ModeEvent::ScreenRetargeted {
+                        screen: screens[0].clone(),
+                        preserve: true,
+                    },
+                    &ctx,
+                );
+            }
+            let allocations = region.change();
+            assert_eq!(allocations.allocations + allocations.reallocations, 0);
+            mode.handle(&movement, &ctx);
+            let region = Region::new(crate::TEST_ALLOCATOR);
+            for _ in 0..1000 {
+                mode.handle(&frame, &ctx);
+            }
+            let allocations = region.change();
+            assert_eq!(allocations.allocations + allocations.reallocations, 0);
+        }
+        let grid = || {
+            GridGeometry::new(
                 Layout {
                     rows: 2,
                     cols: 2,
@@ -183,66 +244,22 @@ mod tests {
                 },
                 &[],
                 20,
-                None,
-                true,
-                TargetingLifecycle::default(),
-            ),
+            )
+        };
+        check(TargetingController::new(
+            grid(),
+            20,
             true,
+            TargetingLifecycle::default(),
+        ));
+        check(TargetingController::new(
+            RecursiveGeometry {
+                grid: grid(),
+                min_size: (1.0, 1.0),
+            },
+            20,
             true,
-        );
-        let palette = Palette::default();
-        let screens = [Screen {
-            bounds: Rect::new(0.0, 0.0, 1024.0, 1024.0),
-            work_area: Rect::new(0.0, 0.0, 1024.0, 1024.0),
-            is_primary: true,
-            scale: 1.0,
-            name: None,
-        }];
-        let ctx = HostContext {
-            presenter: &NoGridPresenter,
-            screens: &screens,
-            cursor: Point::new(512.0, 512.0),
-            focused_app: None,
-            palette: &palette,
-        };
-        let events = ["a", "tab", "space"].map(|name| ModeEvent::Binding {
-            binding: Binding::TargetingKey(Key::new(name).unwrap()).into(),
-            key: Key::new(name).unwrap(),
-            state: KeyState::Down,
-        });
-        let movement = ModeEvent::Binding {
-            binding: Binding::Move(crate::api::Direction::Left).into(),
-            key: Key::new("h").unwrap(),
-            state: KeyState::Down,
-        };
-        let frame = ModeEvent::Frame {
-            elapsed: Duration::from_millis(16),
-        };
-        let region = Region::new(crate::TEST_ALLOCATOR);
-        for _ in 0..100 {
-            for _ in 0..20 {
-                mode.handle(&events[0], &ctx);
-            }
-            for _ in 0..20 {
-                mode.handle(&events[1], &ctx);
-            }
-            mode.handle(&events[2], &ctx);
-            mode.handle(
-                &ModeEvent::ScreenRetargeted {
-                    screen: screens[0].clone(),
-                    preserve: true,
-                },
-                &ctx,
-            );
-        }
-        let allocations = region.change();
-        assert_eq!(allocations.allocations + allocations.reallocations, 0);
-        mode.handle(&movement, &ctx);
-        let region = Region::new(crate::TEST_ALLOCATOR);
-        for _ in 0..1000 {
-            mode.handle(&frame, &ctx);
-        }
-        let allocations = region.change();
-        assert_eq!(allocations.allocations + allocations.reallocations, 0);
+            TargetingLifecycle::default(),
+        ));
     }
 }

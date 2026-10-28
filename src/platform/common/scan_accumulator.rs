@@ -124,7 +124,7 @@ impl ScanAccumulator {
                     // Evidence needs only geometry and normalized text, not a
                     // second copy of the provider's metadata/boxed strings.
                     let mut name = String::with_capacity(t.name.len());
-                    let _ = crate::api::presentation::write_ocr_text(&mut name, &t.name);
+                    let _ = crate::api::presentation::write_ocr_text(&mut name, t.name.chars());
                     self.text_spatial.store(t.rect);
                     self.visual_text.push(UiTarget {
                         rect: t.rect,
@@ -211,7 +211,9 @@ impl ScanAccumulator {
                 if old == rect
                     && let Some(target) = self.search_targets[index].take()
                 {
-                    visible |= !self.deferred.get(index).copied().unwrap_or(false);
+                    // Retired candidates must not keep coverage preparation
+                    // active after their last target has disappeared.
+                    visible |= !self.deferred.get_mut(index).is_some_and(std::mem::take);
                     if preserve_names && !target.name.is_empty() {
                         previous.push((index, target));
                     }
@@ -521,11 +523,6 @@ fn attach_ocr(
         let value = text[runs[0]].name.trim();
         if target.details.as_ref().is_some_and(|details| {
             details.ocr == value
-                && details.ocr_spans.as_slice()
-                    == text[runs[0]]
-                        .details
-                        .as_ref()
-                        .map_or(&[][..], |source| source.ocr_spans.as_slice())
                 && (target.role != SemanticRole::StaticText
                     || !details.accessibility.is_empty()
                     || target.name == value)
@@ -561,15 +558,9 @@ fn attach_ocr(
         start = end;
     }
     scratch.clear();
-    let mut spans = Vec::new();
     let mut previous: Option<&UiTarget> = None;
     for &index in runs.iter() {
         let run = &text[index];
-        for span in run.details.iter().flat_map(|details| &details.ocr_spans) {
-            if !spans.contains(span) {
-                spans.push(span.clone());
-            }
-        }
         let value = run.name.trim();
         let overlap = previous.is_some_and(|old| {
             same_text_row(old.rect, run.rect)
@@ -605,12 +596,9 @@ fn attach_ocr(
             ..Default::default()
         })
     });
-    let changed = details.ocr != *scratch || details.ocr_spans != spans;
+    let changed = details.ocr != *scratch;
     if details.ocr != *scratch {
         std::mem::swap(&mut details.ocr, scratch);
-    }
-    if details.ocr_spans != spans {
-        details.ocr_spans = spans;
     }
     if target.role == SemanticRole::StaticText && details.accessibility.is_empty() {
         target.name.clone_from(&details.ocr);
@@ -736,32 +724,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn fused_ocr_retains_word_positions_and_metadata_only_updates() {
-        let a = crate::api::OcrTextSpan {
-            text: "one".into(),
-            rect: Rect::new(10., 10., 30., 20.),
-        };
-        let b = crate::api::OcrTextSpan {
-            text: "two".into(),
-            rect: Rect::new(50., 10., 30., 20.),
-        };
-        let text = vec![
-            UiTarget::recognized_text(a.rect, a.text.clone()).with_ocr_spans(vec![a.clone()]),
-            UiTarget::recognized_text(b.rect, b.text.clone()).with_ocr_spans(vec![b.clone()]),
-        ];
-        let mut target = UiTarget::recognized_text(Rect::new(0., 0., 100., 40.), "one two".into());
-        let mut scratch = OcrScratch::default();
-        let mut spatial = evidence_index(&text);
-        assert!(attach_ocr(&mut target, &text, &mut scratch, &mut spatial));
-        assert_eq!(target.details.as_ref().unwrap().ocr_spans, [a, b]);
-        assert_eq!(target.ocr_text(), "one two");
-        assert!(!attach_ocr(&mut target, &text, &mut scratch, &mut spatial));
-        target.details.as_mut().unwrap().ocr_spans.clear();
-        assert!(attach_ocr(&mut target, &text, &mut scratch, &mut spatial));
-        assert_eq!(target.details.as_ref().unwrap().ocr_spans.len(), 2);
     }
 
     #[test]
@@ -1432,6 +1394,13 @@ mod tests {
                         let (source, targets) = &sources[lane];
                         for batch in targets.chunks(chunk) {
                             let update = scan.push(*source, batch.to_vec(), 0.5);
+                            assert!(
+                                scan.deferred
+                                    .iter()
+                                    .zip(&scan.search_targets)
+                                    .all(|(pending, target)| !pending || target.is_some()),
+                                "retired candidates must not keep progress work pending"
+                            );
                             if defer {
                                 assert!(
                                     update

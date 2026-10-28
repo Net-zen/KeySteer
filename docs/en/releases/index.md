@@ -5,6 +5,62 @@ outline: 2
 
 # Release notes
 
+## 0.15.0
+
+> **Shortcut changes (Normal):** `G` Grid · `F` UI Hint · `Primary+G` Recursive Grid · `Primary+F` Bisect. Customize in `[normal.bindings]`.
+
+**Added**
+
+- **Bisect mode**: narrow the target area with `H/J/K/L`, without typing labels.
+
+**Improved**
+
+- **UI Hint** prioritizes labels near the pointer during full-screen and multi-display scans, with less repeated processing.
+- Clearer overlays across displays and scaling settings, with less repeated work and temporary memory use in mode switches, label rendering, and key help.
+
+**Fixed**
+
+- Fixed temporary-mode shortcut conflicts and movement or scrolling continuing after mode switches.
+- Fixed update restarts, permissions, and exit issues on **macOS**, plus scan cancellation and shutdown cleanup on **Windows**.
+
+## 0.12.9
+
+- Reduced temporary allocations during keyboard input handling and action-sequence execution on Windows and macOS.
+- Reduced processing overhead in Text Select segmentation and label numbering, and in Window mode panel updates.
+- Optimized macOS overlay refreshes to avoid updating unchanged shapes.
+- Optimized OCR paragraph grouping, streamed result handling, and overlay rendering to reduce redundant work and temporary allocations.
+
+## 0.12.8
+
+- Improved preview responsiveness when refining text into words, with less repeated indexing and fewer temporary allocations.
+- Reduced search-index preparation overhead for ASCII text in UIHint and Text Select.
+
+## 0.12.7
+
+Scan resource reuse for UIHint and Text Select to reduce repeated initialization.
+
+## 0.12.6
+
+Added **Text Select mode** to select and copy on-screen text, with refinement into words and characters.
+
+```toml
+[normal.bindings]
+c = "text_select"                  # 进入文字选择 / Enter Text Select
+
+[text_select.bindings]
+"alt+c" = "text_refine"            # 细分为词语、字符 / Refine into words, then characters
+"alt+backspace" = "previous_level" # 返回上层 / Previous level
+"ctrl+backspace" = "first_level"   # 重新识别 / Rescan
+tab = "text_cycle_page"            # 循环翻页 / Cycle pages
+"ctrl+a" = "text_select_all"       # 空输入时全选 / Select all when input is empty
+backspace = "text_clear_selection" # 空输入时清空勾选 / Clear selection when input is empty
+"ctrl+x" = "text_clear_input"      # 清空输入 / Clear input
+"mod+c enter" = "text_copy"        # Ctrl+C（macOS 为 Cmd+C）或 Enter 复制 / Ctrl+C (Cmd+C on macOS) or Enter to copy
+"primary+q" = "normal"             # 返回 Normal / Return to Normal
+esc = "cancel_selection"           # 返回来源模式 / Return to previous mode
+"?" = "key_help"                   # 按键帮助 / Key help
+```
+
 ## 0.12.5
 
 - Improved grid and UIHint rendering and label switching on Windows and macOS, and fixed overlay refresh issues.

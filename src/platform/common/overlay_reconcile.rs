@@ -46,7 +46,10 @@ pub(crate) fn matched_previous_indices(
             previous_cursor += 1;
         }
         if previous_cursor == previous_limit {
-            return false;
+            // If every old slot already matched, the remaining labels are
+            // additions. Keep those matches instead of rebuilding a hash map.
+            // Skipped old slots still require the fallback for later survivors.
+            return current_index >= previous_limit;
         }
         matched[current_index] = Some(previous_cursor);
         previous_cursor += 1;
@@ -77,6 +80,8 @@ pub(crate) fn matched_previous_indices(
 /// Place each matched native slot at its current label's index. Unmatched
 /// positions may reuse any remaining slot; callers must rebuild their content.
 /// Matches must be unique, in bounds, and no longer than `slots`.
+// Keep permutation scratch out of the caller's matching loop.
+#[inline(never)]
 pub(crate) fn reorder_matched_slots<T>(slots: &mut [T], matches: &[Option<usize>]) {
     let Some(first_moved) = matches
         .iter()
@@ -85,6 +90,31 @@ pub(crate) fn reorder_matched_slots<T>(slots: &mut [T], matches: &[Option<usize>
     else {
         return;
     };
+
+    // Filtering in original order only moves surviving slots left. No later
+    // source can have been displaced, so these swaps need no position maps.
+    let mut next_source = first_moved;
+    if matches
+        .iter()
+        .enumerate()
+        .skip(first_moved)
+        .all(|(target, source)| {
+            source.is_none_or(|source| {
+                if source < target || source < next_source {
+                    return false;
+                }
+                next_source = source + 1;
+                true
+            })
+        })
+    {
+        for (target, source) in matches.iter().enumerate().skip(first_moved) {
+            if let Some(source) = *source {
+                slots.swap(target, source);
+            }
+        }
+        return;
+    }
 
     let mut old_at_position: SmallVec<[usize; 128]> = (0..slots.len()).collect();
     let mut position_of_old = old_at_position.clone();
@@ -171,6 +201,57 @@ mod tests {
             matched_previous_indices(&previous, &filtered, previous.len()).as_slice(),
             [Some(2), Some(0)]
         );
+
+        // New labels must not prevent later survivors from finding their slots.
+        filtered.insert(0, label("new", 40.0));
+        assert_eq!(
+            matched_previous_indices(&previous, &filtered, previous.len()).as_slice(),
+            [None, Some(2), Some(0)]
+        );
+        assert_eq!(
+            matched_previous_indices(&previous, &filtered, 1).as_slice(),
+            [None, None, Some(0)],
+            "only existing native slots can be reused"
+        );
+    }
+
+    #[test]
+    fn appending_labels_keeps_existing_slots_even_with_duplicate_identities() {
+        let label = OverlayLabel::new("a", Rect::default(), LabelStyle::default());
+        let previous = [label.clone(), label.clone()];
+        let current = [label.clone(), label.clone(), label.clone(), label];
+        assert_eq!(
+            matched_previous_indices(&previous, &current, previous.len()).as_slice(),
+            [Some(0), Some(1), None, None]
+        );
+        assert_eq!(
+            matched_previous_indices(&previous, &current, 0).as_slice(),
+            [None; 4]
+        );
+    }
+
+    #[test]
+    #[ignore = "run alone with --test-threads=1 so other tests cannot pollute allocator counts"]
+    fn ordered_label_append_only_allocates_the_output() {
+        for count in [0, 64, 1024] {
+            let current: Vec<_> = (0..count + 3)
+                .map(|index| {
+                    OverlayLabel::new(
+                        "a",
+                        Rect::new(index as f64, 0.0, 20.0, 20.0),
+                        LabelStyle::default(),
+                    )
+                })
+                .collect();
+            let allocation = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+            let matched = matched_previous_indices(&current[..count], &current, count);
+            let stats = allocation.change();
+            println!("ordered append {count}: {stats:?}");
+            assert_eq!(stats.allocations, usize::from(current.len() > 128));
+            assert_eq!(stats.reallocations, 0);
+            assert!(matched[..count].iter().copied().eq((0..count).map(Some)));
+            assert_eq!(&matched[count..], &[None; 3]);
+        }
     }
 
     #[test]
@@ -184,6 +265,10 @@ mod tests {
             (3, vec![Some(2), Some(0)]),
             (3, vec![Some(1), Some(2), Some(0)]),
             (4, vec![None, Some(3)]),
+            (6, vec![Some(1), Some(3), Some(4)]),
+            (6, vec![None, Some(2), None, Some(4), Some(5)]),
+            (4, vec![Some(2), None, None, Some(3)]),
+            (5, vec![Some(1), None, Some(0), Some(4)]),
             (3, vec![None, Some(0), Some(2), None, Some(1)]),
         ] {
             let count = old_count.max(matches.len());
@@ -199,5 +284,24 @@ mod tests {
             slots.sort_unstable();
             assert!(slots.into_iter().eq(0..count), "{matches:?}");
         }
+    }
+
+    #[test]
+    #[ignore = "run alone with --test-threads=1 so other tests cannot pollute allocator counts"]
+    fn ordered_slot_compaction_needs_no_position_maps() {
+        let mut slots: Vec<_> = (0..2048).collect();
+        let matches: Vec<_> = (2..2048).step_by(3).map(Some).collect();
+        let allocation = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        reorder_matched_slots(&mut slots, &matches);
+        let stats = allocation.change();
+        assert_eq!(stats.allocations, 0);
+        assert_eq!(stats.reallocations, 0);
+        assert_eq!(stats.bytes_allocated, 0);
+        assert!(
+            slots[..matches.len()]
+                .iter()
+                .copied()
+                .eq((2..2048).step_by(3))
+        );
     }
 }

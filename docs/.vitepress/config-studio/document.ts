@@ -10,6 +10,8 @@ import { validQuickSwitchCharacters } from '../simulator/hint-labels.ts'
 
 export type ConfigDocument = Record<string, any>
 
+const routingModes = ['normal', 'quick_switch', 'text_input', 'text_select', 'grid', 'recursive_grid', 'bisect', 'ui_hint', 'window', 'window_quick', 'window_editor', 'window_restore', 'window_tab']
+
 function mergeSearchEditBindings(defaults: unknown, configured: unknown): Record<string, string> {
   const base = readSearchEditBindings(defaults ?? {})
   const overrides = readSearchEditBindings(configured)
@@ -47,6 +49,7 @@ const replacementTables = new Set([
   'window_quick.bindings', 'window_editor.bindings', 'window_restore.bindings', 'window_tab.bindings',
   'grid.bindings',
   'recursive_grid.bindings',
+  'bisect.bindings',
   'ui_hint.bindings',
   'ui_hint.search_bindings',
   'plugin_modes',
@@ -74,6 +77,45 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
   const parsed = parse(source)
   if (!isRecord(parsed)) throw new Error('TOML 顶层必须是配置表')
   const warnings = normalizeConfigCompatibility(parsed)
+  for (const [mode, settings] of [
+    ...routingModes.map(mode => [mode, parsed[mode]] as const),
+    ...Object.entries(parsed.plugin_modes ?? {}).map(([mode, settings]) => [`plugin_modes.${mode}`, settings] as const),
+  ]) {
+    if (!isRecord(settings)) continue
+    for (const key of ['inherits', 'temporary_mode_keys', 'temporary_mode_passthrough_keys']) {
+      const value = settings[key]
+      if (value !== undefined && (!Array.isArray(value) || value.some(entry => typeof entry !== 'string'))) throw new Error(`${mode}.${key} must be a string array`)
+    }
+    if (settings.temporary_mode !== undefined && typeof settings.temporary_mode !== 'string') throw new Error(`${mode}.temporary_mode must be a string`)
+  }
+  if (parsed.bisect !== undefined) {
+    if (!isRecord(parsed.bisect)) throw new Error('bisect must be a table')
+    const settings = parsed.bisect as ConfigDocument
+    const allowed = new Set(['enabled', 'min_size_width', 'min_size_height', 'max_depth', 'cursor_follow_selection', 'inherits', 'temporary_mode', 'temporary_mode_keys', 'temporary_mode_passthrough_keys', 'lifecycle', 'ui', 'bindings', 'app_configs'])
+    for (const key of Object.keys(settings)) if (!allowed.has(key)) throw new Error(`bisect.${key} is not supported`)
+    for (const key of ['max_depth', 'min_size_width', 'min_size_height']) {
+      const value = settings[key]
+      if (value !== undefined && (!Number.isInteger(value) || value < 1 || value > (key === 'max_depth' ? 40 : 4294967295))) throw new Error(`bisect.${key} is invalid`)
+    }
+    for (const key of ['enabled', 'cursor_follow_selection']) {
+      if (settings[key] !== undefined && typeof settings[key] !== 'boolean') throw new Error(`bisect.${key} must be boolean`)
+    }
+    if (settings.ui !== undefined && !isRecord(settings.ui)) throw new Error('bisect.ui must be a table')
+    if (settings.lifecycle !== undefined) {
+      if (!isRecord(settings.lifecycle)) throw new Error('bisect.lifecycle must be a table')
+      const clicks = ['left_click', 'right_click', 'middle_click', 'double_click']
+      for (const [event, action] of Object.entries(settings.lifecycle)) {
+        const allowed = ['keep', 'restart', 'return', 'idle', ...routingModes, ...(event === 'after_finish' ? clicks : ['finish'])]
+        if (!['after_finish', 'after_click'].includes(event) || typeof action !== 'string' || (!allowed.includes(action) && !action.includes(':'))) throw new Error(`bisect.lifecycle.${event} is invalid`)
+      }
+    }
+    for (const [key, value] of Object.entries(settings.ui ?? {})) {
+      const color = (v: unknown): boolean => typeof v === 'string' && /^#[\da-f]{8}$/i.test(v)
+      const valid = key === 'line_width' ? Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 20
+        : ['line_color', 'highlight_color'].includes(key) && (color(value) || isRecord(value) && Object.keys(value).length === 2 && ['light', 'dark'].every(k => color(value[k])))
+      if (!valid) throw new Error(`bisect.ui.${key} is invalid`)
+    }
+  }
   const quickSwitch = parsed.quick_switch as ConfigDocument | undefined
   if (quickSwitch && !validQuickSwitchCharacters(quickSwitch.hint_characters ?? 'wertyuiop', String(quickSwitch.key ?? 'q'))) {
     throw new Error('quick_switch.hint_characters requires at least two unique character keys, excluding the trigger key')
@@ -95,6 +137,32 @@ export function parseConfigDocument(source: string): ParsedConfigDocument {
     throw new Error('scroll.speed must be finite and non-negative')
   }
   const indicator = parsed.mode_indicator as ConfigDocument | undefined
+  const textSelect = parsed.text_select as ConfigDocument | undefined
+  if (textSelect !== undefined) {
+    if (!isRecord(textSelect)) throw new Error('text_select must be a table')
+    for (const key of Object.keys(textSelect)) {
+      if (!['enabled', 'scan_scope', 'inherits', 'temporary_mode', 'temporary_mode_keys', 'temporary_mode_passthrough_keys', 'hint_characters', 'ui', 'lifecycle', 'bindings'].includes(key)) throw new Error(`text_select.${key} is unknown`)
+    }
+    if (textSelect.scan_scope !== undefined && !['window', 'active', 'screen', 'all'].includes(textSelect.scan_scope)) {
+      throw new Error('text_select.scan_scope must be window, active, screen or all')
+    }
+  }
+  const pairInRange = (value: unknown, min: number, max: number): boolean => Array.isArray(value)
+    && value.length === 2 && value.every(v => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max)
+  const textSelectUi = textSelect?.ui
+  if (textSelectUi !== undefined) {
+    if (!isRecord(textSelectUi)) throw new Error('text_select.ui must be a table')
+    for (const [key, value] of Object.entries(textSelectUi)) {
+      const valid = key === 'border_width' ? typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 20
+        : key === 'panel_width' ? typeof value === 'number' && Number.isInteger(value) && value >= 320 && value <= 2400
+        : ['word_min_width', 'char_min_width'].includes(key) ? typeof value === 'number' && Number.isInteger(value) && value >= 24 && value <= 240
+        : key === 'padding' ? pairInRange(value, 0, 100)
+          : key === 'pointer_offset' ? pairInRange(value, -32768, 32767)
+            : key === 'border_color' && (typeof value === 'string' ? /^#[\da-f]{8}$/i.test(value)
+              : isRecord(value) && Object.keys(value).length === 2 && ['light', 'dark'].every(k => typeof value[k] === 'string' && /^#[\da-f]{8}$/i.test(value[k])))
+      if (!valid) throw new Error(`text_select.ui.${key} is invalid`)
+    }
+  }
   for (const ui of [indicator?.ui, ...Object.values(indicator?.modes ?? {}).map(entry => (entry as ConfigDocument)?.ui)]) {
     if (ui?.indicator_offset !== undefined && (!Array.isArray(ui.indicator_offset) || ui.indicator_offset.length !== 2 || !ui.indicator_offset.every((v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= -32768 && v <= 32767))) throw new Error('indicator_offset requires [X, Y] integers')
   }
@@ -199,6 +267,11 @@ export function resolveConfigDocument(
   document: ConfigDocument,
 ): ConfigDocument {
   const effective = mergeValue(defaults, document, '') as ConfigDocument
+  // A missing trigger list disables this optional layer, including when the
+  // entire user section is absent. Never inherit triggers from product defaults.
+  for (const mode of routingModes) {
+    if (effective[mode] && document[mode]?.temporary_mode_keys === undefined) effective[mode].temporary_mode_keys = []
+  }
   // Match the native upgrade fallback: an older Normal map must not hide a
   // newly added text mode, but occupied keys and remapped entries take priority.
   const enters = (action: unknown, mode: string): boolean => action === mode
@@ -251,8 +324,8 @@ export function deleteConfigPath(document: ConfigDocument, path: string): void {
 function mergeValue(defaultValue: unknown, configuredValue: unknown, path: string): unknown {
   if (configuredValue === undefined) return cloneConfigValue(defaultValue)
   if (path === 'ui_hint.search_edit_keys') return mergeSearchEditBindings(defaultValue, configuredValue)
-  const controls = new Set(['first_level', 'previous_level', 'reopen_selection', 'confirm_selection', 'cancel_selection', 'search_selection', 'window_area_number', 'window_next_page', 'window_previous_page', 'window_multi_cancel'])
-  if (['grid.bindings', 'recursive_grid.bindings', 'ui_hint.bindings', 'window_editor.bindings', 'window_restore.bindings', 'window.multi_select.bindings'].includes(path) && isRecord(defaultValue) && isRecord(configuredValue)) {
+  const controls = new Set(['bisect_left', 'bisect_down', 'bisect_up', 'bisect_right', 'first_level', 'previous_level', 'reopen_selection', 'confirm_selection', 'cancel_selection', 'search_selection', 'window_area_number', 'window_next_page', 'window_previous_page', 'window_multi_cancel'])
+  if (['grid.bindings', 'recursive_grid.bindings', 'bisect.bindings', 'ui_hint.bindings', 'window_editor.bindings', 'window_restore.bindings', 'window.multi_select.bindings'].includes(path) && isRecord(defaultValue) && isRecord(configuredValue)) {
     const expand = (table: ConfigDocument) => Object.fromEntries(Object.entries(table).flatMap(([keys, value]) => keys.split(/\s+/).map(key => [key, value])))
     const configured = expand(configuredValue)
     const fallback = Object.fromEntries(Object.entries(expand(defaultValue)).filter(([key, action]) => controls.has(String(action)) || path === 'window.multi_select.bindings' && !key.includes('+') && String(action).startsWith('send ')))

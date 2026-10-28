@@ -20,7 +20,7 @@ KeySteer brings native keyboard control to Windows and macOS. Move the pointer, 
 
 - **UI Hint recognition**: target labelled controls across displays and applications; search text or Chinese initials, copy information, and pick colours.
 - **Normal pointer control**: Vim-style movement, clicks, scrolling, and dragging, with speed adjustment and display switching.
-- **Grid & Recursive Grid**: reach a region with two keys or subdivide it for precise targeting.
+- **Grid, Recursive Grid & Bisect**: reach a region with two keys, subdivide it for precision, or halve it with `H/J/K/L`.
 - **Window, Quick & Editor**: move, resize, split, and tile windows, with audio controls too.
 - **Tabs & workspaces**: group windows into tabs and save layouts for reuse.
 - **Appearance & configuration**: customise keys, speed, and styles, with previews in the web simulator.
@@ -30,7 +30,7 @@ KeySteer brings native keyboard control to Windows and macOS. Move the pointer, 
 ## Demos
 
 <details>
-<summary>Pointer and interface targeting: Normal, Grid, Recursive Grid, UI Hint</summary>
+<summary>Pointer and interface targeting: Normal, Grid, Recursive Grid, Bisect, UI Hint</summary>
 
 ### Normal
 
@@ -43,6 +43,10 @@ https://github.com/user-attachments/assets/4ecb749e-d770-43c1-907a-e55a4144a9ca
 ### Recursive Grid
 
 https://github.com/user-attachments/assets/cb399755-5cde-40a0-ba64-d00c7e581cc6
+
+### Bisect: half the distance, each time
+
+https://github.com/user-attachments/assets/2c8a6d9f-d6c1-471e-9942-f9551f679790
 
 ### UI Hint
 

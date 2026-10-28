@@ -3,8 +3,8 @@ use crate::api::hint::{LabelDirection, LabelMatch, LabelPlan, match_label_input}
 use crate::api::presentation::{QuickSwitchRow, QuickSwitchView, View};
 use crate::api::style::{QuickSwitchPosition, QuickSwitchStyles};
 use crate::api::{
-    Appearance, Binding, Command, CommandBatch, HostContext, Key, KeyState, Mode, ModeEvent,
-    ModeId, Rect,
+    Appearance, Binding, Color, Command, CommandBatch, HostContext, Key, KeyState, Mode, ModeEvent,
+    ModeId, Palette, Rect,
 };
 
 pub struct Settings {
@@ -104,6 +104,14 @@ impl QuickSwitchMode {
 impl Mode for QuickSwitchMode {
     fn id(&self) -> ModeId {
         ModeId::quick_switch()
+    }
+
+    fn display_name(&self) -> String {
+        "Quick Switch".into()
+    }
+
+    fn indicator_color(&self, palette: &Palette) -> Option<Color> {
+        Some(palette.accent)
     }
 
     fn claims_key(&self, key: &Key) -> bool {

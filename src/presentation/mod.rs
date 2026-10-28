@@ -60,6 +60,7 @@ impl Presenter for Composer {
             View::Empty => OverlayScene::new(),
             View::Grid(view) => view.scene(context.palette),
             View::RecursiveGrid(view) => view.scene(context.palette),
+            View::Bisect(view) => view.scene(context.palette),
             View::Window(view) => view.scene(context),
             View::ScreenSelector(view) => view.scene(context),
             View::Hints(view) => view.scene(context),
@@ -100,7 +101,13 @@ pub(crate) fn text_units(text: &str) -> f64 {
 
 /// Caption budget in font-size units; reserve a full em for non-ASCII text.
 pub(crate) fn elide_width(text: &str, units: f64) -> String {
-    if text_units(text) <= units {
+    let mut measured = 0.0;
+    let elide = text.len() as f64 > units
+        && text.chars().any(|c| {
+            measured += if c.is_ascii() { 0.75 } else { 1.0 };
+            measured > units
+        });
+    if !elide {
         return text.into();
     }
     let mut output = String::new();
@@ -122,7 +129,13 @@ pub(crate) fn elide_width(text: &str, units: f64) -> String {
 pub(crate) fn single_line_elide_width(text: &str, units: f64) -> crate::api::overlay::OverlayText {
     let chars = text.chars().map(|c| if c.is_control() { ' ' } else { c });
     let width = |c: char| if c.is_ascii() { 0.75 } else { 1.0 };
-    let elide = chars.clone().map(width).sum::<f64>() > units;
+    let mut measured = 0.0;
+    // UTF-8 byte length bounds the width, so short text needs no prepass.
+    let elide = text.len() as f64 > units
+        && chars.clone().any(|c| {
+            measured += width(c);
+            measured > units
+        });
     let mut output = crate::api::overlay::OverlayText::default();
     let mut used = if elide { 1.0 } else { 0.0 };
     for c in chars {
@@ -136,4 +149,37 @@ pub(crate) fn single_line_elide_width(text: &str, units: f64) -> crate::api::ove
         output.push('…');
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn width_elision_preserves_fitting_text_and_scalar_boundaries() {
+        for (text, units, expected) in [
+            ("", -1.0, ""),
+            ("a", 0.5, ""),
+            ("a", 0.75, "a"),
+            ("ab", 1.0, "…"),
+            ("ab", 1.5, "ab"),
+            ("abc", 1.75, "a…"),
+            ("中文🦀", 3.0, "中文🦀"),
+            ("中文🦀", 2.0, "中…"),
+            ("e\u{301}🦀", 1.75, "e…"),
+            ("a中🦀", f64::INFINITY, "a中🦀"),
+            ("a中🦀", f64::NAN, "a中🦀"),
+            ("a中🦀", f64::NEG_INFINITY, ""),
+        ] {
+            assert_eq!(elide_width(text, units), expected);
+            assert_eq!(single_line_elide_width(text, units).as_str(), expected);
+        }
+        for (units, expected) in [(10.0, "a  b "), (3.75, "a  b "), (3.0, "a …")] {
+            assert_eq!(
+                single_line_elide_width("a\t\nb\u{85}", units).as_str(),
+                expected
+            );
+        }
+        assert_eq!(elide_width("a\t\nb\u{85}", 10.0), "a\t\nb\u{85}");
+    }
 }

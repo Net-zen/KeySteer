@@ -3,12 +3,154 @@ import test from 'node:test'
 import { reactive } from 'vue'
 import { readFile } from 'node:fs/promises'
 import { hintLabels } from './hint-labels.ts'
+import { quickSwitchColors } from './quick-switch-style.ts'
+
+test('text selection copy lifecycle inherits Normal and preserves overrides through export', async () => {
+  const { stringify } = await import('smol-toml')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  for (const source of ['', '[text_select.lifecycle]']) {
+    assert.equal(resolveConfigDocument(defaults, parseConfigDocument(source).document).text_select.lifecycle.after_copy, 'normal')
+  }
+  for (const action of ['normal', 'idle', 'keep', 'restart', 'return']) {
+    const document = parseConfigDocument(`[text_select.lifecycle]\nafter_copy = '${action}'`).document
+    const exported = parseConfigDocument(stringify(document)).document
+    assert.equal(resolveConfigDocument(defaults, exported).text_select.lifecycle.after_copy, action)
+  }
+})
+
+test('text selection copy uses Ctrl or Command independently of Primary and can be remapped', async () => {
+  const { stringify } = await import('smol-toml')
+  const { resolvedChordKeys, resolvePhysicalBinding, shortcutCaption } = await import('./bindings.ts')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  assert.equal(defaults.text_select.bindings['mod+c enter'], 'text_copy')
+  assert.equal(defaults.text_select.bindings['ctrl+x'], 'text_clear_input')
+  assert.equal(defaults.text_select.bindings.enter, undefined)
+  const exported = parseConfigDocument(stringify(defaults)).document
+  assert.equal(exported.text_select.bindings['mod+c enter'], 'text_copy')
+  for (const isMac of [false, true]) {
+    const modifier = isMac ? 'cmd' : 'ctrl'
+    assert.deepEqual(resolvedChordKeys(defaults, 'mod+c', isMac), [modifier, 'c'])
+    assert.equal(shortcutCaption(defaults, 'mod+c', isMac), `${modifier.toUpperCase()}+C`)
+    assert.equal(resolvePhysicalBinding(exported, 'text_select', ['enter'], 'enter', isMac)?.value, 'text_copy')
+    for (const side of ['left', 'right']) {
+      assert.equal(resolvePhysicalBinding(defaults, 'text_select', [`${side}_${modifier}`, 'c'], 'c', isMac)?.value, 'text_copy')
+    }
+    assert.equal(resolvePhysicalBinding(defaults, 'text_select', ['left_alt', 'c'], 'c', isMac)?.value, 'text_refine')
+    assert.equal(resolvePhysicalBinding(defaults, 'text_select', ['right_ctrl', 'x'], 'x', isMac)?.value, 'text_clear_input')
+    const custom = parseConfigDocument('[text_select.bindings]\n"mod+c" = "none"\nf9 = "text_copy"\n"ctrl+x" = "none"\nf8 = "text_clear_input"').document
+    const restored = resolveConfigDocument(defaults, parseConfigDocument(stringify(custom)).document)
+    assert.equal(resolvePhysicalBinding(restored, 'text_select', [`left_${modifier}`, 'c'], 'c', isMac)?.value, 'none')
+    assert.equal(resolvePhysicalBinding(restored, 'text_select', ['f9'], 'f9', isMac)?.value, 'text_copy')
+    assert.equal(resolvePhysicalBinding(restored, 'text_select', ['left_ctrl', 'x'], 'x', isMac)?.value, 'none')
+    assert.equal(resolvePhysicalBinding(restored, 'text_select', ['f8'], 'f8', isMac)?.value, 'text_clear_input')
+    assert.equal(restored.text_select.bindings.enter, undefined)
+  }
+})
+
+test('text selection outline and pointer pairs inherit, validate and roundtrip', async () => {
+  const { stringify } = await import('smol-toml')
+  const { fields } = await import('../config-studio/fields.ts')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  assert.equal(defaults.text_select.ui, undefined)
+  for (const source of ['', '[text_select.ui]']) {
+    const document = parseConfigDocument(source).document
+    const inherited = resolveConfigDocument(defaults, document)
+    for (const [key, value] of Object.entries({ pointer_offset: [12, 12], padding: [2, 2], border_width: 1.5, word_min_width: 48, char_min_width: 40, panel_width: 800 })) {
+      const field = fields.text_select.layout.find(field => field.path === `text_select.ui.${key}`)!
+      assert.deepEqual(getConfigPath(inherited, field.path) ?? field.default, value)
+    }
+    assert.deepEqual(parseConfigDocument(stringify(document)).document, document)
+    assert.equal(document.text_select?.ui?.panel_width, undefined)
+  }
+  const source = `[text_select.ui]
+pointer_offset = [20, -8]
+border_color = {light = "#112233FF", dark = "#AABBCCFF"}
+border_width = 2.5
+padding = [5, 3]
+word_min_width = 60
+char_min_width = 32
+panel_width = 960`
+  const document = parseConfigDocument(source).document
+  assert.deepEqual(parseConfigDocument(stringify(document)).document, document)
+  for (const pair of ['[1]', '[1, 2, 3]', '[1.5, 2]', '[32768, 0]']) {
+    assert.throws(() => parseConfigDocument(`[text_select.ui]\npointer_offset = ${pair}`))
+  }
+  for (const field of ['border_width = -1', 'border_width = 21', 'border_width = nan', 'padding = [-1, 0]', 'padding = [101, 0]', 'padding = [1]', 'padding = [1.5, 2]', 'border_color = "invalid"']) {
+    assert.throws(() => parseConfigDocument(`[text_select.ui]\n${field}`), field)
+  }
+  for (const field of ['word_min_width = 23', 'char_min_width = 241', 'char_min_width = 42.5', 'panel_width = 319', 'panel_width = 2401', 'panel_width = 800.5']) {
+    assert.throws(() => parseConfigDocument(`[text_select.ui]\n${field}`), field)
+  }
+  for (const source of ['[text_select]\npointer_offset = [12, 12]', '[text_select.selection_outline]\npadding = [2, 2]']) {
+    assert.throws(() => parseConfigDocument(source), /is unknown/)
+  }
+})
+
+test('text selection inheritance and temporary settings survive editing and export', async () => {
+  const { stringify } = await import('smol-toml')
+  const { effectiveBindings, resolveLayeredPhysicalBinding } = await import('./bindings.ts')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  assert.equal(defaults.text_select.inherits, undefined)
+  assert.equal(defaults.text_select.temporary_mode, undefined)
+  assert.equal(defaults.text_select.temporary_mode_keys, undefined)
+  assert.deepEqual(defaults.ui_hint.temporary_mode_keys, ['primary'])
+  const restoredDefaults = parseConfigDocument(stringify(defaults)).document
+  assert.deepEqual(resolveConfigDocument(defaults, restoredDefaults).ui_hint.temporary_mode_keys, ['primary'])
+  const overrides = parseConfigDocument('[key_aliases]\nBorrow = "right_alt"\n[text_select]\ninherits = ["normal"]\ntemporary_mode = "normal"\ntemporary_mode_keys = ["Borrow"]\ntemporary_mode_passthrough_keys = ["Borrow+f8"]').document
+  const exported = parseConfigDocument(stringify(overrides)).document
+  assert.deepEqual(exported.text_select, overrides.text_select)
+  const effective = resolveConfigDocument(defaults, exported)
+  assert.deepEqual(effective.ui_hint.temporary_mode_keys, [])
+  assert.equal(effectiveBindings(effective, 'text_select').get('h')?.source, 'normal')
+  for (const isMac of [false, true]) {
+    assert.equal(resolveLayeredPhysicalBinding(effective, 'text_select', ['right_alt', 'h'], 'h', isMac)?.value, 'move_left')
+  }
+  const disabled = resolveConfigDocument(defaults, parseConfigDocument('[text_select]\ninherits = []\ntemporary_mode_keys = []').document)
+  assert.equal(effectiveBindings(disabled, 'text_select').has('h'), false)
+  assert.equal(resolveLayeredPhysicalBinding(disabled, 'text_select', ['right_alt', 'h'], 'h', false), undefined)
+  for (const field of ['inherits = "normal"', 'temporary_mode = true', 'temporary_mode_keys = "primary"', 'temporary_mode_passthrough_keys = [1]']) {
+    assert.throws(() => parseConfigDocument(`[text_select]\n${field}`), /text_select/)
+  }
+})
+
+test('text selection scan scope is independent, editable and resets to all displays', async () => {
+  const { stringify } = await import('smol-toml')
+  const { fields } = await import('../config-studio/fields.ts')
+  const { fieldLocation } = await import('../config-studio/navigation.ts')
+  const { setConfigPath, deleteConfigPath } = await import('../config-studio/document.ts')
+  const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
+  const field = fields.text_select.layout.find(field => field.path === 'text_select.scan_scope')
+  assert.ok(field)
+  assert.deepEqual(field?.options, ['window', 'active', 'screen', 'all'])
+  assert.equal(field.default, 'all')
+  assert.deepEqual(fieldLocation('text_select.scan_scope'), { page: 'text_select', tab: 'behavior' })
+  assert.equal(defaults.text_select.scan_scope, 'all')
+  assert.equal(defaults.ui_hint.scan_scope, 'all')
+  for (const source of ['[ui_hint]\nscan_scope = "screen"', '[ui_hint]\nscan_scope = "screen"\n[text_select]']) {
+    const document = parseConfigDocument(source).document
+    assert.equal(resolveConfigDocument(defaults, document).text_select.scan_scope, 'all')
+    for (const scope of field.options) {
+      setConfigPath(document, 'text_select.scan_scope', scope)
+      const exported = parseConfigDocument(stringify(document)).document
+      const effective = resolveConfigDocument(defaults, exported)
+      assert.equal(effective.text_select.scan_scope, scope)
+      assert.equal(effective.ui_hint.scan_scope, 'screen')
+    }
+    deleteConfigPath(document, 'text_select.scan_scope')
+    const reset = resolveConfigDocument(defaults, parseConfigDocument(stringify(document)).document)
+    assert.equal(reset.text_select.scan_scope, 'all')
+    assert.equal(reset.ui_hint.scan_scope, 'screen')
+  }
+  for (const value of ['"invalid"', '"inherit"', 'true', '1', '[]']) {
+    assert.throws(() => parseConfigDocument(`[text_select]\nscan_scope = ${value}`), /text_select.scan_scope/)
+  }
+})
 
 test('UI Hint display scopes use scan_scope without a second screens setting', async () => {
   const { stringify } = await import('smol-toml')
   const { frequentFields } = await import('../config-studio/fields.ts')
   const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
-  assert.equal(defaults.ui_hint.scan_scope, 'window')
+  assert.equal(defaults.ui_hint.scan_scope, 'all')
   const scopes = frequentFields.find(field => field.path === 'ui_hint.scan_scope')?.options?.map(option => option.value)
   assert.deepEqual(scopes, ['window', 'active', 'screen', 'all'])
   for (const scope of scopes) {
@@ -105,6 +247,11 @@ test('usage checkpoint and quick-switch options survive sparse import and export
 })
 
 test('quick switch and UI Hint previews share prefix-free labels beyond nine modes', () => {
+  for (const appearance of ['light', 'dark'] as const) {
+    assert.equal(quickSwitchColors({}, appearance).matched_text_color, '#E4B400FF')
+    const ui = { matched_text_color: { light: '#CC0088FF', dark: '#FFCC00FF' } }
+    assert.equal(quickSwitchColors({ ui }, appearance).matched_text_color, ui.matched_text_color[appearance])
+  }
   assert.deepEqual(hintLabels('wertyuiop', 10), ['w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'pw', 'pe'])
   assert.deepEqual(hintLabels('asdf', 5), ['a', 's', 'd', 'fa', 'fs'])
   assert.deepEqual(hintLabels('asdf', 5, true), ['aa', 'sa', 'da', 'fa', 'as'])
@@ -443,6 +590,16 @@ test('older configurations retain text modes and receive only missing unoccupied
   const defaults = parseConfigDocument(await readFile(new URL('../../../keysteer.default.toml', import.meta.url), 'utf8')).document
   const effective = resolveConfigDocument(defaults, { normal: { bindings: { h: 'move_left' } } })
   assert.equal(effective.text_select.enabled, true)
+  assert.equal(effective.text_select.bindings['alt+c'], 'text_refine')
+  assert.equal(effective.text_select.bindings.tab, 'text_cycle_page')
+  assert.equal(effective.text_select.bindings.backspace, 'text_clear_selection')
+  assert.equal(effective.text_select.bindings['ctrl+a'], 'text_select_all')
+  assert.equal(effective.text_select.bindings['alt+backspace'], 'previous_level')
+  assert.equal(effective.text_select.bindings.page_down, undefined)
+  assert.equal(effective.text_select.bindings.page_up, undefined)
+  assert.equal(effective.text_select.bindings['primary+shift+c'], undefined)
+  assert.equal(effective.text_select.bindings['primary+c'], undefined)
+  assert.equal(effective.ui_hint.search_edit_keys['primary+c'], 'copy')
   assert.deepEqual(effective.text_select.bindings, { ...defaults.text_select.bindings })
   assert.equal(effective.normal.bindings.c, 'text_select')
   assert.equal(effective.normal.bindings['\\'], 'text_input')

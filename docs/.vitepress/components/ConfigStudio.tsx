@@ -1,3 +1,4 @@
+import { applyBisectAction, bisectColors, bisectRegion, bisectAxes, createBisectState } from '../simulator/bisect'
 import { quickSwitchColors } from '../simulator/quick-switch-style'
 import { hintLabels, validQuickSwitchCharacters } from '../simulator/hint-labels'
 import { selectedCardStyle } from '../simulator/window-card-style'
@@ -52,7 +53,7 @@ import {
   type ConfigDocument,
 } from '../config-studio/document'
 
-type EditorMode = 'hotkeys' | 'normal' | 'text_input' | 'quick_switch' | 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
+type EditorMode = 'hotkeys' | 'normal' | 'text_input' | 'quick_switch' | 'text_select' | 'grid' | 'recursive_grid' | 'bisect' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'
 type Modifier = 'primary' | 'shift' | 'alt'
 type Appearance = 'dark' | 'light'
 
@@ -89,6 +90,7 @@ const modes: Array<{ id: EditorMode; label: string }> = [
   { id: 'text_select', label: 'Text Select' },
   { id: 'grid', label: 'Grid' },
   { id: 'recursive_grid', label: 'Recursive Grid' },
+  { id: 'bisect', label: 'Bisect' },
   { id: 'ui_hint', label: 'UI Hint' },
   { id: 'window', label: 'Window' },
   ...(['window_quick', 'window_editor', 'window_restore', 'window_tab'] as const).map(id => ({ id, label: id })),
@@ -99,7 +101,9 @@ const actionGroups: ActionGroup[] = [
     ['first_level', '回到第一层'], ['previous_level', '返回上一层'], ['reopen_selection', '返回已完成的选择'],
     ['confirm_selection', '确认选择'], ['cancel_selection', '取消选择'], ['search_selection', '搜索文字'],
     ['text_refine', '细分文字'], ['text_copy', '复制文字'], ['text_search', '搜索选词'],
-    ['text_next_page', '下一页文字'], ['text_previous_page', '上一页文字'],
+    ['text_cycle_page', '循环翻页文字'],
+    ['text_select_all', '全选文字'], ['text_clear_selection', '清空文字选择'],
+    ['text_clear_input', '清空输入框'],
     ['window_area_number', '区域编号'], ['window_next_page', '下一页布局'], ['window_previous_page', '上一页布局'], ['window_multi_cancel', '取消多选输入'],
   ].map(([value, label]) => ({ value, label })) },
   { name: 'Tabs', actions: [
@@ -123,6 +127,10 @@ const actionGroups: ActionGroup[] = [
   { name: '按键提示', actions: [
     { value: 'key_help', label: '切换按键提示' },
   ] },
+  {
+    name: '二分定位',
+    actions: [['bisect_left', '保留左半区'], ['bisect_down', '保留下半区'], ['bisect_up', '保留上半区'], ['bisect_right', '保留右半区']].map(([value, label]) => ({ value, label })),
+  },
   {
     name: '移动',
     actions: [
@@ -166,7 +174,7 @@ const actionGroups: ActionGroup[] = [
     name: '模式',
     actions: [
       ['normal', 'Normal'], ['text_input', 'Text Input'], ['text_select', 'Text Select'], ['grid', 'Grid'],
-      ['recursive_grid', 'Recursive Grid'], ['ui_hint', 'UI Hint'],
+      ['recursive_grid', 'Recursive Grid'], ['bisect', 'Bisect'], ['ui_hint', 'UI Hint'],
       ['idle', 'Idle'], ['window', 'Window'], ['window_quick', 'Quick'], ['window_editor', 'Editor'], ['window_restore', 'Restore'], ['window_tab', 'Tabs'],
     ].map(([value, label]) => ({ value, label })),
   },
@@ -766,7 +774,27 @@ export default defineComponent({
       return typeof binding === 'string' ? [binding] : []
     }
 
+    function bisectLifecycle(event: 'after_finish' | 'after_click'): void {
+      const action = String(effectiveDocument.value?.bisect?.lifecycle?.[event] ?? 'keep')
+      if (action === 'keep') return
+      if (action === 'return') executeAction(simulator.targeting.bisect.returnMode)
+      else if (action === 'restart') executeAction('restart_mode')
+      else executeAction(action)
+    }
+
     function executeAction(action: string, continuous = false): void {
+      if (action === 'bisect' && simulator.mode !== 'bisect') {
+        simulator.targeting.bisect = createBisectState(effectiveDocument.value?.bisect, simulator.mode)
+      }
+      if (simulator.mode === 'bisect') {
+        const result = applyBisectAction(simulator.targeting.bisect, action, effectiveDocument.value?.bisect ?? {}, simulator.pointer)
+        if (result !== 'ignored') {
+          simulator.lastEvent = action
+          if (result === 'cancel') executeAction(simulator.targeting.bisect.returnMode)
+          if (result === 'finish') bisectLifecycle('after_finish')
+          return
+        }
+      }
       if (action === 'quick_switch') { enterQuickSwitch(); return }
       if (simulator.mode === 'quick_switch') {
         if (action === 'cancel_selection') { quickVisible.value = false; quickUsed = true; applyModeAction(simulator, quickPrevious); return }
@@ -799,12 +827,14 @@ export default defineComponent({
       if (applyModeAction(simulator, action, effectiveDocument.value?.key_help?.mouse_key_help === true)) return
       if (action === 'left_click' || action === 'mouse_left' || action === 'double_click') {
         clickPulse.value += 1
+        if (simulator.mode === 'bisect') bisectLifecycle('after_click')
         if (simulator.mode === 'normal' && (targetingConfig(effectiveDocument.value ?? {})?.reset_on ?? ['move', 'click']).includes('click')) simulator.blindTargeting.pendingReset = true
         simulator.lastEvent = action === 'double_click' ? '双击' : '左键点击'
         return
       }
       if (['right_click', 'mouse_right', 'middle_click', 'mouse_middle'].includes(action)) {
         clickPulse.value += 1
+        if (simulator.mode === 'bisect') bisectLifecycle('after_click')
         if (simulator.mode === 'normal' && (targetingConfig(effectiveDocument.value ?? {})?.reset_on ?? ['move', 'click']).includes('click')) simulator.blindTargeting.pendingReset = true
         simulator.lastEvent = action === 'right_click' || action === 'mouse_right' ? '右键点击' : '中键点击'
         return
@@ -815,6 +845,7 @@ export default defineComponent({
       }
       if (['mouse_x1', 'xbutton1', 'mouse4', 'x1_click', 'mouse_x2', 'xbutton2', 'mouse5', 'x2_click', 'x1_double_click', 'x2_double_click'].includes(action)) {
         clickPulse.value += 1
+        if (simulator.mode === 'bisect') bisectLifecycle('after_click')
         simulator.lastEvent = action
         return
       }
@@ -928,7 +959,7 @@ export default defineComponent({
           const routing = simulator.mode === 'normal' && targetingConfig(document) ? { ...document, normal: { ...document.normal, bindings: targetingControlBindings(document) } } : document
           const resolved = resolvePhysicalBinding(routing, simulator.mode === 'idle' ? 'hotkeys' : simulator.mode, pressed, physical, isMac.value)
           const actions = Array.isArray(resolved?.value) ? resolved.value.map(String) : [String(resolved?.value)]
-          if (actions.some(action => ['first_level', 'previous_level', 'cancel_selection', 'confirm_selection', 'reopen_selection', 'search_selection', 'idle', 'normal', 'text_input', 'text_select', 'grid', 'recursive_grid', 'ui_hint'].includes(action) || isWindowMode(action))) {
+          if (actions.some(action => action.startsWith('bisect_') || ['first_level', 'previous_level', 'cancel_selection', 'confirm_selection', 'reopen_selection', 'search_selection', 'idle', 'normal', 'text_input', 'text_select', 'grid', 'recursive_grid', 'bisect', 'ui_hint'].includes(action) || isWindowMode(action))) {
             event.preventDefault(); heldActions.clear(); actions.forEach(action => executeAction(action)); return
           }
         }
@@ -1046,8 +1077,9 @@ export default defineComponent({
       simulator.pointer.y = region.y + region.height / 2
     }
 
-    function setPreviewMode(mode: 'normal' | 'text_input' | 'quick_switch' | 'text_select' | 'grid' | 'recursive_grid' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'): void {
+    function setPreviewMode(mode: 'normal' | 'text_input' | 'quick_switch' | 'text_select' | 'grid' | 'recursive_grid' | 'bisect' | 'ui_hint' | 'window' | 'window_quick' | 'window_editor' | 'window_restore' | 'window_tab'): void {
       heldActions.clear(); physicalKeys.clear()
+      if (mode === 'bisect') simulator.targeting.bisect = createBisectState(effectiveDocument.value?.bisect, 'normal')
       if (mode === 'quick_switch') { enterQuickSwitch(); return }
       quickVisible.value = false
       if (isWindowMode(mode)) switchWindowMode(simulator, mode, effectiveDocument.value?.[mode] ?? {})
@@ -1275,6 +1307,7 @@ export default defineComponent({
                 {simulator.mode === 'grid' && <TargetGrid mode="grid" settings={targetingSettings.value} path={simulator.targeting.grid.path} />}
                 {simulator.mode === 'recursive_grid' && <TargetGrid mode="recursive_grid" settings={targetingSettings.value} path={simulator.targeting.recursiveGrid.path} />}
                 {simulator.mode === 'text_select' && <div class="preview-mode-note">{t('文字选择在桌面应用中使用屏幕 OCR；搜索框和文字面板外观共用 UI Hint 设置。')}</div>}
+                {simulator.mode === 'bisect' && <BisectOverlay settings={targetingSettings.value} state={simulator.targeting.bisect} />}
                 {simulator.mode === 'ui_hint' && <HintOverlay settings={targetingSettings.value} />}
                 {simulator.mode === 'ui_hint' && effectiveDocument.value && <SearchPanelsOverlay document={effectiveDocument.value} appearance={appearance.value} />}
                 {cursorPreview.value.enabled && simulator.mode !== 'idle' && <svg class="ks-cursor-marker" aria-hidden="true"
@@ -1344,8 +1377,8 @@ export default defineComponent({
               </div>
               {selectedTab.value === 'appearance' && <section class="ks-quick-colors">
                 <h3>{t('模式颜色')}</h3>
-                <div class="ks-style-fields">{(['background_color', 'text_color', 'border_color'] as const).map(field => <StyleControl key={field}
-                  field={{ path: `quick_switch.ui.${field}`, label: { background_color: '背景颜色', text_color: '文字颜色', border_color: '边框颜色' }[field], kind: 'color' }}
+                <div class="ks-style-fields">{(['background_color', 'text_color', 'matched_text_color', 'border_color'] as const).map(field => <StyleControl key={field}
+                  field={{ path: `quick_switch.ui.${field}`, label: { background_color: '背景颜色', text_color: '文字颜色', matched_text_color: '匹配文字', border_color: '边框颜色' }[field], kind: 'color' }}
                   value={effectiveDocument.value?.quick_switch?.ui?.[field] ?? quickSwitchColors(effectiveDocument.value?.quick_switch ?? {}, appearance.value)[field]}
                   appearance={appearance.value}
                   inherited={document.value?.quick_switch?.ui?.[field] === undefined}
@@ -1453,9 +1486,9 @@ export default defineComponent({
                 mode={pageId.value === 'mode_indicator' ? undefined : currentPage.value.mode}
                 document={document.value} effectiveDocument={effectiveDocument.value} appearance={appearance.value}
                 onChange={next => document.value = next} />}
-              {['normal', 'text_input', 'text_select', 'grid', 'recursive_grid', 'ui_hint'].includes(pageId.value) && <CommonConfigControls page={pageId.value} tab={selectedTab.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} />}
+              {['normal', 'text_input', 'text_select', 'grid', 'recursive_grid', 'bisect', 'ui_hint'].includes(pageId.value) && <CommonConfigControls page={pageId.value} tab={selectedTab.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} />}
               {pageId.value === 'normal' && selectedTab.value === 'behavior' && <NormalTargetingControls document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => { document.value = next; simulator.blindTargeting.pendingReset = true }} />}
-              {(pageId.value.startsWith('window') || ['grid', 'recursive_grid', 'ui_hint', 'text_select', 'key_help'].includes(pageId.value)) && <ModeStyleControls page={pageId.value} tab={selectedTab.value} mode={(pageId.value === 'window_card' ? 'window' : pageId.value) as any} appearance={appearance.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} onAppearanceChange={next => appearance.value = next} />}
+              {(pageId.value.startsWith('window') || ['grid', 'recursive_grid', 'bisect', 'ui_hint', 'text_select', 'key_help'].includes(pageId.value)) && <ModeStyleControls page={pageId.value} tab={selectedTab.value} mode={(pageId.value === 'window_card' ? 'window' : pageId.value) as any} appearance={appearance.value} document={document.value} effectiveDocument={effectiveDocument.value} onChange={next => document.value = next} onAppearanceChange={next => appearance.value = next} />}
             </div>}
             {pageId.value === 'quick_switch' && selectedTab.value !== 'keys' && renderQuickSwitch()}
             {pageId.value === 'mode_usage' && renderUsage()}
@@ -1483,6 +1516,26 @@ export default defineComponent({
         </div>
       </div>
     )
+  },
+})
+
+const BisectOverlay = defineComponent({
+  props: {
+    settings: { type: Object as () => ConfigDocument, required: true },
+    state: { type: Object as () => import('../simulator/bisect').BisectState, required: true },
+  },
+  setup(props) {
+    return () => {
+      const area = bisectRegion(props.state.path)
+      const [horizontal, vertical] = bisectAxes(props.state, props.settings)
+      return <>
+        {props.state.terminal && <div class="ks-bisect-backdrop" />}
+        <div class={{ 'ks-bisect-region': true, terminal: props.state.terminal }} aria-label="Bisect" style={{ left: `${area.x}%`, top: `${area.y}%`, width: `${area.width}%`, height: `${area.height}%` }}>
+          {!props.state.terminal && horizontal && <i class="vertical" />}
+          {!props.state.terminal && vertical && <i class="horizontal" />}
+        </div>
+      </>
+    }
   },
 })
 
@@ -1857,16 +1910,16 @@ function targetingAppearance(document: ConfigDocument | null, mode: string, appe
     '--ks-card-number-width': `${Math.max(finiteSetting(card.number_min_width, 38), numberSize * .75 + autoSetting(ui.padding_x, Math.round(numberSize * .4)) * 2)}px`,
     '--ks-card-radius': `${autoSetting(ui.border_radius, Math.round(numberSize * .35))}px`,
     '--ks-card-number-padding-y': `${autoSetting(ui.padding_y, Math.round(numberSize * .2))}px`,
-    '--ks-target-accent': border,
+    '--ks-target-accent': mode === 'bisect' ? bisectColors(document ?? {}, appearance).line_color : border,
     '--ks-target-preview-border': translucent(configuredBorder, 35),
-    '--ks-target-highlight': themedColor(ui.highlight_color ?? ui.matched_background_color, accentAlt),
+    '--ks-target-highlight': mode === 'bisect' ? bisectColors(document ?? {}, appearance).highlight_color : themedColor(ui.highlight_color ?? ui.matched_background_color, accentAlt),
     '--ks-target-surface': labelBackground,
     '--ks-target-grid-fill': translucent(configuredBackground, 55),
     '--ks-target-text': themedColor(ui.text_color, text),
     '--ks-target-matched-text': themedColor(ui.matched_text_color, accentAlt),
     '--ks-target-boundary': themedColor(boundaries.border_color, translucent(accent, 60)),
     '--ks-target-boundary-fill': themedColor(boundaries.background_color, 'transparent'),
-    '--ks-target-line-width': `${numberSetting(ui.line_width ?? ui.border_width, 1)}px`,
+    '--ks-target-line-width': `${finiteSetting(ui.line_width ?? ui.border_width, 1)}px`,
     '--ks-target-boundary-width': `${numberSetting(boundaries.border_width, 1)}px`,
     '--ks-target-boundary-radius': `${autoSetting(boundaries.border_radius, 2)}px`,
     '--ks-target-font-size': `${numberSetting(ui.font_size, mode === 'ui_hint' ? 12 : 20)}px`,
@@ -1916,7 +1969,7 @@ function actionTone(action: string): string {
   if (action.includes('click')) return 'click'
   if (action === 'toggle' || action.startsWith('press') || action.startsWith('release')) return 'state'
   if (action.includes('scroll') || action.includes('wheel')) return 'scroll'
-  if (['grid', 'recursive_grid', 'ui_hint', 'normal', 'idle'].includes(action)) return 'mode'
+  if (['grid', 'recursive_grid', 'bisect', 'ui_hint', 'normal', 'idle'].includes(action)) return 'mode'
   return 'utility'
 }
 
@@ -1926,7 +1979,7 @@ function shortAction(action: string): string {
     wheel_up: '↑ 滚动', wheel_down: '↓ 滚动', scroll_left: '← 滚动', scroll_right: '→ 滚动',
     left_click: '左键', right_click: '右键', middle_click: '中键', double_click: '双击',
     mouse_left: '左键', mouse_right: '右键', mouse_middle: '中键', mouse_x1: '侧键 1', mouse_x2: '侧键 2',
-    grid: 'Grid', recursive_grid: '递归 Grid', ui_hint: 'UI Hint', normal: 'Normal', idle: 'Idle',
+    grid: 'Grid', recursive_grid: '递归 Grid', bisect: 'Bisect', bisect_left: '保留左半区', bisect_down: '保留下半区', bisect_up: '保留上半区', bisect_right: '保留右半区', ui_hint: 'UI Hint', normal: 'Normal', idle: 'Idle',
     precision: '精确', slow: '慢速', fast: '快速', finish: '完成', restart_mode: '重启', escape: '返回',
     precision_toggle: '切换精确', slow_toggle: '切换慢速', fast_toggle: '切换快速',
     'move_window previous': '窗口上一屏', 'move_window prev': '窗口上一屏', 'move_window next': '窗口下一屏',
@@ -2220,7 +2273,7 @@ function keyHelpEntries(document: ConfigDocument, mode: string, isMac = false): 
         window_tab_move_left: 'Move tab left', window_tab_move_right: 'Move tab right',
         window_screen_next: 'Next screen', window_screen_previous: 'Previous screen', size_cycle: 'Maximize / minimize / restore', window_maximize: 'Maximize / restore', window_minimize: 'Minimize / restore',
         window_center: 'Center window', window_close: 'Close window', window_volume_down: 'App volume down', window_volume_up: 'App volume up', window_volume_mute: 'Mute / unmute app', window_audio_previous: 'Previous app output', window_audio_next: 'Next app output', window_system_volume_down: 'System volume down', window_system_volume_up: 'System volume up', window_system_volume_mute: 'Mute / unmute system', window_system_audio_previous: 'Previous system output', window_system_audio_next: 'Next system output', window_select: 'Next window', window_select_previous: 'Previous window', window_undo: 'Undo', window_redo: 'Redo', window_reset_initial: 'Restore initial state', window_remove_region: 'Delete region', window_saved_layouts: 'Restore layout', window_save_layout: 'Save layout',
-        window_confirm: 'Confirm', window: 'Window', window_quick: 'Quick layout', window_editor: 'Editor', window_restore: 'Restore', window_delete: 'Restore / delete', window_tab: 'Tabs', idle: 'Exit', normal: 'Normal', grid: 'Grid', recursive_grid: 'Recursive Grid', ui_hint: 'UI Hint',
+        window_confirm: 'Confirm', window: 'Window', window_quick: 'Quick layout', window_editor: 'Editor', window_restore: 'Restore', window_delete: 'Restore / delete', window_tab: 'Tabs', idle: 'Exit', normal: 'Normal', grid: 'Grid', recursive_grid: 'Recursive Grid', bisect: 'Bisect', ui_hint: 'UI Hint',
       }
       for (const direction of ['left', 'right', 'up', 'down']) {
         labels[`window_layout_${direction}`] = `Layout ${direction}`

@@ -65,7 +65,7 @@ space = "idle"
 | `[general]` | 排除应用 |
 | `[key_aliases]` | 自定义键名和跨平台修饰键 |
 | `[hotkeys]` | 从 Idle 进入模式的启动键 |
-| `[normal]`、`[grid]`、`[recursive_grid]`、`[ui_hint]` | 鼠标与定位模式的按键和行为 |
+| `[normal]`、`[grid]`、`[recursive_grid]`、`[bisect]`、`[ui_hint]` | 鼠标与定位模式的按键和行为 |
 | `[window]`、`[window_quick]`、`[window_editor]`、`[window_restore]`、`[window_tab]` | 各窗口模式的按键和行为 |
 | `[pointer]`、`[scroll]` | 鼠标速度、滚动距离和速度 |
 | `[theme]`、`[mode_indicator]` | 颜色和模式提示 |
@@ -113,6 +113,7 @@ h = "move_left"
 | `h` | 单键 |
 | `primary+shift+s` | 同时按下的组合键 |
 | `"v b"` | V 和 B 分别执行同一动作，空格不表示先后顺序 |
+| `"mod+c enter"` | 组合键和单键也可同组；系统复制快捷键或 Enter 均执行该动作 |
 | `ctrl` / `alt` / `shift` | 左右两侧都能触发 |
 | `left_shift` / `right_shift` | 只匹配指定一侧 |
 
@@ -233,8 +234,9 @@ k = "move_up"
 l = "move_right"
 ";" = "left_click"
 g = "grid"
-f = "recursive_grid"
-"primary+f" = "ui_hint"
+f = "ui_hint"
+"primary+g" = "recursive_grid"
+"primary+f" = "bisect"
 "primary+s" = "screen next"
 
 # 可选：把 Primary+H/J/K/L 发送为应用的方向键。
@@ -255,7 +257,7 @@ f = "recursive_grid"
 
 无参数 `toggle` 可同时锁定多个伙伴键，先按伙伴或先按激活键都可以；单独短按激活键、返回 Normal 或进入 Idle 会全部释放。单独长按激活键会锁定它自身。具体步骤见 [拖拽与长按](/modes/normal#拖拽与长按)。
 
-Grid、Recursive Grid、UI Hint 始终独占键盘；Idle 始终放行未命中的输入。
+Grid、Recursive Grid、Bisect、UI Hint 始终独占键盘；Idle 始终放行未命中的输入。
 
 ### Grid
 
@@ -308,6 +310,33 @@ layers = [
 ]
 ```
 
+### Bisect
+
+从 Normal 按 `Primary+F` 进入 [Bisect 二分定位](/modes/bisect)。h/j/k/l 每次保留左／下／上／右半区，只缩小对应的轴。不显示字母，也不接受字母表、网格行列数或 `layers`。导航、光标跟随和生命周期沿用 Recursive Grid，各项独立配置。
+
+```toml
+[bisect]
+max_depth = 20
+min_size_width = 2
+min_size_height = 2
+cursor_follow_selection = true
+
+[bisect.bindings]
+h = "bisect_left"
+j = "bisect_down"
+k = "bisect_up"
+l = "bisect_right"
+
+[bisect.lifecycle]
+after_finish = "keep"
+after_click = "keep"
+
+[bisect.ui]
+line_width = 1
+```
+
+`max_depth` 允许 1–40 次二分；最小宽高必须为正数。某轴的下一半小于最小尺寸时，该轴停止，另一轴仍可继续。`line_color`、`highlight_color` 支持与递归网格相同的 RGBA／主题颜色；`line_width` 为 0–20 整数，0 隐藏内部参考线并保留区域轮廓。方向键通过 `[bisect.bindings]` 改绑，移除旧键时写 `"none"`；省略的方向绑定与网格导航键一样保留默认值。
+
 ### UI Hint
 
 ```toml
@@ -342,7 +371,7 @@ after_click = "normal"
 | `vision.rectangle_max_candidates` | 轮廓候选上限，默认 10000 |
 | `vision.detect_text` / `vision.detect_rectangles` | 只控制 `vision` 来源；不关闭 `hybrid` 或独立 `contour` 的识别来源 |
 
-扫描仍受范围、超时和总上限 10000 约束；高分辨率画面中的极小目标可能识别不到。Windows 自动发现本机系统／微信 OCR，不下载微信组件；macOS 视觉识别需要录屏权限。
+扫描仍受范围、超时和总上限 10000 约束；高分辨率画面中的极小目标可能识别不到。Windows 使用本机系统 OCR；macOS 视觉识别需要录屏权限。
 
 搜索用法见 [UI Hint](/modes/ui-hint#搜索与结果预览)。`search_match_priority = ["pinyin", "text", "label"]` 设置同等匹配程度下的优先级；`search_bindings` 的 `point_next` 默认 Tab。
 
@@ -484,7 +513,7 @@ preserve = true
 inherits = ["hotkeys", "normal"]
 ```
 
-Screen Selector 的 `preserve = true` 会在切屏时保留 Grid／Recursive Grid 的选择路径；false 则在新屏幕重新开始。开发自己的插件见[插件开发](/development/plugin-development)。
+Screen Selector 的 `preserve = true` 会在切屏时保留 Grid／Recursive Grid／Bisect 的选择路径；false 则在新屏幕重新开始。开发自己的插件见[插件开发](/development/plugin-development)。
 
 ## 运行时修改与调试
 
@@ -521,7 +550,7 @@ timers = true
 
 | 设置 | 影响哪些模式 | 默认 |
 | --- | --- | --- |
-| `mouse_key_help` | Normal、Grid、Recursive Grid、UI Hint | false |
+| `mouse_key_help` | Normal、Grid、Recursive Grid、Bisect、UI Hint | false |
 | `window_key_help` | Window、Quick、Editor、Restore、Tabs | true |
 
 例如，想让窗口面板也默认隐藏：
@@ -604,6 +633,8 @@ padding_y = 8
 
 配置 `[quick_switch.bindings]` 时整张表替换默认值：只写 `esc = "cancel_selection"` 即只允许 Esc；只写 `q = "cancel_selection"` 即只允许 Q；两行都写则都能退出。需要退格时保留 `backspace` 行。绑定键不能与标签字符冲突。
 
+已输入的标签前缀默认使用与 UI Hint 相同的黄色高亮；通过 `quick_switch.ui.matched_text_color` 修改，支持浅／深主题颜色。`Quick Switch` 模式指示器沿用共享样式和主题强调色。
+
 ::: info Q 仍先执行原来的动作
 按下 Q 会立即执行原绑定；进入快速切换后，不再重复原动作，松开时只正常结束原手势，面板保持。即使原动作已进入 Idle，本次长按仍有效；从 Idle 开始、暂停、排除应用或文本／备注输入时不接管 Q。
 :::
@@ -644,14 +675,17 @@ position = ["44%", "50%", "56%", "50%"]
 
 ## 临时模式按键优先级
 
-按住 `temporary_mode_keys` 时，依次查找：
+所有模式共用 `inherits`、`temporary_mode`、`temporary_mode_keys` 和 `temporary_mode_passthrough_keys`，包括 Normal、Quick Switch、Text Input、Text Select、UI Hint、网格、窗口与插件。用户配置未写 `temporary_mode_keys` 或设为 `[]` 时关闭临时层；加载时即确定，输入时跳过临时匹配。发布配置中 UI Hint 显式设置 `temporary_mode_keys = ["primary"]`，按住 Primary 可临时借用 Normal；文字选择默认关闭临时层，默认段不添加这些可选字段。
 
-1. 临时模式的完整组合键。
-2. 当前模式的完整组合键。
-3. 去掉临时激活键后的临时模式绑定。
-4. 去掉临时激活键后的当前模式绑定或标签输入。
+只有临时层实际激活时才处理激活键；未激活时沿用普通解析。激活期间依次查找：
 
-每一层都包含其继承绑定。完整组合键优先于裸键，例如 Normal 的 `Primary+F` 进入 UI Hint，优先于裸 F 的 Recursive Grid；Grid 的 `Primary+Q` 仍返回 Normal。
+1. 当前模式自身显式配置的完整组合键，不包括继承绑定。
+2. 剔除本次实际生效的激活键后，临时模式的完整组合键。
+3. 剔除激活键后，当前模式的完整组合键。
+4. 使用相同的剩余按键，查找临时模式的其他匹配。
+5. 使用相同的剩余按键，查找当前模式的其他匹配或标签输入。
+
+后四项均包含各自的继承绑定，`none` 仍终止匹配。剩余完整组合键优先，同级临时层优先；不会重新带回已消耗的激活键。例如临时 Normal 中 `Primary+H` 使用 `h = "move_left"`，不会触发 Normal 的 `primary+h`；其他修饰键仍保留。Grid 自身显式配置的 `Primary+Q` 仍返回 Normal。若要在临时层中保留 `Primary+S` 切屏等完整快捷键，请在当前模式的 `bindings` 中显式配置。
 
 想让 Q 直接交给当前模式，可声明穿透键：
 
@@ -667,9 +701,7 @@ q = "normal"
 
 穿透键只跳过临时模式，不向系统发送按键。默认 `[]`，支持组合键、别名和左右修饰键；同样适用于其他定位模式、窗口模式和插件。
 
-::: info Window 的临时键有不同规则
-Window 先保留自身显式组合键，再去掉激活键查找 Normal 和当前模式。例如临时 S 可切屏，临时 F 默认进入 Recursive Grid。窗口面板显示窗口操作，不会列出整张 Normal 按键表。
-:::
+窗口和文字编辑面板使用相同优先级。临时层激活期间全部按键先经过公共路由，移动、滚动和模式切换都可用；松开激活键停止借用的保持动作，保留原模式和选择。需要保留当前模式操作时使用穿透键；UI Hint／文字选择的重叠换层键仍优先用于换层。
 
 ## Normal 盲操定位
 
@@ -686,26 +718,45 @@ Normal 也能直接输入网格键定位，但默认关闭。启用步骤和安�
 
 ## 文字选择配置
 
-`text_select` 复用 UIHint 的识别与外观，单独配置入口、标签和操作键。Normal 默认用 `c` 进入。以下是默认绑定；显式填写该绑定表会替换文字选择的默认表。
+`text_select` 复用 UIHint 的 OCR 选项与外观，扫描范围由自己的 `scan_scope` 独立控制，默认 `all`；可在网页“文字选择 → 行为”中选择 `window`／`active`／`screen`／`all`。Normal 默认用 `c` 进入。以下是默认绑定；显式填写该绑定表会替换文字选择的默认表。
 
 ```toml
 [text_select]
 enabled = true
+scan_scope = "all"
 hint_characters = "asdfghjklqwertyuiopzvbnm"
 
+[text_select.lifecycle]
+after_copy = "normal"
+
 [text_select.bindings]
-"primary+c" = "text_refine"
+"alt+c" = "text_refine" # macOS Option+C，Windows Alt+C
+"alt+backspace" = "previous_level"
 "ctrl+backspace" = "first_level"
-"tab backspace" = "previous_level"
-enter = "text_copy"
-page_up = "text_previous_page"
-page_down = "text_next_page"
+tab = "text_cycle_page"
+
+"ctrl+a" = "text_select_all"
+backspace = "text_clear_selection"
+"ctrl+x" = "text_clear_input"
+"mod+c enter" = "text_copy"
+
+"primary+q" = "normal"
 esc = "cancel_selection"
 "?" = "key_help"
 ```
 
+`[text_select.ui]` 的所有字段都有内置默认值，整段可省略；自定义时只需写要修改的字段。包围框样式和鼠标偏移可在网页配置编辑器的 **文字选择 → 外观** 中调节。边距与鼠标落点使用交互示意图：拖动包围框右下角调整边距，切换到鼠标落点后点击或拖动定位；也可使用横向／纵向滑块和方向键微调，Shift 加速、Esc 撤销当前拖动。
+
+`panel_width` 设置本模式面板宽度，默认 800，范围 320–2400；实际显示受屏幕／窗口宽度限制。数量统计下方有留白和分隔线，卡片内标签与文字紧凑排列。页脚显示当前页／总页数及实际翻页键；Tab 循环翻页，末页回到首页，空输入时 Backspace 清空勾选，Alt+Backspace 返回上一层。
+
+单词卡片按各自长度自动排满一行，长词不会加宽其他卡片；字符层也会自动换行。`word_min_width`／`char_min_width` 分别设置最小宽度，默认 48／40，范围 24–240；调小可显示更多列，调大可增加间距。两项都在“文字选择 → 外观”中调节。屏幕高度不足时会压缩过宽卡片并省略显示长词，复制内容保持完整。
+
+`pointer_offset = [x, y]` 是鼠标相对原始区域右下角的偏移，默认 `[12, 12]`，正值向右／向下。包围框字段只控制第一层：`border_color` 省略时跟随主题强调色，支持浅深主题；`border_width` 为 0–20，0 隐藏；`padding` 使用单个 `[x, y]` 数组，向水平／垂直两侧各外扩 0–100，默认 `[2, 2]`。
+
+`text_select.lifecycle.after_copy` 仅在复制勾选文字成功后执行，默认 `normal`。可设为 `keep` 保留当前选择、`restart` 重新识别、`return` 返回进入前的模式，或其他内置／已配置插件模式；不接受点击动作或 `finish`。复制失败保留当前选择。初始只显示输入框和原位标签，输入后才显示紧凑文字预览；细分时保留预览。
+
 升级时若没有 `[text_select]` 或 `[text_input]`，模式及内部按键采用默认值；旧 Normal 绑定表缺少对应入口时补齐 `c`／`\`，但不覆盖已占用、参与自定义组合键／Normal 盲操网格或设为 `none` 的按键，也不追加已改键模式的第二个入口。显式 `text_select.enabled = false` 仍关闭文字选择。
 
-进入模式的键在 Normal 配置，细分键在 Text Select 配置，互不影响。进入后直接输入文字、简拼或空格分隔的标签；普通 `c` 始终参与输入，`Primary+C` 细分，`Enter` 复制。输入框中 Space 用于输入；Backspace 在输入非空时编辑，清空后才返回上层。UIHint 的 `search_edit_keys` 同时提供光标、粘贴等编辑键；文字选择操作绑定优先。绑定为操作的单字母不会生成文字选择标签。
+进入模式的键在 Normal 配置，细分键在 Text Select 配置，互不影响。第一层直接输入文字、简拼或空格分隔的标签；词语／字符层默认全选，标签固定为数字，`hint_characters` 仅控制第一层。字母／文字／简拼搜索当前细分层的全部条目（跨页），只筛选候选并保留已有勾选；单个编号切换勾选，`1-20`、`1-3 4-5` 勾选区间，按输入顺序组合，无歧义编号立即生效，其余用空格或复制／细分动作确认；普通 `c` 始终参与输入，`Alt+C` 细分（macOS 为 Option+C，不依赖 Primary 别名），网页“文字选择 → 按键”使用统一按键映射编辑“复制文字”（`text_copy`）和“清空输入框”（`text_clear_input`）；默认分别为 `mod+c enter` 和 `ctrl+x`。Ctrl+C（macOS Command+C）和 Enter 始终复制面板勾选文字，与输入内容和选区无关；Ctrl+X 清空整个输入框，不操作剪贴板，不改变当前层级或词语／字符层已确认的勾选。`Primary+Q` 不复制并返回 Normal。已有配置请将旧细分绑定替换为 `alt+c = "text_refine"`。输入框中 Space 用于输入；Backspace 在输入非空时编辑，空输入时清空勾选；Ctrl+A 有输入时全选输入，空输入时全选勾选；Alt+Backspace 返回上层。UIHint 的 `search_edit_keys` 同时提供光标、粘贴等编辑键；文字选择操作绑定优先。绑定为操作的单字母不会生成区域层标签。
 
 原来不能修改的网格、UIHint、屏幕选择和窗口导航键也已开放配置，旧默认键保持不变；稀疏旧配置自动补齐这些原有操作，显式 `none` 可禁用。详见[可配置的选择操作](/reference/modes-and-actions#可配置的选择操作)。

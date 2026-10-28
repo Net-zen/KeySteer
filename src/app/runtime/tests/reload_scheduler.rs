@@ -276,13 +276,24 @@ fn focus_changes_rebuild_only_when_the_effective_binding_profile_changes() {
         initial_rebuilds + 3,
         "a title change that changes the resolved override must rebuild"
     );
+    focus(
+        &mut engine,
+        &mut backend,
+        app("com.example.editor", "Document", 3),
+    );
+    assert_eq!(engine.registry.table_rebuild_count, initial_rebuilds + 4);
+    engine
+        .handle_backend_event(BackendEvent::FocusChanged(None), &mut backend)
+        .unwrap();
+    assert!(engine.registry.binding_profile_key.is_empty());
+    assert_eq!(engine.registry.table_rebuild_count, initial_rebuilds + 5);
     assert_eq!(
         seen.lock()
             .unwrap()
             .iter()
             .filter(|event| event.ends_with(":focus"))
             .count(),
-        8,
+        10,
         "all focus events must still reach the active mode"
     );
 }

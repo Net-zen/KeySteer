@@ -69,10 +69,10 @@ impl WindowSession {
                 .skip(self.library_page * super::presets::PAGE_SIZE)
                 .take(super::presets::PAGE_SIZE)
             {
-                detail.push_str(&format!("\n{}   {}", layout.id, layout.name()));
+                let _ = write!(detail, "\n{}   {}", layout.id, layout.name());
             }
             if !self.number.display.is_empty() {
-                detail.push_str(&format!("\nInput: {}", self.number.display));
+                let _ = write!(detail, "\nInput: {}", self.number.display);
             }
             detail.push('\n');
             if let Some(status) = &self.status {
@@ -113,7 +113,7 @@ impl WindowSession {
                 .next()
                 .unwrap_or(&window.app)
                 .trim_end_matches(".exe");
-            detail.push_str(&format!("\n{app}\n"));
+            let _ = write!(detail, "\n{app}\n");
             detail.extend(
                 window
                     .title
@@ -132,7 +132,7 @@ impl WindowSession {
             }
         }
         if let Some(source) = self.swap_source.and_then(|id| self.numbers.get(&id)) {
-            detail.push_str(&format!("\nWindow {source} → window number / `area"));
+            let _ = write!(detail, "\nWindow {source} → window number / `area");
         }
         // Preserve the feedback row even while empty, so result updates do not
         // move the panel or the window cards placed around it.

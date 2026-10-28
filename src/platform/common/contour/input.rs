@@ -57,11 +57,10 @@ pub(crate) fn from_bgra(
             );
         }
     } else {
-        let source_x_offsets = nearest_offsets(source_width, width);
-        let source_y_offsets = nearest_offsets(source_height, height);
+        let source_x_offsets: Vec<_> = nearest_offsets(source_width, width).collect();
         gray.resize(width * height, 0);
         let mut mean = vec![0; width * height];
-        for (y, source_y) in source_y_offsets.into_iter().enumerate() {
+        for (y, source_y) in nearest_offsets(source_height, height).enumerate() {
             if y.is_multiple_of(32) && cancelled()? {
                 return Ok(None);
             }
@@ -106,21 +105,20 @@ fn bgra_luma(pixel: &[u8; 4]) -> u8 {
 
 /// Return the exact `floor(output * source / destination)` mapping without a
 /// division in the per-pixel conversion loop.
-pub(crate) fn nearest_offsets(source: usize, destination: usize) -> Vec<usize> {
+pub(super) fn nearest_offsets(source: usize, destination: usize) -> impl Iterator<Item = usize> {
     debug_assert!(source != 0 && destination != 0);
     let step = source / destination;
     let remainder_step = source % destination;
     let mut source_index = 0usize;
     let mut remainder = 0usize;
-    let mut offsets = Vec::with_capacity(destination);
-    for _ in 0..destination {
-        offsets.push(source_index.min(source - 1));
+    (0..destination).map(move |_| {
+        let offset = source_index.min(source - 1);
         source_index += step;
         remainder += remainder_step;
         if remainder >= destination {
             source_index += 1;
             remainder -= destination;
         }
-    }
-    offsets
+        offset
+    })
 }

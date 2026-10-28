@@ -62,6 +62,64 @@ fn visible_dense_overlay() -> (Engine, FakeBackend, Arc<Mutex<Recorder>>) {
 }
 
 #[test]
+fn shared_scene_submission_only_detaches_when_sorting_is_needed() {
+    let (mut engine, mut backend, _) = visible_normal_overlay();
+    for batched in [false, true] {
+        for (labels_ordered, shapes_ordered) in
+            [(true, true), (false, true), (true, false), (false, false)]
+        {
+            let ordered = labels_ordered && shapes_ordered;
+            let mut scene = OverlayScene::new();
+            for depth in [0, 1] {
+                scene.labels.push(
+                    crate::api::overlay::OverlayLabel::new(
+                        depth.to_string(),
+                        Rect::default(),
+                        crate::api::overlay::LabelStyle::default(),
+                    )
+                    .with_z_index(if labels_ordered {
+                        depth
+                    } else {
+                        1 - depth
+                    }),
+                );
+                scene.shapes.push(crate::api::overlay::OverlayShape::Rect {
+                    rect: Rect::default(),
+                    fill: crate::api::Color::rgb(0, 0, 0),
+                    stroke: crate::api::Color::TRANSPARENT,
+                    stroke_width: 0.0,
+                    corner_radius: 0.0,
+                    z_index: if shapes_ordered { depth } else { 1 - depth },
+                });
+            }
+            let source = Arc::new(scene);
+            engine.overlay.command_batch_depth = usize::from(batched);
+            engine
+                .show_overlay(Arc::clone(&source), &mut backend)
+                .unwrap();
+            engine.overlay.command_batch_depth = 0;
+            engine.flush_pending_overlay(&mut backend).unwrap();
+            let content = engine.overlay.content.as_ref().unwrap();
+            assert!(content.is_sorted());
+            assert_eq!(Arc::ptr_eq(content, &source), ordered);
+            assert_eq!(
+                source.is_sorted(),
+                ordered,
+                "submission changed the caller's scene"
+            );
+
+            let submitted = Arc::downgrade(content);
+            drop(source);
+            engine.hide_overlay(&mut backend).unwrap();
+            assert!(
+                submitted.upgrade().is_none(),
+                "dismissed source scene was retained"
+            );
+        }
+    }
+}
+
+#[test]
 fn pointer_motion_uses_position_only_backend_update() {
     let (mut engine, mut backend, log) = visible_normal_overlay();
     backend.accept_position_updates = true;
@@ -114,51 +172,6 @@ fn overlay_position_path_is_allocation_free() {
     assert_eq!(
         change.bytes_allocated, 0,
         "position path allocated: {change:?}"
-    );
-}
-
-#[test]
-#[ignore = "microbenchmark probe; run in release with --test-threads=1"]
-fn overlay_position_performance_probe() {
-    const WARMUP: usize = 1_000;
-    const SAMPLES: usize = 10_000;
-    fn measure(mut operation: impl FnMut(usize)) -> (u128, u128, u128) {
-        for index in 0..WARMUP {
-            operation(index);
-        }
-        let mut samples = Vec::with_capacity(SAMPLES);
-        for index in 0..SAMPLES {
-            let started = Instant::now();
-            operation(index);
-            samples.push(started.elapsed().as_nanos());
-        }
-        samples.sort_unstable();
-        let last = samples.len() - 1;
-        (
-            samples[last * 50 / 100],
-            samples[last * 95 / 100],
-            samples[last * 99 / 100],
-        )
-    }
-
-    let (mut fast, mut fast_backend, fast_log) = visible_dense_overlay();
-    let position = measure(|index| {
-        fast.cursor = Point::new(100.0 + (index % 500) as f64, 100.0);
-        fast.refresh_overlay_positions(&mut fast_backend).unwrap();
-        fast_log.lock().unwrap().positions.clear();
-    });
-
-    let (mut full, mut full_backend, full_log) = visible_dense_overlay();
-    let complete = measure(|index| {
-        full.cursor = Point::new(100.0 + (index % 500) as f64, 100.0);
-        full.refresh_overlay(&mut full_backend).unwrap();
-        let mut log = full_log.lock().unwrap();
-        log.scenes.clear();
-        log.timeline.clear();
-    });
-    println!(
-        "overlay_probe samples={SAMPLES} position_p50={}ns position_p95={}ns position_p99={}ns complete_p50={}ns complete_p95={}ns complete_p99={}ns",
-        position.0, position.1, position.2, complete.0, complete.1, complete.2
     );
 }
 
@@ -242,242 +255,6 @@ fn common_toggle_transaction_is_allocation_free() {
     assert_eq!(change.allocations, 0, "toggle allocated: {change:?}");
     assert_eq!(change.deallocations, 0, "toggle freed: {change:?}");
     assert_eq!(change.bytes_allocated, 0, "toggle allocated: {change:?}");
-}
-
-#[test]
-#[ignore = "microbenchmark probe; run in release with --test-threads=1"]
-fn deadline_performance_probe() {
-    const WARMUP: usize = 2_000;
-    const SAMPLES: usize = 20_000;
-    const CALLS_PER_SAMPLE: usize = 100;
-
-    fn measure(mut operation: impl FnMut()) -> (u128, u128, u128) {
-        for _ in 0..WARMUP {
-            operation();
-        }
-        let mut samples = Vec::with_capacity(SAMPLES);
-        for _ in 0..SAMPLES {
-            let started = Instant::now();
-            for _ in 0..CALLS_PER_SAMPLE {
-                operation();
-            }
-            samples.push(started.elapsed().as_nanos() / CALLS_PER_SAMPLE as u128);
-        }
-        samples.sort_unstable();
-        let last = samples.len() - 1;
-        (
-            samples[last * 50 / 100],
-            samples[last * 95 / 100],
-            samples[last * 99 / 100],
-        )
-    }
-
-    fn engine_with_timers(count: usize) -> Engine {
-        let mut engine = Engine::new(Config::default(), Appearance::Dark);
-        let now = Instant::now();
-        for index in 0..count {
-            engine.scheduler.timers.insert(
-                format!("timer-{index}"),
-                Timer {
-                    fires_at: now + Duration::from_secs(30),
-                    last_fired: now,
-                    interval: None,
-                    owner: ModeId::idle(),
-                },
-            );
-        }
-        engine
-    }
-
-    let no_tasks = engine_with_timers(0);
-    let one_timer = engine_with_timers(1);
-    let simultaneous = engine_with_timers(8);
-    let no_tasks_result = measure(|| {
-        std::hint::black_box(no_tasks.next_timeout());
-    });
-    let one_timer_result = measure(|| {
-        std::hint::black_box(one_timer.next_timeout());
-    });
-    let simultaneous_result = measure(|| {
-        std::hint::black_box(simultaneous.next_timeout());
-    });
-
-    let mut idle = engine_with_timers(0);
-    let (mut backend, _) = FakeBackend::new(Vec::new());
-    let service_result = measure(|| {
-        idle.fire_due_long_press_toggles(&mut backend).unwrap();
-        idle.fire_due_timers(&mut backend).unwrap();
-        idle.fire_due_sequences(&mut backend).unwrap();
-    });
-
-    println!(
-        "deadline_probe samples={SAMPLES} calls_per_sample={CALLS_PER_SAMPLE} no_tasks_p50={}ns no_tasks_p95={}ns no_tasks_p99={}ns one_timer_p50={}ns one_timer_p95={}ns one_timer_p99={}ns simultaneous_p50={}ns simultaneous_p95={}ns simultaneous_p99={}ns idle_service_p50={}ns idle_service_p95={}ns idle_service_p99={}ns",
-        no_tasks_result.0,
-        no_tasks_result.1,
-        no_tasks_result.2,
-        one_timer_result.0,
-        one_timer_result.1,
-        one_timer_result.2,
-        simultaneous_result.0,
-        simultaneous_result.1,
-        simultaneous_result.2,
-        service_result.0,
-        service_result.1,
-        service_result.2,
-    );
-}
-
-#[test]
-#[ignore = "microbenchmark probe; run in release with --test-threads=1"]
-fn toggle_performance_probe() {
-    const WARMUP: usize = 1_000;
-    const SAMPLES: usize = 10_000;
-    fn measure(mut operation: impl FnMut()) -> (u128, u128, u128) {
-        for _ in 0..WARMUP {
-            operation();
-        }
-        let mut samples = Vec::with_capacity(SAMPLES);
-        for _ in 0..SAMPLES {
-            let started = Instant::now();
-            operation();
-            samples.push(started.elapsed().as_nanos());
-        }
-        samples.sort_unstable();
-        let last = samples.len() - 1;
-        (
-            samples[last * 50 / 100],
-            samples[last * 95 / 100],
-            samples[last * 99 / 100],
-        )
-    }
-    fn clear_log(log: &Arc<Mutex<Recorder>>) {
-        let mut log = log.lock().unwrap();
-        log.scenes.clear();
-        log.positions.clear();
-        log.timeline.clear();
-        log.dispositions.clear();
-        log.buttons.clear();
-        log.sent.clear();
-    }
-
-    let mut bare = engine_with_normal_binding("n", "toggle");
-    bare.registry.active = ModeId::normal();
-    let (mut bare_backend, bare_log) = FakeBackend::new(Vec::new());
-    let bare_result = measure(|| {
-        bare.handle_backend_event(key_down("n"), &mut bare_backend)
-            .unwrap();
-        bare.handle_backend_event(key_up("n"), &mut bare_backend)
-            .unwrap();
-        clear_log(&bare_log);
-    });
-
-    let mut repeated = engine_with_normal_binding("n", "toggle");
-    repeated.registry.active = ModeId::normal();
-    let (mut repeated_backend, repeated_log) = FakeBackend::new(Vec::new());
-    let BackendEvent::Input(mut repeat_down) = key_down("n") else { unreachable!() };
-    repeat_down.repeat = true;
-    let repeat_result = measure(|| {
-        repeated
-            .handle_backend_event(key_down("n"), &mut repeated_backend)
-            .unwrap();
-        for _ in 0..100 {
-            repeated
-                .handle_key(repeat_down.clone(), &mut repeated_backend)
-                .unwrap();
-        }
-        repeated
-            .handle_backend_event(key_up("n"), &mut repeated_backend)
-            .unwrap();
-        clear_log(&repeated_log);
-    });
-
-    let mut chord = engine_with_normal_binding("n", "toggle");
-    chord.registry.active = ModeId::normal();
-    let (mut chord_backend, chord_log) = FakeBackend::new(Vec::new());
-    let chord_result = measure(|| {
-        for event in [
-            key_down("left_ctrl"),
-            key_down("left_shift"),
-            key_down("e"),
-            key_down("n"),
-            key_up("n"),
-            key_up("e"),
-            key_up("left_shift"),
-            key_up("left_ctrl"),
-            key_down("n"),
-            key_up("n"),
-        ] {
-            chord
-                .handle_backend_event(event, &mut chord_backend)
-                .unwrap();
-        }
-        clear_log(&chord_log);
-    });
-
-    let mut mouse_config = Config::default();
-    mouse_config.normal.bindings.clear();
-    mouse_config
-        .normal
-        .bindings
-        .insert("n".into(), Binding::Toggle(Vec::new()));
-    mouse_config.normal.bindings.insert(
-        ";".into(),
-        Binding::Click(crate::api::binding::Button::Left),
-    );
-    let mut mouse = Engine::new(mouse_config, Appearance::Dark);
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    mouse.register(Box::new(ProbeMode::new("normal", seen)));
-    mouse.registry.active = ModeId::normal();
-    let (mut mouse_backend, mouse_log) = FakeBackend::new(Vec::new());
-    let mouse_result = measure(|| {
-        for event in [
-            key_down("n"),
-            key_down(";"),
-            key_up(";"),
-            key_up("n"),
-            key_down("n"),
-            key_up("n"),
-        ] {
-            mouse
-                .handle_backend_event(event, &mut mouse_backend)
-                .unwrap();
-        }
-        clear_log(&mouse_log);
-    });
-
-    let left = InputTarget::Key(Key::new("left_ctrl").unwrap());
-    let right = InputTarget::Key(Key::new("e").unwrap());
-    let rollback_targets = [left, right];
-    let mut rollback = engine_with_normal_binding("n", "toggle");
-    rollback.registry.active = ModeId::normal();
-    let (mut rollback_backend, rollback_log) = FakeBackend::new(Vec::new());
-    rollback
-        .press_targets(&rollback_targets, &mut rollback_backend)
-        .unwrap();
-    let rollback_result = measure(|| {
-        rollback_log.lock().unwrap().fail_next_key_up = true;
-        let _ = rollback.toggle_targets(&rollback_targets, &mut rollback_backend);
-        clear_log(&rollback_log);
-    });
-
-    println!(
-        "toggle_probe samples={SAMPLES} bare_p50={}ns bare_p95={}ns bare_p99={}ns repeat100_p50={}ns repeat100_p95={}ns repeat100_p99={}ns chord_p50={}ns chord_p95={}ns chord_p99={}ns mouse_p50={}ns mouse_p95={}ns mouse_p99={}ns rollback_p50={}ns rollback_p95={}ns rollback_p99={}ns",
-        bare_result.0,
-        bare_result.1,
-        bare_result.2,
-        repeat_result.0,
-        repeat_result.1,
-        repeat_result.2,
-        chord_result.0,
-        chord_result.1,
-        chord_result.2,
-        mouse_result.0,
-        mouse_result.1,
-        mouse_result.2,
-        rollback_result.0,
-        rollback_result.1,
-        rollback_result.2,
-    );
 }
 
 #[test]
@@ -727,13 +504,17 @@ fn key_help_narrows_to_held_chord_prefix() {
     for mode in crate::app::mode_catalog::built_in(&config) { engine.register(mode); }
     engine.set_active(ModeId::normal());
     let (mut backend, _) = FakeBackend::new(Vec::new());
-    assert!(engine.key_help_entries().iter().any(|entry| entry.starts_with("h  ")));
+    let initial = engine.key_help_entries();
+    assert!(initial.iter().any(|entry| entry.starts_with("h  ")));
     engine.handle_backend_event(key_down("left_alt"), &mut backend).unwrap();
     engine.handle_backend_event(key_down("x"), &mut backend).unwrap();
     assert!(!engine.input.pending_chords.is_empty());
     let entries = engine.key_help_entries();
     assert!(entries.iter().any(|entry| entry.starts_with("alt+x+y  ")));
     assert!(!entries.iter().any(|entry| entry.starts_with("h  ")));
+    engine.handle_backend_event(key_up("x"), &mut backend).unwrap();
+    engine.handle_backend_event(key_up("left_alt"), &mut backend).unwrap();
+    assert_eq!(engine.key_help_entries(), initial);
 }
 
 #[test]
@@ -829,7 +610,7 @@ fn key_help_cache_reuses_labels_and_releases_on_close() {
 
 #[test]
 fn key_help_cache_rebuilds_on_routes_theme_and_mode_events() {
-    struct ChangingHelp { key: &'static str }
+    struct ChangingHelp { key: &'static str, reads: Arc<std::sync::atomic::AtomicUsize> }
     impl Mode for ChangingHelp {
         fn id(&self) -> ModeId { ModeId::normal() }
         fn handle(&mut self, event: &ModeEvent, _: &HostContext<'_>) -> CommandBatch {
@@ -841,13 +622,20 @@ fn key_help_cache_rebuilds_on_routes_theme_and_mode_events() {
             Command::show_overlay(OverlayScene::new()).into()
         }
         fn available_keys(&self) -> Vec<(String, String)> { vec![(self.key.into(), "dynamic test".into())] }
+        fn help_previews(&self) -> Vec<(String, String, Rect, bool)> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            vec![("1".into(), "Preview".into(), Rect::new(0.0, 0.0, 1.0, 1.0), true)]
+        }
     }
     let (mut engine, mut backend, _) = visible_normal_overlay();
-    engine.register(Box::new(ChangingHelp { key: "f22" }));
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    engine.register(Box::new(ChangingHelp { key: "f22", reads: Arc::clone(&reads) }));
     engine.overlay.key_help_visible = true;
     engine.refresh_overlay(&mut backend).unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 1);
     let contains = |engine: &Engine, text: &str| engine.overlay.last_scene.as_ref().unwrap().labels.iter().any(|label| label.text.as_str() == text);
     assert!(contains(&engine, "F22"));
+    assert!(contains(&engine, "1 · Preview"));
     engine.dispatch(ModeEvent::Key { key: Key::new("f21").unwrap(), state: KeyState::Down, repeat: false }, &mut backend).unwrap();
     assert!(contains(&engine, "F23"));
     assert!(!contains(&engine, "F22"));

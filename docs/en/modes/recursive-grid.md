@@ -9,7 +9,7 @@ import KeyLayout from '../../.vitepress/components/KeyLayout'
 
 <ModeVideo file="recursivegrid.mp4" title="Recursive Grid mode demonstration" description="Repeated subdivision, backtracking, and continued targeting of small targets." />
 
-Enter it from Normal with `f`. The default grid is 3 × 3:
+Enter it from Normal with `Primary+G`. The default grid is 3 × 3:
 
 <KeyLayout layout="qwe/asd/zxc" target="q w e a s d z x c" label="Recursive Grid default keys" />
 
@@ -50,3 +50,5 @@ cursor_follow_selection = true
 after_finish = "keep"
 after_click = "keep"
 ```
+
+For label-free, one-axis-at-a-time narrowing, use [Bisect](/en/modes/bisect) with `Primary+F` from Normal.
