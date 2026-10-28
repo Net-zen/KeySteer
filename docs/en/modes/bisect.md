@@ -7,7 +7,7 @@ import ModeVideo from '../../.vitepress/components/ModeVideo'
 Bisect is recursive positioning without letter labels. Press `Primary+F` from Normal, then use four direction keys to keep half of the current region. The pointer follows the selected region's center by default.
 
 <ModeVideo
-  src="https://github.com/user-attachments/assets/2c8a6d9f-d6c1-471e-9942-f9551f679790"
+  file="bisect-en.mp4"
   title="Bisect mode demonstration"
   description="Halve the target area with H/J/K/L, then press Enter to position the pointer without clicking."
 />

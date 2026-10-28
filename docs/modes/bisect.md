@@ -7,7 +7,7 @@ import ModeVideo from '../.vitepress/components/ModeVideo'
 Bisect 是不显示字母的递归定位模式。从 Normal 按 `Primary+F` 进入，用四个方向键反复保留当前区域的一半，鼠标默认跟随到区域中心。
 
 <ModeVideo
-  src="https://github.com/user-attachments/assets/630c7e04-c49b-42fc-aaf5-3fbd55b3cb8e"
+  file="bisect-zh.mp4"
   title="Bisect 二分定位演示"
   description="用 H/J/K/L 连续二分，再按 Enter 将鼠标定位到目标；Enter 不会发送点击。"
 />
