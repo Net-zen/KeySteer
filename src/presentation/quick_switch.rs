@@ -61,7 +61,7 @@ impl CaptionMetrics {
         let mut result = Self::default();
         let mut sum = 0.0;
         for row in rows {
-            let width = caption_width(&row.caption);
+            let width = caption_width(row.mode.as_str());
             result.max_width = result.max_width.max(width);
             result.label_chars = result.label_chars.max(row.label.chars().count());
             result.count += 1;
@@ -163,6 +163,7 @@ impl Panel<'_> {
         label.fit_to_text = false;
         scene.labels.push(label);
         let x = rect.x + left_padding;
+        let matched_prefix_len = self.prefix.chars().count() as u32;
         for (index, row) in self
             .rows
             .iter()
@@ -179,11 +180,11 @@ impl Panel<'_> {
             );
             badge.z_index = 10001;
             badge.fit_to_text = false;
-            badge.matched_prefix_len = self.prefix.chars().count() as u32;
+            badge.matched_prefix_len = matched_prefix_len;
             fit_panel_label(&mut badge, scale);
             scene.labels.push(badge);
             let mut caption = OverlayLabel::new(
-                row.caption.clone(),
+                row.mode.as_str(),
                 Rect::new(
                     caption_x,
                     y,
@@ -254,7 +255,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, name)| Row {
-                caption: (*name).into(),
+                mode: crate::api::ModeId::parse_borrowed(name).unwrap(),
                 label: plan.unwrap().code(index, &alphabet).as_str().into(),
             })
             .collect()

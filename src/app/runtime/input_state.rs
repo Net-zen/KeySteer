@@ -2172,9 +2172,7 @@ impl Engine {
     }
 
     pub(super) fn ui_hint_overlap_matches(&self, key: &Key) -> bool {
-        self.ui_hint_overlap_chord
-            .as_ref()
-            .is_some_and(|chord| chord.activation_matches(key))
+        self.settings.ui_hint_overlap_key.activation_matches(key)
     }
 
     /// Find the binding for `key` using the compiled mode precedence rules.

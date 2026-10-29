@@ -42,19 +42,28 @@ pub(super) fn read_lifecycle<'de, D: serde::Deserializer<'de>>(
 
 config_struct! {
     pub struct MultiSelect {
-        bindings: Bindings = super::builtin_bindings(&[
-            ("ctrl enter", "window_multi_confirm"),
-            ("esc", "window_multi_cancel"),
-            ("backspace", "send backspace"),
-            ("delete", "send delete"),
-            ("arrow_left", "send arrow_left"),
-            ("arrow_right", "send arrow_right"),
-            ("home", "send home"),
-            ("end", "send end"),
-            ("primary+h", "arrow_left"),
-            ("primary+l", "arrow_right"),
-        ]),
+        bindings: Bindings = {
+            let mut bindings = multi_select_control_defaults();
+            bindings.extend(super::builtin_bindings(&[
+                ("ctrl enter", "window_multi_confirm"),
+                ("primary+h", "arrow_left"),
+                ("primary+l", "arrow_right"),
+            ]));
+            bindings
+        },
     }
+}
+
+pub(super) fn multi_select_control_defaults() -> Bindings {
+    super::builtin_bindings(&[
+        ("esc", "window_multi_cancel"),
+        ("backspace", "send backspace"),
+        ("delete", "send delete"),
+        ("arrow_left", "send arrow_left"),
+        ("arrow_right", "send arrow_right"),
+        ("home", "send home"),
+        ("end", "send end"),
+    ])
 }
 
 window_config!(pub struct Window {
@@ -143,7 +152,7 @@ impl EditorCard {
 window_config!(pub struct WindowEditor {
     common: {
         use crate::api::Direction::*;
-        editing_common(
+        let mut common = editing_common(
             ModeId::window(),
             &[
                 ("h", W::Navigate(Left)),
@@ -160,39 +169,50 @@ window_config!(pub struct WindowEditor {
                 ("ctrl+l", W::Ratio(Right)),
                 ("x", W::RemoveRegion),
                 ("ctrl+s", W::SaveLayout),
-                ("`", W::AreaNumber),
             ],
             &[("r", ModeId::window_restore())],
-        )
+        );
+        common.bindings.extend(editor_control_defaults());
+        common
     },
     card: EditorCard,
     resize_step: f64 = 20.0,
     resize_speed: f64 = 500.0,
     gap: f64 = 0.0,
 });
+pub(super) fn editor_control_defaults() -> Bindings {
+    Bindings::from([("`".into(), Binding::Window(W::AreaNumber))])
+}
+
 window_config!(pub struct WindowRestore {
     common: {
         let mut common = common(
             ModeId::window(),
-            &[
+            [
                 ("enter", W::Confirm),
                 ("x", W::DeletePreset),
-                ("page_up", W::PreviousPage),
-                ("page_down", W::NextPage),
             ],
             &[],
         );
+        common.bindings.extend(restore_control_defaults());
         common.lifecycle.after_finish = LifecycleAction::Mode(ModeId::window_editor());
         common
     },
     gap: f64 = 0.0,
 });
+pub(super) fn restore_control_defaults() -> Bindings {
+    Bindings::from([
+        ("page_up".into(), Binding::Window(W::PreviousPage)),
+        ("page_down".into(), Binding::Window(W::NextPage)),
+    ])
+}
+
 window_config!(pub struct WindowTab {
     common: {
         use crate::api::Direction::{Down, Left, Right, Up};
         let mut common = common(
             ModeId::window(),
-            &[
+            [
                 ("t", W::TabEnd),
                 ("~", W::TabPrefix),
                 ("space", W::TabSeparator),
@@ -222,9 +242,9 @@ fn editing_common(
     actions: &[(&str, W)],
     modes: &[(&str, ModeId)],
 ) -> WindowModeConfig {
-    let mut common = common(back, actions, modes);
-    common.bindings.extend(
-        [
+    common(
+        back,
+        actions.iter().copied().chain([
             ("tab", W::Select),
             ("shift+tab", W::SelectPrevious),
             ("v+j", W::VolumeDown),
@@ -240,19 +260,22 @@ fn editing_common(
             ("z", W::Undo),
             ("shift+z", W::Redo),
             ("shift+c", W::ResetInitial),
-        ]
-        .map(|(key, action)| (key.into(), Binding::Window(action))),
-    );
-    common
+        ]),
+        modes,
+    )
 }
 
-fn common(back: ModeId, actions: &[(&str, W)], modes: &[(&str, ModeId)]) -> WindowModeConfig {
+fn common<'a>(
+    back: ModeId,
+    actions: impl IntoIterator<Item = (&'a str, W)>,
+    modes: &[(&str, ModeId)],
+) -> WindowModeConfig {
     let mut common = WindowModeConfig::default();
     common.bindings.insert("?".into(), Binding::KeyHelp);
     common.bindings.extend(
         actions
-            .iter()
-            .map(|(key, action)| ((*key).into(), Binding::Window(*action))),
+            .into_iter()
+            .map(|(key, action)| (key.into(), Binding::Window(action))),
     );
     common.bindings.extend(
         modes

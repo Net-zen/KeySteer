@@ -467,21 +467,25 @@ pub(in crate::modes) fn filter(
     } else {
         super::SEARCH_PREWARM_TARGETS
     };
-    filter_with_budget(session, query, priority, budget)
+    let names_ready = !needs_names(query) || session.prepare_search_names(budget);
+    filter_prepared(session, query, priority, names_ready)
 }
 
-/// The same query, ranking and multi-selection semantics with a caller-owned
-/// preparation budget. Zero defers text indexing until after the input paint.
-pub(in crate::modes) fn filter_with_budget(
+pub(in crate::modes) fn needs_names(query: &str) -> bool {
+    query
+        .split_whitespace()
+        .any(|word| !word.starts_with('@') && !word.ends_with('@'))
+}
+
+/// Shared ranking and multi-selection over caller-prepared text. Label-only
+/// queries can run immediately; other queries wait for their index to be ready.
+pub(in crate::modes) fn filter_prepared(
     session: &mut super::session::ScanSession,
     query: &str,
     priority: &crate::api::hint::CompiledSearchPriority,
-    budget: usize,
+    names_ready: bool,
 ) -> bool {
-    let needs_names = query
-        .split_whitespace()
-        .any(|word| !word.starts_with('@') && !word.ends_with('@'));
-    session.search_pending = needs_names && !session.prepare_search_names(budget);
+    session.search_pending = !names_ready;
     if session.search_pending {
         // Never expose old candidates as matches for new text. Keep the label
         // storage for reuse; the mode displays preparation status until ready.
@@ -510,7 +514,9 @@ pub(in crate::modes) fn filter_with_budget(
     session.search_terms.prepare(&query);
     let needs_dedup = session.search_terms.needs_dedup();
     if needs_dedup {
-        session.search_seen.resize(session.scanned.len(), false);
+        session
+            .search_seen
+            .resize(session.scanned.len().max(session.search_hints.len()), false);
     }
     for term in session.search_terms.iter(&query) {
         let term = Term::new(term);

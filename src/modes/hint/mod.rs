@@ -71,7 +71,6 @@ pub struct Settings {
     pub strategy: UiScanStrategy,
     pub scan_scope: crate::api::UiScanScope,
     pub vision: VisionOptions,
-    pub hint_characters: String,
     pub label_direction: LabelDirection,
     pub max_depth: u32,
     pub scan_timeout_ms: u64,
@@ -94,7 +93,7 @@ pub struct Settings {
     pub search_titles: [String; 4],
     pub search_point: PointSettings,
     pub lifecycle: TargetingLifecycle,
-    pub overlap_cycle_key: String,
+    pub overlap_cycle_key: KeyChord,
     pub app_overrides: Vec<AppStrategyOverride>,
 }
 
@@ -142,7 +141,6 @@ pub struct HintMode {
     sample_serial: u64,
     config: Settings,
     alphabet: Vec<char>,
-    overlap_cycle_chord: Option<KeyChord>,
     session: ScanSession,
     input: Input,
     return_mode: ModeId,
@@ -156,18 +154,13 @@ pub struct HintMode {
 }
 
 impl HintMode {
-    pub fn new(config: Settings) -> Self {
+    pub fn new(config: Settings, alphabet: Vec<char>) -> Self {
         Self {
             scene_cache: Default::default(),
             pending_view: None,
             inspection: None,
             sample_serial: 0,
-            alphabet: config
-                .hint_characters
-                .chars()
-                .filter_map(|character| Key::new(character.to_string()).ok()?.as_char())
-                .collect(),
-            overlap_cycle_chord: KeyChord::parse(&config.overlap_cycle_key).ok(),
+            alphabet,
             config,
             session: ScanSession::default(),
             input: Input::Labels(OverlayText::default()),
@@ -1161,9 +1154,7 @@ impl Mode for HintMode {
         {
             return false;
         }
-        self.overlap_cycle_chord
-            .as_ref()
-            .is_some_and(|chord| chord.activation_matches(key))
+        self.config.overlap_cycle_key.activation_matches(key)
             || key
                 .as_char()
                 .is_some_and(|character| self.alphabet.contains(&character))
@@ -1200,9 +1191,10 @@ impl Mode for HintMode {
                 keys.push(("space".into(), "search names".into()));
             }
         }
-        if let Some(chord) = &self.overlap_cycle_chord {
-            keys.push((chord.canonical(), "cycle overlapping hints".into()));
-        }
+        keys.push((
+            self.config.overlap_cycle_key.canonical(),
+            "cycle overlapping hints".into(),
+        ));
         keys
     }
 
@@ -1574,11 +1566,7 @@ impl HintMode {
                 key,
                 state,
                 repeat: false,
-            } if self
-                .overlap_cycle_chord
-                .as_ref()
-                .is_some_and(|chord| chord.activation_matches(key)) =>
-            {
+            } if self.config.overlap_cycle_key.activation_matches(key) => {
                 self.overlap_cycle_key(key, *state, ctx)
             }
             ModeEvent::Key {
@@ -6681,7 +6669,7 @@ mod tests {
     fn reverse_label_direction_is_honoured() {
         let mut config = Config::default();
         config.ui_hint.label_direction = crate::config::LabelDirection::Reverse;
-        config.ui_hint.hint_characters = "asdf".into();
+        config.ui_hint.hint_characters = "ASDF".into();
         let env = Env::with(config);
         let mut mode = crate::app::mode_catalog::hint(&env.config);
         activate(&mut mode, &env);

@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use crate::api::{Palette, Point, Screen};
+use crate::api::{Palette, Point, Screen, UiTarget};
 
 struct Env {
     screens: Vec<Screen>,
@@ -96,6 +96,10 @@ fn first_hints_and_early_input_paint_before_bounded_search_prewarm() {
         &env.ctx(),
     );
     assert_eq!(mode.search.search_query, "hello");
+    assert!(
+        mode.search.scanned.is_empty(),
+        "search borrows frame text instead of duplicating targets"
+    );
     assert!(mode.search.search_text.is_empty());
     assert!(mode.search.search_pending);
     let paint = commands
@@ -142,7 +146,9 @@ fn an_early_unmatched_query_receives_matching_late_ocr() {
 #[test]
 fn explicit_labels_work_without_preparing_names_and_plain_c_remains_input() {
     let env = Env::new();
-    let mut mode = mode();
+    let config = crate::config::Config::parse("[text_select]\nhint_characters = 'badc'\n[text_select.bindings]\nb = 'key_help'\na = 'none'\n'ctrl+d' = 'key_help'").unwrap();
+    let mut mode = crate::app::mode_catalog::text_select(&config);
+    assert_eq!(mode.config.alphabet, ['a', 'd', 'c']);
     mode.start(&env.ctx());
     mode.scan(
         UiScanResult {
@@ -221,12 +227,11 @@ fn word_and_character_selection_stays_in_the_panel_and_restores_region_geometry(
     mode.start(&env.ctx());
     deliver(&mut mode, &env, UiScanStatus::Success, "iW");
     mode.insert("a", &env.ctx());
-    let original = mode.frame.selected_bounds();
+    let original = mode.frame.region_bounds.clone();
     assert_eq!(original, [Rect::new(10., 10., 300., 20.)]);
     let panel_only = |mode: &TextSelectMode| {
         assert!(mode.frame.region_bounds.is_empty());
         assert!(mode.search.scanned.is_empty());
-        assert!(mode.frame.selected_bounds().is_empty());
         assert!(mode.selection_pointer().is_empty());
         let Command::ShowOverlay(scene) = mode.render(&env.ctx()) else {
             panic!()
@@ -273,7 +278,8 @@ fn word_and_character_selection_stays_in_the_panel_and_restores_region_geometry(
     panel_only(&mode);
     mode.navigate(false, &env.ctx());
     assert_eq!(mode.frame.level, Level::Regions);
-    assert_eq!(mode.frame.selected_bounds(), original);
+    assert_eq!(mode.frame.region_bounds, original);
+    assert_eq!(mode.frame.selected, [true]);
     assert_eq!(mode.output, "iW");
 }
 
@@ -1033,16 +1039,25 @@ padding = [5, 3]
             if *rect == Rect::new(10. - 5. * scale, 10. - 3. * scale, 300. + 10. * scale, 20. + 6. * scale)
                 && *stroke == color && *stroke_width == 2.5 * scale)));
     }
-    mode.config.ui.border_width = 0.;
-    let Command::ShowOverlay(scene) = mode.render(&env.ctx()) else {
-        panic!()
-    };
-    assert!(
-        scene
-            .shapes
-            .iter()
-            .all(|shape| !matches!(shape, OverlayShape::Rect { z_index: 0, .. }))
-    );
+    let bounds = mode.frame.region_bounds[0];
+    for (width, selected, bounds) in [
+        (0., true, bounds),
+        (2.5, false, bounds),
+        (2.5, true, Rect::default()),
+    ] {
+        mode.config.ui.border_width = width;
+        mode.frame.selected[0] = selected;
+        mode.frame.region_bounds[0] = bounds;
+        let Command::ShowOverlay(scene) = mode.render(&env.ctx()) else {
+            panic!()
+        };
+        assert!(
+            scene
+                .shapes
+                .iter()
+                .all(|shape| !matches!(shape, OverlayShape::Rect { z_index: 0, .. }))
+        );
+    }
 }
 
 #[test]
@@ -1347,7 +1362,7 @@ fn late_batches_coalesce_and_deactivation_cancels_maintenance() {
     settle(&mut mode, &env);
     assert_eq!(mode.frame.text, snapshot.text);
     assert_eq!(mode.frame.selected, snapshot.selected);
-    assert_eq!(mode.frame.selected_bounds(), snapshot.selected_bounds());
+    assert_eq!(mode.frame.region_bounds, snapshot.region_bounds);
     mode.navigate(true, &env.ctx());
     settle(&mut mode, &env);
     assert_eq!(&*mode.frame.text, "first late row\n\nsecond");

@@ -4,7 +4,7 @@ use super::macros::{config_struct, mode_config};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{
-    Binding, BoundaryHighlight, FocusedApp, HintPlacement, Key, KeyChord, LabelDirection, LabelUi,
+    Binding, BoundaryHighlight, FocusedApp, HintPlacement, LabelDirection, LabelUi,
     LifecycleAction, ModeId, SearchInputUi, TargetingLifecycle, ThemedColor, UiScanStrategy,
     VisionOptions,
 };
@@ -260,27 +260,9 @@ mode_config! {
         },
         boundary_highlight: BoundaryHighlight,
         #[serde(deserialize_with = "deserialize_search_input_ui")]
-        search_input_ui: SearchInputUi = SearchInputUi {
-            label: LabelUi {
-                font_size: 14,
-                padding_y: 6,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        search_input_ui: SearchInputUi = default_search_input_ui(),
         #[serde(deserialize_with = "deserialize_search_info_ui")]
-        search_info_ui: SearchInputUi = SearchInputUi {
-            position_mode: crate::api::style::PanelPositionMode::SearchInput,
-            position: crate::api::style::PanelPosition::Percentages(
-                ["44%", "50%", "56%", "50%"].map(String::from),
-            ),
-            width: 520,
-            label: LabelUi {
-                font_size: 14,
-                padding_y: 16,
-                ..Default::default()
-            },
-        },
+        search_info_ui: SearchInputUi = default_search_info_ui(),
         #[serde(skip_serializing_if = "crate::api::style::SearchHighlightUi::is_default")]
         search_highlight: crate::api::style::SearchHighlightUi,
         /// Independent shortcuts for OCR, accessibility, coordinates and color.
@@ -314,17 +296,26 @@ mode_config! {
         },
         /// Modifier held to expose the next label in each overlapping group.
         overlap_cycle_key: String = "shift".into(),
-        bindings: Bindings = Bindings::from([
-            ("esc".into(), Binding::SelectionCancel),
-            ("enter".into(), Binding::SelectionAccept),
-            ("backspace".into(), Binding::SelectionParent),
-            ("tab".into(), Binding::SelectionReopen),
-            ("/".into(), Binding::SelectionSearch),
-            ("primary+r".into(), Binding::RescanUi),
-            ("primary+q".into(), Binding::Mode(ModeId::normal())),
-        ]),
+        bindings: Bindings = {
+            let mut bindings = ui_hint_control_defaults();
+            bindings.extend([
+                ("primary+r".into(), Binding::RescanUi),
+                ("primary+q".into(), Binding::Mode(ModeId::normal())),
+            ]);
+            bindings
+        },
         app_configs: Vec<UiHintAppOverride>,
     }
+}
+
+pub(super) fn ui_hint_control_defaults() -> Bindings {
+    Bindings::from([
+        ("esc".into(), Binding::SelectionCancel),
+        ("enter".into(), Binding::SelectionAccept),
+        ("backspace".into(), Binding::SelectionParent),
+        ("tab".into(), Binding::SelectionReopen),
+        ("/".into(), Binding::SelectionSearch),
+    ])
 }
 
 // A present but partial panel table must inherit that panel's defaults, rather
@@ -342,13 +333,39 @@ fn deserialize_search_panel<'de, D: serde::Deserializer<'de>>(
 fn deserialize_search_input_ui<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<SearchInputUi, D::Error> {
-    deserialize_search_panel(deserializer, UiHint::default().search_input_ui)
+    deserialize_search_panel(deserializer, default_search_input_ui())
 }
 
 fn deserialize_search_info_ui<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<SearchInputUi, D::Error> {
-    deserialize_search_panel(deserializer, UiHint::default().search_info_ui)
+    deserialize_search_panel(deserializer, default_search_info_ui())
+}
+
+fn default_search_input_ui() -> SearchInputUi {
+    SearchInputUi {
+        label: LabelUi {
+            font_size: 14,
+            padding_y: 6,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn default_search_info_ui() -> SearchInputUi {
+    SearchInputUi {
+        position_mode: crate::api::style::PanelPositionMode::SearchInput,
+        position: crate::api::style::PanelPosition::Percentages(
+            ["44%", "50%", "56%", "50%"].map(String::from),
+        ),
+        width: 520,
+        label: LabelUi {
+            font_size: 14,
+            padding_y: 16,
+            ..Default::default()
+        },
+    }
 }
 
 impl UiHint {
@@ -368,24 +385,6 @@ impl UiHint {
             .find(|over| app_override_matches(&over.bundle_id, app))
             .and_then(|over| over.strategy)
             .unwrap_or(self.strategy)
-    }
-
-    /// Side-agnostic modifiers such as `shift` match either physical key.
-    pub fn overlap_cycle_matches(&self, key: &Key) -> bool {
-        KeyChord::parse(&self.overlap_cycle_key).is_ok_and(|chord| chord.activation_matches(key))
-    }
-
-    /// Whether a temporary-mode key denotes the same physical modifier family
-    /// as the overlap key. In UI Hint, overlap cycling deliberately wins.
-    pub fn overlap_cycle_conflicts_with(&self, temporary_key: &str) -> bool {
-        let (Ok(overlap), Ok(temporary)) = (
-            KeyChord::parse(&self.overlap_cycle_key),
-            KeyChord::parse(temporary_key),
-        ) else {
-            return false;
-        };
-        overlap.activation_matches(temporary.activation_key())
-            || temporary.activation_matches(overlap.activation_key())
     }
 }
 
@@ -443,7 +442,7 @@ mode_config! {
             },
             ..Default::default()
         },
-        bindings: Bindings = default_grid_control_bindings(),
+        bindings: Bindings = with_grid_shortcuts(grid_control_defaults()),
         app_configs: Vec<AppOverride>,
     }
 }
@@ -479,21 +478,27 @@ mode_config! {
         /// Per-depth layout overrides.
         layers: Vec<GridLayer>,
         ui: RecursiveGridUi,
-        bindings: Bindings = default_grid_control_bindings(),
+        bindings: Bindings = with_grid_shortcuts(grid_control_defaults()),
         app_configs: Vec<AppOverride>,
     }
 }
 
-fn default_grid_control_bindings() -> Bindings {
+pub(super) fn grid_control_defaults() -> Bindings {
     Bindings::from([
-        ("`".into(), Binding::ToggleCursorFollowSelection),
         ("enter".into(), Binding::SelectionAccept),
         ("esc".into(), Binding::SelectionCancel),
         ("space".into(), Binding::SelectionReset),
         ("tab".into(), Binding::SelectionParent),
         ("backspace".into(), Binding::SelectionParent),
-        ("primary+q".into(), Binding::Mode(ModeId::normal())),
     ])
+}
+
+fn with_grid_shortcuts(mut bindings: Bindings) -> Bindings {
+    bindings.extend([
+        ("`".into(), Binding::ToggleCursorFollowSelection),
+        ("primary+q".into(), Binding::Mode(ModeId::normal())),
+    ]);
+    bindings
 }
 
 mode_config! {
@@ -507,19 +512,21 @@ mode_config! {
         ..routing {}
         lifecycle: TargetingLifecycle,
         ui: BisectUi,
-        bindings: Bindings = {
-            use crate::api::Direction;
-            let mut bindings = default_grid_control_bindings();
-            bindings.extend([
-                ("h".into(), Binding::Bisect(Direction::Left)),
-                ("j".into(), Binding::Bisect(Direction::Down)),
-                ("k".into(), Binding::Bisect(Direction::Up)),
-                ("l".into(), Binding::Bisect(Direction::Right)),
-            ]);
-            bindings
-        },
+        bindings: Bindings = with_grid_shortcuts(bisect_control_defaults()),
         app_configs: Vec<AppOverride>,
     }
+}
+
+pub(super) fn bisect_control_defaults() -> Bindings {
+    use crate::api::Direction;
+    let mut bindings = grid_control_defaults();
+    bindings.extend([
+        ("h".into(), Binding::Bisect(Direction::Left)),
+        ("j".into(), Binding::Bisect(Direction::Down)),
+        ("k".into(), Binding::Bisect(Direction::Up)),
+        ("l".into(), Binding::Bisect(Direction::Right)),
+    ]);
+    bindings
 }
 
 config_struct! {

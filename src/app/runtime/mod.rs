@@ -83,10 +83,6 @@ impl RuntimeError {
         }
     }
 }
-fn chords_conflict(left: &KeyChord, right: &KeyChord) -> bool {
-    left.activation_matches(right.activation_key())
-        || right.activation_matches(left.activation_key())
-}
 
 pub struct Engine {
     settings: EngineSettings,
@@ -95,8 +91,6 @@ pub struct Engine {
     appearance: Appearance,
 
     registry: ModeRegistry,
-
-    ui_hint_overlap_chord: Option<KeyChord>,
 
     screens: Vec<Screen>,
     cursor: Point,
@@ -183,7 +177,6 @@ impl Engine {
             palette,
             appearance,
             registry: ModeRegistry::with_routes(routes),
-            ui_hint_overlap_chord: None,
             screens: Vec::new(),
             cursor: Point::default(),
             focused_app: None,
@@ -905,7 +898,14 @@ impl Engine {
                         let profile = self.binding_profile_key_for(app.as_ref());
                         (profile != self.registry.binding_profile_key).then_some(profile)
                     };
-                self.focused_app = app.clone();
+                match (&mut self.focused_app, &app) {
+                    (Some(current), Some(next)) => {
+                        current.bundle_id.clone_from(&next.bundle_id);
+                        current.window_title.clone_from(&next.window_title);
+                        current.process_id = next.process_id;
+                    }
+                    (current, next) => current.clone_from(next),
+                }
                 self.focused_app_excluded = self.excluded_app_matches(self.focused_app.as_ref());
                 if self.focused_app_excluded {
                     let click_feedback_changed = self.cancel_transient_clicks(backend)?;

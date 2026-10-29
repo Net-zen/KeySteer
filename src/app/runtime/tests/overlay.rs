@@ -482,6 +482,7 @@ fn key_help_resolves_current_binding_table_and_keeps_position_fast_path() {
     assert!(!expected.is_empty());
     let help = engine.key_help_entries();
     assert!(help.iter().any(|entry| entry.contains(&expected[0].1.canonical())));
+    assert!(help.windows(2).all(|pair| pair[0] < pair[1]));
     engine.overlay.key_help_visible = true;
     engine.refresh_overlay(&mut backend).unwrap();
     backend.accept_position_updates = true;
@@ -762,6 +763,8 @@ fn literal_character_held_action_releases_by_physical_key() {
 #[test]
 fn character_capture_policy_tracks_startup_and_reload_removal() {
     let mut config = Config::default();
+    config.quick_switch.key = "f8".into();
+    config.quick_switch.hint_characters = ":甲乙".into();
     config.normal.bindings.insert(":".into(), Binding::parse("key_help").unwrap());
     config.normal.bindings.insert("ctrl+@".into(), Binding::parse("key_help").unwrap());
     let mut engine = Engine::from_plan(crate::app::configuration::compile(&config).unwrap(), Appearance::Dark).unwrap();
@@ -770,13 +773,16 @@ fn character_capture_policy_tracks_startup_and_reload_removal() {
     assert!(engine.registry.character_keys.contains_key(&':'));
     assert!(!engine.registry.character_keys.contains_key(&'@'), "a modified chord is not a literal character binding");
     let captured = log.lock().unwrap().character_bindings[0].clone();
-    assert!(captured.contains(&":".to_string()));
+    assert_eq!(captured.iter().filter(|key| *key == ":").count(), 1);
+    assert!(["甲", "乙"].iter().all(|key| captured.iter().any(|captured| captured == key)));
+    assert!(!captured.contains(&"f8".to_string()));
     assert!(!captured.contains(&"@".to_string()));
 
     config.normal.bindings.remove(":");
+    config.quick_switch.enabled = false;
     engine.apply_runtime_plan(crate::app::configuration::compile(&config).unwrap(), &mut backend).unwrap();
     assert!(!engine.registry.character_keys.contains_key(&':'));
-    assert!(!log.lock().unwrap().character_bindings.last().unwrap().contains(&":".to_string()));
+    assert!(log.lock().unwrap().character_bindings.last().unwrap().iter().all(|key| ![":", "甲", "乙"].contains(&key.as_str())));
 }
 
 #[test]

@@ -1498,22 +1498,22 @@ fn window_family_shortcut_plan_survives_input_and_scene_refresh_until_routes_cha
         if let Some(key) = entry {
             for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
         }
-        let plan = Arc::clone(&engine.overlay.window_help_plan.as_ref().unwrap().entries);
+        let plan = Arc::clone(engine.overlay.window_help_plan.as_ref().unwrap());
         if entry == Some("e") {
-            assert!(plan.iter().any(|hint| hint.ends_with("window_save_layout")));
+            assert!(plan.entries.iter().any(|hint| hint.ends_with("window_save_layout")));
             acknowledge_window_edit(&mut engine, &mut backend, &log);
         }
         for key in ["h", "left_shift", "left_ctrl"] {
             for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
             engine.overlay.key_help_cache = None;
             engine.refresh_overlay(&mut backend).unwrap();
-            assert!(Arc::ptr_eq(&plan, &engine.overlay.window_help_plan.as_ref().unwrap().entries),
+            assert!(Arc::ptr_eq(&plan, engine.overlay.window_help_plan.as_ref().unwrap()),
                 "mode={entry:?}: shortcut table must be reused even when the scene is recomposed");
         }
         engine.rebuild_tables();
         assert!(engine.overlay.window_help_plan.is_none());
         engine.refresh_overlay(&mut backend).unwrap();
-        assert!(!Arc::ptr_eq(&plan, &engine.overlay.window_help_plan.as_ref().unwrap().entries));
+        assert!(!Arc::ptr_eq(&plan, engine.overlay.window_help_plan.as_ref().unwrap()));
     }
 }
 
@@ -1531,11 +1531,11 @@ fn restore_delete_toggle_is_rebindable_keeps_page_and_cached_help() {
     for key in ["r", "page_down"] {
         for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
     }
-    let plan = engine.overlay.window_help_plan.as_ref().unwrap().entries.clone();
+    let plan = engine.overlay.window_help_plan.as_ref().unwrap().clone();
     for key in ["v", "7", "v", "enter"] {
         for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
         assert_eq!(engine.active_mode(), &ModeId::window_restore());
-        assert!(std::sync::Arc::ptr_eq(&plan, &engine.overlay.window_help_plan.as_ref().unwrap().entries));
+        assert!(std::sync::Arc::ptr_eq(&plan, engine.overlay.window_help_plan.as_ref().unwrap()));
     }
     assert_eq!(engine.window_presets.store.list().unwrap().len(), 7);
     assert!(log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|l| l.text.contains("page 2 / 2")));

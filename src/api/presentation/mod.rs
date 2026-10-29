@@ -62,7 +62,7 @@ pub enum View<'a> {
 
 pub struct QuickSwitchRow {
     pub label: super::overlay::OverlayText,
-    pub caption: super::overlay::OverlayText,
+    pub mode: super::ModeId,
 }
 
 pub struct QuickSwitchView<'a> {
@@ -224,7 +224,8 @@ pub struct TextSelectView<'a> {
     pub summary: &'a str,
     pub page: (usize, usize),
     pub page_keys: &'a str,
-    pub selected_bounds: Vec<Rect>,
+    pub region_bounds: &'a [Rect],
+    pub selected: &'a [bool],
     pub selection_ui: &'a super::text_select::Ui<ThemedColor>,
 }
 

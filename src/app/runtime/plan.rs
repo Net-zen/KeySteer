@@ -29,7 +29,7 @@ pub struct EngineSettings {
     pub passthrough_unbound_keys: bool,
     pub invert_scroll: (bool, bool),
     pub default_scan_roles: Vec<String>,
-    pub ui_hint_overlap_key: String,
+    pub ui_hint_overlap_key: crate::api::KeyChord,
     pub mode_indicator: crate::api::style::compiled::ModeIndicator,
     pub key_help: crate::api::style::compiled::KeyHelp,
     pub usage_save_after_entries: u32,
@@ -40,7 +40,7 @@ pub struct EngineSettings {
 pub struct QuickSwitchSettings {
     pub enabled: bool,
     pub key: crate::api::Key,
-    pub alphabet: Vec<char>,
+    pub alphabet: Vec<crate::api::Key>,
     pub hold_ms: u64,
 }
 
@@ -70,7 +70,8 @@ pub struct ModeRoute {
     pub bindings: Bindings,
     pub inherits: Vec<ModeId>,
     pub temporary_mode: Option<ModeId>,
-    pub temporary_keys: Vec<String>,
+    /// Compiled triggers, moved into the mode slot on the first table build.
+    pub temporary_keys: Option<Vec<crate::api::KeyChord>>,
     pub temporary_passthrough: Vec<crate::api::KeyChord>,
     pub app_overrides: Vec<AppRouteOverride>,
 }

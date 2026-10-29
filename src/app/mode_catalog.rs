@@ -4,7 +4,7 @@
 //! strongly typed settings and remains unaware of TOML or the application
 //! configuration document.
 
-use crate::api::{Mode, ModeId, Plugin};
+use crate::api::{KeyChord, Mode, ModeId, Plugin};
 use crate::config::{AppOverride, Bindings, Config, Routing};
 use crate::modes::targeting::{
     BisectGeometry, GridGeometry, LayerSettings, Layout, LetterGeometry, RecursiveGeometry,
@@ -60,7 +60,6 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
         strategy: config.ui_hint.strategy,
         scan_scope: config.ui_hint.scan_scope,
         vision: config.ui_hint.vision.clone(),
-        hint_characters: config.ui_hint.hint_characters.clone(),
         label_direction: config.ui_hint.label_direction,
         max_depth: config.ui_hint.max_depth,
         scan_timeout_ms: config.ui_hint.scan_timeout_ms,
@@ -141,7 +140,8 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
             movement: normal_settings(config),
         },
         lifecycle: config.ui_hint.lifecycle.clone(),
-        overlap_cycle_key: config.ui_hint.overlap_cycle_key.clone(),
+        overlap_cycle_key: KeyChord::parse(&config.ui_hint.overlap_cycle_key)
+            .unwrap_or_else(|error| panic!("hint requires validated overlap key: {error}")),
         app_overrides: config
             .ui_hint
             .app_configs
@@ -313,10 +313,10 @@ pub(crate) fn compile_normal_targeting(
                 ("recursive_grid", &config.recursive_grid.bindings)
             }
         };
-        for (key, binding) in
-            crate::config::with_control_defaults(name, controls, config.resolved_key_aliases())
-                .map_err(|e| e.to_string())?
-        {
+        let mut controls = controls.clone();
+        crate::config::apply_control_defaults(name, &mut controls, config.resolved_key_aliases())
+            .map_err(|e| e.to_string())?;
+        for (key, binding) in controls {
             if matches!(binding, Binding::SelectionReset | Binding::SelectionParent)
                 && !specs[normal].route.bindings.contains_key(&key)
             {
@@ -486,7 +486,19 @@ pub fn bisect(config: &Config) -> GridMode<BisectGeometry> {
 
 #[doc(hidden)]
 pub fn hint(config: &Config) -> HintMode {
-    HintMode::new(hint_settings(config))
+    HintMode::new(
+        hint_settings(config),
+        config
+            .ui_hint
+            .hint_characters
+            .chars()
+            .filter_map(|character| {
+                crate::api::Key::new(character.encode_utf8(&mut [0; 4]))
+                    .ok()?
+                    .as_char()
+            })
+            .collect(),
+    )
 }
 
 pub(crate) fn quick_switch(config: &Config) -> modes::quick_switch::QuickSwitchMode {
@@ -509,7 +521,7 @@ pub(crate) fn quick_switch(config: &Config) -> modes::quick_switch::QuickSwitchM
             .hint_characters
             .chars()
             .map(|ch| {
-                crate::api::Key::new(ch.to_string())
+                crate::api::Key::new(ch.encode_utf8(&mut [0; 4]))
                     .and_then(|key| {
                         key.as_char()
                             .ok_or_else(|| "expected a character key".into())
@@ -530,23 +542,28 @@ pub(crate) fn text_select(config: &Config) -> modes::text_select::TextSelectMode
     let mut hint = hint_settings(config);
     hint.scan_scope = config.text_select.scan_scope;
     hint.search_info_ui.width = f64::from(config.text_select.ui.panel_width);
+    let mut alphabet: Vec<_> = config.text_select.hint_characters.chars().collect();
+    let mut bindings = Vec::new();
+    for (keys, binding) in &config.text_select.bindings {
+        for key in keys.split_whitespace() {
+            let Ok(chord) = KeyChord::parse_with_aliases(key, config.resolved_key_aliases()) else {
+                continue;
+            };
+            if !matches!(binding, crate::api::Binding::Disabled)
+                && let [key] = chord.keys()
+                && let Some(character) = key.as_char()
+            {
+                alphabet.retain(|&c| c != character);
+            }
+            bindings.push((chord, std::sync::Arc::new(binding.clone())));
+        }
+    }
     modes::text_select::TextSelectMode::new(modes::text_select::Settings {
         hint,
-        alphabet: config.text_select.hint_characters.clone(),
+        alphabet,
         ui: config.text_select.ui.compile(),
         lifecycle: config.text_select.lifecycle.clone(),
-        bindings: config
-            .text_select
-            .bindings
-            .iter()
-            .flat_map(|(keys, binding)| {
-                keys.split_whitespace().filter_map(|key| {
-                    crate::api::KeyChord::parse_with_aliases(key, config.resolved_key_aliases())
-                        .ok()
-                        .map(|chord| (chord, std::sync::Arc::new(binding.clone())))
-                })
-            })
-            .collect(),
+        bindings,
     })
 }
 
@@ -608,7 +625,13 @@ fn built_in_factories(config: &Config, order: CatalogOrder) -> impl Iterator<Ite
     let text_select = ModeFactory {
         enabled: config.text_select.enabled,
         create: |config| Box::new(text_select(config)),
-        route: |config| compile_route(&config.text_select.bindings, config.text_select.routing()),
+        route: |config| {
+            compile_hint_route(
+                &config.text_select.bindings,
+                config.text_select.routing(),
+                &config.ui_hint.overlap_cycle_key,
+            )
+        },
     };
     let shared = [
         ModeFactory {
@@ -689,26 +712,31 @@ fn window_settings(config: &Config, kind: modes::window::WindowKind) -> modes::w
     } else {
         config.window.card.clone()
     };
+    let mut multi_bindings = config.window.multi_select.bindings.clone();
+    crate::config::apply_control_defaults(
+        "window.multi_select",
+        &mut multi_bindings,
+        config.resolved_key_aliases(),
+    )
+    .unwrap_or_else(|error| panic!("window settings require validated configuration: {error}"));
     modes::window::Settings {
-        multi_bindings: crate::config::with_control_defaults(
-            "window.multi_select",
-            &config.window.multi_select.bindings,
-            config.resolved_key_aliases(),
-        )
-        .unwrap_or_else(|error| panic!("window settings require validated configuration: {error}"))
-        .iter()
-        .flat_map(|(keys, binding)| {
-            keys.split_whitespace().map(|key| {
-                (
-                    crate::api::KeyChord::parse_with_aliases(key, config.resolved_key_aliases())
+        multi_bindings: multi_bindings
+            .iter()
+            .flat_map(|(keys, binding)| {
+                keys.split_whitespace().map(|key| {
+                    (
+                        crate::api::KeyChord::parse_with_aliases(
+                            key,
+                            config.resolved_key_aliases(),
+                        )
                         .unwrap_or_else(|error| {
                             panic!("window settings require validated configuration: {error}")
                         }),
-                    std::sync::Arc::new(binding.clone()),
-                )
+                        std::sync::Arc::new(binding.clone()),
+                    )
+                })
             })
-        })
-        .collect(),
+            .collect(),
         target: common.target,
         all_screens: common.screens == crate::config::WindowScreens::All,
         include_minimized: common.include_minimized,
@@ -800,9 +828,9 @@ pub(crate) fn built_in_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
         ));
     }
     for spec in &mut specs {
-        spec.route.bindings = crate::config::with_control_defaults(
+        crate::config::apply_control_defaults(
             spec.id().as_str(),
-            &spec.route.bindings,
+            &mut spec.route.bindings,
             config.resolved_key_aliases(),
         )
         .map_err(|e| e.to_string())?;
@@ -821,9 +849,9 @@ pub(crate) fn bundled_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
                 }
                 None => ModeRoute::default(),
             };
-            route.bindings = crate::config::with_control_defaults(
+            crate::config::apply_control_defaults(
                 id.as_str(),
-                &route.bindings,
+                &mut route.bindings,
                 config.resolved_key_aliases(),
             )
             .map_err(|e| e.to_string())?;
@@ -855,11 +883,14 @@ fn compile_route(bindings: &Bindings, routing: Routing<'_>) -> Result<ModeRoute,
             })
             .collect::<Result<Vec<_>, _>>()?,
         temporary_mode: temporary_mode.map(ModeId::parse_borrowed).transpose()?,
-        temporary_keys: if temporary_mode.is_some() {
-            temporary_keys.to_vec()
-        } else {
-            Vec::new()
-        },
+        temporary_keys: temporary_mode
+            .map(|_| {
+                temporary_keys
+                    .iter()
+                    .map(|key| KeyChord::parse(key))
+                    .collect()
+            })
+            .transpose()?,
         temporary_passthrough: temporary_passthrough
             .iter()
             .filter(|_| temporary_mode.is_some())
@@ -892,12 +923,36 @@ fn compile_app_route(
 fn compile_ui_hint_route(config: &Config) -> Result<ModeRoute, String> {
     // UI Hint overrides also contain scan strategy; routes only use their bindings.
     let hint = &config.ui_hint;
-    let mut route = compile_route(&hint.bindings, hint.routing())?;
+    let mut route = compile_hint_route(&hint.bindings, hint.routing(), &hint.overlap_cycle_key)?;
     route.app_overrides = hint
         .app_configs
         .iter()
         .map(|value| compile_app_override(&value.bundle_id, &value.bindings))
         .collect();
+    Ok(route)
+}
+
+// UI Hint and Text Select reserve the same overlap modifier before routes
+// reach the generic keymap builder. Side-agnostic modifiers match either side.
+fn compile_hint_route(
+    bindings: &Bindings,
+    routing: Routing<'_>,
+    overlap_key: &str,
+) -> Result<ModeRoute, String> {
+    let mut route = compile_route(bindings, routing)?;
+    if let Some(triggers) = &mut route.temporary_keys
+        && let Ok(overlap) = KeyChord::parse(overlap_key)
+    {
+        triggers.retain(|trigger| {
+            !overlap.activation_matches(trigger.activation_key())
+                && !trigger.activation_matches(overlap.activation_key())
+        });
+        if triggers.is_empty() {
+            route.temporary_keys = None;
+            route.temporary_mode = None;
+            route.temporary_passthrough = Vec::new();
+        }
+    }
     Ok(route)
 }
 

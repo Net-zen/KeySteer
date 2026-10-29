@@ -272,6 +272,17 @@ mod tests {
                 .search_edit_keys,
             config.ui_hint.search_edit_keys,
         );
+        let aliases = crate::config::Config::parse(
+            "[key_aliases]\nCopyKey = 'f8'\n[ui_hint.search_edit_keys]\nCopyKey = 'copy'\n'  f9\t\u{a0}f10  ' = 'accept'\n'' = 'cut'",
+        )
+        .unwrap();
+        aliases.validate().unwrap();
+        assert_eq!(aliases.ui_hint.search_edit_keys[&EditAction::Copy], "f8");
+        assert_eq!(
+            aliases.ui_hint.search_edit_keys[&EditAction::Accept],
+            "f9 f10"
+        );
+        assert!(aliases.ui_hint.search_edit_keys[&EditAction::Cut].is_empty());
         assert!(
             crate::config::Config::parse("[ui_hint.search_edit_keys]\nf8 = 'missing_action'")
                 .is_err()

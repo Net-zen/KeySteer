@@ -1,6 +1,7 @@
 //! Key alias compilation, binding normalization, and platform chord warnings.
 
 use super::*;
+use std::collections::btree_map::Entry;
 
 /// User-defined key names shared by every platform, with optional
 /// platform-specific overrides.
@@ -57,8 +58,7 @@ impl KeyAliases {
 /// failure mode is otherwise baffling — the key appears bound and simply does
 /// nothing, or types a character instead.
 pub(super) fn platform_warning(chord: &KeyChord) -> Option<String> {
-    let keys: Vec<&str> = chord.keys().iter().map(|k| k.as_str()).collect();
-    let has = |name: &str| keys.contains(&name);
+    let has = |name: &str| chord.keys().iter().any(|key| key.as_str() == name);
     let has_any = |names: &[&str]| names.iter().any(|n| has(n));
 
     let alt = has_any(&["alt", "left_alt", "right_alt"]);
@@ -124,7 +124,7 @@ pub(super) fn normalized_alias_scope(
 ) -> Result<BTreeMap<String, String>, ConfigError> {
     let mut normalized = BTreeMap::new();
     for (name, target) in configured {
-        let name = normalize_alias_name(name);
+        let name = normalize_alias_name(name).into_owned();
         if name.is_empty() || name.contains('+') {
             return Err(ConfigError::Invalid(format!(
                 "{label} alias {name:?} must name one key"
@@ -169,8 +169,8 @@ pub(super) fn compile_key_aliases(
             )));
         }
         let target_name = normalize_alias_name(target);
-        let canonical = if raw.contains_key(&target_name) {
-            resolve(&target_name, raw, resolved, visiting)?
+        let canonical = if raw.contains_key(target_name.as_ref()) {
+            resolve(target_name.as_ref(), raw, resolved, visiting)?
         } else {
             normalize_builtin_key(target)
         };
@@ -193,22 +193,46 @@ pub(super) fn compile_key_aliases(
 
 pub(super) fn normalize_binding_keys<T: Clone>(
     table: &mut BTreeMap<String, T>,
-    label: &str,
+    label: impl std::fmt::Display,
     aliases: &BTreeMap<String, String>,
 ) -> Result<(), ConfigError> {
+    let uses_alias = |text: &str| {
+        !aliases.is_empty()
+            && text
+                .split('+')
+                .any(|part| aliases.contains_key(normalize_alias_name(part).as_ref()))
+    };
+    if table
+        .keys()
+        .all(|text| text.split_ascii_whitespace().nth(1).is_none() && !uses_alias(text))
+    {
+        return Ok(());
+    }
+    let duplicate = |text: &str, canonical: &str| {
+        ConfigError::Parse(format!(
+            "{label} binding {text:?} resolves to duplicate chord {canonical:?}"
+        ))
+    };
     let source = std::mem::take(table);
     for (text, binding) in source {
-        let names: Vec<&str> = text.split_ascii_whitespace().collect();
-        let names = if names.len() > 1 {
-            names
-        } else {
-            vec![text.as_str()]
-        };
-        for name in names {
-            let uses_alias = name
-                .split('+')
-                .any(|part| aliases.contains_key(&normalize_alias_name(part)));
-            let canonical = if uses_alias {
+        let mut names = text.split_ascii_whitespace().peekable();
+        let first = names.next().unwrap_or(text.as_str());
+        let multiple = names.peek().is_some();
+        let single_alias = !multiple && uses_alias(&text);
+        if !multiple && !single_alias {
+            match table.entry(text) {
+                Entry::Vacant(entry) => {
+                    entry.insert(binding);
+                }
+                Entry::Occupied(entry) => {
+                    return Err(duplicate(entry.key(), entry.key()));
+                }
+            }
+            continue;
+        }
+        let mut name = if multiple { first } else { text.as_str() };
+        loop {
+            let canonical = if single_alias || uses_alias(name) {
                 KeyChord::parse_with_aliases(name, aliases)
                     .map_err(|error| {
                         ConfigError::Parse(format!(
@@ -216,20 +240,27 @@ pub(super) fn normalize_binding_keys<T: Clone>(
                         ))
                     })?
                     .canonical()
-            } else if text.split_ascii_whitespace().count() > 1 {
+            } else {
                 let chord = KeyChord::parse(name).map_err(|error| {
                     ConfigError::Parse(format!(
                         "{label} binding alternative {name:?} is not a valid key or chord: {error}"
                     ))
                 })?;
                 chord.canonical()
-            } else {
-                name.to_string()
             };
-            if table.insert(canonical.clone(), binding.clone()).is_some() {
-                return Err(ConfigError::Parse(format!(
-                    "{label} binding {text:?} resolves to duplicate chord {canonical:?}"
-                )));
+            let entry = match table.entry(canonical) {
+                Entry::Vacant(entry) => entry,
+                Entry::Occupied(entry) => {
+                    return Err(duplicate(&text, entry.key()));
+                }
+            };
+            let next = if multiple { names.next() } else { None };
+            if let Some(next) = next {
+                entry.insert(binding.clone());
+                name = next;
+            } else {
+                entry.insert(binding);
+                break;
             }
         }
     }
@@ -250,9 +281,10 @@ pub(super) fn normalize_key_if_aliased(
     key: &mut String,
     aliases: &BTreeMap<String, String>,
 ) -> Result<(), ConfigError> {
-    if key
-        .split('+')
-        .any(|part| aliases.contains_key(&normalize_alias_name(part)))
+    if !aliases.is_empty()
+        && key
+            .split('+')
+            .any(|part| aliases.contains_key(normalize_alias_name(part).as_ref()))
     {
         *key = KeyChord::parse_with_aliases(key, aliases)
             .map_err(ConfigError::Parse)?

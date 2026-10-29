@@ -35,7 +35,7 @@ f11 = 'move_left'
             assert_eq!(route.temporary_mode.is_some(), enabled, "{mode}: {triggers}");
             assert_eq!(engine.registry.temporary_chords(&id).is_some(), enabled, "{mode}");
             if !enabled {
-                assert!(route.temporary_keys.is_empty() && route.temporary_passthrough.is_empty());
+                assert!(route.temporary_passthrough.is_empty());
             }
             let resolve = |key: &str, modifier: bool| {
                 let key = Key::new(key).unwrap();
@@ -66,7 +66,7 @@ f11 = 'move_left'
             engine.set_active(id.clone());
             let route = &engine.registry.routes[&id];
             assert!(route.temporary_mode.is_none(), "{id}");
-            assert!(route.temporary_keys.is_empty() && route.temporary_passthrough.is_empty(), "{id}");
+            assert!(route.temporary_passthrough.is_empty(), "{id}");
             assert!(engine.registry.temporary_chords(&id).is_none(), "{id}");
             for modifier in ["left_alt", "right_alt", "left_ctrl", "right_ctrl", "left_shift", "right_shift", "left_win", "right_win"] {
                 let key = Key::new(modifier).unwrap();
@@ -471,38 +471,53 @@ fn label_modes_use_normal_pointer_controls_only_when_allowed_or_temporary() {
 }
 
 #[test]
-fn ui_hint_overlap_key_wins_over_inheritance_and_temporary_mode() {
-    let mut config = Config::default();
-    config.ui_hint.overlap_cycle_key = "alt".into();
-    config.ui_hint.temporary_mode_keys = vec!["alt".into()];
-    config.normal.bindings.insert(
-        "left_alt".into(),
-        Binding::Click(crate::api::binding::Button::Middle),
-    );
-    let mut engine = Engine::new(config.clone(), Appearance::Dark);
-    for mode in crate::app::mode_catalog::built_in(&config) {
-        engine.register(mode);
+fn hint_overlap_key_wins_over_inheritance_and_temporary_mode() {
+    for (source, trigger, physical) in [
+        ("", "shift", ["left_shift", "right_shift"]),
+        ("[ui_hint]\noverlap_cycle_key = 'option'", "alt", ["left_alt", "right_alt"]),
+    ] {
+        let mut config = Config::parse(source).unwrap();
+        config.ui_hint.temporary_mode_keys = vec!["ctrl".into()];
+        config.text_select.temporary_mode = Some("normal".into());
+        config.text_select.temporary_mode_keys = vec!["ctrl".into()];
+        config.ui_hint.temporary_mode_passthrough_keys = vec!["f8".into()];
+        config.text_select.temporary_mode_passthrough_keys = vec!["f8".into()];
+        for key in physical {
+            config.normal.bindings.insert(key.into(), Binding::Click(crate::api::binding::Button::Middle));
+        }
+        let mut engine = text_input_engine(config.clone());
+        for id in [ModeId::ui_hint(), ModeId::text_select()] {
+            assert!(engine.registry.temporary_chords(&id).is_some(), "{id}: {source}");
+        }
+        config.ui_hint.temporary_mode_keys[0] = trigger.into();
+        config.text_select.temporary_mode_keys[0] = trigger.into();
+        engine.apply_config(config).unwrap();
+        // Filtering every trigger disables the layer and clears the old plan.
+        for id in [ModeId::ui_hint(), ModeId::text_select()] {
+            engine.rebuild_tables();
+            assert!(engine.registry.temporary_chords(&id).is_none());
+            let route = &engine.registry.routes[&id];
+            assert!(route.temporary_mode.is_none() && route.temporary_passthrough.is_empty());
+            engine.registry.active = id.clone();
+            for key in physical {
+                let key = Key::new(key).unwrap();
+                assert!(engine.ui_hint_overlap_matches(&key));
+                engine.input.pressed.insert(key.clone());
+                assert_eq!(engine.display_mode(), id);
+                if id == ModeId::ui_hint() {
+                    assert!(engine.lookup(&key).is_none(), "overlap must reach UI Hint as a raw hold event");
+                }
+                engine.input.pressed.clear();
+            }
+        }
+        engine.registry.active = ModeId::normal();
+        for key in physical {
+            let key = Key::new(key).unwrap();
+            engine.input.pressed.insert(key.clone());
+            assert!(engine.lookup(&key).is_some(), "Normal keeps its own binding");
+            engine.input.pressed.clear();
+        }
     }
-    let key = Key::new("left_alt").unwrap();
-    engine.input.pressed.insert(key.clone());
-
-    engine.registry.active = ModeId::ui_hint();
-    assert!(engine.registry.temporary_chords(&ModeId::ui_hint()).is_none());
-    assert!(
-        engine.lookup(&key).is_none(),
-        "the configured key must reach UI Hint as a raw hold event"
-    );
-    assert_eq!(
-        engine.display_mode(),
-        ModeId::ui_hint(),
-        "the same temporary key must not hide overlap cycling"
-    );
-
-    engine.registry.active = ModeId::normal();
-    assert!(
-        engine.lookup(&key).is_some(),
-        "the key must retain its Normal binding outside UI Hint"
-    );
 }
 
 #[test]

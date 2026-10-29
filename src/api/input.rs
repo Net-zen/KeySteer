@@ -253,8 +253,8 @@ fn normalized_alias(value: &str) -> Cow<'_, str> {
     Cow::Owned(normalized)
 }
 
-pub(crate) fn normalize_alias_name(value: &str) -> String {
-    normalized_alias(value).into_owned()
+pub(crate) fn normalize_alias_name(value: &str) -> Cow<'_, str> {
+    normalized_alias(value)
 }
 
 pub(crate) fn normalize_builtin_key(value: &str) -> String {

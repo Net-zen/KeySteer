@@ -237,63 +237,54 @@ fn default_plugin_modes() -> BTreeMap<String, PluginModeConfig> {
         "plugin:screen-selector".into(),
         PluginModeConfig {
             settings: BTreeMap::from([("preserve".into(), toml::Value::Boolean(true))]),
-            bindings: builtin_bindings(&[
-                ("esc", "cancel_selection"),
-                ("enter", "confirm_selection"),
-                ("backspace", "previous_level"),
-            ]),
+            bindings: screen_selector_control_defaults(),
             ..Default::default()
         },
     )])
 }
 
-/// Defaults for controls that were formerly owned by mode key handlers. Keep
-/// their original behavior for sparse/older binding tables; `none` opts out.
-pub(crate) fn with_control_defaults(
+fn screen_selector_control_defaults() -> Bindings {
+    builtin_bindings(&[
+        ("esc", "cancel_selection"),
+        ("enter", "confirm_selection"),
+        ("backspace", "previous_level"),
+    ])
+}
+
+/// Each provider owns the controls also used to construct its full defaults.
+pub(crate) fn apply_control_defaults(
     mode: &str,
-    configured: &Bindings,
+    configured: &mut Bindings,
     aliases: &BTreeMap<String, String>,
-) -> Result<Bindings, ConfigError> {
-    let mut controls = match mode {
-        "grid" => Grid::default().bindings,
-        "recursive_grid" => RecursiveGrid::default().bindings,
-        "bisect" => Bisect::default().bindings,
-        "ui_hint" => UiHint::default().bindings,
-        "window_editor" => WindowEditor::default().bindings.clone(),
-        "window_restore" => WindowRestore::default().bindings.clone(),
-        "window.multi_select" => window::MultiSelect::default().bindings,
-        "plugin:screen-selector" => {
-            default_plugin_modes()
-                .remove(mode)
-                .ok_or_else(|| ConfigError::Parse("missing screen-selector defaults".into()))?
-                .bindings
-        }
-        _ => return Ok(configured.clone()),
+) -> Result<(), ConfigError> {
+    let controls = match mode {
+        "grid" | "recursive_grid" => settings::grid_control_defaults(),
+        "bisect" => settings::bisect_control_defaults(),
+        "ui_hint" => settings::ui_hint_control_defaults(),
+        "window_editor" => window::editor_control_defaults(),
+        "window_restore" => window::restore_control_defaults(),
+        "window.multi_select" => window::multi_select_control_defaults(),
+        "plugin:screen-selector" => screen_selector_control_defaults(),
+        _ => return Ok(()),
     };
-    controls.retain(|key, binding| {
-        matches!(
-            binding,
-            Binding::Bisect(_)
-                | Binding::SelectionReset
-                | Binding::SelectionParent
-                | Binding::SelectionAccept
-                | Binding::SelectionCancel
-                | Binding::SelectionSearch
-                | Binding::SelectionReopen
-                | Binding::Window(
-                    crate::api::window::WindowAction::AreaNumber
-                        | crate::api::window::WindowAction::NextPage
-                        | crate::api::window::WindowAction::PreviousPage
-                        | crate::api::window::WindowAction::MultiCancel
-                )
-        ) || mode == "window.multi_select"
-            && !key.contains('+')
-            && matches!(binding, Binding::Send(_))
-    });
-    normalize_binding_keys(&mut controls, mode, aliases)?;
-    let mut result = configured.clone();
-    normalize_binding_keys(&mut result, mode, aliases)?;
-    let occupied: BTreeSet<_> = result
+    merge_control_defaults(mode, configured, controls, aliases)
+}
+
+/// Fill unoccupied controls; explicit bindings, including `none`, win.
+/// The mode name is only an error label; aliases are already fully validated.
+fn merge_control_defaults(
+    label: &str,
+    configured: &mut Bindings,
+    mut controls: Bindings,
+    aliases: &BTreeMap<String, String>,
+) -> Result<(), ConfigError> {
+    normalize_binding_keys(&mut controls, label, aliases)?;
+    normalize_binding_keys(configured, label, aliases)?;
+    if controls.keys().all(|key| configured.contains_key(key)) {
+        // Normalized defaults already have valid keys; exact matches occupy them.
+        return Ok(());
+    }
+    let occupied: BTreeSet<_> = configured
         .keys()
         .filter_map(|key| {
             KeyChord::parse_with_aliases(key, aliases)
@@ -307,10 +298,10 @@ pub(crate) fn with_control_defaults(
                 .map_err(ConfigError::Parse)?
                 .canonical(),
         ) {
-            result.insert(key, binding);
+            configured.insert(key, binding);
         }
     }
-    Ok(result)
+    Ok(())
 }
 
 /// Defaults for `idle`: only what is needed to wake the program up.
@@ -614,11 +605,10 @@ impl ConfigFile {
                 &mut config.window.multi_select.bindings,
             ),
         ] {
-            *table = with_control_defaults(name, table, &config.resolved_key_aliases)?;
+            apply_control_defaults(name, table, &config.resolved_key_aliases)?;
         }
         for (name, plugin) in &mut config.plugin_modes {
-            plugin.bindings =
-                with_control_defaults(name, &plugin.bindings, &config.resolved_key_aliases)?;
+            apply_control_defaults(name, &mut plugin.bindings, &config.resolved_key_aliases)?;
         }
 
         Ok((config, warnings))
@@ -647,11 +637,15 @@ impl ConfigFile {
             normalize_binding_keys(table, label, &aliases)?;
         }
         for (name, mode) in self.window_modes_mut() {
-            normalize_binding_keys(&mut mode.bindings, &format!("[{name}.bindings]"), &aliases)?;
+            normalize_binding_keys(
+                &mut mode.bindings,
+                format_args!("[{name}.bindings]"),
+                &aliases,
+            )?;
             for over in &mut mode.app_configs {
                 normalize_binding_keys(
                     &mut over.bindings,
-                    &format!("[[{name}.app_configs]]"),
+                    format_args!("[[{name}.app_configs]]"),
                     &aliases,
                 )?;
             }
@@ -667,18 +661,18 @@ impl ConfigFile {
                 ) && !windows.contains(name)
             })
         {
-            normalize_binding_keys(table, &format!("[{name}.bindings]"), &aliases)?;
+            normalize_binding_keys(table, format_args!("[{name}.bindings]"), &aliases)?;
         }
         for (id, mode) in &mut self.plugin_modes {
             normalize_binding_keys(
                 &mut mode.bindings,
-                &format!("[plugin_modes.{id:?}.bindings]"),
+                format_args!("[plugin_modes.{id:?}.bindings]"),
                 &aliases,
             )?;
             for over in &mut mode.app_configs {
                 normalize_binding_keys(
                     &mut over.bindings,
-                    &format!("[[plugin_modes.{id:?}.app_configs]] {:?}", over.bundle_id),
+                    format_args!("[[plugin_modes.{id:?}.app_configs]] {:?}", over.bundle_id),
                     &aliases,
                 )?;
             }
@@ -696,7 +690,7 @@ impl ConfigFile {
             for over in overrides {
                 normalize_binding_keys(
                     &mut over.bindings,
-                    &format!("{label} {:?}", over.bundle_id),
+                    format_args!("{label} {:?}", over.bundle_id),
                     &aliases,
                 )?;
             }
@@ -704,7 +698,7 @@ impl ConfigFile {
         for over in &mut self.ui_hint.app_configs {
             normalize_binding_keys(
                 &mut over.bindings,
-                &format!("[[ui_hint.app_configs]] {:?}", over.bundle_id),
+                format_args!("[[ui_hint.app_configs]] {:?}", over.bundle_id),
                 &aliases,
             )?;
         }
@@ -716,6 +710,10 @@ impl ConfigFile {
             &aliases,
         )?;
         for alternatives in self.ui_hint.search_edit_keys.values_mut() {
+            if !alternatives.contains(char::is_whitespace) {
+                normalize_key_if_aliased(alternatives, &aliases)?;
+                continue;
+            }
             let mut keys: Vec<String> =
                 alternatives.split_whitespace().map(str::to_owned).collect();
             normalize_key_list(&mut keys, &aliases)?;

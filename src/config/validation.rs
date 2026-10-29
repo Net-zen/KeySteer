@@ -88,7 +88,7 @@ impl ConfigFile {
         let trigger = Key::new(&switch.key).map_err(bad)?;
         let mut canonical = BTreeSet::new();
         for character in switch.hint_characters.chars() {
-            let key = Key::new(character.to_string()).map_err(|error| {
+            let key = Key::new(character.encode_utf8(&mut [0; 4])).map_err(|error| {
                 bad(format!(
                     "quick_switch.hint_characters contains an invalid key: {error}"
                 ))
@@ -588,7 +588,7 @@ impl ConfigFile {
             }
             let mut canonical = BTreeSet::new();
             for character in self.ui_hint.hint_characters.chars() {
-                let key = Key::new(character.to_string()).map_err(|error| {
+                let key = Key::new(character.encode_utf8(&mut [0; 4])).map_err(|error| {
                     bad(format!(
                         "ui_hint.hint_characters contains an invalid key: {error}"
                     ))

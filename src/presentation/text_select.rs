@@ -95,10 +95,11 @@ impl TextSelectView<'_> {
         );
         let highlight = self.hints.content.style.search_highlight;
         let mut scene = self.hints.scene(ctx);
-        for rect in self
-            .selected_bounds
-            .into_iter()
-            .filter(|_| self.selection_ui.border_width > 0.0)
+        for (rect, _) in self
+            .region_bounds
+            .iter()
+            .zip(self.selected)
+            .filter(|(rect, selected)| **selected && !rect.is_empty())
         {
             let [pad_x, pad_y] = self
                 .selection_ui
