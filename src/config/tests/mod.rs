@@ -182,6 +182,10 @@ fn window_split_ratios_validate_and_round_trip() {
         "[nan]",
         "[inf]",
         "[\"nan\"]",
+        "[\"inf\"]",
+        "[\"0.0\"]",
+        "[\"1.0\"]",
+        "[\"1/2/3\"]",
         "[\"1/4294967296\"]",
     ] {
         let config = Config::parse(&format!("[window_quick]\nsplit_ratios = {values}")).unwrap();
@@ -205,6 +209,7 @@ fn window_split_ratios_sort_and_deduplicate_mixed_inputs_without_rewriting_sourc
         ),
         ("[0.4, 0.3, 0.4]", vec![0.3, 0.4]),
         ("[\"3/5\", \"1/5\", \"2/10\"]", vec![0.2, 0.6]),
+        ("[\"0.25\", \" 1 / 2 \", 0.5]", vec![0.25, 0.5]),
     ] {
         let config = Config::parse(&format!("[window_quick]\nsplit_ratios = {source}")).unwrap();
         config.validate().unwrap();
@@ -508,6 +513,138 @@ fn partial_config_keeps_defaults_for_omitted_fields() {
     assert_eq!(config.scroll.scroll_step_half, 500);
     assert_eq!(config.scroll.speed, 500.0);
     assert_eq!(config.grid.keys, Grid::default().keys);
+}
+
+#[test]
+fn config_groups_preserve_surrounding_fields_and_custom_serde_hooks() {
+    // Deliberately omit the Deserialize import and the last field's comma.
+    mod schemas {
+        use crate::config::macros::{mode_config, window_config};
+
+        mode_config! {
+            #[derive(Eq)]
+            pub struct Example {
+                before: u32 = 7,
+                ..routing {
+                    omit_empty: temporary,
+                    inherits: vec!["normal".into()],
+                    temporary_mode: None,
+                    temporary_mode_keys: vec!["ctrl".into()],
+                    temporary_mode_passthrough_keys: vec!["ctrl+x".into()],
+                }
+                #[serde(alias = "old_name")]
+                name: String = "example".into()
+            }
+        }
+        mode_config! {
+            pub struct NewMode {
+                ..routing {}
+                speed: f64 = 300.0,
+            }
+        }
+        window_config!(pub struct Window {
+            common: crate::config::WindowRestore::default().common,
+            #[serde(alias = "old_step")]
+            step: u32 = 17
+        });
+    }
+
+    let parsed: schemas::Example = toml::from_str("old_name = 'custom'").unwrap();
+    assert_eq!(parsed.before, 7);
+    assert_eq!(parsed.inherits, ["normal"]);
+    assert_eq!(parsed.name, "custom");
+    assert_eq!(parsed.temporary_mode_keys, ["ctrl"]);
+    assert_eq!(parsed.temporary_mode_passthrough_keys, ["ctrl+x"]);
+    assert_eq!(
+        toml::from_str::<schemas::Example>("").unwrap(),
+        schemas::Example::default()
+    );
+    let mode: schemas::NewMode = toml::from_str("speed = 250").unwrap();
+    assert_eq!(mode.speed, 250.0);
+    assert_eq!(mode.inherits, ["hotkeys", "normal"]);
+    assert_eq!(mode.temporary_mode.as_deref(), Some("normal"));
+    assert!(mode.temporary_mode_keys.is_empty());
+    assert!(mode.temporary_mode_passthrough_keys.is_empty());
+
+    let window: schemas::Window =
+        toml::from_str("old_step = 9\n[lifecycle]\nafter_click = 'idle'").unwrap();
+    assert_eq!(window.step, 9);
+    assert_eq!(
+        window.lifecycle.after_finish,
+        LifecycleAction::Mode(ModeId::window_editor())
+    );
+    assert_eq!(
+        window.lifecycle.after_click,
+        LifecycleAction::Mode(ModeId::idle())
+    );
+    assert_eq!(toml::from_str::<schemas::Window>("").unwrap().step, 17);
+    for exported in [
+        toml::to_string(&parsed).unwrap(),
+        toml::to_string(&window).unwrap(),
+    ] {
+        assert!(!exported.contains("old_"));
+        assert!(!exported.contains("[common]"));
+    }
+}
+
+#[test]
+fn mode_schemas_preserve_defaults_explicit_overrides_and_flat_roundtrips() {
+    macro_rules! check_modes {
+        ($($mode:ty => ($omit_inherits:expr, $omit_temporary:expr)),+ $(,)?) => {$(
+            let defaults = <$mode>::default();
+            assert_eq!(toml::from_str::<$mode>("").unwrap(), defaults);
+            let mut expected = defaults;
+            expected.inherits.clear();
+            expected.temporary_mode = Some("grid".into());
+            expected.temporary_mode_keys = vec!["ctrl".into()];
+            expected.temporary_mode_passthrough_keys = vec!["ctrl+f8".into()];
+            expected.bindings.clear();
+            for bindings in ["", "f8 = 'none'"] {
+                let source = format!(
+                    "inherits = []\ntemporary_mode = 'grid'\ntemporary_mode_keys = ['ctrl']\n\
+                     temporary_mode_passthrough_keys = ['ctrl+f8']\n[bindings]\n{bindings}"
+                );
+                if !bindings.is_empty() {
+                    expected.bindings = builtin_bindings(&[("f8", "none")]);
+                }
+                let parsed: $mode = toml::from_str(&source).unwrap();
+                assert_eq!(parsed, expected, "{}", stringify!($mode));
+                let exported = toml::to_string(&parsed).unwrap();
+                assert!(!exported.contains("[common]"));
+                assert_eq!(toml::from_str::<$mode>(&exported).unwrap(), parsed);
+            }
+            assert!(toml::from_str::<$mode>("unknown_setting = true").is_err());
+            assert!(toml::from_str::<$mode>("temporary_mode_keys = 1").is_err());
+            expected.temporary_mode = None;
+            expected.temporary_mode_keys.clear();
+            expected.temporary_mode_passthrough_keys.clear();
+            let exported = serde_json::to_value(&expected).unwrap();
+            for (field, omitted) in [
+                ("inherits", $omit_inherits),
+                ("temporary_mode", $omit_temporary),
+                ("temporary_mode_keys", $omit_temporary),
+                ("temporary_mode_passthrough_keys", $omit_temporary),
+            ] {
+                assert_eq!(exported.get(field).is_none(), omitted, "{}.{field}", stringify!($mode));
+            }
+        )+};
+    }
+    check_modes!(
+        Normal => (false, true),
+        TextInput => (false, false),
+        TextSelect => (true, true),
+        UiHint => (false, false),
+        Grid => (false, false),
+        RecursiveGrid => (false, false),
+        Bisect => (false, false),
+        Window => (false, false),
+        WindowQuick => (false, false),
+        WindowEditor => (false, false),
+        WindowRestore => (false, false),
+        WindowTab => (false, false),
+        QuickSwitch => (true, true),
+        PluginModeConfig => (false, false),
+    );
 }
 
 #[test]
@@ -1884,16 +2021,31 @@ fn window_modes_have_independent_sparse_defaults_and_migration_errors() {
 }
 
 #[test]
-fn sparse_restore_lifecycle_preserves_default_finish_destination() {
-    let config = Config::parse("[window_restore.lifecycle]\nafter_click = 'idle'").unwrap();
-    assert_eq!(
-        config.window_restore.lifecycle.after_finish,
-        crate::api::LifecycleAction::Mode(ModeId::window_editor())
-    );
-    assert_eq!(
-        config.window_restore.lifecycle.after_click,
-        crate::api::LifecycleAction::Mode(ModeId::idle())
-    );
+fn sparse_window_lifecycles_preserve_each_modes_defaults() {
+    let defaults = Config::default();
+    for (name, mode) in defaults.window_modes() {
+        for field in [None, Some("after_click"), Some("after_finish")] {
+            let mut expected = mode.lifecycle.clone();
+            let mut source = format!("[{name}.lifecycle]\n");
+            if let Some(field) = field {
+                source.push_str(&format!("{field} = 'idle'"));
+                let action = if field == "after_click" {
+                    &mut expected.after_click
+                } else {
+                    &mut expected.after_finish
+                };
+                *action = LifecycleAction::Mode(ModeId::idle());
+            }
+            let config = Config::parse(&source).unwrap();
+            let (_, parsed) = config
+                .window_modes()
+                .into_iter()
+                .find(|(key, _)| *key == name)
+                .unwrap();
+            assert_eq!(parsed.lifecycle, expected, "{source}");
+        }
+        assert!(Config::parse(&format!("[{name}.lifecycle]\nunknown = 'keep'")).is_err());
+    }
 }
 
 #[test]

@@ -13,6 +13,7 @@
 
 mod aliases;
 mod compatibility;
+mod macros;
 mod settings;
 mod window;
 pub use window::{
@@ -21,6 +22,8 @@ pub use window::{
 pub mod store;
 pub mod theme;
 mod validation;
+
+use macros::{config_struct, mode_config};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -188,63 +191,35 @@ impl Default for ConfigFile {
     }
 }
 
-/// Usage is checkpointed by events, never by a periodic timer.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ModeUsage {
-    pub save_after_entries: u32,
-}
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct QuickSwitch {
-    pub enabled: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub inherits: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temporary_mode: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub temporary_mode_keys: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    pub key: String,
-    pub hint_characters: String,
-    pub bindings: Bindings,
-    pub hold_ms: u64,
-    pub blacklist: Vec<String>,
-    pub position: crate::api::style::QuickSwitchPosition,
-    pub ui: LabelUi,
-}
-impl Default for QuickSwitch {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            inherits: Vec::new(),
-            temporary_mode: None,
-            temporary_mode_keys: Vec::new(),
-            temporary_mode_passthrough_keys: Vec::new(),
-            key: "q".into(),
-            hint_characters: "wertyuiop".into(),
-            bindings: builtin_bindings(&[
-                ("esc", "cancel_selection"),
-                ("q", "cancel_selection"),
-                ("backspace", "previous_level"),
-            ]),
-            hold_ms: 350,
-            blacklist: vec!["idle".into()],
-            position: Default::default(),
-            ui: LabelUi {
-                font_size: 28,
-                padding_x: 10,
-                ..Default::default()
-            },
-        }
+config_struct! {
+    /// Usage is checkpointed by events, never by a periodic timer.
+    pub struct ModeUsage {
+        save_after_entries: u32 = 100,
     }
 }
-impl Default for ModeUsage {
-    fn default() -> Self {
-        Self {
-            save_after_entries: 100,
+mode_config! {
+    pub struct QuickSwitch {
+        enabled: bool = true,
+        ..routing {
+            omit_empty: all,
+            inherits: Vec::new(),
+            temporary_mode: None,
         }
+        key: String = "q".into(),
+        hint_characters: String = "wertyuiop".into(),
+        bindings: Bindings = builtin_bindings(&[
+            ("esc", "cancel_selection"),
+            ("q", "cancel_selection"),
+            ("backspace", "previous_level"),
+        ]),
+        hold_ms: u64 = 350,
+        blacklist: Vec<String> = vec!["idle".into()],
+        position: crate::api::style::QuickSwitchPosition,
+        ui: LabelUi = LabelUi {
+            font_size: 28,
+            padding_x: 10,
+            ..Default::default()
+        },
     }
 }
 
@@ -338,24 +313,20 @@ pub(crate) fn with_control_defaults(
 /// accent), and on Linux, where `Ctrl+Shift+C/V` are taken by terminals. The
 /// letters here avoid both.
 fn default_idle_bindings() -> Bindings {
-    let entries: &[(&str, &str)] = &[
+    builtin_bindings(&[
         // Idle remains silent until an explicitly configured launcher is pressed.
         ("primary+e", "normal"),
         ("alt+w", "window"),
-    ];
-    builtin_bindings(entries)
+    ])
 }
 
 fn builtin_bindings(entries: &[(&str, &str)]) -> Bindings {
     entries
         .iter()
         .map(|&(chord, binding)| {
-            let parsed = match Binding::parse(binding) {
-                Ok(parsed) => parsed,
-                Err(error) => {
-                    panic!("invalid built-in binding `{binding}` for chord `{chord}`: {error}")
-                }
-            };
+            let parsed = Binding::parse(binding).unwrap_or_else(|error| {
+                panic!("invalid built-in binding `{binding}` for chord `{chord}`: {error}")
+            });
             (chord.to_owned(), parsed)
         })
         .collect()
@@ -367,17 +338,17 @@ impl ConfigFile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct PluginModeConfig {
-    pub inherits: Vec<String>,
-    pub temporary_mode: Option<String>,
-    pub temporary_mode_keys: Vec<String>,
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    /// Plugin-owned values exposed through the host settings snapshot.
-    pub settings: BTreeMap<String, toml::Value>,
-    pub bindings: Bindings,
-    pub app_configs: Vec<AppOverride>,
+mode_config! {
+    pub struct PluginModeConfig {
+        ..routing {
+            inherits: Vec::new(),
+            temporary_mode: None,
+        }
+        /// Plugin-owned values exposed through the host settings snapshot.
+        settings: BTreeMap<String, toml::Value>,
+        bindings: Bindings,
+        app_configs: Vec<AppOverride>,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -409,54 +380,32 @@ pub struct MacOsConfig {
     pub scroll: MacOsScrollConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MacOsScrollConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invert_horizontal: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invert_vertical: Option<bool>,
-}
-
-impl Default for MacOsScrollConfig {
-    fn default() -> Self {
-        Self {
-            invert_horizontal: Some(false),
-            invert_vertical: Some(true),
-        }
+config_struct! {
+    pub struct MacOsScrollConfig {
+        // A missing table uses these defaults; a missing field inside a present
+        // table stays None so the platform can apply its fallback.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invert_horizontal: Option<bool> = Some(false),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invert_vertical: Option<bool> = Some(true),
     }
 }
 
-/// Verbose runtime tracing written to stderr for diagnosing native input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct DebugConfig {
-    pub enabled: bool,
-    pub keys: bool,
-    pub actions: bool,
-    pub modes: bool,
-    pub backend: bool,
-    /// Pointer coordinates are extremely high-volume; opt in separately.
-    pub pointer: bool,
-    /// High-volume OS key-repeat, movement and cursor-overlay details.
-    pub motion: bool,
-    pub overlay: bool,
-    pub timers: bool,
-}
-
-impl Default for DebugConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            keys: true,
-            actions: true,
-            modes: true,
-            backend: true,
-            pointer: false,
-            motion: false,
-            overlay: true,
-            timers: true,
-        }
+config_struct! {
+    /// Verbose runtime tracing written to stderr for diagnosing native input.
+    #[derive(Eq)]
+    pub struct DebugConfig {
+        enabled: bool,
+        keys: bool = true,
+        actions: bool = true,
+        modes: bool = true,
+        backend: bool = true,
+        /// Pointer coordinates are extremely high-volume; opt in separately.
+        pointer: bool,
+        /// High-volume OS key-repeat, movement and cursor-overlay details.
+        motion: bool,
+        overlay: bool = true,
+        timers: bool = true,
     }
 }
 

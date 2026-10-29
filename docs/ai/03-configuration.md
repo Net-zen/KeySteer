@@ -3,6 +3,7 @@
 ## 查找入口
 
 - `src/config/`：文档模型、默认值、别名、校验和保留注释的写回。
+- `src/config/macros.rs`：`config_struct!` 生成字段和默认值，`mode_config!` 复用路由字段，`window_config!` 处理窗口公共结构与平铺解析。
 - `src/config/compatibility.rs`、`compatibility.json`、`build/compatibility.rs`：配置入口统一规范化旧字段、绑定和表格式；原生与网页共用规则，Rust 在编译时生成静态规则。
 - `src/app/configuration.rs`：配置编译边界；`src/app/mode_catalog.rs`：模式 Settings 与路由装配。
 - `src/api/input.rs`、`src/api/binding.rs`：键与动作语法。
@@ -13,6 +14,26 @@
 `[bisect]` 独立配置二分上限、最小宽高、光标跟随、生命周期、继承、临时层与应用覆盖；`[bisect.bindings]` 默认 h/j/k/l 对应四个二分动作，支持普通绑定的别名、多键与禁用规则。稀疏表补齐默认方向和导航动作，`none` 可禁用。没有 `keys`、行列或 `layers`；`[bisect.ui]` 仅提供无字母区域适用的线宽、线色、高亮色。默认 Normal 入口 `primary+f`；从临时层沿用这个完整入口须在来源模式 bindings 显式配置，临时目标及继承不重新使用已消耗的激活键；网页配置器同步模型、键位及预览。
 
 ## 保留的语义
+
+配置宏只生成普通结构体和默认值，不增加运行时配置层。普通设置使用 `config_struct!`；`field: Type = expression` 指定默认值，省略表达式使用字段类型的 `Default`。字段注释、serde 属性和自定义解析器原样保留；结构体可追加 `#[derive(Eq)]` 等属性。已有 `derive(Default)` 且无需自定义默认值的结构体不必改用宏。根配置的默认值还需要编译别名，继续使用普通 Rust 实现。
+
+内置模式及插件使用 `mode_config!`，在需要的位置放置 `..routing {}`，原位生成 `inherits`、`temporary_mode`、`temporary_mode_keys`、`temporary_mode_passthrough_keys`。默认继承 `["hotkeys", "normal"]`、临时目标为 `Some("normal")`，两种按键列表为空；这与 Hint 和网格模式共用的默认值一致。组内按上述字段顺序写 `字段名: Rust 表达式,` 即可覆盖默认值，所有字段均可省略。例如新增同类模式：
+
+```rust
+mode_config! {
+    pub struct Example {
+        enabled: bool = true,
+        ..routing {}
+        speed: f64 = 300.0,
+        bindings: Bindings,
+        app_configs: Vec<AppOverride>,
+    }
+}
+```
+
+无继承或临时目标的模式显式写 `inherits: Vec::new(), temporary_mode: None,`。仅影响导出的 `omit_empty: all,` 或 `omit_empty: temporary,` 放在组内最前面，分别省略四个空字段或仅三个空临时字段，缺省保留空字段。声明处不使用内部 `@` 分支。宏只拆分一次路由组前后的字段，不递归扫描任意字段组；特殊默认表达式、独立字段和解析函数仍由模式定义。
+
+窗口使用 `window_config!(pub struct Name { common: expression, ... })`，只声明共享配置的默认值及额外字段；`window_config!(common pub struct WindowModeConfig;)` 生成共享结构。窗口公共字段定义只有一份，路由字段继续复用 `mode_config!`。窗口保留 `common` 与 `Deref`，TOML 仍为平铺字段，其稀疏文档和生命周期使用各模式自己的默认值（包括 Restore 的完成目标）。共享结构直接反序列化时继续允许未知字段，各窗口模式的平铺文档则严格拒绝未知字段。普通配置也严格拒绝未知字段；显式绑定表仍替换默认表，不做通用递归合并。
 
 所有可配置模式（含 Normal、Quick Switch、文字与窗口模式、插件）共用继承、临时目标、触发键与穿透键的编译和路由。内置 `temporary_mode_keys` 全部默认为空；用户配置省略该字段（包括整段省略）或设置 `[]` 均禁用临时层。发布 TOML 保留已有显式触发键，其行为不变；只有非空触发键且有临时目标时启用。`Config::default()` 与 `Config::parse("")` 的临时层状态一致，无需加载后补偿清空。catalog 对关闭的层移除目标与匹配数据；Registry 在建表时把没有有效触发组合的槽位编译为 `None`，输入时直接读取结果，不重新解析配置或判断列表是否为空。重叠换层修饰键冲突也在建表时排除，不逐键检查模式名。启用层仍需在输入时匹配当前按键状态。网页稀疏文档合并同样不从默认配置补回触发键。
 

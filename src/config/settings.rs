@@ -1,5 +1,6 @@
 //! TOML settings DTOs for built-in mode sections.
 
+use super::macros::{config_struct, mode_config};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{
@@ -14,51 +15,32 @@ use super::{AppOverride, Bindings, UiHintAppOverride, app_override_matches, buil
 // [normal]
 // ---------------------------------------------------------------------------
 
-/// The working mode: move the pointer, click, scroll, and enter the other
-/// modes.
-///
-/// Everything here is a plain binding table, so a user can rebind `hjkl` to
-/// anything, add `t = "home"`, or point a key at a plugin mode.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Normal {
-    pub inherits: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temporary_mode: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub temporary_mode_keys: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    /// Opt-in blind positioning. Absence keeps the ordinary Normal runtime.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub targeting: Option<Box<NormalTargeting>>,
-    /// Forward keyboard input that does not match a complete KeySteer binding.
-    pub passthrough_unbound_keys: bool,
-    /// Hold a physical key bound to click/double-click for this many
-    /// milliseconds to toggle that mouse button. The same threshold lets a
-    /// parameterless toggle activation key latch itself. Zero disables both.
-    pub long_press_toggle_ms: u64,
-    /// Release a direct click/double-click button latched by long press after
-    /// a physical-modifier drag has remained still. Zero disables it.
-    pub auto_release_ms: u64,
-    pub bindings: Bindings,
-    pub app_configs: Vec<AppOverride>,
-}
-
-impl Default for Normal {
-    fn default() -> Self {
-        Self {
+mode_config! {
+    /// The working mode: move the pointer, click, scroll, and enter the other
+    /// modes.
+    ///
+    /// Everything here is a plain binding table, so a user can rebind `hjkl` to
+    /// anything, add `t = "home"`, or point a key at a plugin mode.
+    pub struct Normal {
+        ..routing {
+            omit_empty: temporary,
             inherits: vec!["hotkeys".into()],
             temporary_mode: None,
-            temporary_mode_keys: Vec::new(),
-            temporary_mode_passthrough_keys: Vec::new(),
-            targeting: None,
-            passthrough_unbound_keys: true,
-            long_press_toggle_ms: 500,
-            auto_release_ms: 0,
-            bindings: default_normal_bindings(),
-            app_configs: Vec::new(),
         }
+        /// Opt-in blind positioning. Absence keeps the ordinary Normal runtime.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        targeting: Option<Box<NormalTargeting>>,
+        /// Forward keyboard input that does not match a complete KeySteer binding.
+        passthrough_unbound_keys: bool = true,
+        /// Hold a physical key bound to click/double-click for this many
+        /// milliseconds to toggle that mouse button. The same threshold lets a
+        /// parameterless toggle activation key latch itself. Zero disables both.
+        long_press_toggle_ms: u64 = 500,
+        /// Release a direct click/double-click button latched by long press after
+        /// a physical-modifier drag has remained still. Zero disables it.
+        auto_release_ms: u64 = 0,
+        bindings: Bindings = default_normal_bindings(),
+        app_configs: Vec<AppOverride>,
     }
 }
 
@@ -77,41 +59,25 @@ pub enum TargetingReset {
     Click,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct NormalTargeting {
-    pub method: TargetingMethod,
-    pub reset_on: Vec<TargetingReset>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub grid_cols: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub grid_rows: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub keys: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_depth: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_size_width: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_size_height: Option<u32>,
-    /// None inherits all layers; Some replaces the entire list (empty clears it).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub layers: Option<Vec<GridLayer>>,
-}
-
-impl Default for NormalTargeting {
-    fn default() -> Self {
-        Self {
-            method: TargetingMethod::Grid,
-            reset_on: vec![TargetingReset::Move, TargetingReset::Click],
-            grid_cols: None,
-            grid_rows: None,
-            keys: None,
-            max_depth: None,
-            min_size_width: None,
-            min_size_height: None,
-            layers: None,
-        }
+config_struct! {
+    pub struct NormalTargeting {
+        method: TargetingMethod = TargetingMethod::Grid,
+        reset_on: Vec<TargetingReset> = vec![TargetingReset::Move, TargetingReset::Click],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        grid_cols: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        grid_rows: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        keys: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_depth: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        min_size_width: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        min_size_height: Option<u32>,
+        /// None inherits all layers; Some replaces the entire list (empty clears it).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        layers: Option<Vec<GridLayer>>,
     }
 }
 
@@ -172,7 +138,7 @@ impl NormalTargeting {
 /// by default. Complete modifier combinations take precedence over bare-key
 /// bindings so external shortcuts remain usable.
 fn default_normal_bindings() -> Bindings {
-    let entries: &[(&str, &str)] = &[
+    builtin_bindings(&[
         ("?", "key_help"),
         ("\\", "text_input"),
         // Movement and speed modifiers, held alongside a direction.
@@ -210,86 +176,49 @@ fn default_normal_bindings() -> Bindings {
         // Normal has no label-key conflict, so bare q exits immediately.
         ("q", "idle"),
         ("esc", "idle"),
-    ];
-    builtin_bindings(entries)
+    ])
 }
 
 // ---------------------------------------------------------------------------
 // [text_input]
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct TextInput {
-    pub inherits: Vec<String>,
-    pub temporary_mode: Option<String>,
-    pub temporary_mode_keys: Vec<String>,
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    pub bindings: Bindings,
-}
-
-impl Default for TextInput {
-    fn default() -> Self {
-        Self {
+mode_config! {
+    pub struct TextInput {
+        ..routing {
             inherits: Vec::new(),
             temporary_mode: None,
-            temporary_mode_keys: Vec::new(),
-            temporary_mode_passthrough_keys: Vec::new(),
-            bindings: default_text_input_bindings(),
         }
+        bindings: Bindings = builtin_bindings(&[("enter", "normal"), ("\\", "normal"), ("esc", "normal")]),
     }
 }
 
-fn default_text_input_bindings() -> Bindings {
-    builtin_bindings(&[("enter", "normal"), ("\\", "normal"), ("esc", "normal")])
-}
-
-/// OCR-only text selection has its own scope and shares UIHint's OCR options and styles.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct TextSelect {
-    pub enabled: bool,
-    pub scan_scope: crate::api::UiScanScope,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub inherits: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temporary_mode: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub temporary_mode_keys: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    pub hint_characters: String,
-    pub ui: crate::api::text_select::Ui,
-    pub lifecycle: crate::api::text_select::Lifecycle,
-    pub bindings: Bindings,
-}
-
-impl Default for TextSelect {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            scan_scope: crate::api::UiScanScope::All,
+mode_config! {
+    /// OCR-only text selection has its own scope and shares UIHint's OCR options and styles.
+    pub struct TextSelect {
+        enabled: bool = true,
+        scan_scope: crate::api::UiScanScope = crate::api::UiScanScope::All,
+        ..routing {
+            omit_empty: all,
             inherits: Vec::new(),
             temporary_mode: None,
-            temporary_mode_keys: Vec::new(),
-            temporary_mode_passthrough_keys: Vec::new(),
-            hint_characters: "asdfghjklqwertyuiopzvbnm".into(),
-            ui: crate::api::text_select::Ui::default(),
-            lifecycle: crate::api::text_select::Lifecycle::default(),
-            bindings: builtin_bindings(&[
-                ("alt+c", "text_refine"),
-                ("alt+backspace", "previous_level"),
-                ("ctrl+backspace", "first_level"),
-                ("tab", "text_cycle_page"),
-                ("ctrl+a", "text_select_all"),
-                ("backspace", "text_clear_selection"),
-                ("ctrl+x", "text_clear_input"),
-                ("mod+c enter", "text_copy"),
-                ("primary+q", "normal"),
-                ("esc", "cancel_selection"),
-                ("?", "key_help"),
-            ]),
         }
+        hint_characters: String = "asdfghjklqwertyuiopzvbnm".into(),
+        ui: crate::api::text_select::Ui,
+        lifecycle: crate::api::text_select::Lifecycle,
+        bindings: Bindings = builtin_bindings(&[
+            ("alt+c", "text_refine"),
+            ("alt+backspace", "previous_level"),
+            ("ctrl+backspace", "first_level"),
+            ("tab", "text_cycle_page"),
+            ("ctrl+a", "text_select_all"),
+            ("backspace", "text_clear_selection"),
+            ("ctrl+x", "text_clear_input"),
+            ("mod+c enter", "text_copy"),
+            ("primary+q", "normal"),
+            ("esc", "cancel_selection"),
+            ("?", "key_help"),
+        ]),
     }
 }
 
@@ -297,64 +226,105 @@ impl Default for TextSelect {
 // [ui_hint]
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct UiHint {
-    pub enabled: bool,
-    pub strategy: UiScanStrategy,
-    pub scan_scope: crate::api::UiScanScope,
-    pub vision: VisionOptions,
-    /// Characters used to build hint labels.
-    pub hint_characters: String,
-    pub label_direction: LabelDirection,
-    /// Accessibility tree depth limit; 0 means unlimited.
-    pub max_depth: u32,
-    /// Soft budget for one accessibility scan. Incremental results remain
-    /// visible while the scan continues.
-    pub scan_timeout_ms: u64,
-    /// Automatic retries when a scan times out or returns no targets.
-    pub scan_retry_count: u32,
-    /// Delay before an automatic retry, allowing a busy UI provider to settle.
-    pub scan_retry_delay_ms: u64,
-    /// Semantic roles that receive a hint.
-    pub clickable_roles: Vec<String>,
-    /// Skip the clickability heuristic and hint every matching role.
-    pub ignore_clickable_check: bool,
-    /// Hit-test each element; slower but removes occluded hints.
-    pub visible_check_enabled: bool,
-    pub placement: HintPlacement,
-    /// Pixel offsets applied after placing each label relative to its element.
-    pub label_x_offset: i32,
-    pub label_y_offset: i32,
-    pub ui: LabelUi,
-    pub boundary_highlight: BoundaryHighlight,
-    #[serde(deserialize_with = "deserialize_search_input_ui")]
-    pub search_input_ui: SearchInputUi,
-    #[serde(deserialize_with = "deserialize_search_info_ui")]
-    pub search_info_ui: SearchInputUi,
-    #[serde(skip_serializing_if = "crate::api::style::SearchHighlightUi::is_default")]
-    pub search_highlight: crate::api::style::SearchHighlightUi,
-    /// Independent shortcuts for OCR, accessibility, coordinates and color.
-    pub search_copy_keys: Vec<String>,
-    /// Search-result preview groups, highest priority first; all three are required.
-    pub search_match_priority: [crate::api::hint::SearchMatchKind; 3],
-    pub search_bindings: std::collections::BTreeMap<String, crate::api::point_sample::Action>,
-    #[serde(skip_serializing_if = "SearchPoint::is_default")]
-    pub search_point: SearchPoint,
-    #[serde(
-        deserialize_with = "deserialize_search_edit_keys",
-        serialize_with = "serialize_search_edit_keys"
-    )]
-    pub search_edit_keys: std::collections::BTreeMap<crate::api::text_edit::EditAction, String>,
-    pub inherits: Vec<String>,
-    pub temporary_mode: Option<String>,
-    pub temporary_mode_keys: Vec<String>,
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    pub lifecycle: TargetingLifecycle,
-    /// Modifier held to expose the next label in each overlapping group.
-    pub overlap_cycle_key: String,
-    pub bindings: Bindings,
-    pub app_configs: Vec<UiHintAppOverride>,
+mode_config! {
+    pub struct UiHint {
+        enabled: bool = true,
+        strategy: UiScanStrategy = UiScanStrategy::Hybrid,
+        scan_scope: crate::api::UiScanScope = crate::api::UiScanScope::All,
+        vision: VisionOptions,
+        /// Characters used to build hint labels.
+        hint_characters: String = "asdfghjkl".into(),
+        label_direction: LabelDirection = LabelDirection::Normal,
+        /// Accessibility tree depth limit; 0 means unlimited.
+        max_depth: u32 = 50,
+        /// Soft budget for one accessibility scan. Incremental results remain
+        /// visible while the scan continues.
+        scan_timeout_ms: u64 = 2_500,
+        /// Automatic retries when a scan times out or returns no targets.
+        scan_retry_count: u32 = 1,
+        /// Delay before an automatic retry, allowing a busy UI provider to settle.
+        scan_retry_delay_ms: u64 = 200,
+        /// Semantic roles that receive a hint.
+        clickable_roles: Vec<String> = default_clickable_roles(),
+        /// Skip the clickability heuristic and hint every matching role.
+        ignore_clickable_check: bool = false,
+        /// Hit-test each element; slower but removes occluded hints.
+        visible_check_enabled: bool = false,
+        placement: HintPlacement = HintPlacement::Bottom,
+        /// Pixel offsets applied after placing each label relative to its element.
+        label_x_offset: i32 = 0,
+        label_y_offset: i32 = -8,
+        ui: LabelUi = LabelUi {
+            font_size: 17,
+            ..Default::default()
+        },
+        boundary_highlight: BoundaryHighlight,
+        #[serde(deserialize_with = "deserialize_search_input_ui")]
+        search_input_ui: SearchInputUi = SearchInputUi {
+            label: LabelUi {
+                font_size: 14,
+                padding_y: 6,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        #[serde(deserialize_with = "deserialize_search_info_ui")]
+        search_info_ui: SearchInputUi = SearchInputUi {
+            position_mode: crate::api::style::PanelPositionMode::SearchInput,
+            position: crate::api::style::PanelPosition::Percentages(
+                ["44%", "50%", "56%", "50%"].map(String::from),
+            ),
+            width: 520,
+            label: LabelUi {
+                font_size: 14,
+                padding_y: 16,
+                ..Default::default()
+            },
+        },
+        #[serde(skip_serializing_if = "crate::api::style::SearchHighlightUi::is_default")]
+        search_highlight: crate::api::style::SearchHighlightUi,
+        /// Independent shortcuts for OCR, accessibility, coordinates and color.
+        search_copy_keys: Vec<String> = ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"]
+            .map(String::from)
+            .to_vec(),
+        /// Search-result preview groups, highest priority first; all three are required.
+        search_match_priority: [crate::api::hint::SearchMatchKind; 3] =
+            crate::api::hint::DEFAULT_SEARCH_MATCH_PRIORITY,
+        search_bindings: std::collections::BTreeMap<String, crate::api::point_sample::Action> =
+            std::collections::BTreeMap::from([
+                ("ctrl".into(), crate::api::point_sample::Action::PointToggle),
+                ("tab".into(), crate::api::point_sample::Action::PointNext),
+                (
+                    "ctrl+shift+4".into(),
+                    crate::api::point_sample::Action::ColorNext,
+                ),
+            ]),
+        #[serde(skip_serializing_if = "SearchPoint::is_default")]
+        search_point: SearchPoint,
+        #[serde(
+            deserialize_with = "deserialize_search_edit_keys",
+            serialize_with = "serialize_search_edit_keys"
+        )]
+        search_edit_keys: std::collections::BTreeMap<crate::api::text_edit::EditAction, String> =
+            crate::api::text_edit::default_keys(),
+        ..routing {}
+        lifecycle: TargetingLifecycle = TargetingLifecycle {
+            after_finish: LifecycleAction::Mode(ModeId::normal()),
+            after_click: LifecycleAction::Mode(ModeId::normal()),
+        },
+        /// Modifier held to expose the next label in each overlapping group.
+        overlap_cycle_key: String = "shift".into(),
+        bindings: Bindings = Bindings::from([
+            ("esc".into(), Binding::SelectionCancel),
+            ("enter".into(), Binding::SelectionAccept),
+            ("backspace".into(), Binding::SelectionParent),
+            ("tab".into(), Binding::SelectionReopen),
+            ("/".into(), Binding::SelectionSearch),
+            ("primary+r".into(), Binding::RescanUi),
+            ("primary+q".into(), Binding::Mode(ModeId::normal())),
+        ]),
+        app_configs: Vec<UiHintAppOverride>,
+    }
 }
 
 // A present but partial panel table must inherit that panel's defaults, rather
@@ -419,90 +389,6 @@ impl UiHint {
     }
 }
 
-impl Default for UiHint {
-    fn default() -> Self {
-        let ui = LabelUi {
-            font_size: 17,
-            ..Default::default()
-        };
-        let search_input_ui = SearchInputUi {
-            label: LabelUi {
-                font_size: 14,
-                padding_y: 6,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        Self {
-            enabled: true,
-            strategy: UiScanStrategy::Hybrid,
-            scan_scope: crate::api::UiScanScope::All,
-            vision: VisionOptions::default(),
-            hint_characters: "asdfghjkl".into(),
-            label_direction: LabelDirection::Normal,
-            max_depth: 50,
-            scan_timeout_ms: 2_500,
-            scan_retry_count: 1,
-            scan_retry_delay_ms: 200,
-            clickable_roles: default_clickable_roles(),
-            ignore_clickable_check: false,
-            visible_check_enabled: false,
-            placement: HintPlacement::Bottom,
-            label_x_offset: 0,
-            label_y_offset: -8,
-            ui,
-            boundary_highlight: BoundaryHighlight::default(),
-            search_input_ui,
-            search_info_ui: SearchInputUi {
-                position_mode: crate::api::style::PanelPositionMode::SearchInput,
-                position: crate::api::style::PanelPosition::Percentages(
-                    ["44%", "50%", "56%", "50%"].map(String::from),
-                ),
-                width: 520,
-                label: LabelUi {
-                    font_size: 14,
-                    padding_y: 16,
-                    ..Default::default()
-                },
-            },
-            search_edit_keys: crate::api::text_edit::default_keys(),
-            search_highlight: Default::default(),
-            search_copy_keys: ["ctrl+1", "ctrl+2", "ctrl+3", "ctrl+4"]
-                .map(String::from)
-                .to_vec(),
-            search_match_priority: crate::api::hint::DEFAULT_SEARCH_MATCH_PRIORITY,
-            search_point: SearchPoint::default(),
-            search_bindings: std::collections::BTreeMap::from([
-                ("ctrl".into(), crate::api::point_sample::Action::PointToggle),
-                ("tab".into(), crate::api::point_sample::Action::PointNext),
-                (
-                    "ctrl+shift+4".into(),
-                    crate::api::point_sample::Action::ColorNext,
-                ),
-            ]),
-            inherits: vec!["hotkeys".into(), "normal".into()],
-            temporary_mode: Some("normal".into()),
-            temporary_mode_keys: Vec::new(),
-            temporary_mode_passthrough_keys: Vec::new(),
-            lifecycle: TargetingLifecycle {
-                after_finish: LifecycleAction::Mode(ModeId::normal()),
-                after_click: LifecycleAction::Mode(ModeId::normal()),
-            },
-            overlap_cycle_key: "shift".into(),
-            bindings: Bindings::from([
-                ("esc".into(), Binding::SelectionCancel),
-                ("enter".into(), Binding::SelectionAccept),
-                ("backspace".into(), Binding::SelectionParent),
-                ("tab".into(), Binding::SelectionReopen),
-                ("/".into(), Binding::SelectionSearch),
-                ("primary+r".into(), Binding::RescanUi),
-                ("primary+q".into(), Binding::Mode(ModeId::normal())),
-            ]),
-            app_configs: Vec::new(),
-        }
-    }
-}
-
 fn default_clickable_roles() -> Vec<String> {
     [
         "button",
@@ -532,58 +418,33 @@ fn default_clickable_roles() -> Vec<String> {
 // [grid]
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Grid {
-    pub enabled: bool,
-    /// Columns in every selection layer.
-    pub grid_cols: u32,
-    /// Rows in every selection layer.
-    pub grid_rows: u32,
-    /// One selection key per cell, in row-major keyboard order.
-    pub keys: String,
-    /// Number of selection layers before the current cell becomes the target.
-    pub max_depth: u32,
-    /// Move the pointer to each selected cell's centre while drilling down.
-    pub cursor_follow_selection: bool,
-    pub inherits: Vec<String>,
-    pub temporary_mode: Option<String>,
-    pub temporary_mode_keys: Vec<String>,
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    pub lifecycle: TargetingLifecycle,
-    pub ui: GridUi,
-    pub bindings: Bindings,
-    pub app_configs: Vec<AppOverride>,
-}
-
-impl Default for Grid {
-    fn default() -> Self {
-        let ui = GridUi {
+mode_config! {
+    pub struct Grid {
+        enabled: bool = true,
+        /// Columns in every selection layer.
+        grid_cols: u32 = 5,
+        /// Rows in every selection layer.
+        grid_rows: u32 = 4,
+        /// One selection key per cell, in row-major keyboard order.
+        keys: String = "12345qwertasdfgzxcvb".into(),
+        /// Number of selection layers before the current cell becomes the target.
+        max_depth: u32 = 3,
+        /// Move the pointer to each selected cell's centre while drilling down.
+        cursor_follow_selection: bool = true,
+        ..routing {}
+        lifecycle: TargetingLifecycle = TargetingLifecycle {
+            after_finish: LifecycleAction::Mode(ModeId::normal()),
+            after_click: LifecycleAction::Finish,
+        },
+        ui: GridUi = GridUi {
             label: LabelUi {
                 font_size: 20,
                 ..Default::default()
             },
             ..Default::default()
-        };
-        Self {
-            enabled: true,
-            grid_cols: 5,
-            grid_rows: 4,
-            keys: "12345qwertasdfgzxcvb".into(),
-            max_depth: 3,
-            cursor_follow_selection: true,
-            inherits: vec!["hotkeys".into(), "normal".into()],
-            temporary_mode: Some("normal".into()),
-            temporary_mode_keys: Vec::new(),
-            temporary_mode_passthrough_keys: Vec::new(),
-            lifecycle: TargetingLifecycle {
-                after_finish: LifecycleAction::Mode(ModeId::normal()),
-                after_click: LifecycleAction::Finish,
-            },
-            ui,
-            bindings: default_grid_control_bindings(),
-            app_configs: Vec::new(),
-        }
+        },
+        bindings: Bindings = default_grid_control_bindings(),
+        app_configs: Vec<AppOverride>,
     }
 }
 
@@ -600,54 +461,26 @@ pub struct GridUi {
 // [recursive_grid]
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct RecursiveGrid {
-    pub enabled: bool,
-    pub grid_cols: u32,
-    pub grid_rows: u32,
-    /// Cell keys; must hold `grid_cols * grid_rows` characters.
-    pub keys: String,
-    pub min_size_width: u32,
-    pub min_size_height: u32,
-    /// Recursion limit, 1..=20.
-    pub max_depth: u32,
-    /// Move the pointer to each selected cell's centre while drilling down.
-    pub cursor_follow_selection: bool,
-    pub inherits: Vec<String>,
-    pub temporary_mode: Option<String>,
-    pub temporary_mode_keys: Vec<String>,
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    pub lifecycle: TargetingLifecycle,
-    /// Per-depth layout overrides.
-    pub layers: Vec<GridLayer>,
-    pub ui: RecursiveGridUi,
-    pub bindings: Bindings,
-    pub app_configs: Vec<AppOverride>,
-}
-
-impl Default for RecursiveGrid {
-    fn default() -> Self {
-        let ui = RecursiveGridUi::default();
-        Self {
-            enabled: true,
-            grid_cols: 3,
-            grid_rows: 3,
-            keys: "qweasdzxc".into(),
-            min_size_width: 1,
-            min_size_height: 1,
-            max_depth: 10,
-            cursor_follow_selection: true,
-            inherits: vec!["hotkeys".into(), "normal".into()],
-            temporary_mode: Some("normal".into()),
-            temporary_mode_keys: Vec::new(),
-            temporary_mode_passthrough_keys: Vec::new(),
-            lifecycle: TargetingLifecycle::default(),
-            layers: Vec::new(),
-            ui,
-            bindings: default_grid_control_bindings(),
-            app_configs: Vec::new(),
-        }
+mode_config! {
+    pub struct RecursiveGrid {
+        enabled: bool = true,
+        grid_cols: u32 = 3,
+        grid_rows: u32 = 3,
+        /// Cell keys; must hold `grid_cols * grid_rows` characters.
+        keys: String = "qweasdzxc".into(),
+        min_size_width: u32 = 1,
+        min_size_height: u32 = 1,
+        /// Recursion limit, 1..=20.
+        max_depth: u32 = 10,
+        /// Move the pointer to each selected cell's centre while drilling down.
+        cursor_follow_selection: bool = true,
+        ..routing {}
+        lifecycle: TargetingLifecycle,
+        /// Per-depth layout overrides.
+        layers: Vec<GridLayer>,
+        ui: RecursiveGridUi,
+        bindings: Bindings = default_grid_control_bindings(),
+        app_configs: Vec<AppOverride>,
     }
 }
 
@@ -663,68 +496,37 @@ fn default_grid_control_bindings() -> Bindings {
     ])
 }
 
-/// Directional bisection has no label alphabet or per-depth grid layout.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Bisect {
-    pub enabled: bool,
-    pub min_size_width: u32,
-    pub min_size_height: u32,
-    pub max_depth: u32,
-    pub cursor_follow_selection: bool,
-    pub inherits: Vec<String>,
-    pub temporary_mode: Option<String>,
-    pub temporary_mode_keys: Vec<String>,
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    pub lifecycle: TargetingLifecycle,
-    pub ui: BisectUi,
-    pub bindings: Bindings,
-    pub app_configs: Vec<AppOverride>,
-}
-
-impl Default for Bisect {
-    fn default() -> Self {
-        use crate::api::Direction;
-        let mut bindings = default_grid_control_bindings();
-        bindings.extend([
-            ("h".into(), Binding::Bisect(Direction::Left)),
-            ("j".into(), Binding::Bisect(Direction::Down)),
-            ("k".into(), Binding::Bisect(Direction::Up)),
-            ("l".into(), Binding::Bisect(Direction::Right)),
-        ]);
-        Self {
-            enabled: true,
-            min_size_width: 2,
-            min_size_height: 2,
-            max_depth: 20,
-            cursor_follow_selection: true,
-            inherits: vec!["hotkeys".into(), "normal".into()],
-            temporary_mode: Some("normal".into()),
-            temporary_mode_keys: Vec::new(),
-            temporary_mode_passthrough_keys: Vec::new(),
-            lifecycle: TargetingLifecycle::default(),
-            ui: BisectUi::default(),
-            bindings,
-            app_configs: Vec::new(),
-        }
+mode_config! {
+    /// Directional bisection has no label alphabet or per-depth grid layout.
+    pub struct Bisect {
+        enabled: bool = true,
+        min_size_width: u32 = 2,
+        min_size_height: u32 = 2,
+        max_depth: u32 = 20,
+        cursor_follow_selection: bool = true,
+        ..routing {}
+        lifecycle: TargetingLifecycle,
+        ui: BisectUi,
+        bindings: Bindings = {
+            use crate::api::Direction;
+            let mut bindings = default_grid_control_bindings();
+            bindings.extend([
+                ("h".into(), Binding::Bisect(Direction::Left)),
+                ("j".into(), Binding::Bisect(Direction::Down)),
+                ("k".into(), Binding::Bisect(Direction::Up)),
+                ("l".into(), Binding::Bisect(Direction::Right)),
+            ]);
+            bindings
+        },
+        app_configs: Vec<AppOverride>,
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct BisectUi {
-    pub line_width: i32,
-    pub line_color: Option<ThemedColor>,
-    pub highlight_color: Option<ThemedColor>,
-}
-
-impl Default for BisectUi {
-    fn default() -> Self {
-        Self {
-            line_width: 1,
-            line_color: None,
-            highlight_color: None,
-        }
+config_struct! {
+    pub struct BisectUi {
+        line_width: i32 = 1,
+        line_color: Option<ThemedColor>,
+        highlight_color: Option<ThemedColor>,
     }
 }
 
@@ -739,50 +541,30 @@ pub struct GridLayer {
     pub keys: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct RecursiveGridUi {
-    #[serde(flatten)]
-    pub label: LabelUi,
-    pub line_width: i32,
-    pub line_color: Option<ThemedColor>,
-    pub highlight_color: Option<ThemedColor>,
-    /// Draw a filled pill behind each cell key.
-    pub label_background: bool,
-    pub label_background_color: Option<ThemedColor>,
-    /// Replace every cell label with this character, e.g. `·`.
-    pub label_char: String,
-    /// Hide labels when fitting them would require a smaller font.
-    pub label_min_font_size: i32,
-    /// Hide labels once a cell is smaller than the fitted font size times this
-    /// multiplier. `0` disables this additional threshold.
-    pub label_autohide_multiplier: f64,
-    pub sub_key_preview: bool,
-    pub sub_key_preview_font_size: i32,
-    pub sub_key_preview_text_color: Option<ThemedColor>,
-    pub sub_key_preview_autohide_multiplier: f64,
-}
-
-impl Default for RecursiveGridUi {
-    fn default() -> Self {
-        Self {
-            label: LabelUi {
-                font_size: 0,
-                ..Default::default()
-            },
-            line_width: 1,
-            line_color: None,
-            highlight_color: None,
-            label_background: false,
-            label_background_color: None,
-            label_char: String::new(),
-            label_min_font_size: 6,
-            label_autohide_multiplier: 1.5,
-            sub_key_preview: false,
-            sub_key_preview_font_size: 8,
-            sub_key_preview_text_color: None,
-            sub_key_preview_autohide_multiplier: 1.5,
-        }
+config_struct! {
+    pub struct RecursiveGridUi {
+        #[serde(flatten)]
+        label: LabelUi = LabelUi {
+            font_size: 0,
+            ..Default::default()
+        },
+        line_width: i32 = 1,
+        line_color: Option<ThemedColor>,
+        highlight_color: Option<ThemedColor>,
+        /// Draw a filled pill behind each cell key.
+        label_background: bool = false,
+        label_background_color: Option<ThemedColor>,
+        /// Replace every cell label with this character, e.g. `·`.
+        label_char: String,
+        /// Hide labels when fitting them would require a smaller font.
+        label_min_font_size: i32 = 6,
+        /// Hide labels once a cell is smaller than the fitted font size times this
+        /// multiplier. `0` disables this additional threshold.
+        label_autohide_multiplier: f64 = 1.5,
+        sub_key_preview: bool = false,
+        sub_key_preview_font_size: i32 = 8,
+        sub_key_preview_text_color: Option<ThemedColor>,
+        sub_key_preview_autohide_multiplier: f64 = 1.5,
     }
 }
 
@@ -793,27 +575,16 @@ impl Default for RecursiveGridUi {
 // any mode can use, so there is no `scroll` mode to enter.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Scroll {
-    /// Ordinary held scrolling in pixels per second; zero is tap-only.
-    pub speed: f64,
-    /// Pixels for `scroll_up` and friends.
-    pub scroll_step: i32,
-    /// Pixels for `scroll_half_up` and friends.
-    pub scroll_step_half: i32,
-    /// Pixels for `scroll_full_up` and friends.
-    pub scroll_step_full: i32,
-}
-
-impl Default for Scroll {
-    fn default() -> Self {
-        Self {
-            speed: 500.0,
-            scroll_step: 50,
-            scroll_step_half: 500,
-            scroll_step_full: 1_000_000,
-        }
+config_struct! {
+    pub struct Scroll {
+        /// Ordinary held scrolling in pixels per second; zero is tap-only.
+        speed: f64 = 500.0,
+        /// Pixels for `scroll_up` and friends.
+        scroll_step: i32 = 50,
+        /// Pixels for `scroll_half_up` and friends.
+        scroll_step_half: i32 = 500,
+        /// Pixels for `scroll_full_up` and friends.
+        scroll_step_full: i32 = 1_000_000,
     }
 }
 
@@ -829,60 +600,49 @@ impl Scroll {
     }
 }
 
-/// Keyboard-driven pointer acceleration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Pointer {
-    /// Initial pointer velocity in pixels per second.
-    pub initial_speed: f64,
-    /// Maximum pointer velocity in pixels per second.
-    pub max_speed: f64,
-    /// Velocity added per second while held, in pixels per second².
-    pub acceleration: f64,
-    /// Ease acceleration at both ends instead of changing velocity linearly.
-    pub smooth_acceleration: bool,
-    /// Immediate pixel distance for a tap shorter than the next display update.
-    pub tap_distance: f64,
-    pub slow_multiplier: f64,
-    pub precision_multiplier: f64,
-    pub fast_multiplier: f64,
-}
-
-impl Default for Pointer {
-    fn default() -> Self {
-        Self {
-            initial_speed: 1000.0,
-            max_speed: 2200.0,
-            acceleration: 3000.0,
-            smooth_acceleration: true,
-            tap_distance: 2.5,
-            slow_multiplier: 0.35,
-            precision_multiplier: 0.12,
-            fast_multiplier: 2.0,
-        }
+config_struct! {
+    /// Keyboard-driven pointer acceleration.
+    pub struct Pointer {
+        /// Initial pointer velocity in pixels per second.
+        initial_speed: f64 = 1000.0,
+        /// Maximum pointer velocity in pixels per second.
+        max_speed: f64 = 2200.0,
+        /// Velocity added per second while held, in pixels per second².
+        acceleration: f64 = 3000.0,
+        /// Ease acceleration at both ends instead of changing velocity linearly.
+        smooth_acceleration: bool = true,
+        /// Immediate pixel distance for a tap shorter than the next display update.
+        tap_distance: f64 = 2.5,
+        slow_multiplier: f64 = 0.35,
+        precision_multiplier: f64 = 0.12,
+        fast_multiplier: f64 = 2.0,
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SearchPoint {
-    #[serde(skip_serializing_if = "SearchPoint::default_field_modes")]
-    pub field_modes: [crate::api::point_sample::FieldMode; 4],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_background_color: Option<ThemedColor>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_border_color: Option<ThemedColor>,
-    #[serde(skip_serializing_if = "crate::api::style::SearchColorPreview::is_default")]
-    pub color_preview: crate::api::style::SearchColorPreview,
-    /// First entry is the initial format. Cycle order is preserved.
-    #[serde(skip_serializing_if = "SearchPoint::default_formats")]
-    pub color_formats: Vec<crate::api::point_sample::ColorFormat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub marker_color: Option<ThemedColor>,
-    #[serde(skip_serializing_if = "SearchPoint::default_radius")]
-    pub marker_radius: u16,
-    #[serde(skip_serializing_if = "SearchPoint::default_width")]
-    pub marker_width: u16,
+config_struct! {
+    pub struct SearchPoint {
+        #[serde(skip_serializing_if = "SearchPoint::default_field_modes")]
+        field_modes: [crate::api::point_sample::FieldMode; 4] =
+            crate::api::point_sample::DEFAULT_FIELD_MODES,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input_background_color: Option<ThemedColor>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input_border_color: Option<ThemedColor>,
+        #[serde(skip_serializing_if = "crate::api::style::SearchColorPreview::is_default")]
+        color_preview: crate::api::style::SearchColorPreview,
+        /// First entry is the initial format. Cycle order is preserved.
+        #[serde(skip_serializing_if = "SearchPoint::default_formats")]
+        color_formats: Vec<crate::api::point_sample::ColorFormat> = {
+            use crate::api::point_sample::ColorFormat::*;
+            vec![Hex, Rgb, Hsl]
+        },
+        #[serde(skip_serializing_if = "Option::is_none")]
+        marker_color: Option<ThemedColor>,
+        #[serde(skip_serializing_if = "SearchPoint::default_radius")]
+        marker_radius: u16 = 6,
+        #[serde(skip_serializing_if = "SearchPoint::default_width")]
+        marker_width: u16 = 2,
+    }
 }
 
 impl SearchPoint {
@@ -901,22 +661,6 @@ impl SearchPoint {
     }
     fn default_width(value: &u16) -> bool {
         *value == 2
-    }
-}
-
-impl Default for SearchPoint {
-    fn default() -> Self {
-        use crate::api::point_sample::ColorFormat::*;
-        Self {
-            field_modes: crate::api::point_sample::DEFAULT_FIELD_MODES,
-            color_formats: vec![Hex, Rgb, Hsl],
-            color_preview: Default::default(),
-            input_background_color: None,
-            input_border_color: None,
-            marker_color: None,
-            marker_radius: 6,
-            marker_width: 2,
-        }
     }
 }
 
