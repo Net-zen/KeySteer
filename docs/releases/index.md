@@ -5,6 +5,16 @@ outline: 2
 
 # 更新日志 / Release Notes
 
+## 0.15.1
+
+**优化**
+
+- 优化配置加载与重载、快捷键解析和应用切换，减少重复处理与临时内存占用。
+
+**Improved**
+
+- Reduced redundant work and temporary memory use during configuration loading and reloading, shortcut parsing, and application switching.
+
 ## 0.15.0
 
 **快捷键调整（Normal）**：`G` 网格 · `F` UI Hint · `Primary+G` 递归网格 · `Primary+F` Bisect。可在 `[normal.bindings]` 自定义。

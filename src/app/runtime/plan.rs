@@ -65,7 +65,7 @@ pub struct AppRouteOverride {
     pub bindings: Bindings,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModeRoute {
     pub bindings: Bindings,
     pub inherits: Vec<ModeId>,

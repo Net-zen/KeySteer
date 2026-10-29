@@ -116,19 +116,28 @@ impl Key {
     }
 
     pub fn new(value: impl AsRef<str>) -> Result<Self, String> {
-        let normalized = normalize_key(value.as_ref());
-        if normalized.is_empty() {
-            Err("key must not be empty".into())
-        } else {
-            Ok(Self(SmolStr::new(normalized.as_ref())))
-        }
+        let value = value.as_ref();
+        ACTIVE_KEY_ALIASES.with(|active| Self::parse(value, active.borrow().as_ref()))
     }
 
     pub(crate) fn new_with_aliases(
         value: impl AsRef<str>,
         aliases: &BTreeMap<String, String>,
     ) -> Result<Self, String> {
-        with_key_aliases(aliases, || Self::new(value))
+        Self::parse(value.as_ref(), Some(aliases))
+    }
+
+    fn parse(value: &str, aliases: Option<&BTreeMap<String, String>>) -> Result<Self, String> {
+        let alias = normalized_alias(value);
+        let normalized = match aliases.and_then(|aliases| aliases.get(alias.as_ref())) {
+            Some(resolved) => Cow::Borrowed(resolved.as_str()),
+            None => builtin_key(alias),
+        };
+        if normalized.is_empty() {
+            Err("key must not be empty".into())
+        } else {
+            Ok(Self(SmolStr::new(normalized.as_ref())))
+        }
     }
 
     pub fn as_str(&self) -> &str {
@@ -225,19 +234,6 @@ impl Key {
                 | "fn"
         )
     }
-}
-
-fn normalize_key(value: &str) -> Cow<'_, str> {
-    let alias = normalized_alias(value);
-    if let Some(resolved) = ACTIVE_KEY_ALIASES.with(|active| {
-        active
-            .borrow()
-            .as_ref()
-            .and_then(|aliases| aliases.get(alias.as_ref()).cloned())
-    }) {
-        return Cow::Owned(resolved);
-    }
-    builtin_key(alias)
 }
 
 fn normalized_alias(value: &str) -> Cow<'_, str> {
@@ -354,12 +350,26 @@ pub struct KeyChord {
 
 impl KeyChord {
     pub fn parse(value: &str) -> Result<Self, String> {
+        ACTIVE_KEY_ALIASES.with(|active| Self::parse_inner(value, active.borrow().as_ref()))
+    }
+
+    pub(crate) fn parse_with_aliases(
+        value: &str,
+        aliases: &BTreeMap<String, String>,
+    ) -> Result<Self, String> {
+        Self::parse_inner(value, Some(aliases))
+    }
+
+    fn parse_inner(
+        value: &str,
+        aliases: Option<&BTreeMap<String, String>>,
+    ) -> Result<Self, String> {
         let mut keys = if value.trim().chars().count() == 1 {
-            vec![Key::new(value)?]
+            vec![Key::parse(value, aliases)?]
         } else {
             value
                 .split('+')
-                .map(Key::new)
+                .map(|key| Key::parse(key, aliases))
                 .collect::<Result<Vec<_>, _>>()?
         };
         if keys.is_empty() {
@@ -395,13 +405,6 @@ impl KeyChord {
             input_len,
             activation,
         })
-    }
-
-    pub(crate) fn parse_with_aliases(
-        value: &str,
-        aliases: &BTreeMap<String, String>,
-    ) -> Result<Self, String> {
-        with_key_aliases(aliases, || Self::parse(value))
     }
 
     pub fn keys(&self) -> &[Key] {
@@ -531,6 +534,25 @@ mod injection_tests {
             assert_eq!(Key::new("ctrl").unwrap().as_str(), "right_ctrl");
         });
         assert_eq!(Key::new("ctrl").unwrap().as_str(), "ctrl");
+    }
+
+    #[test]
+    fn explicit_aliases_isolate_keys_and_chords_from_the_ambient_scope() {
+        let outer = BTreeMap::from([("ctrl".into(), "right_ctrl".into())]);
+        let inner = BTreeMap::from([("ctrl".into(), "left_alt".into())]);
+        with_key_aliases(&outer, || {
+            for aliases in [&inner, &BTreeMap::new()] {
+                let expected = aliases.get("ctrl").map(String::as_str).unwrap_or("ctrl");
+                assert_eq!(
+                    Key::new_with_aliases("CTRL", aliases).unwrap().as_str(),
+                    expected
+                );
+                let chord = KeyChord::parse_with_aliases("ctrl+a", aliases).unwrap();
+                assert_eq!(chord.keys()[0].as_str(), expected);
+                assert!(KeyChord::parse_with_aliases("ctrl+ctrl", aliases).is_err());
+                assert_eq!(Key::new("ctrl").unwrap().as_str(), "right_ctrl");
+            }
+        });
     }
 
     #[test]
@@ -667,23 +689,57 @@ pub fn single_printable_character(units: &[u16]) -> Option<char> {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModeId(ModeName);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum ModeName {
-    Idle,
-    Normal,
-    TextInput,
-    TextSelect,
-    QuickSwitch,
-    Grid,
-    RecursiveGrid,
-    Bisect,
-    UiHint,
-    Window,
-    WindowQuick,
-    WindowEditor,
-    WindowRestore,
-    WindowTab,
-    Shared(Arc<str>),
+// Keep the compact representation, parsing, constructors and public name list
+// in the same declaration. Variant order remains part of ModeId's ordering.
+macro_rules! builtin_mode_ids {
+    ($($variant:ident => $name:ident),+ $(,)?) => {
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        enum ModeName {
+            $($variant,)+
+            Shared(Arc<str>),
+        }
+
+        impl ModeId {
+            /// The ids of the built-in modes, in their established order.
+            pub const BUILT_IN: [&'static str; [$(stringify!($name)),+].len()] =
+                [$(stringify!($name)),+];
+
+            $(pub fn $name() -> Self { Self(ModeName::$variant) })+
+
+            pub fn as_str(&self) -> &str {
+                match &self.0 {
+                    $(ModeName::$variant => stringify!($name),)+
+                    ModeName::Shared(name) => name,
+                }
+            }
+        }
+
+        impl ModeName {
+            fn parse(value: &str) -> Self {
+                match value {
+                    $(stringify!($name) => Self::$variant,)+
+                    _ => Self::Shared(Arc::from(value)),
+                }
+            }
+        }
+    };
+}
+
+builtin_mode_ids! {
+    Idle => idle,
+    Normal => normal,
+    TextInput => text_input,
+    TextSelect => text_select,
+    QuickSwitch => quick_switch,
+    Grid => grid,
+    RecursiveGrid => recursive_grid,
+    Bisect => bisect,
+    UiHint => ui_hint,
+    Window => window,
+    WindowQuick => window_quick,
+    WindowEditor => window_editor,
+    WindowRestore => window_restore,
+    WindowTab => window_tab,
 }
 
 impl ModeId {
@@ -698,46 +754,11 @@ impl ModeId {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '/'));
         if valid {
-            let name = match value {
-                "idle" => ModeName::Idle,
-                "normal" => ModeName::Normal,
-                "text_input" => ModeName::TextInput,
-                "text_select" => ModeName::TextSelect,
-                "quick_switch" => ModeName::QuickSwitch,
-                "grid" => ModeName::Grid,
-                "recursive_grid" => ModeName::RecursiveGrid,
-                "bisect" => ModeName::Bisect,
-                "ui_hint" => ModeName::UiHint,
-                "window" => ModeName::Window,
-                "window_quick" => ModeName::WindowQuick,
-                "window_editor" => ModeName::WindowEditor,
-                "window_restore" => ModeName::WindowRestore,
-                "window_tab" => ModeName::WindowTab,
-                _ => ModeName::Shared(Arc::from(value)),
-            };
-            Ok(Self(name))
+            Ok(Self(ModeName::parse(value)))
         } else {
             Err(format!("invalid mode id: {value:?}"))
         }
     }
-
-    /// The ids of the built-in modes.
-    pub const BUILT_IN: [&'static str; 14] = [
-        "idle",
-        "normal",
-        "text_input",
-        "text_select",
-        "quick_switch",
-        "grid",
-        "recursive_grid",
-        "bisect",
-        "ui_hint",
-        "window",
-        "window_quick",
-        "window_editor",
-        "window_restore",
-        "window_tab",
-    ];
 
     /// Whether `name` could name a mode in configuration.
     ///
@@ -748,49 +769,6 @@ impl ModeId {
         Self::BUILT_IN.contains(&name) || name.contains(':')
     }
 
-    pub fn idle() -> Self {
-        Self(ModeName::Idle)
-    }
-    pub fn normal() -> Self {
-        Self(ModeName::Normal)
-    }
-    pub fn text_input() -> Self {
-        Self(ModeName::TextInput)
-    }
-    pub fn quick_switch() -> Self {
-        Self(ModeName::QuickSwitch)
-    }
-    pub fn text_select() -> Self {
-        Self(ModeName::TextSelect)
-    }
-    pub fn grid() -> Self {
-        Self(ModeName::Grid)
-    }
-    pub fn recursive_grid() -> Self {
-        Self(ModeName::RecursiveGrid)
-    }
-    pub fn bisect() -> Self {
-        Self(ModeName::Bisect)
-    }
-    pub fn ui_hint() -> Self {
-        Self(ModeName::UiHint)
-    }
-    pub fn window() -> Self {
-        Self(ModeName::Window)
-    }
-
-    pub fn window_quick() -> Self {
-        Self(ModeName::WindowQuick)
-    }
-    pub fn window_editor() -> Self {
-        Self(ModeName::WindowEditor)
-    }
-    pub fn window_restore() -> Self {
-        Self(ModeName::WindowRestore)
-    }
-    pub fn window_tab() -> Self {
-        Self(ModeName::WindowTab)
-    }
     pub fn is_grid(&self) -> bool {
         matches!(
             self.0,
@@ -806,25 +784,6 @@ impl ModeId {
                 | ModeName::WindowRestore
                 | ModeName::WindowTab
         )
-    }
-    pub fn as_str(&self) -> &str {
-        match &self.0 {
-            ModeName::Idle => "idle",
-            ModeName::Normal => "normal",
-            ModeName::TextInput => "text_input",
-            ModeName::TextSelect => "text_select",
-            ModeName::QuickSwitch => "quick_switch",
-            ModeName::Grid => "grid",
-            ModeName::RecursiveGrid => "recursive_grid",
-            ModeName::Bisect => "bisect",
-            ModeName::UiHint => "ui_hint",
-            ModeName::Window => "window",
-            ModeName::WindowQuick => "window_quick",
-            ModeName::WindowEditor => "window_editor",
-            ModeName::WindowRestore => "window_restore",
-            ModeName::WindowTab => "window_tab",
-            ModeName::Shared(name) => name,
-        }
     }
 }
 

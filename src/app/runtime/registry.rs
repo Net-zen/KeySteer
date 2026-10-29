@@ -535,14 +535,18 @@ impl Engine {
     /// Per-app overrides for the focused application are folded in, so a
     /// binding can differ per application, and disabled entries are dropped.
     pub(super) fn rebuild_tables(&mut self) {
+        let profile = self.binding_profile_key_for(self.focused_app.as_ref());
+        self.rebuild_tables_for_profile(profile);
+    }
+
+    pub(super) fn rebuild_tables_for_profile(&mut self, binding_profile_key: Vec<Bindings>) {
         self.overlay.window_help_plan = None;
         self.overlay.key_help_cache = None;
         let ids = self.binding_mode_ids();
-        let binding_profile_key = self.binding_profile_key_for(self.focused_app.as_ref());
 
         let ui_hint_overlap_chord = KeyChord::parse(&self.settings.ui_hint_overlap_key).ok();
         let mut routes = Vec::with_capacity(ids.len());
-        for id in ids {
+        for (index, id) in ids.into_iter().enumerate() {
             let temporary_chords = self
                 .registry
                 .routes
@@ -568,8 +572,20 @@ impl Engine {
                 })
                 .unwrap_or_default();
             let table = self.registry.routes.get(&id).map(|route| {
-                let merged = self.merge_overrides(&id, &route.bindings);
-                CompiledKeymap::compile(merged, &self.settings.resolved_key_aliases)
+                let aliases = &self.settings.resolved_key_aliases;
+                // The profile follows binding_mode_ids order. Borrow its resolved
+                // overrides; only matching modes need a merged, key-sorted view.
+                match binding_profile_key
+                    .get(index)
+                    .filter(|patch| !patch.is_empty())
+                {
+                    Some(overrides) => {
+                        let merged: BTreeMap<_, _> =
+                            route.bindings.iter().chain(overrides).collect();
+                        CompiledKeymap::compile(merged, aliases)
+                    }
+                    None => CompiledKeymap::compile(&route.bindings, aliases),
+                }
             });
             routes.push((id, table, temporary_chords));
         }
@@ -644,15 +660,6 @@ impl Engine {
             }
         }
         backend.set_character_bindings(&keys);
-    }
-
-    /// Apply the focused application's overrides to one mode's table.
-    fn merge_overrides(&self, mode_id: &ModeId, base: &Bindings) -> Vec<(String, Binding)> {
-        let mut merged: BTreeMap<String, Binding> = base.clone();
-        for (chord, binding) in self.resolved_app_overrides(mode_id, self.focused_app.as_ref()) {
-            merged.insert(chord, binding);
-        }
-        merged.into_iter().collect()
     }
 
     fn resolved_app_overrides(&self, mode_id: &ModeId, app: Option<&FocusedApp>) -> Bindings {

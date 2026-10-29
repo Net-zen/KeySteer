@@ -299,6 +299,65 @@ fn focus_changes_rebuild_only_when_the_effective_binding_profile_changes() {
 }
 
 #[test]
+fn focus_rebuild_preserves_override_precedence_and_sorted_chord_collisions() {
+    let plan = crate::app::configuration::compile(&Config::default()).unwrap();
+    let mut engine = Engine::from_plan(plan, Appearance::Dark).unwrap();
+    let left = Binding::parse("move_left").unwrap();
+    let right = Binding::parse("move_right").unwrap();
+    let normal = engine.registry.routes.get_mut(&ModeId::normal()).unwrap();
+    normal.bindings = Bindings::from([
+        ("ctrl+j".into(), left.clone()),
+        ("h".into(), left.clone()),
+        ("k".into(), left.clone()),
+    ]);
+    normal.app_overrides = vec![
+        plan::AppRouteOverride {
+            pattern: "Editor".into(),
+            bindings: Bindings::from([("CTRL+j".into(), left.clone())]),
+        },
+        plan::AppRouteOverride {
+            pattern: "Document".into(),
+            bindings: Bindings::from([
+                ("CTRL+j".into(), right.clone()),
+                ("h".into(), Binding::Disabled),
+            ]),
+        },
+    ];
+    engine.registry.routes.get_mut(&ModeId::grid()).unwrap().app_overrides = vec![
+        plan::AppRouteOverride {
+            pattern: "Editor".into(),
+            bindings: Bindings::from([("f12".into(), Binding::Disabled)]),
+        },
+    ];
+    let (mut backend, _) = FakeBackend::new(Vec::new());
+    engine.handle_backend_event(BackendEvent::FocusChanged(Some(FocusedApp {
+        bundle_id: "com.example.editor".into(),
+        window_title: "Editor Document".into(),
+        process_id: 42,
+    })), &mut backend).unwrap();
+    assert_eq!(
+        engine.bindings_in(&ModeId::normal()).into_iter().collect::<Bindings>(),
+        Bindings::from([
+            ("ctrl+j".into(), right),
+            ("h".into(), Binding::Disabled),
+            ("k".into(), left.clone()),
+        ]),
+        "last matching override wins raw keys; sorted raw keys decide canonical collisions"
+    );
+    assert!(engine.bindings_in(&ModeId::grid()).contains(&("f12".into(), Binding::Disabled)));
+    engine.handle_backend_event(BackendEvent::FocusChanged(None), &mut backend).unwrap();
+    assert_eq!(
+        engine.bindings_in(&ModeId::normal()).into_iter().collect::<Bindings>(),
+        Bindings::from([
+            ("ctrl+j".into(), left.clone()),
+            ("h".into(), left.clone()),
+            ("k".into(), left),
+        ])
+    );
+    assert!(!engine.bindings_in(&ModeId::grid()).iter().any(|(key, _)| key == "f12"));
+}
+
+#[test]
 fn bootstrap_registration_compiles_binding_tables_once() {
     let config = Config::default();
     let modes = crate::app::mode_catalog::built_in(&config);

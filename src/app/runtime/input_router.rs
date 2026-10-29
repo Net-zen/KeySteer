@@ -72,18 +72,17 @@ impl CompiledKeymap {
         self.by_activation.values().flatten()
     }
 
-    pub fn compile(bindings: Vec<(String, Binding)>, aliases: &BTreeMap<String, String>) -> Self {
-        // All entries use the same aliases. Own one scope for the complete
-        // table instead of cloning the alias map for every chord.
-        crate::api::input::with_key_aliases(aliases, || {
-            let mut map = Self::default();
-            for (text, binding) in bindings {
-                if let Ok(chord) = KeyChord::parse(&text) {
-                    map.insert(chord, binding);
-                }
+    pub fn compile<'a>(
+        bindings: impl IntoIterator<Item = (&'a String, &'a Binding)>,
+        aliases: &BTreeMap<String, String>,
+    ) -> Self {
+        let mut map = Self::default();
+        for (text, binding) in bindings {
+            if let Ok(chord) = KeyChord::parse_with_aliases(text, aliases) {
+                map.insert(chord, binding.clone());
             }
-            map
-        })
+        }
+        map
     }
 
     pub fn insert(&mut self, chord: KeyChord, binding: Binding) {
@@ -329,6 +328,16 @@ mod tests {
     use crate::api::ModeId;
     use std::collections::BTreeSet;
 
+    fn compile(
+        bindings: Vec<(String, Binding)>,
+        aliases: &BTreeMap<String, String>,
+    ) -> CompiledKeymap {
+        CompiledKeymap::compile(
+            bindings.iter().map(|(key, binding)| (key, binding)),
+            aliases,
+        )
+    }
+
     fn mode(name: &str) -> Binding {
         Binding::Mode(ModeId::new(name).unwrap())
     }
@@ -338,7 +347,7 @@ mod tests {
         let outer = BTreeMap::from([("primary".into(), "right_ctrl".into())]);
         let inner = BTreeMap::from([("primary".into(), "left_alt".into())]);
         crate::api::input::with_key_aliases(&outer, || {
-            let map = CompiledKeymap::compile(
+            let map = compile(
                 vec![
                     ("primary+e".into(), mode("normal")),
                     ("primary+primary".into(), mode("grid")),
@@ -363,7 +372,7 @@ mod tests {
     #[test]
     fn custom_primary_side_is_enforced_by_the_compiled_keymap() {
         let aliases = BTreeMap::from([("primary".into(), "left_alt".into())]);
-        let map = CompiledKeymap::compile(vec![("primary+e".into(), mode("normal"))], &aliases);
+        let map = compile(vec![("primary+e".into(), mode("normal"))], &aliases);
         let e = Key::new("e").unwrap();
         let right = BTreeSet::from([Key::new("right_alt").unwrap(), e.clone()]);
         let left = BTreeSet::from([Key::new("left_alt").unwrap(), e.clone()]);
@@ -378,7 +387,7 @@ mod tests {
     #[test]
     fn generic_modifier_alias_accepts_both_physical_sides() {
         let aliases = BTreeMap::from([("primary".into(), "alt".into())]);
-        let map = CompiledKeymap::compile(vec![("primary+e".into(), mode("normal"))], &aliases);
+        let map = compile(vec![("primary+e".into(), mode("normal"))], &aliases);
         let e = Key::new("e").unwrap();
 
         for side in ["left_alt", "right_alt"] {
@@ -395,7 +404,7 @@ mod tests {
         for modifier in ["alt", "ctrl", "shift", "win"] {
             let left = Key::new(format!("left_{modifier}")).unwrap();
             let right = Key::new(format!("right_{modifier}")).unwrap();
-            let map = CompiledKeymap::compile(
+            let map = compile(
                 vec![
                     (modifier.into(), mode("normal")),
                     (left.as_str().into(), mode("grid")),
@@ -420,7 +429,7 @@ mod tests {
 
     #[test]
     fn single_key_lookup_requires_activation_and_preserves_companion_chords() {
-        let map = CompiledKeymap::compile(
+        let map = compile(
             vec![("s".into(), mode("normal")), ("alt+s".into(), mode("grid"))],
             &BTreeMap::new(),
         );
@@ -441,14 +450,13 @@ mod tests {
             map.lookup(&s, &[alt, s.clone()]),
             Some(Arc::new(mode("grid")))
         );
-        let chord_only =
-            CompiledKeymap::compile(vec![("alt+s".into(), mode("grid"))], &BTreeMap::new());
+        let chord_only = compile(vec![("alt+s".into(), mode("grid"))], &BTreeMap::new());
         assert_eq!(chord_only.lookup(&s, std::slice::from_ref(&s)), None);
     }
 
     #[test]
     fn strict_lookup_rejects_foreign_modifiers_but_accepts_owned_ones() {
-        let map = CompiledKeymap::compile(
+        let map = compile(
             vec![("h".into(), mode("normal")), ("alt+h".into(), mode("grid"))],
             &BTreeMap::new(),
         );
@@ -475,7 +483,7 @@ mod tests {
 
     #[test]
     fn strict_lookup_allows_a_bare_parameterless_toggle_to_capture_a_modifier() {
-        let map = CompiledKeymap::compile(
+        let map = compile(
             vec![("n".into(), Binding::Toggle(Vec::new()))],
             &BTreeMap::new(),
         );
@@ -490,7 +498,7 @@ mod tests {
 
     #[test]
     fn strict_lookup_prefers_a_specific_chord_over_a_bare_toggle() {
-        let map = CompiledKeymap::compile(
+        let map = compile(
             vec![
                 ("n".into(), Binding::Toggle(Vec::new())),
                 ("ctrl+n".into(), mode("grid")),
@@ -508,7 +516,7 @@ mod tests {
 
     #[test]
     fn disabled_binding_is_compiled_so_it_can_block_inheritance() {
-        let map = CompiledKeymap::compile(vec![("h".into(), Binding::Disabled)], &BTreeMap::new());
+        let map = compile(vec![("h".into(), Binding::Disabled)], &BTreeMap::new());
         let h = Key::new("h").unwrap();
         assert_eq!(
             map.lookup(&h, std::slice::from_ref(&h)),

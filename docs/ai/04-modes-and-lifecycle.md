@@ -15,7 +15,9 @@ Mode/Plugin 是平台无关状态机：接收 `ModeEvent` 和 `HostContext`，�
 | 插件 | `src/plugins/` |
 | 注册与生命周期词汇 | `src/app/mode_catalog.rs`、`src/api/lifecycle.rs` |
 
-普通网格、递归网格与 Bisect 二分定位共用泛型 `GridMode<G>` 的事件、命令和生命周期源码；catalog 分别装配 `GridGeometry`、`RecursiveGeometry`、`BisectGeometry`，各自绑定具体样式、视图和模式身份。`targeting/geometry.rs` 定义三种几何，`grid/variants.rs` 将几何和样式静态配对；`TargetingController<G>` 的选择、终态、重置和跨屏重放在编译时分别实例化，不保存模式种类标记或样式枚举。Bisect 不存字母布局；Grid 不存递归最小尺寸。Normal 的静默定位同样在 catalog 选择具体字母几何，普通 Normal 保持原实现。Bisect 通过独立 `bisect_left/down/up/right` 绑定选择半区，无标签字母表与层布局；每次只缩小一个轴，该轴到最小尺寸时仍可切分另一轴。深度上限或两轴均无法继续时沿用网格完成语义，路径记录方向供撤销和跨屏重放。无字母视图复用递归网格的区域填充、描边与终态背景，原生覆盖层资源策略不变；Window 借用定位也将 Bisect 视为网格，保留窗口会话。
+`built_in_factories` 共用一份启用条件、构造函数和路由编译函数清单；条目只保存布尔值与函数指针，迭代前不构造实例或复制绑定。基础路由由 `compile_route` 处理，应用覆盖在基础编译成功后才复制；窗口和插件也复用 `compile_app_route`，UIHint 单独处理其覆盖类型。生产入口 `built_in_specs` 按顺序构造实例并编译路由，首个错误立即返回；兼容测试入口 `built_in` 只调用构造函数，不因无关的路由配置错误失败。两种历史顺序用普通数组与共享数组拼接，仅在兼容入口把 Text Select 延至共享数组之后，不排序；禁用条目先过滤，再调用构造或编译函数。完整性测试检查两者的身份集合、启用开关和各自的顺序。窗口族按各自 `WindowKind` 读取配置与启用开关，路由按模式 ID 配对，避免并行数组顺序造成错配。新增模式步骤见[配置维护入口](03-configuration.md#新增模式的维护入口)。
+
+普通网格、递归网格与 Bisect 二分定位共用泛型 `GridMode<G>` 的事件、命令和生命周期源码；catalog 分别装配 `GridGeometry`、`RecursiveGeometry`、`BisectGeometry`，各自绑定具体样式、视图和模式身份。`targeting/geometry.rs` 定义三种几何，`grid/variants.rs` 将几何和样式静态配对；`TargetingController<G>` 的选择、终态、重置和跨屏重放在编译时分别实例化，不保存模式种类标记或样式枚举。Bisect 不存字母布局；Grid 不存递归最小尺寸。Normal 的静默定位同样在 catalog 选择具体字母几何，普通 Normal 保持原实现。 catalog 通过共享布局函数和 `From<&GridLayer>` 转换组装网格，配置到运行设置的转换仍留在装配层，模式不依赖配置类型。Bisect 通过独立 `bisect_left/down/up/right` 绑定选择半区，无标签字母表与层布局；每次只缩小一个轴，该轴到最小尺寸时仍可切分另一轴。深度上限或两轴均无法继续时沿用网格完成语义，路径记录方向供撤销和跨屏重放。无字母视图复用递归网格的区域填充、描边与终态背景，原生覆盖层资源策略不变；Window 借用定位也将 Bisect 视为网格，保留窗口会话。
 
 Normal 移动与滚动共用原生显示帧时钟，各自维护手势状态并输出独立命令：按下立即执行短步，随后按帧的实际经过时间持续更新，不等待键盘重复延迟；仅在最后一个移动／滚动手势释放后停止时钟。普通滚动使用配置预编译且独立于短按距离的每秒速度，叠加当前速度倍率并保留小数余量；帧到达后忽略 OS 重复，没有显示帧时保留键盘重复回退。连续滚动输出可取消的 `ScrollFrame`，短按保留 `Scroll`；移动按下／释放不取消滚动帧，滚动自身状态改变且已发出连续帧时才作废旧帧；短按和页滚动不取消不存在的帧，页滚动也不重算连续滚动速度，原生执行策略见[平台后端](06-platform-backends.md)。半页／整页动作和普通滚动的仅短按配置不启动滚动帧时钟，也不接受重复滚动。模式借用仍按原 owner 接收帧与释放，会话清理清空全部保持状态。
 

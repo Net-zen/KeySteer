@@ -674,27 +674,14 @@ impl ConfigFile {
                 "ui_hint.vision minimum aspect ratios must not exceed maximums".into(),
             ));
         }
-        for (mode, keys) in [
-            ("normal", &self.normal.temporary_mode_keys),
-            ("quick_switch", &self.quick_switch.temporary_mode_keys),
-            ("text_input", &self.text_input.temporary_mode_keys),
-            ("text_select", &self.text_select.temporary_mode_keys),
-            ("grid", &self.grid.temporary_mode_keys),
-            ("bisect", &self.bisect.temporary_mode_keys),
-            ("recursive_grid", &self.recursive_grid.temporary_mode_keys),
-            ("ui_hint", &self.ui_hint.temporary_mode_keys),
-            ("window", &self.window.temporary_mode_keys),
-            ("window_quick", &self.window_quick.temporary_mode_keys),
-            ("window_editor", &self.window_editor.temporary_mode_keys),
-            ("window_restore", &self.window_restore.temporary_mode_keys),
-            ("window_tab", &self.window_tab.temporary_mode_keys),
-        ]
-        .into_iter()
-        .chain(
-            self.plugin_modes
-                .iter()
-                .map(|(id, mode)| (id.as_str(), &mode.temporary_mode_keys)),
-        ) {
+        for (mode, keys) in builtin_mode_fields!(self, [&], |mode| &mode.temporary_mode_keys)
+            .into_iter()
+            .chain(
+                self.plugin_modes
+                    .iter()
+                    .map(|(id, mode)| (id.as_str(), &mode.temporary_mode_keys)),
+            )
+        {
             for key in keys {
                 let key = Key::new(key).map_err(|error| {
                     bad(format!(
@@ -967,7 +954,8 @@ impl ConfigFile {
 
     /// Every binding table with a label for error messages.
     fn binding_tables(&self) -> Vec<(String, &Bindings)> {
-        let mut tables: Vec<(String, &Bindings)> = vec![
+        // Keep Quick Switch and multi-select first in diagnostics and warnings.
+        let mut tables = vec![
             ("[hotkeys]".into(), &self.hotkeys),
             (
                 "[quick_switch.bindings]".into(),
@@ -977,17 +965,15 @@ impl ConfigFile {
                 "[window.multi_select.bindings]".into(),
                 &self.window.multi_select.bindings,
             ),
-            ("[normal.bindings]".into(), &self.normal.bindings),
-            ("[text_input.bindings]".into(), &self.text_input.bindings),
-            ("[text_select.bindings]".into(), &self.text_select.bindings),
-            ("[grid.bindings]".into(), &self.grid.bindings),
-            ("[bisect.bindings]".into(), &self.bisect.bindings),
-            (
-                "[recursive_grid.bindings]".into(),
-                &self.recursive_grid.bindings,
-            ),
-            ("[ui_hint.bindings]".into(), &self.ui_hint.bindings),
         ];
+        let windows = self.window_modes().map(|(name, _)| name);
+        for (name, bindings) in builtin_mode_fields!(self, [&], |mode| &mode.bindings)
+            .into_iter()
+            // Window tables stay beside their application overrides below.
+            .filter(|(name, _)| *name != "quick_switch" && !windows.contains(name))
+        {
+            tables.push((format!("[{name}.bindings]"), bindings));
+        }
         for (id, mode) in &self.plugin_modes {
             tables.push((format!("[plugin_modes.{id:?}.bindings]"), &mode.bindings));
         }
@@ -1006,29 +992,18 @@ impl ConfigFile {
                 ));
             }
         }
-        for over in &self.normal.app_configs {
-            tables.push((
-                format!("[[normal.app_configs]] {:?}", over.bundle_id),
-                &over.bindings,
-            ));
-        }
-        for over in &self.bisect.app_configs {
-            tables.push((
-                format!("[[bisect.app_configs]] {:?}", over.bundle_id),
-                &over.bindings,
-            ));
-        }
-        for over in &self.grid.app_configs {
-            tables.push((
-                format!("[[grid.app_configs]] {:?}", over.bundle_id),
-                &over.bindings,
-            ));
-        }
-        for over in &self.recursive_grid.app_configs {
-            tables.push((
-                format!("[[recursive_grid.app_configs]] {:?}", over.bundle_id),
-                &over.bindings,
-            ));
+        for (name, overrides) in [
+            ("normal", &self.normal.app_configs),
+            ("bisect", &self.bisect.app_configs),
+            ("grid", &self.grid.app_configs),
+            ("recursive_grid", &self.recursive_grid.app_configs),
+        ] {
+            for over in overrides {
+                tables.push((
+                    format!("[[{name}.app_configs]] {:?}", over.bundle_id),
+                    &over.bindings,
+                ));
+            }
         }
         for over in &self.ui_hint.app_configs {
             tables.push((
@@ -1049,28 +1024,13 @@ impl ConfigFile {
 }
 
 fn validate_inheritance(config: &Config) -> Result<(), String> {
-    let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::from([
-        ("normal".into(), config.normal.inherits.clone()),
-        ("quick_switch".into(), config.quick_switch.inherits.clone()),
-        ("text_input".into(), config.text_input.inherits.clone()),
-        ("text_select".into(), config.text_select.inherits.clone()),
-        ("grid".into(), config.grid.inherits.clone()),
-        ("bisect".into(), config.bisect.inherits.clone()),
-        (
-            "recursive_grid".into(),
-            config.recursive_grid.inherits.clone(),
-        ),
-        ("ui_hint".into(), config.ui_hint.inherits.clone()),
-    ]);
-    for (name, mode) in config.window_modes() {
-        graph.insert(name.into(), mode.inherits.clone());
-    }
-    for (id, mode) in &config.plugin_modes {
-        graph.insert(id.clone(), mode.inherits.clone());
-    }
+    let graph: BTreeMap<&str, &[String]> = config
+        .mode_routing()
+        .map(|(name, routing)| (name, routing.inherits))
+        .collect();
     let known = |name: &str| name == "hotkeys" || graph.contains_key(name);
     for (mode, sources) in &graph {
-        for source in sources {
+        for source in *sources {
             if !known(source) {
                 return Err(format!(
                     "{mode}.inherits contains unknown source {source:?}"
@@ -1078,44 +1038,8 @@ fn validate_inheritance(config: &Config) -> Result<(), String> {
             }
         }
     }
-    for (mode, source) in [
-        ("normal", config.normal.temporary_mode.as_deref()),
-        (
-            "quick_switch",
-            config.quick_switch.temporary_mode.as_deref(),
-        ),
-        ("text_input", config.text_input.temporary_mode.as_deref()),
-        ("text_select", config.text_select.temporary_mode.as_deref()),
-        ("grid", config.grid.temporary_mode.as_deref()),
-        ("bisect", config.bisect.temporary_mode.as_deref()),
-        ("window", config.window.temporary_mode.as_deref()),
-        (
-            "window_quick",
-            config.window_quick.temporary_mode.as_deref(),
-        ),
-        (
-            "window_editor",
-            config.window_editor.temporary_mode.as_deref(),
-        ),
-        (
-            "window_restore",
-            config.window_restore.temporary_mode.as_deref(),
-        ),
-        ("window_tab", config.window_tab.temporary_mode.as_deref()),
-        (
-            "recursive_grid",
-            config.recursive_grid.temporary_mode.as_deref(),
-        ),
-        ("ui_hint", config.ui_hint.temporary_mode.as_deref()),
-    ]
-    .into_iter()
-    .chain(
-        config
-            .plugin_modes
-            .iter()
-            .map(|(id, mode)| (id.as_str(), mode.temporary_mode.as_deref())),
-    ) {
-        if let Some(source) = source
+    for (mode, routing) in config.mode_routing() {
+        if let Some(source) = routing.temporary_mode
             && !known(source)
         {
             return Err(format!(
@@ -1124,25 +1048,25 @@ fn validate_inheritance(config: &Config) -> Result<(), String> {
         }
     }
 
-    fn visit(
-        mode: &str,
-        graph: &BTreeMap<String, Vec<String>>,
-        visiting: &mut std::collections::BTreeSet<String>,
-        done: &mut std::collections::BTreeSet<String>,
+    fn visit<'a>(
+        mode: &'a str,
+        graph: &BTreeMap<&'a str, &'a [String]>,
+        visiting: &mut BTreeSet<&'a str>,
+        done: &mut BTreeSet<&'a str>,
     ) -> Result<(), String> {
         if done.contains(mode) || mode == "hotkeys" {
             return Ok(());
         }
-        if !visiting.insert(mode.to_string()) {
+        if !visiting.insert(mode) {
             return Err(format!("inheritance cycle contains {mode:?}"));
         }
         if let Some(sources) = graph.get(mode) {
-            for source in sources {
+            for source in *sources {
                 visit(source, graph, visiting, done)?;
             }
         }
         visiting.remove(mode);
-        done.insert(mode.to_string());
+        done.insert(mode);
         Ok(())
     }
 

@@ -31,6 +31,19 @@ macro_rules! mode_config {
     ($(#[$attr:meta])* $vis:vis struct $name:ident { $($fields:tt)* }) => {
         $crate::config::macros::mode_config!(@expand
             [config_struct ($(#[$attr])* $vis struct $name)] { $($fields)* });
+        $crate::config::macros::mode_config!(@view $name);
+    };
+    (@view $name:ident) => {
+        impl $name {
+            pub(crate) fn routing(&self) -> $crate::config::Routing<'_> {
+                $crate::config::Routing {
+                    inherits: &self.inherits,
+                    temporary_mode: self.temporary_mode.as_deref(),
+                    temporary_mode_keys: &self.temporary_mode_keys,
+                    temporary_mode_passthrough_keys: &self.temporary_mode_passthrough_keys,
+                }
+            }
+        }
     };
     (@expand $output:tt {
         $($(#[$attr:meta])* $field:ident: $ty:ty $(= $default:expr)?,)*
@@ -85,6 +98,7 @@ macro_rules! window_config {
     (common $vis:vis struct $name:ident;) => {
         $crate::config::macros::window_config!(@schema []
             [config_struct (@define [#[derive(serde::Deserialize)] #[serde(default)]] $vis struct $name)]);
+        $crate::config::macros::mode_config!(@view $name);
     };
     ($vis:vis struct $name:ident { common: $common:expr, $($extra:tt)* }) => {
         $crate::config::macros::window_config!(@schema [#[serde(deserialize_with = "read_lifecycle")]]
@@ -148,4 +162,24 @@ macro_rules! window_config {
     };
 }
 
-pub(super) use {config_struct, mode_config, window_config};
+// One inventory for read-only routing, mutable key normalization and validation.
+// The projection borrows fields directly, including window modes' common data.
+macro_rules! builtin_mode_fields {
+    ($config:ident, $borrow:tt, |$mode:ident| $value:expr) => {
+        $crate::config::macros::builtin_mode_fields!(@fields $config, $borrow, |$mode| $value;
+            normal, quick_switch, text_input, text_select, grid, bisect,
+            recursive_grid, ui_hint, window.common, window_quick.common,
+            window_editor.common, window_restore.common, window_tab.common)
+    };
+    (@fields $config:ident, $borrow:tt, |$mode:ident| $value:expr;
+        $($name:ident $(.$field:ident)*),+ $(,)?) => {
+        [$({
+            let $mode = $crate::config::macros::builtin_mode_fields!(
+                @borrow $borrow $config.$name$(.$field)*);
+            (stringify!($name), $value)
+        }),+]
+    };
+    (@borrow [$($borrow:tt)*] $place:expr) => { $($borrow)* $place };
+}
+
+pub(super) use {builtin_mode_fields, config_struct, mode_config, window_config};

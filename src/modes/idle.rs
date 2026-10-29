@@ -8,16 +8,11 @@
 use crate::api::command::{Command, CommandBatch, HostContext, Mode, ModeEvent};
 use crate::api::input::ModeId;
 
+#[derive(Default)]
 pub struct IdleMode;
 
 impl IdleMode {
     pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for IdleMode {
-    fn default() -> Self {
         Self
     }
 }

@@ -23,7 +23,7 @@ pub mod store;
 pub mod theme;
 mod validation;
 
-use macros::{config_struct, mode_config};
+use macros::{builtin_mode_fields, config_struct, mode_config};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -48,8 +48,7 @@ use aliases::{
     compile_key_aliases, normalize_binding_keys, normalize_key_if_aliased, normalize_key_list,
     platform_warning,
 };
-#[cfg(test)]
-pub use settings::GridLayer;
+pub(crate) use settings::GridLayer;
 pub use settings::{
     Bisect, Grid, Normal, Pointer, RecursiveGrid, Scroll, TargetingMethod, TargetingReset,
     TextInput, TextSelect, UiHint,
@@ -60,6 +59,16 @@ pub use theme::{Palette, Theme, ThemedColor};
 
 /// A binding table: chord text -> what it does.
 pub type Bindings = BTreeMap<String, Binding>;
+
+/// Borrowed routing fields shared by mode assembly and validation. The document
+/// keeps its flat fields; this view neither clones them nor changes serialization.
+#[derive(Default)]
+pub(crate) struct Routing<'a> {
+    pub inherits: &'a [String],
+    pub temporary_mode: Option<&'a str>,
+    pub temporary_mode_keys: &'a [String],
+    pub temporary_mode_passthrough_keys: &'a [String],
+}
 
 /// Root configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -628,22 +637,15 @@ impl ConfigFile {
             "[window.multi_select.bindings]",
             &aliases,
         )?;
-        normalize_binding_keys(&mut self.normal.bindings, "[normal.bindings]", &aliases)?;
-        normalize_binding_keys(
-            &mut self.quick_switch.bindings,
-            "[quick_switch.bindings]",
-            &aliases,
-        )?;
-        normalize_binding_keys(
-            &mut self.text_select.bindings,
-            "[text_select.bindings]",
-            &aliases,
-        )?;
-        normalize_binding_keys(
-            &mut self.text_input.bindings,
-            "[text_input.bindings]",
-            &aliases,
-        )?;
+        // These tables historically report errors before window overrides.
+        for (label, table) in [
+            ("[normal.bindings]", &mut self.normal.bindings),
+            ("[quick_switch.bindings]", &mut self.quick_switch.bindings),
+            ("[text_select.bindings]", &mut self.text_select.bindings),
+            ("[text_input.bindings]", &mut self.text_input.bindings),
+        ] {
+            normalize_binding_keys(table, label, &aliases)?;
+        }
         for (name, mode) in self.window_modes_mut() {
             normalize_binding_keys(&mut mode.bindings, &format!("[{name}.bindings]"), &aliases)?;
             for over in &mut mode.app_configs {
@@ -655,14 +657,18 @@ impl ConfigFile {
             }
             normalize_passthrough_keys(&mut mode.temporary_mode_passthrough_keys, &aliases)?;
         }
-        normalize_binding_keys(&mut self.grid.bindings, "[grid.bindings]", &aliases)?;
-        normalize_binding_keys(&mut self.bisect.bindings, "[bisect.bindings]", &aliases)?;
-        normalize_binding_keys(
-            &mut self.recursive_grid.bindings,
-            "[recursive_grid.bindings]",
-            &aliases,
-        )?;
-        normalize_binding_keys(&mut self.ui_hint.bindings, "[ui_hint.bindings]", &aliases)?;
+        let windows = self.window_modes().map(|(name, _)| name);
+        for (name, table) in builtin_mode_fields!(self, [&mut], |mode| &mut mode.bindings)
+            .into_iter()
+            .filter(|(name, _)| {
+                !matches!(
+                    *name,
+                    "normal" | "quick_switch" | "text_select" | "text_input"
+                ) && !windows.contains(name)
+            })
+        {
+            normalize_binding_keys(table, &format!("[{name}.bindings]"), &aliases)?;
+        }
         for (id, mode) in &mut self.plugin_modes {
             normalize_binding_keys(
                 &mut mode.bindings,
@@ -718,16 +724,12 @@ impl ConfigFile {
         for (_, keys) in self.temporary_key_lists_mut() {
             normalize_key_list(keys, &aliases)?;
         }
-        for keys in [
-            &mut self.normal.temporary_mode_passthrough_keys,
-            &mut self.quick_switch.temporary_mode_passthrough_keys,
-            &mut self.text_input.temporary_mode_passthrough_keys,
-            &mut self.text_select.temporary_mode_passthrough_keys,
-            &mut self.grid.temporary_mode_passthrough_keys,
-            &mut self.bisect.temporary_mode_passthrough_keys,
-            &mut self.recursive_grid.temporary_mode_passthrough_keys,
-            &mut self.ui_hint.temporary_mode_passthrough_keys,
-        ] {
+        // Window passthrough keys were normalized with their application overrides.
+        for (_, keys) in
+            builtin_mode_fields!(self, [&mut], |mode| &mut mode.temporary_mode_passthrough_keys)
+                .into_iter()
+                .filter(|(name, _)| !windows.contains(name))
+        {
             normalize_passthrough_keys(keys, &aliases)?;
         }
         for mode in self.plugin_modes.values_mut() {
@@ -741,37 +743,10 @@ impl ConfigFile {
         &self.resolved_key_aliases
     }
 
-    fn temporary_key_lists_mut(&mut self) -> [(&'static str, &mut Vec<String>); 13] {
-        [
-            ("normal", &mut self.normal.temporary_mode_keys),
-            ("quick_switch", &mut self.quick_switch.temporary_mode_keys),
-            ("text_input", &mut self.text_input.temporary_mode_keys),
-            ("text_select", &mut self.text_select.temporary_mode_keys),
-            ("grid", &mut self.grid.temporary_mode_keys),
-            ("bisect", &mut self.bisect.temporary_mode_keys),
-            (
-                "recursive_grid",
-                &mut self.recursive_grid.temporary_mode_keys,
-            ),
-            ("ui_hint", &mut self.ui_hint.temporary_mode_keys),
-            ("window", &mut self.window.common.temporary_mode_keys),
-            (
-                "window_quick",
-                &mut self.window_quick.common.temporary_mode_keys,
-            ),
-            (
-                "window_editor",
-                &mut self.window_editor.common.temporary_mode_keys,
-            ),
-            (
-                "window_restore",
-                &mut self.window_restore.common.temporary_mode_keys,
-            ),
-            (
-                "window_tab",
-                &mut self.window_tab.common.temporary_mode_keys,
-            ),
-        ]
+    fn temporary_key_lists_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (&'static str, &mut Vec<String>)> {
+        builtin_mode_fields!(self, [&mut], |mode| &mut mode.temporary_mode_keys).into_iter()
     }
 
     pub fn to_toml(&self) -> Result<String, ConfigError> {
@@ -817,6 +792,22 @@ impl ConfigFile {
 mod tests;
 
 impl ConfigFile {
+    fn mode_routing(&self) -> impl Iterator<Item = (&str, Routing<'_>)> {
+        // Keep the historical target-error order: these two sections follow windows.
+        builtin_mode_fields!(self, [&], |mode| mode.routing())
+            .into_iter()
+            .filter(|(name, _)| !matches!(*name, "recursive_grid" | "ui_hint"))
+            .chain([
+                ("recursive_grid", self.recursive_grid.routing()),
+                ("ui_hint", self.ui_hint.routing()),
+            ])
+            .chain(
+                self.plugin_modes
+                    .iter()
+                    .map(|(id, mode)| (id.as_str(), mode.routing())),
+            )
+    }
+
     pub(crate) fn window_modes(&self) -> [(&'static str, &WindowModeConfig); 5] {
         [
             ("window", &self.window.common),

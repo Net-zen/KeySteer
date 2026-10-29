@@ -9,6 +9,13 @@
 - `src/api/input.rs`、`src/api/binding.rs`：键与动作语法。
 - `src/app/paths.rs`、`src/app/restart.rs`、`src/app/preset_store/mod.rs`：路径、重载进程、工作区存储。
 
+## 新增模式的维护入口
+
+1. 在 `api/input.rs` 的 `builtin_mode_ids!` 添加内置身份；枚举、解析、构造函数、字符串转换与 `ModeId::BUILT_IN` 自动同步。已有条目的顺序不要调整，它决定 `ModeId` 的排序。
+2. 声明模式配置并接入 `ConfigFile` 的字段和默认值，再在 `config/macros.rs` 的 `builtin_mode_fields!` 添加配置节。公共路由与临时键遍历不再逐处加名单；专属字段仍需要相应的校验和别名处理。
+3. 在 `app/mode_catalog.rs` 编译模式 Settings，并在 `built_in_factories` 的共享数组中添加一项 `ModeFactory`，一起声明启用条件、实例构造函数和路由编译函数。普通路由使用 `compile_route`，带标准应用覆盖的使用 `compile_app_route`；UIHint 的独立覆盖类型由 `compile_ui_hint_route` 处理。`built_in` 与 `built_in_specs` 自动共用该项，无需分别添加模式；只有后者编译路由。两种历史顺序由固定前后项与共享数组拼接，新增普通模式不需要修改顺序分支。窗口模式另接入 `WindowKind` 与 `window_common` 的穷尽匹配；窗口路由按 ID 查找配置，不依赖两个数组的位置一致。
+4. 配置测试对照序列化的模式节、ID 清单、路由／可变键清单，并逐模式检查普通／应用覆盖绑定的别名和非法键；catalog 测试检查完整身份集合、注册顺序和每个启用开关。漏接任一入口应在测试中失败。模式特有生命周期和发布配置／用户文档仍按改动范围维护。
+
 ## Bisect 配置入口
 
 `[bisect]` 独立配置二分上限、最小宽高、光标跟随、生命周期、继承、临时层与应用覆盖；`[bisect.bindings]` 默认 h/j/k/l 对应四个二分动作，支持普通绑定的别名、多键与禁用规则。稀疏表补齐默认方向和导航动作，`none` 可禁用。没有 `keys`、行列或 `layers`；`[bisect.ui]` 仅提供无字母区域适用的线宽、线色、高亮色。默认 Normal 入口 `primary+f`；从临时层沿用这个完整入口须在来源模式 bindings 显式配置，临时目标及继承不重新使用已消耗的激活键；网页配置器同步模型、键位及预览。
@@ -31,7 +38,7 @@ mode_config! {
 }
 ```
 
-无继承或临时目标的模式显式写 `inherits: Vec::new(), temporary_mode: None,`。仅影响导出的 `omit_empty: all,` 或 `omit_empty: temporary,` 放在组内最前面，分别省略四个空字段或仅三个空临时字段，缺省保留空字段。声明处不使用内部 `@` 分支。宏只拆分一次路由组前后的字段，不递归扫描任意字段组；特殊默认表达式、独立字段和解析函数仍由模式定义。
+无继承或临时目标的模式显式写 `inherits: Vec::new(), temporary_mode: None,`。仅影响导出的 `omit_empty: all,` 或 `omit_empty: temporary,` 放在组内最前面，分别省略四个空字段或仅三个空临时字段，缺省保留空字段。声明处不使用内部 `@` 分支。宏只拆分一次路由组前后的字段，不递归扫描任意字段组；特殊默认表达式、独立字段和解析函数仍由模式定义。 `mode_config!` 同时生成 `routing()` 借用视图，窗口从公共结构获得同一视图；catalog 和继承校验直接借用四个字段，不复制配置或改变平铺格式。`builtin_mode_fields!` 是内置配置节的公共遍历清单，供路由、绑定别名规范化与校验、临时触发键校验及可变键列表借用共用；窗口项指向 `common`。`ConfigFile::mode_routing` 从该清单生成借用并追加插件，保留原有临时目标报错顺序；继承图与遍历集合只保存借用。遍历中的少量特殊前后项直接列出，避免为保留报错顺序排序；其余模式从公共清单自动遍历。绑定诊断保留 Quick Switch、多选表和窗口应用覆盖的既有顺序。
 
 窗口使用 `window_config!(pub struct Name { common: expression, ... })`，只声明共享配置的默认值及额外字段；`window_config!(common pub struct WindowModeConfig;)` 生成共享结构。窗口公共字段定义只有一份，路由字段继续复用 `mode_config!`。窗口保留 `common` 与 `Deref`，TOML 仍为平铺字段，其稀疏文档和生命周期使用各模式自己的默认值（包括 Restore 的完成目标）。共享结构直接反序列化时继续允许未知字段，各窗口模式的平铺文档则严格拒绝未知字段。普通配置也严格拒绝未知字段；显式绑定表仍替换默认表，不做通用递归合并。
 

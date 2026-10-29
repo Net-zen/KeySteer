@@ -551,7 +551,7 @@ fn config_groups_preserve_surrounding_fields_and_custom_serde_hooks() {
 
     let parsed: schemas::Example = toml::from_str("old_name = 'custom'").unwrap();
     assert_eq!(parsed.before, 7);
-    assert_eq!(parsed.inherits, ["normal"]);
+    assert_eq!(parsed.routing().inherits, ["normal"]);
     assert_eq!(parsed.name, "custom");
     assert_eq!(parsed.temporary_mode_keys, ["ctrl"]);
     assert_eq!(parsed.temporary_mode_passthrough_keys, ["ctrl+x"]);
@@ -562,7 +562,7 @@ fn config_groups_preserve_surrounding_fields_and_custom_serde_hooks() {
     let mode: schemas::NewMode = toml::from_str("speed = 250").unwrap();
     assert_eq!(mode.speed, 250.0);
     assert_eq!(mode.inherits, ["hotkeys", "normal"]);
-    assert_eq!(mode.temporary_mode.as_deref(), Some("normal"));
+    assert_eq!(mode.routing().temporary_mode, Some("normal"));
     assert!(mode.temporary_mode_keys.is_empty());
     assert!(mode.temporary_mode_passthrough_keys.is_empty());
 
@@ -1071,6 +1071,84 @@ fn grid_like_modes_do_not_steal_label_keys_with_exit_bindings() {
 }
 
 #[test]
+fn builtin_inventory_covers_config_sections_and_binding_validation() {
+    let mut config = Config::default();
+    let document = serde_json::to_value(&config).unwrap();
+    let configured: BTreeSet<_> = document
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(_, section)| section.get("bindings").is_some())
+        .map(|(name, _)| name.clone())
+        .collect();
+    let known: BTreeSet<_> = ModeId::BUILT_IN
+        .into_iter()
+        .filter(|name| *name != "idle") // Idle uses the root hotkeys table.
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(configured, known);
+    let routing: BTreeSet<_> = config
+        .mode_routing()
+        .filter(|(name, _)| !config.plugin_modes.contains_key(*name))
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    assert_eq!(routing, configured);
+    let mutable: BTreeSet<_> = config
+        .temporary_key_lists_mut()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    assert_eq!(mutable, configured);
+
+    for name in configured {
+        let mut config = Config::parse(&format!(
+            "[key_aliases]\nModeTest = 'f8'\n[{name}.bindings]\nModeTest = 'none'"
+        ))
+        .unwrap();
+        config.validate().unwrap();
+        let document = serde_json::to_value(&config).unwrap();
+        assert_eq!(document[&name]["bindings"]["f8"], "none", "{name}");
+        let plan = crate::app::configuration::compile(&config).unwrap();
+        let id = ModeId::new(&name).unwrap();
+        assert_eq!(
+            plan.route(&id).unwrap().bindings.get("f8"),
+            Some(&Binding::Disabled),
+            "{name}"
+        );
+        let (_, bindings) = builtin_mode_fields!(config, [&mut], |mode| &mut mode.bindings)
+            .into_iter()
+            .find(|(id, _)| *id == name)
+            .unwrap();
+        bindings.insert("invalid+".into(), Binding::Disabled);
+        assert!(config.validate().is_err(), "{name}");
+
+        if document[&name].get("app_configs").is_some() {
+            let source = format!(
+                "[key_aliases]\nModeTest = 'f8'\n\
+                 [[{name}.app_configs]]\nbundle_id = 'org.example.Editor'\n\
+                 [{name}.app_configs.bindings]\nModeTest = 'none'"
+            );
+            let config = Config::parse(&source).unwrap();
+            config.validate().unwrap();
+            let plan = crate::app::configuration::compile(&config).unwrap();
+            assert_eq!(
+                plan.route(&id).unwrap().app_overrides[0].bindings.get("f8"),
+                Some(&Binding::Disabled),
+                "{name}.app_configs"
+            );
+            let document = serde_json::to_value(&config).unwrap();
+            assert_eq!(
+                document[&name]["app_configs"][0]["bindings"]["f8"], "none",
+                "{name}"
+            );
+            match Config::parse(&source.replace("ModeTest = 'none'", "'invalid+' = 'none'")) {
+                Err(_) => {}
+                Ok(config) => assert!(config.validate().is_err(), "{name}.app_configs"),
+            }
+        }
+    }
+}
+
+#[test]
 fn all_modes_default_to_empty_temporary_triggers() {
     let mut defaults = Config::default();
     for (mode, keys) in defaults.temporary_key_lists_mut() {
@@ -1158,6 +1236,35 @@ fn inheritance_rejects_unknown_sources_and_cycles() {
     let cycle =
         Config::parse("[normal]\ninherits = [\"grid\"]\n[grid]\ninherits = [\"normal\"]").unwrap();
     assert!(cycle.validate().unwrap_err().to_string().contains("cycle"));
+
+    let mixed_cycle = Config::parse(
+        "[grid]\ninherits = ['window_quick']\n\
+         [window_quick]\ninherits = ['plugin:picker']\n\
+         [plugin_modes.'plugin:picker']\ninherits = ['grid']",
+    )
+    .unwrap();
+    assert!(
+        mixed_cycle
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("inheritance cycle contains \"grid\"")
+    );
+
+    // Invalid targets are still checked when temporary triggers are empty,
+    // and the first error retains the established mode order.
+    let invalid_targets = Config::parse(
+        "[window]\ntemporary_mode = 'missing'\n\
+         [recursive_grid]\ntemporary_mode = 'also_missing'",
+    )
+    .unwrap();
+    assert!(
+        invalid_targets
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("window.temporary_mode names unknown mode \"missing\"")
+    );
 }
 
 #[test]

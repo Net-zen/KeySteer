@@ -898,12 +898,12 @@ impl Engine {
                 // valid without even walking the override list. A changed
                 // title may affect substring overrides, so compare the exact
                 // resolved profile before deciding whether to recompile.
-                let profile_changed =
+                let changed_profile =
                     if same_binding_app_snapshot(self.focused_app.as_ref(), app.as_ref()) {
-                        false
+                        None
                     } else {
-                        self.binding_profile_key_for(app.as_ref())
-                            != self.registry.binding_profile_key
+                        let profile = self.binding_profile_key_for(app.as_ref());
+                        (profile != self.registry.binding_profile_key).then_some(profile)
                     };
                 self.focused_app = app.clone();
                 self.focused_app_excluded = self.excluded_app_matches(self.focused_app.as_ref());
@@ -914,8 +914,8 @@ impl Engine {
                         self.refresh_overlay(backend)?;
                     }
                 }
-                if profile_changed {
-                    self.rebuild_tables();
+                if let Some(profile) = changed_profile {
+                    self.rebuild_tables_for_profile(profile);
                     self.sync_character_bindings(backend);
                     self.trace_binding_tables();
                 }
@@ -1085,11 +1085,12 @@ impl Engine {
         let RuntimePlan {
             settings,
             palettes,
-            modes,
+            mut modes,
         } = plan;
+        // Retain unused instances through installation; move only their routes.
         let routes = modes
-            .iter()
-            .map(|spec| (spec.id(), spec.route.clone()))
+            .iter_mut()
+            .map(|spec| (spec.id(), std::mem::take(&mut spec.route)))
             .collect();
         crate::support::logging::set_non_error_enabled(settings.debug.enabled);
         self.input.drag_auto_release.clear();
@@ -1114,10 +1115,10 @@ impl Engine {
             palettes,
             modes,
         } = plan;
-        let routes = modes
-            .iter()
-            .map(|spec| (spec.id(), spec.route.clone()))
-            .collect();
+        let (routes, instances): (std::collections::BTreeMap<_, _>, Vec<_>) = modes
+            .into_iter()
+            .map(|spec| ((spec.id(), spec.route), spec.instance))
+            .unzip();
 
         self.retire_workspace_requests(None);
         // Keep physical pressed/disposition pairs until their real KeyUp, but
@@ -1161,8 +1162,8 @@ impl Engine {
         self.focused_app_excluded = self.excluded_app_matches(self.focused_app.as_ref());
         self.registry = ModeRegistry::with_routes(routes);
         crate::support::logging::set_non_error_enabled(self.settings.debug.enabled);
-        for spec in modes {
-            match spec.instance {
+        for instance in instances {
+            match instance {
                 ModeInstance::BuiltIn(mode) => self.register_deferred(mode),
                 ModeInstance::Plugin(plugin) => {
                     self.register_plugin_dyn_deferred(plugin)?;

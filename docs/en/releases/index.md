@@ -5,6 +5,12 @@ outline: 2
 
 # Release notes
 
+## 0.15.1
+
+**Improved**
+
+- Reduced redundant work and temporary memory use during configuration loading and reloading, shortcut parsing, and application switching.
+
 ## 0.15.0
 
 > **Shortcut changes (Normal):** `G` Grid · `F` UI Hint · `Primary+G` Recursive Grid · `Primary+F` Bisect. Customize in `[normal.bindings]`.
