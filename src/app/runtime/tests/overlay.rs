@@ -93,21 +93,24 @@ fn shared_scene_submission_only_detaches_when_sorting_is_needed() {
                 });
             }
             let source = Arc::new(scene);
-            engine.overlay.command_batch_depth = usize::from(batched);
-            engine
-                .show_overlay(Arc::clone(&source), &mut backend)
-                .unwrap();
-            engine.overlay.command_batch_depth = 0;
-            engine.flush_pending_overlay(&mut backend).unwrap();
-            let content = engine.overlay.content.as_ref().unwrap();
-            assert!(content.is_sorted());
-            assert_eq!(Arc::ptr_eq(content, &source), ordered);
-            assert_eq!(
-                source.is_sorted(),
-                ordered,
-                "submission changed the caller's scene"
-            );
+            for _ in 0..2 {
+                engine.overlay.command_batch_depth = usize::from(batched);
+                engine
+                    .show_overlay(Arc::clone(&source), &mut backend)
+                    .unwrap();
+                engine.overlay.command_batch_depth = 0;
+                engine.flush_pending_overlay(&mut backend).unwrap();
+                let content = engine.overlay.content.as_ref().unwrap();
+                assert!(content.is_sorted());
+                assert_eq!(Arc::ptr_eq(content, &source), ordered);
+                assert_eq!(
+                    source.is_sorted(),
+                    ordered,
+                    "submission changed the caller's scene"
+                );
+            }
 
+            let content = engine.overlay.content.as_ref().unwrap();
             let submitted = Arc::downgrade(content);
             drop(source);
             engine.hide_overlay(&mut backend).unwrap();

@@ -2092,12 +2092,12 @@ impl Engine {
             .iter()
             .filter(|physical| {
                 !chords.iter().any(|entry| {
-                    (HELP || self.temporary_chord_armed(entry))
+                    entry
+                        .keys()
+                        .iter()
+                        .any(|configured| Self::keys_match(configured, physical))
+                        && (HELP || self.temporary_chord_armed(entry))
                         && entry.matches_pressed(pressed)
-                        && entry
-                            .keys()
-                            .iter()
-                            .any(|configured| Self::keys_match(configured, physical))
                 })
             })
             .cloned()

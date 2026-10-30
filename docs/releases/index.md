@@ -9,11 +9,13 @@ outline: 2
 
 **优化**
 
-- 优化配置加载与重载、快捷键解析和应用切换，减少重复处理与临时内存占用。
+- 优化配置加载与重载、自定义快捷键和应用切换。
+- 减少网格、UI 标签、文字选择和快速切换的重复处理与临时内存占用。
 
 **Improved**
 
-- Reduced redundant work and temporary memory use during configuration loading and reloading, shortcut parsing, and application switching.
+- Improved configuration loading and reloading, custom shortcuts, and application switching.
+- Reduced repeated work and temporary memory use in grids, UI hints, Text Select, and Quick Switch.
 
 ## 0.15.0
 

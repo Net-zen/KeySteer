@@ -74,6 +74,14 @@ impl HintCode {
         // Keep the conversion safe even if that invariant changes later.
         std::str::from_utf8(&self.0).unwrap_or_default()
     }
+
+    fn push(&mut self, value: char) {
+        let mut encoded = [0; 4];
+        // Each char adds at most four bytes; avoid the slice insertion path.
+        for byte in value.encode_utf8(&mut encoded).bytes() {
+            self.0.push(byte);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -111,11 +119,6 @@ pub(crate) fn match_label_input<'a, T>(
         }
     }
     exact.map_or(LabelMatch::None, LabelMatch::Complete)
-}
-
-trait LabelBuffer {
-    fn clear(&mut self);
-    fn push(&mut self, value: char);
 }
 
 #[derive(Clone, Copy)]
@@ -192,18 +195,6 @@ impl LabelPlan {
     }
 }
 
-impl LabelBuffer for HintCode {
-    fn clear(&mut self) {
-        self.0.clear();
-    }
-
-    fn push(&mut self, value: char) {
-        let mut encoded = [0; 4];
-        self.0
-            .extend_from_slice(value.encode_utf8(&mut encoded).as_bytes());
-    }
-}
-
 pub(crate) fn assign_compact_into<T, I>(
     output: &mut Vec<CompactHint<T>>,
     targets: I,
@@ -251,8 +242,8 @@ fn iterator_count<I: Iterator + Clone>(iterator: &I) -> usize {
     }
 }
 
-fn write_label<L: LabelBuffer>(label: &mut L, index: usize, alphabet: &[char], plan: LabelPlan) {
-    label.clear();
+fn write_label(label: &mut HintCode, index: usize, alphabet: &[char], plan: LabelPlan) {
+    label.0.clear();
     let radix = alphabet.len();
     match plan {
         LabelPlan::Direct => label.push(alphabet[index]),
@@ -274,8 +265,8 @@ fn write_label<L: LabelBuffer>(label: &mut L, index: usize, alphabet: &[char], p
     }
 }
 
-fn write_fixed_width<L: LabelBuffer>(
-    label: &mut L,
+fn write_fixed_width(
+    label: &mut HintCode,
     mut index: usize,
     alphabet: &[char],
     width: usize,
@@ -501,7 +492,13 @@ mod tests {
 
     #[test]
     fn uniform_width_follows_the_retained_alphabet_plan_including_stream_capacity() {
-        for text in ["ab", "asdfghjkl", "arstneioqwfpjluy", "甲乙丙丁戊"] {
+        for text in [
+            "ab",
+            "asdfghjkl",
+            "arstneioqwfpjluy",
+            "甲乙丙丁戊",
+            "aé甲🦀",
+        ] {
             let alphabet = chars(text);
             let radix = alphabet.len();
             for direction in [LabelDirection::Normal, LabelDirection::Reverse] {

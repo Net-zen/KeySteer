@@ -9,7 +9,8 @@ outline: 2
 
 **Improved**
 
-- Reduced redundant work and temporary memory use during configuration loading and reloading, shortcut parsing, and application switching.
+- Improved configuration loading and reloading, custom shortcuts, and application switching.
+- Reduced repeated work and temporary memory use in grids, UI hints, Text Select, and Quick Switch.
 
 ## 0.15.0
 

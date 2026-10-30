@@ -143,13 +143,20 @@ impl Engine {
         mut scene: Arc<OverlayScene>,
         backend: &mut dyn Backend,
     ) -> Result<(), String> {
-        // Cached mode scenes are usually already ordered. Inspect the shared
-        // scene before requesting ownership so these submissions keep it intact.
-        if !scene.is_sorted() {
+        // Stored content is already sorted and immutable while shared. Only
+        // inspect a different scene before requesting ownership for sorting.
+        if self
+            .overlay
+            .content
+            .as_ref()
+            .is_none_or(|content| !Arc::ptr_eq(content, &scene))
+            && !scene.is_sorted()
+        {
             Arc::make_mut(&mut scene).sort_in_place();
         }
-        self.overlay.content = Some(Arc::clone(&scene));
-        self.present_overlay(scene.as_ref().clone(), backend)
+        let frame = scene.as_ref().clone();
+        self.overlay.content = Some(scene);
+        self.present_overlay(frame, backend)
     }
 
     fn present_overlay(
