@@ -180,15 +180,11 @@ impl CompiledKeymap {
 
     #[cfg(test)]
     pub fn lookup(&self, key: &Key, pressed: &[Key]) -> Option<Arc<Binding>> {
-        self.lookup_with_specificity(key, pressed)
-            .map(|(binding, _)| binding)
+        self.lookup_entry(key, pressed)
+            .map(|entry| Arc::clone(&entry.binding))
     }
 
-    pub fn lookup_with_specificity(
-        &self,
-        key: &Key,
-        pressed: &[Key],
-    ) -> Option<(Arc<Binding>, usize)> {
+    pub fn lookup_entry(&self, key: &Key, pressed: &[Key]) -> Option<&CompiledBinding> {
         self.lookup_with_modifier_filter(key, pressed, |_| true)
     }
 
@@ -232,12 +228,12 @@ impl CompiledKeymap {
     /// A bare parameterless `toggle` is deliberately the sole exception: its
     /// purpose is to capture whichever companion input is already held, so
     /// `Ctrl` then `n = "toggle"` must resolve just like `n` then `Ctrl`.
-    pub fn lookup_with_specificity_strict(
+    pub fn lookup_entry_strict(
         &self,
         key: &Key,
         pressed: &[Key],
         modifier_is_owned: impl Fn(&Key) -> bool,
-    ) -> Option<(Arc<Binding>, usize)> {
+    ) -> Option<&CompiledBinding> {
         self.lookup_with_modifier_filter(key, pressed, |entry| {
             pressed
                 .iter()
@@ -257,7 +253,7 @@ impl CompiledKeymap {
         key: &Key,
         pressed: &[Key],
         modifier_filter: impl Fn(&CompiledBinding) -> bool,
-    ) -> Option<(Arc<Binding>, usize)> {
+    ) -> Option<&CompiledBinding> {
         if let [only] = pressed
             && only == key
             && !only.is_modifier()
@@ -266,13 +262,11 @@ impl CompiledKeymap {
             // final single-key binding can match one held non-modifier;
             // modifier aliases cannot make a longer chord eligible here.
             let entry = self.by_activation.get(key)?.last()?;
-            return (entry.chord.keys().len() == 1 && modifier_filter(entry))
-                .then(|| (Arc::clone(&entry.binding), 1));
+            return (entry.chord.keys().len() == 1 && modifier_filter(entry)).then_some(entry);
         }
         self.find_entry(key, |entry| {
             entry.chord.matches_pressed(pressed) && modifier_filter(entry)
         })
-        .map(|entry| (Arc::clone(&entry.binding), entry.chord.keys().len()))
     }
 
     fn find_entry(
@@ -466,18 +460,17 @@ mod tests {
 
         let alt_h = vec![alt.clone(), h.clone()];
         assert_eq!(
-            map.lookup_with_specificity_strict(&h, &alt_h, |_| false),
-            Some((Arc::new(mode("grid")), 2))
+            map.lookup_entry_strict(&h, &alt_h, |_| false)
+                .map(|entry| (entry.binding.as_ref(), entry.chord.keys().len())),
+            Some((&mode("grid"), 2))
         );
 
         let shift_h = vec![shift.clone(), h.clone()];
+        assert!(map.lookup_entry_strict(&h, &shift_h, |_| false).is_none());
         assert_eq!(
-            map.lookup_with_specificity_strict(&h, &shift_h, |_| false),
-            None
-        );
-        assert_eq!(
-            map.lookup_with_specificity_strict(&h, &shift_h, |key| key == &shift),
-            Some((Arc::new(mode("normal")), 1))
+            map.lookup_entry_strict(&h, &shift_h, |key| key == &shift)
+                .map(|entry| (entry.binding.as_ref(), entry.chord.keys().len())),
+            Some((&mode("normal"), 1))
         );
     }
 
@@ -491,8 +484,9 @@ mod tests {
         let ctrl = Key::new("left_ctrl").unwrap();
 
         assert_eq!(
-            map.lookup_with_specificity_strict(&n, &[ctrl, n.clone()], |_| false),
-            Some((Arc::new(Binding::Toggle(Vec::new())), 1))
+            map.lookup_entry_strict(&n, &[ctrl, n.clone()], |_| false)
+                .map(|entry| (entry.binding.as_ref(), entry.chord.keys().len())),
+            Some((&Binding::Toggle(Vec::new()), 1))
         );
     }
 
@@ -509,8 +503,9 @@ mod tests {
         let ctrl = Key::new("left_ctrl").unwrap();
 
         assert_eq!(
-            map.lookup_with_specificity_strict(&n, &[ctrl, n.clone()], |_| false),
-            Some((Arc::new(mode("grid")), 2))
+            map.lookup_entry_strict(&n, &[ctrl, n.clone()], |_| false)
+                .map(|entry| (entry.binding.as_ref(), entry.chord.keys().len())),
+            Some((&mode("grid"), 2))
         );
     }
 

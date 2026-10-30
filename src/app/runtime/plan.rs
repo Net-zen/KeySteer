@@ -68,8 +68,12 @@ pub struct AppRouteOverride {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModeRoute {
     pub bindings: Bindings,
-    pub inherits: Vec<ModeId>,
+    /// Direct sources in a plan; flattened in depth-first order on installation.
+    pub inherits: Box<[ModeId]>,
     pub temporary_mode: Option<ModeId>,
+    /// Only needed when the temporary layer inherits this mode. Its raw input
+    /// claim prunes this mode's descendants, but not the remaining branches.
+    pub temporary_inherits_when_claimed: Option<Box<[ModeId]>>,
     /// Compiled triggers, moved into the mode slot on the first table build.
     pub temporary_keys: Option<Vec<crate::api::KeyChord>>,
     pub temporary_passthrough: Vec<crate::api::KeyChord>,

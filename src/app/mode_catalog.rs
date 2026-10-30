@@ -881,7 +881,7 @@ fn compile_route(bindings: &Bindings, routing: Routing<'_>) -> Result<ModeRoute,
                     ModeId::parse_borrowed(source)
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?,
+            .collect::<Result<_, _>>()?,
         temporary_mode: temporary_mode.map(ModeId::parse_borrowed).transpose()?,
         temporary_keys: temporary_mode
             .map(|_| {
@@ -897,6 +897,7 @@ fn compile_route(bindings: &Bindings, routing: Routing<'_>) -> Result<ModeRoute,
             .map(|key| crate::api::KeyChord::parse(key))
             .collect::<Result<_, _>>()?,
         app_overrides: Vec::new(),
+        ..ModeRoute::default()
     })
 }
 

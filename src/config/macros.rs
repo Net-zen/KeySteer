@@ -38,7 +38,7 @@ macro_rules! mode_config {
             pub(crate) fn routing(&self) -> $crate::config::Routing<'_> {
                 $crate::config::Routing {
                     inherits: &self.inherits,
-                    temporary_mode: self.temporary_mode.as_deref(),
+                    temporary_mode: self.temporary_mode.as_deref().filter(|mode| !mode.trim().is_empty()),
                     temporary_mode_keys: &self.temporary_mode_keys,
                     temporary_mode_passthrough_keys: &self.temporary_mode_passthrough_keys,
                 }

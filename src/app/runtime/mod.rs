@@ -1097,7 +1097,7 @@ impl Engine {
         self.settings = settings;
         self.quick_switch.pending = None;
         self.palettes = palettes;
-        self.registry.routes = routes;
+        self.registry.replace_routes(routes);
         self.focused_app_excluded = self.excluded_app_matches(self.focused_app.as_ref());
         self.palette = self.palettes.for_appearance(self.appearance);
         self.rebuild_tables();

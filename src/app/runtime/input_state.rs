@@ -1,6 +1,6 @@
 //! Physical input pairing, held gestures, synthetic latches, and their Engine handling.
 
-use super::input_router::CompiledKeymap;
+use super::input_router::{CompiledBinding, CompiledKeymap};
 use super::*;
 
 pub(super) enum MappedChordKeys<'a> {
@@ -2104,18 +2104,10 @@ impl Engine {
             .collect()
     }
 
-    fn temporary_passthrough_matches(
-        chords: &[KeyChord],
-        key: &Key,
-        pressed: &[Key],
-        remaining: &[Key],
-    ) -> bool {
-        chords.iter().any(|chord| {
-            chord.activation_matches(key)
-                && [pressed, remaining]
-                    .into_iter()
-                    .any(|keys| chord.keys().len() == keys.len() && chord.matches_pressed(keys))
-        })
+    fn temporary_passthrough_matches(chords: &[KeyChord], key: &Key, pressed: &[Key]) -> bool {
+        chords
+            .iter()
+            .any(|chord| chord.activation_matches(key) && chord.matches_pressed(pressed))
     }
 
     fn temporary_layer_claims_input(&self, mode: &ModeId, key: &Key, pressed: &[Key]) -> bool {
@@ -2126,12 +2118,7 @@ impl Engine {
             return false;
         };
         route.temporary_passthrough.is_empty()
-            || !Self::temporary_passthrough_matches(
-                &route.temporary_passthrough,
-                key,
-                pressed,
-                &self.temporary_remaining_keys::<false>(mode, pressed),
-            )
+            || !Self::temporary_passthrough_matches(&route.temporary_passthrough, key, pressed)
     }
 
     pub(super) fn key_may_change_temporary_mode(&self, key: &Key) -> bool {
@@ -2302,9 +2289,9 @@ impl Engine {
         pressed: &[Key],
         temporary_active: bool,
     ) -> Option<ResolvedBinding> {
-        let available = |binding: &Binding| {
-            if HELP {
-                match binding.window_action() {
+        let resolve = |(owner, entry): (&ModeId, &CompiledBinding)| {
+            let available = if HELP {
+                match entry.binding.window_action() {
                     Some(action) => self
                         .registry
                         .get(active)
@@ -2312,36 +2299,33 @@ impl Engine {
                     _ => true,
                 }
             } else {
-                self.binding_available(active, binding)
-            }
+                self.binding_available(active, &entry.binding)
+            };
+            (entry.binding.as_ref() != &Binding::Disabled && available).then(|| ResolvedBinding {
+                binding: Arc::clone(&entry.binding),
+                owner: owner.clone(),
+            })
         };
         // Temporary routing resolves both layers itself. Query the base table
         // only on paths that actually use this result.
         let active_match = || self.lookup_reference_match::<HELP>(active, active, key, pressed);
         if *active == ModeId::idle() {
-            return active_match().map(|(binding, _)| ResolvedBinding {
-                binding,
-                owner: active.clone(),
-            });
+            return active_match().and_then(|entry| resolve((active, entry)));
         }
 
         if *active == ModeId::ui_hint() && self.ui_hint_overlap_matches(key) {
             return None;
         }
-        let Some(route) = self.registry.routes.get(active) else {
-            return active_match().map(|(binding, _)| ResolvedBinding {
-                binding,
-                owner: active.clone(),
-            });
+        let layer = |owner, keys: &[Key]| {
+            self.lookup_layer_reference::<HELP>(active, owner, key, keys, None)
         };
-        if temporary_active && let Some(owner) = route.temporary_mode.as_ref() {
+        if temporary_active
+            && let Some(route) = self.registry.routes.get(active)
+            && let Some(owner) = route.temporary_mode.as_ref()
+        {
             let remaining = self.temporary_remaining_keys::<HELP>(active, pressed);
-            let passthrough = Self::temporary_passthrough_matches(
-                &route.temporary_passthrough,
-                key,
-                pressed,
-                &remaining,
-            );
+            let passthrough =
+                Self::temporary_passthrough_matches(&route.temporary_passthrough, key, pressed);
             if !passthrough && !remaining.contains(key) {
                 return None;
             }
@@ -2355,178 +2339,66 @@ impl Engine {
                     owner: active.clone(),
                 });
             }
-            // Only the current mode's own explicit chord keeps the trigger.
-            // Inherited chords must not resurrect a consumed activation key.
-            // Explicit passthrough retains the current layer's normal inheritance.
-            let explicit = if passthrough {
-                self.lookup_layer_reference::<HELP>(
-                    active,
-                    active,
-                    key,
-                    pressed,
-                    true,
-                    &mut SmallVec::new(),
-                )
-            } else {
-                active_match()
-                    .filter(|(_, specificity)| *specificity == pressed.len())
-                    .map(|(binding, _)| ResolvedBinding {
-                        binding,
-                        owner: active.clone(),
-                    })
-            };
-            if let Some(resolved) = explicit {
-                return (resolved.binding.as_ref() != &Binding::Disabled
-                    && available(&resolved.binding))
-                .then_some(resolved);
+            if passthrough {
+                return layer(active, pressed)
+                    .or_else(|| layer(active, &remaining))
+                    .and_then(resolve);
             }
-            // The trigger is consumed once. Keep the existing exact-chord
-            // precedence and temporary-layer tie breaking on the remaining keys.
-            for exact in [true, false] {
-                for (temporary, source) in [(true, owner), (false, active)] {
-                    if temporary && passthrough {
-                        continue;
-                    }
-                    if let Some(resolved) = self.lookup_layer_reference::<HELP>(
-                        active,
-                        source,
-                        key,
-                        &remaining,
-                        exact,
-                        &mut SmallVec::new(),
-                    ) {
-                        return (resolved.binding.as_ref() != &Binding::Disabled
-                            && available(&resolved.binding))
-                        .then_some(resolved);
-                    }
-                }
-            }
-            return None;
-        }
-
-        let active_match = active_match();
-        if let Some((binding, _)) = &active_match
-            && !available(binding)
-        {
-            return None;
-        }
-
-        match active_match {
-            Some((binding, _)) if matches!(binding.as_ref(), Binding::Disabled) => None,
-            Some((binding, _)) => Some(ResolvedBinding {
-                binding,
-                owner: active.clone(),
-            }),
-            None if self.registry.get(active).is_some_and(|mode| {
-                if HELP {
-                    mode.claims_key_for_help(key)
-                } else {
-                    mode.claims_key(key)
-                }
-            }) =>
+            // Only the active mode's own chord may retain consumed trigger keys.
+            if let Some(entry) =
+                active_match().filter(|entry| !entry.chord.matches_pressed(&remaining))
             {
-                None
+                return resolve((active, entry));
             }
-            None => route.inherits.iter().find_map(|owner| {
-                if owner == active {
-                    return None;
-                }
-                self.lookup_inherited_reference::<HELP>(
-                    active,
-                    owner,
-                    key,
-                    pressed,
-                    &mut SmallVec::new(),
-                )
-                .filter(|resolved| available(&resolved.binding))
-            }),
+            return layer(owner, &remaining)
+                .or_else(|| layer(active, &remaining))
+                .and_then(resolve);
         }
+        layer(active, pressed).and_then(resolve)
     }
 
-    /// Resolve a layer including inheritance, retaining `none` as a terminal match.
-    pub(super) fn lookup_layer_reference<const HELP: bool>(
-        &self,
+    /// Resolve the active or temporary layer, retaining `none` as a terminal match.
+    pub(super) fn lookup_layer_reference<'a, const HELP: bool>(
+        &'a self,
         active: &ModeId,
-        owner: &ModeId,
+        owner: &'a ModeId,
         key: &Key,
         pressed: &[Key],
-        exact: bool,
-        visited: &mut SmallVec<[ModeId; 8]>,
-    ) -> Option<ResolvedBinding> {
-        if visited.contains(owner) {
-            return None;
+        configured_chord: Option<&KeyChord>,
+    ) -> Option<(&'a ModeId, &'a CompiledBinding)> {
+        let lookup = |source| {
+            self.lookup_reference_match::<HELP>(active, source, key, pressed)
+                .filter(|entry| {
+                    configured_chord.is_none_or(|chord| entry.chord.same_binding(chord))
+                })
+                .map(|entry| (source, entry))
+        };
+        if let Some(found) = lookup(owner) {
+            return Some(found);
         }
-        visited.push(owner.clone());
-        if let Some((binding, specificity)) =
-            self.lookup_reference_match::<HELP>(active, owner, key, pressed)
-            && (!exact || specificity == pressed.len())
-        {
-            return Some(ResolvedBinding {
-                binding,
-                owner: owner.clone(),
-            });
-        }
-        if !exact
-            && owner == active
+        let route = self.registry.routes.get(owner)?;
+        let claimed = if owner == active {
+            Some(&[][..])
+        } else {
+            self.registry
+                .routes
+                .get(active)
+                .and_then(|route| route.temporary_inherits_when_claimed.as_deref())
+        };
+        let sources = if configured_chord.is_none()
+            && let Some(claimed) = claimed
             && self.registry.get(active).is_some_and(|mode| {
                 if HELP {
                     mode.claims_key_for_help(key)
                 } else {
                     mode.claims_key(key)
                 }
-            })
-        {
-            return None;
-        }
-        self.registry
-            .routes
-            .get(owner)?
-            .inherits
-            .iter()
-            .find_map(|source| {
-                self.lookup_layer_reference::<HELP>(active, source, key, pressed, exact, visited)
-            })
-    }
-
-    pub(super) fn lookup_inherited(
-        &self,
-        owner: &ModeId,
-        key: &Key,
-        pressed: &[Key],
-        visited: &mut SmallVec<[ModeId; 8]>,
-    ) -> Option<ResolvedBinding> {
-        self.lookup_inherited_reference::<false>(
-            &self.registry.active,
-            owner,
-            key,
-            pressed,
-            visited,
-        )
-    }
-
-    fn lookup_inherited_reference<const HELP: bool>(
-        &self,
-        active: &ModeId,
-        owner: &ModeId,
-        key: &Key,
-        pressed: &[Key],
-        visited: &mut SmallVec<[ModeId; 8]>,
-    ) -> Option<ResolvedBinding> {
-        if visited.contains(owner) {
-            return None;
-        }
-        visited.push(owner.clone());
-        if let Some((binding, _)) = self.lookup_reference_match::<HELP>(active, owner, key, pressed)
-        {
-            return (binding.as_ref() != &Binding::Disabled).then(|| ResolvedBinding {
-                binding,
-                owner: owner.clone(),
-            });
-        }
-        let sources = &self.registry.routes.get(owner)?.inherits;
-        sources.iter().find_map(|source| {
-            self.lookup_inherited_reference::<HELP>(active, source, key, pressed, visited)
-        })
+            }) {
+            claimed
+        } else {
+            &route.inherits
+        };
+        sources.iter().find_map(lookup)
     }
 
     fn lookup_reference_match<const HELP: bool>(
@@ -2535,15 +2407,13 @@ impl Engine {
         owner: &ModeId,
         key: &Key,
         pressed: &[Key],
-    ) -> Option<(Arc<Binding>, usize)> {
+    ) -> Option<&CompiledBinding> {
         // Window help is compiled without an active input session. Its modes
         // use non-strict matching, independent of held keys or dispositions.
         if HELP && active.is_window() {
-            self.registry
-                .table(owner)?
-                .lookup_with_specificity(key, pressed)
+            self.registry.table(owner)?.lookup_entry(key, pressed)
         } else {
-            self.lookup_with_specificity_for_pressed(owner, key, pressed)
+            self.lookup_entry_for_pressed(owner, key, pressed)
         }
     }
 
@@ -2554,34 +2424,26 @@ impl Engine {
     }
 
     pub(super) fn lookup_in(&self, mode: &ModeId, key: &Key) -> Option<Arc<Binding>> {
-        self.lookup_with_specificity_in(mode, key)
-            .map(|(binding, _)| binding)
+        self.lookup_entry_for_pressed(mode, key, &self.input.pressed)
+            .map(|entry| Arc::clone(&entry.binding))
     }
 
-    pub(super) fn lookup_with_specificity_in(
-        &self,
-        mode: &ModeId,
-        key: &Key,
-    ) -> Option<(Arc<Binding>, usize)> {
-        self.lookup_with_specificity_for_pressed(mode, key, &self.input.pressed)
-    }
-
-    fn lookup_with_specificity_for_pressed(
+    fn lookup_entry_for_pressed(
         &self,
         mode: &ModeId,
         key: &Key,
         pressed: &[Key],
-    ) -> Option<(Arc<Binding>, usize)> {
+    ) -> Option<&CompiledBinding> {
         let table = self.registry.table(mode)?;
         if self.strict_modifier_matching_enabled() {
-            table.lookup_with_specificity_strict(key, pressed, |modifier| {
+            table.lookup_entry_strict(key, pressed, |modifier| {
                 matches!(
                     self.input.key_dispositions.get(modifier),
                     Some(KeyDisposition::Consume)
                 )
             })
         } else {
-            table.lookup_with_specificity(key, pressed)
+            table.lookup_entry(key, pressed)
         }
     }
 
@@ -2648,29 +2510,16 @@ impl Engine {
     }
 
     pub(super) fn normal_binding_chain_matches(&self, key: &Key) -> bool {
-        self.binding_chain_matches(&ModeId::normal(), key, &mut SmallVec::new())
-    }
-
-    pub(super) fn binding_chain_matches(
-        &self,
-        owner: &ModeId,
-        key: &Key,
-        visited: &mut SmallVec<[ModeId; 8]>,
-    ) -> bool {
-        if visited.contains(owner) {
-            return false;
-        }
-        visited.push(owner.clone());
-        if self.lookup_with_specificity_in(owner, key).is_some() {
-            return true;
-        }
-        let Some(route) = self.registry.routes.get(owner) else {
-            return false;
+        let matches = |owner: &ModeId| {
+            self.lookup_entry_for_pressed(owner, key, &self.input.pressed)
+                .is_some()
         };
-        route
-            .inherits
-            .iter()
-            .any(|source| self.binding_chain_matches(source, key, visited))
+        matches(&ModeId::normal())
+            || self
+                .registry
+                .routes
+                .get(&ModeId::normal())
+                .is_some_and(|route| route.inherits.iter().any(matches))
     }
 
     pub(super) fn strict_modifier_matching_enabled(&self) -> bool {

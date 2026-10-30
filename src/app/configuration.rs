@@ -398,7 +398,7 @@ mod tests {
         });
         let plan = compile(&config).unwrap();
         let grid = plan.route(&ModeId::grid()).unwrap();
-        assert_eq!(grid.inherits, [ModeId::idle(), ModeId::normal()]);
+        assert_eq!(grid.inherits.as_ref(), [ModeId::idle(), ModeId::normal()]);
         assert_eq!(
             plan.route(&ModeId::normal()).unwrap().app_overrides[0].pattern,
             "com.example.Editor"

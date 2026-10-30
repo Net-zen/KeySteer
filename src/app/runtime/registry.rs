@@ -64,11 +64,60 @@ impl Default for ModeRegistry {
 
 impl ModeRegistry {
     pub(super) fn with_routes(routes: BTreeMap<ModeId, ModeRoute>) -> Self {
-        Self {
+        let mut registry = Self {
             slots: Vec::with_capacity(routes.len()),
-            routes,
             ..Self::default()
+        };
+        registry.replace_routes(routes);
+        registry
+    }
+
+    pub(super) fn replace_routes(&mut self, mut routes: BTreeMap<ModeId, ModeRoute>) {
+        fn expand(
+            owner: &ModeId,
+            routes: &BTreeMap<ModeId, ModeRoute>,
+            stop: Option<&ModeId>,
+            order: &mut Vec<ModeId>,
+        ) {
+            if order.contains(owner) {
+                return;
+            }
+            order.push(owner.clone());
+            if stop != Some(owner)
+                && let Some(route) = routes.get(owner)
+            {
+                for source in &route.inherits {
+                    expand(source, routes, stop, order);
+                }
+            }
         }
+        // Read the original graph before replacing it. Store only source IDs;
+        // tables and bindings retain their existing owners, including modes
+        // registered later. Cycle protection runs here, never on a key event.
+        let expanded: Vec<_> = routes
+            .iter()
+            .map(|(id, route)| {
+                let mut inherits = Vec::new();
+                expand(id, &routes, None, &mut inherits);
+                inherits.remove(0);
+                let claimed = route
+                    .temporary_mode
+                    .as_ref()
+                    .filter(|owner| *owner != id)
+                    .and_then(|owner| {
+                        let mut order = Vec::new();
+                        expand(owner, &routes, Some(id), &mut order);
+                        order.remove(0);
+                        order.contains(id).then(|| order.into_boxed_slice())
+                    });
+                (inherits, claimed)
+            })
+            .collect();
+        for (route, (inherits, claimed)) in routes.values_mut().zip(expanded) {
+            route.inherits = inherits.into_boxed_slice();
+            route.temporary_inherits_when_claimed = claimed;
+        }
+        self.routes = routes;
     }
 
     pub(super) fn insert(
@@ -213,14 +262,13 @@ impl Engine {
                                 id,
                                 entry.chord.activation_key(),
                                 entry.chord.keys(),
-                                true,
-                                &mut smallvec::SmallVec::new(),
+                                Some(&entry.chord),
                             )
-                            .is_some_and(|resolved| {
-                                resolved.owner == *owner
-                                    && resolved.binding == entry.binding
+                            .is_some_and(|(source, matched)| {
+                                source == owner
+                                    && matched.binding == entry.binding
                                     && self.registry.get(id).is_none_or(|mode| {
-                                        match resolved.binding.window_action() {
+                                        match matched.binding.window_action() {
                                             Some(
                                                 crate::api::window::WindowAction::NextPage
                                                 | crate::api::window::WindowAction::PreviousPage,
