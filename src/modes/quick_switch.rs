@@ -134,7 +134,7 @@ impl Mode for QuickSwitchMode {
             ModeEvent::Restarted => self.enter(),
             ModeEvent::Deactivated => {
                 self.active = false;
-                // The next entry gets a fresh registry snapshot.
+                // The next entry gets a fresh registry snapshot; retain no mode captions.
                 self.rows = Vec::new();
                 self.prefix.clear();
                 self.window = None;

@@ -840,7 +840,8 @@ fn default_bindings_avoid_platform_reserved_chords() {
 
 #[test]
 fn normal_defaults_cover_the_requested_controls_and_targeting_modes() {
-    let normal = &Config::default().normal.bindings;
+    let config = Config::default();
+    let normal = &config.normal.bindings;
     assert_eq!(normal["h"], Binding::Move(Direction::Left));
     assert_eq!(normal["j"], Binding::Move(Direction::Down));
     assert_eq!(normal["k"], Binding::Move(Direction::Up));
@@ -864,8 +865,16 @@ fn normal_defaults_cover_the_requested_controls_and_targeting_modes() {
     assert_eq!(normal["n"], Binding::Toggle(Vec::new()));
     assert_eq!(normal["g"], Binding::Mode(ModeId::grid()));
     assert_eq!(normal["f"], Binding::Mode(ModeId::ui_hint()));
-    assert_eq!(normal["primary+g"], Binding::Mode(ModeId::recursive_grid()));
-    assert_eq!(normal["primary+f"], Binding::Mode(ModeId::bisect()));
+    let primary = config
+        .resolved_key_aliases()
+        .get("primary")
+        .map_or("primary", String::as_str);
+    for (key, mode) in [("g", ModeId::recursive_grid()), ("f", ModeId::bisect())] {
+        assert_eq!(
+            normal.get(&format!("{primary}+{key}")),
+            Some(&Binding::Mode(mode))
+        );
+    }
     assert_eq!(normal["q"], Binding::Mode(ModeId::idle()));
 }
 

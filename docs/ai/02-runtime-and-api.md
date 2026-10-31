@@ -14,6 +14,8 @@ Mode → HostContext::present(View) → presentation → OverlayScene
 
 跨层词汇在 `src/api/backend.rs`、`src/api/command.rs`；原生对象不进入模式。
 
+Engine 使用单一派发入口完成 owner 查找、上下文装配和命令执行。帧和指针通知不含可复用缓冲，继续调用借用 `handle`；其余事件交给 `Mode::handle_owned`，默认实现仍调用原有借用处理器。窗口等拥有消费实现的模式直接接管结果、按键和焦点事件，不再先借用后克隆回拥有值。帮助缓存仍在原有输入／结果边界失效，帧和指针通知不额外清空缓存。
+
 `OverlayScene.retained` 描述不可变的背景图元和可省略的普通标签槽位，前景仍使用常规 labels／shapes；它不携带 Hint 状态或原生资源。`materialized()` 提供完整场景兼容视图，原生后端可按共享身份复用背景。会话的 `HintSceneCache` 只拥有已解析样式、场景及必要的槽位索引；完整目标顺序、保持目标顺序的过滤结果和唯一标签不另建索引，分别使用直接位置或已有 hints 的二分定位，并核对标签身份；搜索重叠场景在实际按层序输出时记录槽位整数，复用容量并跳过后续文字建表；首次普通重叠场景提交后，Mode 向 Presenter 借用传递现有 HintContent 和 VisualLayerPlan；Presenter 每份最多处理指定数量的源标签，利用已经排好层序的场景填充整数槽位，不重复排序或建立文字哈希表。未准备的成员保留即时查找回退，Mode 负责内容／层序变化与退出失效。
 
 连续滚动通过 `Command::ScrollFrame` / `Backend::scroll_frame` 保留取消身份和每帧距离，runtime 在提交前应用滚动反向设置；离散 `Scroll` 不可替换。原生执行与积压策略由共享滚动执行器负责，见[平台后端](06-platform-backends.md)。

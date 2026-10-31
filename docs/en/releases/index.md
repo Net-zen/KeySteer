@@ -5,6 +5,22 @@ outline: 2
 
 # Release notes
 
+## 0.15.2
+
+**性能优化 / Performance**
+
+- 优化 UI Hint 与文字选择的扫描结果合并，减少重复处理和临时内存分配。
+- 减少窗口模式在焦点更新、按键处理和按键帮助更新时的数据复制与重复状态。
+
+- Optimized scan-result merging in UI Hint and Text Select, reducing repeated work and temporary allocations.
+- Reduced data copying and redundant state during focus updates, key handling, and key-help updates in Window mode.
+
+| 测量项 / Metric | 优化前 / Before | 优化后 / After | 减少 / Reduction |
+| --- | ---: | ---: | ---: |
+| 合并 CPU 耗时：512 个轮廓全部被过滤 / Merge CPU time: all 512 contours filtered out | 51.6 μs | 16.0 μs | **69%** |
+| 合并 CPU 耗时：512 个轮廓一半被过滤 / Merge CPU time: half of 512 contours filtered out | 157.4 μs | 141.7 μs | **10%** |
+| 临时分配：512 个轮廓全部被过滤 / Temporary allocations: all 512 contours filtered out | 1,024 / 43 KiB | 0 / 0 B | **100%** |
+
 ## 0.15.1
 
 **Improved**

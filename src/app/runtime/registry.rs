@@ -17,6 +17,7 @@ struct ModeSlot {
     pointer_events: bool,
     keyboard_prompt_supported: bool,
     table: Option<CompiledKeymap>,
+    window_help: Option<Box<super::key_help::WindowKeyHelpPlan>>,
     /// Owned compiled triggers; binding-table rebuilds leave them untouched.
     temporary_chords: Option<Vec<KeyChord>>,
 }
@@ -36,8 +37,6 @@ pub(super) struct ModeRegistry {
     pub(super) plugin_bindings: Vec<(KeyChord, Binding)>,
     pub(super) plugin_verbs: BTreeMap<String, ModeId>,
     pub(super) modal_stack: Vec<ModeId>,
-    pub(super) window_help_plans:
-        BTreeMap<ModeId, std::sync::Arc<super::key_help::WindowKeyHelpPlan>>,
 }
 
 impl Default for ModeRegistry {
@@ -57,7 +56,6 @@ impl Default for ModeRegistry {
             plugin_bindings: Vec::new(),
             plugin_verbs: BTreeMap::new(),
             modal_stack: Vec::new(),
-            window_help_plans: BTreeMap::new(),
         }
     }
 }
@@ -140,6 +138,7 @@ impl ModeRegistry {
             pointer_events,
             keyboard_prompt_supported,
             table: None,
+            window_help: None,
             temporary_chords: None,
         });
         self.indices.insert(id, index);
@@ -204,6 +203,13 @@ impl ModeRegistry {
         self.slots.get(index)?.temporary_chords.as_deref()
     }
 
+    pub(super) fn window_help_plan(
+        &self,
+        id: &ModeId,
+    ) -> Option<&super::key_help::WindowKeyHelpPlan> {
+        self.slots.get(self.index_of(id)?)?.window_help.as_deref()
+    }
+
     pub(super) fn merge_plugin_bindings_into_normal(&mut self) {
         let normal = ModeId::normal();
         let Self {
@@ -243,94 +249,92 @@ impl ModeRegistry {
 impl Engine {
     fn compile_window_help_plans(&mut self) {
         let temporary = self.compile_window_targeting_temporary_help();
-        let plans = self
-            .registry
-            .keys()
-            .filter(|id| id.is_window())
-            .map(|id| {
-                let mut entries = std::collections::BTreeSet::new();
-                for (owner, table) in self.registry.tables() {
-                    for entry in table.iter_entries() {
-                        if matches!(entry.binding.as_ref(), Binding::Disabled) {
-                            continue;
-                        }
-                        // Fixed help is the Window layer, not a preview of
-                        // every binding reachable through its temporary mode.
-                        if self
-                            .lookup_layer_reference::<true>(
-                                id,
-                                id,
-                                entry.chord.activation_key(),
-                                entry.chord.keys(),
-                                Some(&entry.chord),
-                            )
-                            .is_some_and(|(source, matched)| {
-                                source == owner
-                                    && matched.binding == entry.binding
-                                    && self.registry.get(id).is_none_or(|mode| {
-                                        match matched.binding.window_action() {
-                                            Some(
-                                                crate::api::window::WindowAction::NextPage
-                                                | crate::api::window::WindowAction::PreviousPage,
-                                            ) => false,
-                                            Some(action) => mode.window_action_supported(&action),
-                                            _ => true,
-                                        }
-                                    })
-                            })
-                        {
-                            entries.insert(format!(
-                                "{}  ·  {}",
-                                entry.chord.canonical(),
-                                entry.binding.canonical()
-                            ));
-                        }
+        for index in 0..self.registry.slots.len() {
+            let id = &self.registry.slots[index].id;
+            if !id.is_window() {
+                continue;
+            }
+            let mut entries = std::collections::BTreeSet::new();
+            for (owner, table) in self.registry.tables() {
+                for entry in table.iter_entries() {
+                    if matches!(entry.binding.as_ref(), Binding::Disabled) {
+                        continue;
+                    }
+                    // Fixed help is the Window layer, not a preview of
+                    // every binding reachable through its temporary mode.
+                    if self
+                        .lookup_layer_reference::<true>(
+                            id,
+                            id,
+                            entry.chord.activation_key(),
+                            entry.chord.keys(),
+                            Some(&entry.chord),
+                        )
+                        .is_some_and(|(source, matched)| {
+                            source == owner
+                                && matched.binding == entry.binding
+                                && self.registry.get(id).is_none_or(|mode| {
+                                    match matched.binding.window_action() {
+                                        Some(
+                                            crate::api::window::WindowAction::NextPage
+                                            | crate::api::window::WindowAction::PreviousPage,
+                                        ) => false,
+                                        Some(action) => mode.window_action_supported(&action),
+                                        _ => true,
+                                    }
+                                })
+                        })
+                    {
+                        entries.insert(format!(
+                            "{}  ·  {}",
+                            entry.chord.canonical(),
+                            entry.binding.canonical()
+                        ));
                     }
                 }
-                if *id == ModeId::window() {
-                    entries.extend(temporary.iter().cloned());
-                }
-                if let Some(mode) = self.registry.get(id) {
-                    for (key, action) in mode.fixed_key_help() {
-                        if let Ok(chord) = KeyChord::parse(&key)
-                            && self
-                                .lookup_for_help_in(id, chord.activation_key(), chord.keys())
-                                .is_none()
-                        {
-                            entries.insert(format!("{key}  ·  {action}"));
-                        }
+            }
+            if *id == ModeId::window() {
+                entries.extend(temporary.iter().cloned());
+            }
+            if let Some(mode) = self.registry.get(id) {
+                for (key, action) in mode.fixed_key_help() {
+                    if let Ok(chord) = KeyChord::parse(&key)
+                        && self
+                            .lookup_for_help_in(id, chord.activation_key(), chord.keys())
+                            .is_none()
+                    {
+                        entries.insert(format!("{key}  ·  {action}"));
                     }
                 }
-                let entries: Vec<_> = entries.into_iter().collect();
-                let return_target = self.key_help_return_target_in(id, &entries);
-                let move_help =
-                    std::sync::Arc::new(crate::presentation::key_help::compile_window_help(
-                        &entries,
-                        id.as_str(),
-                        return_target.as_deref(),
-                        false,
-                    ));
-                let resize_help = if *id == ModeId::window() {
-                    std::sync::Arc::new(crate::presentation::key_help::compile_window_help(
-                        &entries,
-                        id.as_str(),
-                        return_target.as_deref(),
-                        true,
-                    ))
-                } else {
-                    move_help.clone()
-                };
-                (
-                    id.clone(),
-                    std::sync::Arc::new(super::key_help::WindowKeyHelpPlan {
-                        presentations: [move_help, resize_help],
-                        entries,
-                        return_target,
-                    }),
-                )
-            })
-            .collect();
-        self.registry.window_help_plans = plans;
+            }
+            let entries: Vec<_> = entries.into_iter().collect();
+            let return_target = self
+                .key_help_return_target_in(id, &entries)
+                .map(str::to_owned);
+            let move_help =
+                std::sync::Arc::new(crate::presentation::key_help::compile_window_help(
+                    &entries,
+                    id.as_str(),
+                    return_target.as_deref(),
+                    false,
+                ));
+            let resize_help = if *id == ModeId::window() {
+                std::sync::Arc::new(crate::presentation::key_help::compile_window_help(
+                    &entries,
+                    id.as_str(),
+                    return_target.as_deref(),
+                    true,
+                ))
+            } else {
+                move_help.clone()
+            };
+            self.registry.slots[index].window_help =
+                Some(Box::new(super::key_help::WindowKeyHelpPlan {
+                    presentations: [move_help, resize_help],
+                    entries,
+                    return_target,
+                }));
+        }
     }
     /// Show temporary-layer entrances even before its activation keys are held.
     /// Validate each combined chord through the actual help resolver so local
@@ -475,7 +479,6 @@ impl Engine {
     }
 
     pub(super) fn set_active(&mut self, active: ModeId) {
-        self.overlay.window_help_plan = None;
         if active.is_window() && !self.registry.active.is_window() {
             self.overlay.window_help_override = None;
         }
@@ -554,7 +557,6 @@ impl Engine {
     }
 
     pub(super) fn rebuild_tables_for_profile(&mut self, binding_profile_key: Vec<Bindings>) {
-        self.overlay.window_help_plan = None;
         self.overlay.key_help_cache = None;
         // The registered ids are the prefix of binding_mode_ids in the same order.
         for (index, (id, &slot_index)) in self.registry.indices.iter().enumerate() {
@@ -745,8 +747,8 @@ impl Engine {
         self.registry.index_of(owner)
     }
 
-    /// Deliver an event to a specific registered mode. This is used for normal
-    /// pointer controls borrowed by an active label mode.
+    /// Deliver an event, including pointer controls borrowed by another mode.
+    /// Payload consumers and borrowed handlers share this dispatch path.
     pub(super) fn dispatch_to(
         &mut self,
         owner: &ModeId,
@@ -771,36 +773,13 @@ impl Engine {
         let Some(mode) = self.registry.get_index_mut(mode_index) else {
             return Ok(());
         };
-        let commands = mode.handle(&event, &context);
-        crate::support::perf_probe::mark("mode_handled");
-        crate::support::perf_probe::mark("commands_ready");
-        self.execute_for(owner, commands, backend)
-    }
-
-    /// Deliver the one event family whose platform-owned buffers are worth
-    /// consuming. Keeping this separate leaves frame, pointer and key dispatch
-    /// on the original single-vtable-call hot path.
-    pub(super) fn dispatch_owned_to(
-        &mut self,
-        owner: &ModeId,
-        event: ModeEvent,
-        backend: &mut dyn Backend,
-    ) -> Result<(), String> {
-        self.overlay.key_help_cache = None;
-        let Some(mode_index) = self.mode_index_for_dispatch(owner) else {
-            return Ok(());
+        // Frame and pointer notifications contain no owned buffers to reuse.
+        // Keep their borrowed call while sharing lookup, context and command execution.
+        let commands = if matches!(event, ModeEvent::Frame { .. } | ModeEvent::PointerMoved(_)) {
+            mode.handle(&event, &context)
+        } else {
+            mode.handle_owned(event, &context)
         };
-        let context = HostContext {
-            presenter: &crate::presentation::COMPOSER,
-            screens: &self.screens,
-            cursor: self.cursor,
-            focused_app: self.focused_app.as_ref(),
-            palette: &self.palette,
-        };
-        let Some(mode) = self.registry.get_index_mut(mode_index) else {
-            return Ok(());
-        };
-        let commands = mode.handle_owned(event, &context);
         crate::support::perf_probe::mark("mode_handled");
         crate::support::perf_probe::mark("commands_ready");
         self.execute_for(owner, commands, backend)

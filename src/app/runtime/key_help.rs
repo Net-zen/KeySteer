@@ -224,8 +224,7 @@ impl Engine {
         }
         let entries = if self.registry.active.is_window() {
             self.registry
-                .window_help_plans
-                .get(&self.registry.active)
+                .window_help_plan(&self.registry.active)
                 .map_or_else(Vec::new, |plan| plan.entries.to_vec())
         } else {
             self.configured_key_help_entries()
@@ -253,13 +252,6 @@ impl Engine {
         {
             self.overlay.key_help_cache = None;
             return;
-        }
-        if self.registry.active.is_window() && self.overlay.window_help_plan.is_none() {
-            self.overlay.window_help_plan = self
-                .registry
-                .window_help_plans
-                .get(&self.registry.active)
-                .cloned();
         }
         let Some(screen) = self.help_screen() else {
             self.overlay.key_help_cache = None;
@@ -298,16 +290,12 @@ impl Engine {
         let source_annotations = scene.window_annotations.clone();
         let source_clip = scene.clip;
         let window_help = self.window_help_visible();
+        let plan = self.registry.window_help_plan(&self.registry.active);
         let dynamic_entries;
-        let (entries, return_target, extra_entries) = if let Some(plan) = self
-            .overlay
-            .window_help_plan
-            .as_ref()
-            .filter(|_| self.registry.active.is_window())
-        {
+        let (entries, return_target, extra_entries) = if let Some(plan) = plan {
             (
                 plan.entries.as_slice(),
-                plan.return_target.clone(),
+                plan.return_target.as_deref(),
                 if self.window_library_help() {
                     self.extra_key_help_entries(true, Vec::new())
                 } else {
@@ -322,16 +310,11 @@ impl Engine {
         crate::presentation::key_help::compose(
             scene,
             crate::presentation::key_help::KeyHelpView {
-                prepared: self
-                    .overlay
-                    .window_help_plan
-                    .as_ref()
-                    .filter(|_| !self.window_library_help())
-                    .map(|plan| {
-                        let resizing = display == ModeId::window()
-                            && mode.is_some_and(|mode| !mode.accepts_window_targeting());
-                        plan.presentations[usize::from(resizing)].as_ref()
-                    }),
+                prepared: plan.filter(|_| !self.window_library_help()).map(|plan| {
+                    let resizing = display == ModeId::window()
+                        && mode.is_some_and(|mode| !mode.accepts_window_targeting());
+                    plan.presentations[usize::from(resizing)].as_ref()
+                }),
                 screen,
                 ui: &self.settings.key_help,
                 palette: &self.palette,
@@ -375,7 +358,7 @@ impl Engine {
         &self,
         display_mode: &ModeId,
         entries: &[String],
-    ) -> Option<String> {
+    ) -> Option<&str> {
         self.registry.table(display_mode).and_then(|table| {
             table
                 .iter_entries()
@@ -397,7 +380,6 @@ impl Engine {
                     entries.contains(&effective).then(|| target.as_str())
                 })
                 .min_by_key(|target| (*target == "idle", *target))
-                .map(str::to_owned)
         })
     }
 }

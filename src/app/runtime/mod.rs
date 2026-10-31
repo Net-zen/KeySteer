@@ -769,7 +769,8 @@ impl Engine {
                     .take_if(|(_, id, _)| *id == result.id)
                 {
                     result.id = original;
-                    self.dispatch_owned_to(&owner, ModeEvent::TextSegmented(result), backend)?;
+                    self.overlay.key_help_cache = None;
+                    self.dispatch_to(&owner, ModeEvent::TextSegmented(result), backend)?;
                 }
             }
             BackendEvent::TextPromptResult { id, value } => {
@@ -797,12 +798,14 @@ impl Engine {
             }
             BackendEvent::AudioResult(result) => {
                 if let Some(owner) = self.scheduler.audio_sessions.get(&result.session).cloned() {
-                    self.dispatch_owned_to(&owner, ModeEvent::AudioResult(result), backend)?;
+                    self.overlay.key_help_cache = None;
+                    self.dispatch_to(&owner, ModeEvent::AudioResult(result), backend)?;
                 }
             }
             BackendEvent::WindowResult(result) => {
                 if let Some(owner) = self.scheduler.window_sessions.get(&result.session).cloned() {
-                    self.dispatch_owned_to(&owner, ModeEvent::WindowResult(result), backend)?;
+                    self.overlay.key_help_cache = None;
+                    self.dispatch_to(&owner, ModeEvent::WindowResult(result), backend)?;
                 }
             }
             BackendEvent::Input(_) => unreachable!("input is routed by handle_backend_event"),
@@ -979,7 +982,8 @@ impl Engine {
                     self.scan_owners.remove(&result.id)
                 };
                 if let Some(owner) = owner.filter(|owner| owner == &self.registry.active) {
-                    self.dispatch_owned_to(&owner, ModeEvent::UiScanned(result), backend)?;
+                    self.overlay.key_help_cache = None;
+                    self.dispatch_to(&owner, ModeEvent::UiScanned(result), backend)?;
                 }
             }
             BackendEvent::ReloadConfig => {

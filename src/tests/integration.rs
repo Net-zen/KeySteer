@@ -37,6 +37,12 @@ fn shipped_document() -> toml::Value {
 fn the_shipped_config_matches_defaults_with_explicit_temporary_triggers() {
     let mut expected = Config::default();
     // The shipped document explicitly opts in; omitted user fields stay empty.
+    // Parsed triggers use the configured platform alias, just like bindings.
+    let primary = expected
+        .resolved_key_aliases()
+        .get("primary")
+        .map_or("primary", String::as_str)
+        .to_owned();
     for keys in [
         &mut expected.grid.temporary_mode_keys,
         &mut expected.bisect.temporary_mode_keys,
@@ -48,7 +54,7 @@ fn the_shipped_config_matches_defaults_with_explicit_temporary_triggers() {
         &mut expected.window_restore.temporary_mode_keys,
         &mut expected.window_tab.temporary_mode_keys,
     ] {
-        *keys = vec!["primary".into()];
+        *keys = vec![primary.clone()];
     }
     assert_eq!(shipped(), expected);
 }

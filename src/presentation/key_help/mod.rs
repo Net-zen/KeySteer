@@ -84,7 +84,7 @@ pub(crate) struct KeyHelpView<'a> {
     pub palette: &'a Palette,
     pub entries: &'a [String],
     pub extra_entries: Vec<String>,
-    pub return_target: Option<String>,
+    pub return_target: Option<&'a str>,
     pub window_help: bool,
     pub display_name: String,
     pub ruler: Option<&'a crate::api::window_layout::QuickRuler>,
@@ -133,7 +133,7 @@ fn compose_columns(scene: &mut OverlayScene, input: KeyHelpView<'_>, max_columns
             Some(std::borrow::Cow::Owned(prepare_sections(window::sections(
                 grouped,
                 &input.display_name,
-                input.return_target.as_deref(),
+                input.return_target,
                 input
                     .detail
                     .is_some_and(|detail| detail.starts_with("Resize")),
@@ -1070,7 +1070,7 @@ mod tests {
                 palette: &palette,
                 entries: &entries,
                 extra_entries: Vec::new(),
-                return_target: Some("idle".into()),
+                return_target: Some("idle"),
                 window_help: true,
                 display_name: "window".into(),
                 ruler: None,
@@ -1140,7 +1140,7 @@ mod tests {
                                 palette: &Palette::default(),
                                 entries: &entries,
                                 extra_entries: Vec::new(),
-                                return_target: Some("idle".into()),
+                                return_target: Some("idle"),
                                 window_help: true,
                                 display_name: "window".into(),
                                 ruler: None,

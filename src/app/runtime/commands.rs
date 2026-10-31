@@ -134,7 +134,8 @@ impl Engine {
                             .cmp(usage.get(a.as_str()).unwrap_or(&0))
                             .then_with(|| a.cmp(b))
                     });
-                    self.dispatch_owned_to(owner, ModeEvent::ModeList(modes), backend)?;
+                    self.overlay.key_help_cache = None;
+                    self.dispatch_to(owner, ModeEvent::ModeList(modes), backend)?;
                 }
                 Command::RequestPanelWindowBounds(request) => {
                     self.flush_pending_overlay(backend)?;

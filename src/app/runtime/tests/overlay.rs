@@ -643,7 +643,8 @@ fn key_help_cache_rebuilds_on_routes_theme_and_mode_events() {
     engine.dispatch(ModeEvent::Key { key: Key::new("f21").unwrap(), state: KeyState::Down, repeat: false }, &mut backend).unwrap();
     assert!(contains(&engine, "F23"));
     assert!(!contains(&engine, "F22"));
-    engine.dispatch_owned_to(&ModeId::normal(), ModeEvent::UiScanned(crate::api::command::UiScanResult {
+    engine.scan_owners.insert(1, ModeId::normal());
+    engine.handle_backend_event(BackendEvent::UiScanned(crate::api::command::UiScanResult {
         retired: Vec::new(),
 id: 1, targets: Vec::new(), status: UiScanStatus::Partial,
     }), &mut backend).unwrap();

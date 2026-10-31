@@ -226,7 +226,8 @@ impl Engine {
                 Some(error)
             }
         };
-        self.dispatch_owned_to(
+        self.overlay.key_help_cache = None;
+        self.dispatch_to(
             &pending.owner,
             ModeEvent::WindowPresets(Box::new(PresetLibraryResult {
                 session: pending.session,
@@ -336,7 +337,8 @@ impl Engine {
                     Err(error) => (Vec::new(), None, Some(error)),
                     _ => return Err("Unexpected workspace completion".into()),
                 };
-                self.dispatch_owned_to(
+                self.overlay.key_help_cache = None;
+                self.dispatch_to(
                     &owner,
                     ModeEvent::WindowPresets(Box::new(PresetLibraryResult {
                         session,

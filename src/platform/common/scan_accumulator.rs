@@ -100,20 +100,6 @@ impl ScanAccumulator {
         mut targets: Vec<UiTarget>,
         threshold: f64,
     ) -> ScanUpdate {
-        for target in &mut targets {
-            if source != TargetSource::Accessibility && target.details.is_none() {
-                target.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
-                    ocr: if source != TargetSource::Contour
-                        && target.role == SemanticRole::StaticText
-                    {
-                        target.name.clone()
-                    } else {
-                        String::new()
-                    },
-                    ..Default::default()
-                }));
-            }
-        }
         let text_start = self.visual_text.len();
         let has_text = source != TargetSource::Accessibility
             && source != TargetSource::Contour
@@ -135,18 +121,6 @@ impl ScanAccumulator {
                 }
             }
         }
-        if source == TargetSource::Contour {
-            for t in &mut targets {
-                if t.role == SemanticRole::Image {
-                    image_name(
-                        t,
-                        &self.visual_text,
-                        &mut self.ocr_scratch,
-                        &mut self.text_spatial,
-                    );
-                }
-            }
-        }
         self.has_layout_containers |= source == TargetSource::Accessibility
             && targets.iter().any(|target| {
                 matches!(
@@ -161,6 +135,33 @@ impl ScanAccumulator {
             self.insert_targets::<true>(&mut targets, source, threshold);
         } else {
             self.insert_targets::<false>(&mut targets, source, threshold);
+        }
+        // Dedup/stitching reads only geometry, role and the original caption.
+        // Preserve all OCR evidence above, but enrich only accepted targets;
+        // rejected contours need neither metadata nor image-description queries.
+        if source != TargetSource::Accessibility {
+            for target in &mut targets {
+                if target.details.is_none() {
+                    target.details = Some(Box::new(crate::api::geometry::UiTargetDetails {
+                        ocr: if source != TargetSource::Contour
+                            && target.role == SemanticRole::StaticText
+                        {
+                            target.name.clone()
+                        } else {
+                            String::new()
+                        },
+                        ..Default::default()
+                    }));
+                }
+                if source == TargetSource::Contour && target.role == SemanticRole::Image {
+                    image_name(
+                        target,
+                        &self.visual_text,
+                        &mut self.ocr_scratch,
+                        &mut self.text_spatial,
+                    );
+                }
+            }
         }
         let mut retired = self.index.take_retired();
         let mut descriptions = Vec::new();
@@ -306,7 +307,7 @@ impl ScanAccumulator {
                 {
                     continue;
                 }
-                // Contour images were enriched by image_name before dedup.
+                // Accepted contour images were already enriched by image_name.
                 // Their geometry and this batch's OCR evidence are unchanged,
                 // so rebuilding that description here would repeat the query
                 // and text assembly. Other targets still need enrichment.
@@ -724,6 +725,58 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[ignore = "allocation counter requires isolated execution"]
+    fn suppressed_contours_do_not_allocate_metadata_or_assemble_image_names() {
+        let mut scan = ScanAccumulator::new();
+        let candidates: Vec<_> = (0..64)
+            .map(|i| UiTarget {
+                rect: Rect::new(f64::from(i) * 200.0, 0.0, 120.0, 80.0),
+                role: if i % 2 == 0 {
+                    SemanticRole::Image
+                } else {
+                    SemanticRole::Control
+                },
+                name: String::new(),
+                details: None,
+            })
+            .collect();
+        // Images reject duplicate images; native actions reject controls.
+        // Keep OCR evidence present so rejected images would otherwise query
+        // and assemble descriptions as well as allocate empty metadata.
+        scan.push(
+            TargetSource::Contour,
+            candidates.iter().step_by(2).cloned().collect(),
+            0.5,
+        );
+        let native = candidates
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .map(|target| UiTarget {
+                role: SemanticRole::Button,
+                ..target.clone()
+            })
+            .collect();
+        scan.push(TargetSource::Accessibility, native, 0.5);
+        let text = candidates
+            .iter()
+            .map(|target| {
+                UiTarget::recognized_text(
+                    target.rect.inset(10.0, 30.0),
+                    "caption inside a rejected contour image".into(),
+                )
+            })
+            .collect();
+        scan.push(TargetSource::SystemOcr, text, 0.5);
+        let region = stats_alloc::Region::new(crate::TEST_ALLOCATOR);
+        let update = scan.push(TargetSource::Contour, candidates, 0.5);
+        let stats = region.change();
+        assert!(update.targets.is_empty());
+        assert!(update.retired.is_empty());
+        assert_eq!(stats.allocations + stats.reallocations, 0, "{stats:?}");
     }
 
     #[test]
