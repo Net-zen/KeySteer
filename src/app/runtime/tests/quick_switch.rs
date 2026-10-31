@@ -497,7 +497,7 @@ fn quick_switch_labels_cover_all_modes_and_filter_without_reassigning() {
             &seen,
             &[
                 "mode_a", "mode_b", "mode_c", "mode_d", "mode_e", "mode_f", "mode_g", "mode_h",
-                "mode_i", "mode_j", "mode_k", "mode_l",
+                "mode_i", "mode_j", "mode_k", "mode_with_a_long_custom_identifier",
             ],
         );
         let mut config = Config::default();

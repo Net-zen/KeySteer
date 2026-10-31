@@ -19,7 +19,6 @@ pub struct QuickSwitchMode {
     settings: Settings,
     previous: ModeId,
     active: bool,
-    candidates: Vec<ModeId>,
     rows: Vec<QuickSwitchRow>,
     prefix: String,
     window: Option<Rect>,
@@ -32,7 +31,6 @@ impl QuickSwitchMode {
             settings,
             previous: ModeId::normal(),
             active: false,
-            candidates: Vec::new(),
             rows: Vec::new(),
             prefix: String::new(),
             window: None,
@@ -82,17 +80,17 @@ impl QuickSwitchMode {
             self.settings.alphabet.len(),
             LabelDirection::Normal,
         ) {
-            self.rows.extend(
-                candidates
-                    .iter()
-                    .enumerate()
-                    .map(|(index, id)| QuickSwitchRow {
-                        label: plan.code(index, &self.settings.alphabet).as_str().into(),
-                        caption: id.as_str().into(),
-                    }),
-            );
+            self.rows
+                .extend(
+                    candidates
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, id)| QuickSwitchRow {
+                            label: plan.code(index, &self.settings.alphabet).as_str().into(),
+                            mode: id,
+                        }),
+                );
         }
-        self.candidates = candidates;
         let mut commands: CommandBatch = self.render(ctx).into();
         if self.settings.position == QuickSwitchPosition::Window {
             commands.push(Command::RequestPanelWindowBounds(self.geometry_id));
@@ -137,7 +135,6 @@ impl Mode for QuickSwitchMode {
             ModeEvent::Deactivated => {
                 self.active = false;
                 // The next entry gets a fresh registry snapshot; retain no mode captions.
-                self.candidates = Vec::new();
                 self.rows = Vec::new();
                 self.prefix.clear();
                 self.window = None;
@@ -162,15 +159,10 @@ impl Mode for QuickSwitchMode {
                 };
                 self.prefix.push(character);
                 match match_label_input(
-                    self.rows
-                        .iter()
-                        .enumerate()
-                        .map(|(index, row)| (row.label.as_str(), index)),
+                    self.rows.iter().map(|row| (row.label.as_str(), &row.mode)),
                     &self.prefix,
                 ) {
-                    LabelMatch::Complete(index) => {
-                        Command::SwitchMode(self.candidates[index].clone()).into()
-                    }
+                    LabelMatch::Complete(mode) => Command::SwitchMode(mode.clone()).into(),
                     LabelMatch::Partial => self.render(ctx).into(),
                     LabelMatch::None => {
                         self.prefix.pop();

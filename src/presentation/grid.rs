@@ -17,9 +17,10 @@ fn push_rulings(
 ) {
     let cell_width = area.width / cols as f64;
     let cell_height = area.height / rows as f64;
+    let shapes = &mut *scene.shapes;
     for column in 1..cols {
         let x = area.x + column as f64 * cell_width;
-        scene.push_shape(OverlayShape::Line {
+        shapes.push(OverlayShape::Line {
             placement_group: None,
             from: Point::new(x, area.top()),
             to: Point::new(x, area.bottom()),
@@ -30,7 +31,7 @@ fn push_rulings(
     }
     for row in 1..rows {
         let y = area.y + row as f64 * cell_height;
-        scene.push_shape(OverlayShape::Line {
+        shapes.push(OverlayShape::Line {
             placement_group: None,
             from: Point::new(area.left(), y),
             to: Point::new(area.right(), y),
@@ -77,12 +78,13 @@ impl GridView<'_> {
         if line_width > 0.0 && !line_color.is_transparent() {
             let cell_width = area.width / preview_cols as f64;
             let cell_height = area.height / preview_rows as f64;
+            let shapes = &mut *scene.shapes;
             for column in 1..preview_cols {
                 if column % self.layout.cols == 0 {
                     continue;
                 }
                 let x = area.x + column as f64 * cell_width;
-                scene.push_shape(OverlayShape::Line {
+                shapes.push(OverlayShape::Line {
                     placement_group: None,
                     from: Point::new(x, area.top()),
                     to: Point::new(x, area.bottom()),
@@ -96,7 +98,7 @@ impl GridView<'_> {
                     continue;
                 }
                 let y = area.y + row as f64 * cell_height;
-                scene.push_shape(OverlayShape::Line {
+                shapes.push(OverlayShape::Line {
                     placement_group: None,
                     from: Point::new(area.left(), y),
                     to: Point::new(area.right(), y),
@@ -128,6 +130,7 @@ impl GridView<'_> {
         // Subdivision preserves cell sizes, and every key is one Unicode scalar.
         // Fit once per layer and share the style across all of its labels.
         let preview_style: SharedLabelStyle = preview_style.fit_to("X", first_inner).into();
+        let labels = &mut *scene.labels;
         for outer_index in 0..self.layout.keys.len() {
             let Some(outer) = area.subdivision(self.layout.rows, self.layout.cols, outer_index)
             else {
@@ -138,7 +141,7 @@ impl GridView<'_> {
                 else {
                     break;
                 };
-                scene.push_label(
+                labels.push(
                     OverlayLabel::new(suffix, rect, preview_style.clone())
                         .fitted()
                         .with_z_index(2),
@@ -173,7 +176,7 @@ impl GridView<'_> {
             else {
                 break;
             };
-            scene.push_label(
+            labels.push(
                 OverlayLabel::new(prefix, outer, primary_style.clone())
                     .fitted()
                     .with_z_index(3),
@@ -266,12 +269,13 @@ impl GridView<'_> {
                 }
                 .fit_to("X", cell)
                 .into();
+                let labels = &mut *scene.labels;
                 for (index, key) in self.layout.keys.iter().copied().enumerate() {
                     let Some(rect) = area.subdivision(self.layout.rows, self.layout.cols, index)
                     else {
                         break;
                     };
-                    scene.push_label(
+                    labels.push(
                         OverlayLabel::new(key, rect, text_style.clone())
                             .fitted()
                             .with_z_index(2),

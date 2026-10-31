@@ -15,7 +15,9 @@ Mode/Plugin 是平台无关状态机：接收 `ModeEvent` 和 `HostContext`，�
 | 插件 | `src/plugins/` |
 | 注册与生命周期词汇 | `src/app/mode_catalog.rs`、`src/api/lifecycle.rs` |
 
-普通网格、递归网格与 Bisect 二分定位共用泛型 `GridMode<G>` 的事件、命令和生命周期源码；catalog 分别装配 `GridGeometry`、`RecursiveGeometry`、`BisectGeometry`，各自绑定具体样式、视图和模式身份。`targeting/geometry.rs` 定义三种几何，`grid/variants.rs` 将几何和样式静态配对；`TargetingController<G>` 的选择、终态、重置和跨屏重放在编译时分别实例化，不保存模式种类标记或样式枚举。Bisect 不存字母布局；Grid 不存递归最小尺寸。Normal 的静默定位同样在 catalog 选择具体字母几何，普通 Normal 保持原实现。Bisect 通过独立 `bisect_left/down/up/right` 绑定选择半区，无标签字母表与层布局；每次只缩小一个轴，该轴到最小尺寸时仍可切分另一轴。深度上限或两轴均无法继续时沿用网格完成语义，路径记录方向供撤销和跨屏重放。无字母视图复用递归网格的区域填充、描边与终态背景，原生覆盖层资源策略不变；Window 借用定位也将 Bisect 视为网格，保留窗口会话。
+`built_in_factories` 共用一份启用条件、构造函数和路由编译函数清单；条目只保存布尔值与函数指针，迭代前不构造实例或复制绑定。基础路由由 `compile_route` 处理，应用覆盖在基础编译成功后才复制；窗口和插件也复用 `compile_app_route`，UIHint 单独处理其覆盖类型。生产入口 `built_in_specs` 按顺序构造实例并编译路由，首个错误立即返回；兼容测试入口 `built_in` 只调用构造函数，不因无关的路由配置错误失败。两种历史顺序用普通数组与共享数组拼接，仅在兼容入口把 Text Select 延至共享数组之后，不排序；禁用条目先过滤，再调用构造或编译函数。完整性测试检查两者的身份集合、启用开关和各自的顺序。窗口族按各自 `WindowKind` 读取配置与启用开关，路由按模式 ID 配对，避免并行数组顺序造成错配。新增模式步骤见[配置维护入口](03-configuration.md#新增模式的维护入口)。
+
+普通网格、递归网格与 Bisect 二分定位共用泛型 `GridMode<G>` 的事件、命令和生命周期源码；catalog 分别装配 `GridGeometry`、`RecursiveGeometry`、`BisectGeometry`，各自绑定具体样式、视图和模式身份。`targeting/geometry.rs` 定义三种几何，`grid/variants.rs` 将几何和样式静态配对；`TargetingController<G>` 的选择、终态、重置和跨屏重放在编译时分别实例化，不保存模式种类标记或样式枚举。Bisect 不存字母布局；Grid 不存递归最小尺寸。Normal 的静默定位同样在 catalog 选择具体字母几何，普通 Normal 保持原实现。 catalog 通过共享布局函数和 `From<&GridLayer>` 转换组装网格，配置到运行设置的转换仍留在装配层，模式不依赖配置类型。Bisect 通过独立 `bisect_left/down/up/right` 绑定选择半区，无标签字母表与层布局；每次只缩小一个轴，该轴到最小尺寸时仍可切分另一轴。深度上限或两轴均无法继续时沿用网格完成语义，路径记录方向供撤销和跨屏重放。无字母视图复用递归网格的区域填充、描边与终态背景，原生覆盖层资源策略不变；Window 借用定位也将 Bisect 视为网格，保留窗口会话。
 
 Normal 移动与滚动共用原生显示帧时钟，各自维护手势状态并输出独立命令：按下立即执行短步，随后按帧的实际经过时间持续更新，不等待键盘重复延迟；仅在最后一个移动／滚动手势释放后停止时钟。普通滚动使用配置预编译且独立于短按距离的每秒速度，叠加当前速度倍率并保留小数余量；帧到达后忽略 OS 重复，没有显示帧时保留键盘重复回退。连续滚动输出可取消的 `ScrollFrame`，短按保留 `Scroll`；移动按下／释放不取消滚动帧，滚动自身状态改变且已发出连续帧时才作废旧帧；短按和页滚动不取消不存在的帧，页滚动也不重算连续滚动速度，原生执行策略见[平台后端](06-platform-backends.md)。半页／整页动作和普通滚动的仅短按配置不启动滚动帧时钟，也不接受重复滚动。模式借用仍按原 owner 接收帧与释放，会话清理清空全部保持状态。
 
@@ -63,7 +65,7 @@ UIHint 在结果信息面板出现时按需创建点位检查状态。完整标�
 
 快速切换是 `modes/quick_switch.rs` 中注册的普通模式，使用普通生命周期、按键绑定和 Presenter；`app/runtime/quick_switch.rs` 只检测长按进入并抑制原手势接管后的重复。短按与原绑定 Down／Up 配对保留；未达到长按期限的其他按键取消进入，松开触发键不退出已进入的模式。默认 Esc／再次按 Q 的 `cancel_selection` 返回前一模式，Backspace 的 `previous_level` 删除前缀，均由 `quick_switch.bindings` 配置。
 
-进入时通过 `RequestModeList`／`ModeList` 取得按使用次数及 id 排序的注册模式快照，排除自身、前一模式、上下文插件和黑名单，不限制九项。与 UIHint 共用 `api/hint.rs` 的无前缀冲突标签生成与匹配；筛选不重新编号，死前缀只丢弃最后一字。窗口定位复用 `RequestPanelWindowBounds`，先显示再异步查询，退出／重入隔离迟到结果。绘制按屏幕高度分列，并为多字符键帽预留宽度。
+进入时通过 `RequestModeList`／`ModeList` 取得按使用次数及 id 排序的注册模式快照，排除自身、前一模式、上下文插件和黑名单，不限制九项。每行直接拥有目标 ModeId 和标签，绘制借用 ModeId 的名称；不另保留平行候选数组或一份名称快照，匹配标签后直接取得该行目标。与 UIHint 共用 `api/hint.rs` 的无前缀冲突标签生成与匹配；筛选不重新编号，死前缀只丢弃最后一字。窗口定位复用 `RequestPanelWindowBounds`，先显示再异步查询，退出／重入隔离迟到结果。绘制按屏幕高度分列，并为多字符键帽预留宽度。
 
 Text Select 与 Quick Switch 的模式徽标复用共享呈现及主题强调色，仍接受 `mode_indicator` 覆盖。快速切换标签已输入前缀复用 UIHint 的默认黄色，可由 `quick_switch.ui.matched_text_color` 覆盖。文字选择通过 `HintView.highlighted_hint` 将当前单个预览接入共享高亮缓存；默认 `Primary+Q` 的普通模式绑定优先于搜索编辑确认，返回 Normal 且不复制，Esc 仍返回来源模式。
 

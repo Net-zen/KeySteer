@@ -93,21 +93,24 @@ fn shared_scene_submission_only_detaches_when_sorting_is_needed() {
                 });
             }
             let source = Arc::new(scene);
-            engine.overlay.command_batch_depth = usize::from(batched);
-            engine
-                .show_overlay(Arc::clone(&source), &mut backend)
-                .unwrap();
-            engine.overlay.command_batch_depth = 0;
-            engine.flush_pending_overlay(&mut backend).unwrap();
-            let content = engine.overlay.content.as_ref().unwrap();
-            assert!(content.is_sorted());
-            assert_eq!(Arc::ptr_eq(content, &source), ordered);
-            assert_eq!(
-                source.is_sorted(),
-                ordered,
-                "submission changed the caller's scene"
-            );
+            for _ in 0..2 {
+                engine.overlay.command_batch_depth = usize::from(batched);
+                engine
+                    .show_overlay(Arc::clone(&source), &mut backend)
+                    .unwrap();
+                engine.overlay.command_batch_depth = 0;
+                engine.flush_pending_overlay(&mut backend).unwrap();
+                let content = engine.overlay.content.as_ref().unwrap();
+                assert!(content.is_sorted());
+                assert_eq!(Arc::ptr_eq(content, &source), ordered);
+                assert_eq!(
+                    source.is_sorted(),
+                    ordered,
+                    "submission changed the caller's scene"
+                );
+            }
 
+            let content = engine.overlay.content.as_ref().unwrap();
             let submitted = Arc::downgrade(content);
             drop(source);
             engine.hide_overlay(&mut backend).unwrap();
@@ -482,6 +485,7 @@ fn key_help_resolves_current_binding_table_and_keeps_position_fast_path() {
     assert!(!expected.is_empty());
     let help = engine.key_help_entries();
     assert!(help.iter().any(|entry| entry.contains(&expected[0].1.canonical())));
+    assert!(help.windows(2).all(|pair| pair[0] < pair[1]));
     engine.overlay.key_help_visible = true;
     engine.refresh_overlay(&mut backend).unwrap();
     backend.accept_position_updates = true;
@@ -639,7 +643,8 @@ fn key_help_cache_rebuilds_on_routes_theme_and_mode_events() {
     engine.dispatch(ModeEvent::Key { key: Key::new("f21").unwrap(), state: KeyState::Down, repeat: false }, &mut backend).unwrap();
     assert!(contains(&engine, "F23"));
     assert!(!contains(&engine, "F22"));
-    engine.dispatch_owned_to(&ModeId::normal(), ModeEvent::UiScanned(crate::api::command::UiScanResult {
+    engine.scan_owners.insert(1, ModeId::normal());
+    engine.handle_backend_event(BackendEvent::UiScanned(crate::api::command::UiScanResult {
         retired: Vec::new(),
 id: 1, targets: Vec::new(), status: UiScanStatus::Partial,
     }), &mut backend).unwrap();
@@ -762,6 +767,8 @@ fn literal_character_held_action_releases_by_physical_key() {
 #[test]
 fn character_capture_policy_tracks_startup_and_reload_removal() {
     let mut config = Config::default();
+    config.quick_switch.key = "f8".into();
+    config.quick_switch.hint_characters = ":甲乙".into();
     config.normal.bindings.insert(":".into(), Binding::parse("key_help").unwrap());
     config.normal.bindings.insert("ctrl+@".into(), Binding::parse("key_help").unwrap());
     let mut engine = Engine::from_plan(crate::app::configuration::compile(&config).unwrap(), Appearance::Dark).unwrap();
@@ -770,13 +777,16 @@ fn character_capture_policy_tracks_startup_and_reload_removal() {
     assert!(engine.registry.character_keys.contains_key(&':'));
     assert!(!engine.registry.character_keys.contains_key(&'@'), "a modified chord is not a literal character binding");
     let captured = log.lock().unwrap().character_bindings[0].clone();
-    assert!(captured.contains(&":".to_string()));
+    assert_eq!(captured.iter().filter(|key| *key == ":").count(), 1);
+    assert!(["甲", "乙"].iter().all(|key| captured.iter().any(|captured| captured == key)));
+    assert!(!captured.contains(&"f8".to_string()));
     assert!(!captured.contains(&"@".to_string()));
 
     config.normal.bindings.remove(":");
+    config.quick_switch.enabled = false;
     engine.apply_runtime_plan(crate::app::configuration::compile(&config).unwrap(), &mut backend).unwrap();
     assert!(!engine.registry.character_keys.contains_key(&':'));
-    assert!(!log.lock().unwrap().character_bindings.last().unwrap().contains(&":".to_string()));
+    assert!(log.lock().unwrap().character_bindings.last().unwrap().iter().all(|key| ![":", "甲", "乙"].contains(&key.as_str())));
 }
 
 #[test]

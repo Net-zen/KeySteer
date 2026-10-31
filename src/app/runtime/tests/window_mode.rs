@@ -1,4 +1,31 @@
 #[test]
+#[ignore = "allocation probe; run alone with --test-threads=1"]
+fn window_focus_updates_reuse_the_snapshot_without_cloning_event_payloads() {
+    let config = Config::default();
+    let (mut engine, mut backend, log) = window_test_engine(&config);
+    enter_window(&mut engine, &mut backend, &log);
+    let mut focus = FocusedApp {
+        process_id: 42,
+        bundle_id: "test.keysteer.window-focus".into(),
+        window_title: "Window title ".repeat(128),
+    };
+    engine.handle_backend_event(BackendEvent::FocusChanged(Some(focus.clone())), &mut backend).unwrap();
+    for marker in ['a', 'b'] {
+        focus.window_title.pop();
+        focus.window_title.push(marker);
+        let event = BackendEvent::FocusChanged(Some(focus.clone()));
+        let region = Region::new(TEST_ALLOCATOR);
+        engine.handle_backend_event(event, &mut backend).unwrap();
+        let stats = region.change();
+        assert_eq!(stats.allocations + stats.reallocations, 0, "{stats:?}");
+        assert_eq!(engine.focused_app.as_ref(), Some(&focus));
+        assert_eq!(engine.active_mode(), &ModeId::window());
+    }
+    engine.handle_backend_event(BackendEvent::FocusChanged(None), &mut backend).unwrap();
+    assert!(engine.focused_app.is_none());
+}
+
+#[test]
 fn window_size_toggle_updates_cursor_badge_even_with_help_hidden() {
     for help in [false, true] {
         let mut config = Config::default();
@@ -1498,22 +1525,24 @@ fn window_family_shortcut_plan_survives_input_and_scene_refresh_until_routes_cha
         if let Some(key) = entry {
             for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
         }
-        let plan = Arc::clone(&engine.overlay.window_help_plan.as_ref().unwrap().entries);
+        let owner = engine.active_mode().clone();
+        let plan = engine.registry.window_help_plan(&owner).unwrap();
+        let prepared = Arc::clone(&plan.presentations[0]);
         if entry == Some("e") {
-            assert!(plan.iter().any(|hint| hint.ends_with("window_save_layout")));
+            assert!(plan.entries.iter().any(|hint| hint.ends_with("window_save_layout")));
             acknowledge_window_edit(&mut engine, &mut backend, &log);
         }
         for key in ["h", "left_shift", "left_ctrl"] {
             for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
             engine.overlay.key_help_cache = None;
             engine.refresh_overlay(&mut backend).unwrap();
-            assert!(Arc::ptr_eq(&plan, &engine.overlay.window_help_plan.as_ref().unwrap().entries),
+            assert!(Arc::ptr_eq(&prepared, &engine.registry.window_help_plan(&owner).unwrap().presentations[0]),
                 "mode={entry:?}: shortcut table must be reused even when the scene is recomposed");
         }
         engine.rebuild_tables();
-        assert!(engine.overlay.window_help_plan.is_none());
+        assert!(engine.overlay.key_help_cache.is_none());
         engine.refresh_overlay(&mut backend).unwrap();
-        assert!(!Arc::ptr_eq(&plan, &engine.overlay.window_help_plan.as_ref().unwrap().entries));
+        assert!(!Arc::ptr_eq(&prepared, &engine.registry.window_help_plan(&owner).unwrap().presentations[0]));
     }
 }
 
@@ -1531,11 +1560,11 @@ fn restore_delete_toggle_is_rebindable_keeps_page_and_cached_help() {
     for key in ["r", "page_down"] {
         for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
     }
-    let plan = engine.overlay.window_help_plan.as_ref().unwrap().entries.clone();
+    let plan = engine.registry.window_help_plan(&ModeId::window_restore()).unwrap().presentations[0].clone();
     for key in ["v", "7", "v", "enter"] {
         for event in [key_down(key), key_up(key)] { engine.handle_backend_event(event, &mut backend).unwrap(); }
         assert_eq!(engine.active_mode(), &ModeId::window_restore());
-        assert!(std::sync::Arc::ptr_eq(&plan, &engine.overlay.window_help_plan.as_ref().unwrap().entries));
+        assert!(Arc::ptr_eq(&plan, &engine.registry.window_help_plan(&ModeId::window_restore()).unwrap().presentations[0]));
     }
     assert_eq!(engine.window_presets.store.list().unwrap().len(), 7);
     assert!(log.lock().unwrap().scenes.last().unwrap().labels.iter().any(|l| l.text.contains("page 2 / 2")));
@@ -1750,7 +1779,7 @@ fn window_targeting_uses_real_grid_lifecycle_and_keeps_window_session() {
         let initial = enter_window(&mut engine, &mut backend, &log);
         let help_entries: Vec<_> = engine.registry.table(&ModeId::window()).unwrap()
             .iter_entries().map(|entry| format!("{}  ·  {}", entry.chord.canonical(), entry.binding.canonical())).collect();
-        assert_ne!(engine.key_help_return_target_in(&ModeId::window(), &help_entries).as_deref(), Some("bisect"));
+        assert_ne!(engine.key_help_return_target_in(&ModeId::window(), &help_entries), Some("bisect"));
         let entrance = if kind == "recursive_grid" { "f" } else { "g" };
         let keys = if temporary { vec![primary.as_str(), entrance] } else { vec![entrance] };
         for key in &keys { engine.handle_backend_event(key_down(key), &mut backend).unwrap(); }
@@ -1937,18 +1966,19 @@ fn window_targeting_help_respects_custom_temporary_keys_and_explicit_conflicts()
 #[test]
 fn window_help_is_precompiled_before_entry_and_reused_across_move_resize_and_reentry() {
     let (mut engine, mut backend, log) = window_test_engine(&Config::default());
-    let compiled = engine.registry.window_help_plans[&ModeId::window()].clone();
+    let compiled = engine.registry.window_help_plan(&ModeId::window()).unwrap();
     assert!(compiled.entries.iter().any(|entry| entry.ends_with(" ·  grid")));
-    assert_eq!(engine.registry.window_help_plans.len(), 5);
+    let prepared = compiled.presentations.clone();
+    assert_eq!(engine.registry.keys().filter(|id| engine.registry.window_help_plan(id).is_some()).count(), 5);
     let rebuilds = engine.registry.table_rebuild_count;
     for _ in 0..2 {
         enter_window(&mut engine, &mut backend, &log);
-        assert!(Arc::ptr_eq(&compiled, engine.overlay.window_help_plan.as_ref().unwrap()));
+        assert!(prepared.iter().zip(&engine.registry.window_help_plan(&ModeId::window()).unwrap().presentations).all(|(before, current)| Arc::ptr_eq(before, current)));
         for resizing in [true, false] {
             for event in [key_down("s"), key_up("s")] {
                 engine.handle_backend_event(event, &mut backend).unwrap();
             }
-            assert!(Arc::ptr_eq(&compiled, engine.overlay.window_help_plan.as_ref().unwrap()));
+            assert!(prepared.iter().zip(&engine.registry.window_help_plan(&ModeId::window()).unwrap().presentations).all(|(before, current)| Arc::ptr_eq(before, current)));
             let log = log.lock().unwrap();
             let scene = log.scenes.last().unwrap();
             assert_eq!(scene.labels.iter().any(|label| label.text == "OTHER ACTIONS"), !resizing);

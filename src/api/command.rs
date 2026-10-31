@@ -913,11 +913,12 @@ pub trait Mode: Send {
     /// Handle one event and return the commands it implies.
     fn handle(&mut self, event: &ModeEvent, ctx: &HostContext<'_>) -> CommandBatch;
 
-    /// Handle an event whose payload can be consumed by the mode.
+    /// Runtime entry for events whose payload can be consumed by the mode.
     ///
-    /// The default preserves the borrowed API used by existing modes and
-    /// plugins. Scan results and mode lists use this route so their owned
-    /// buffers and strings can be moved instead of cloned.
+    /// The default forwards to the borrowed handler used by existing modes and
+    /// plugins. Overrides can move buffers and strings instead of cloning them;
+    /// events they do not consume should still reach their borrowed handler.
+    /// Frame and pointer notifications use `handle` directly.
     fn handle_owned(&mut self, event: ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
         self.handle(&event, ctx)
     }

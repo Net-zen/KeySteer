@@ -9,7 +9,7 @@ use crate::api::input::{Key, KeyChord, ModeId};
 
 use super::input_router::CompiledKeymap;
 use super::plan::{Bindings, ModeRoute};
-use super::{Engine, RuntimeError, chords_conflict};
+use super::{Engine, RuntimeError};
 
 struct ModeSlot {
     id: ModeId,
@@ -17,7 +17,8 @@ struct ModeSlot {
     pointer_events: bool,
     keyboard_prompt_supported: bool,
     table: Option<CompiledKeymap>,
-    /// None is decided when routes compile, including filtered-out triggers.
+    window_help: Option<Box<super::key_help::WindowKeyHelpPlan>>,
+    /// Owned compiled triggers; binding-table rebuilds leave them untouched.
     temporary_chords: Option<Vec<KeyChord>>,
 }
 
@@ -36,8 +37,6 @@ pub(super) struct ModeRegistry {
     pub(super) plugin_bindings: Vec<(KeyChord, Binding)>,
     pub(super) plugin_verbs: BTreeMap<String, ModeId>,
     pub(super) modal_stack: Vec<ModeId>,
-    pub(super) window_help_plans:
-        BTreeMap<ModeId, std::sync::Arc<super::key_help::WindowKeyHelpPlan>>,
 }
 
 impl Default for ModeRegistry {
@@ -57,18 +56,66 @@ impl Default for ModeRegistry {
             plugin_bindings: Vec::new(),
             plugin_verbs: BTreeMap::new(),
             modal_stack: Vec::new(),
-            window_help_plans: BTreeMap::new(),
         }
     }
 }
 
 impl ModeRegistry {
     pub(super) fn with_routes(routes: BTreeMap<ModeId, ModeRoute>) -> Self {
-        Self {
+        let mut registry = Self {
             slots: Vec::with_capacity(routes.len()),
-            routes,
             ..Self::default()
+        };
+        registry.replace_routes(routes);
+        registry
+    }
+
+    pub(super) fn replace_routes(&mut self, mut routes: BTreeMap<ModeId, ModeRoute>) {
+        fn expand(
+            owner: &ModeId,
+            routes: &BTreeMap<ModeId, ModeRoute>,
+            stop: Option<&ModeId>,
+            order: &mut Vec<ModeId>,
+        ) {
+            if order.contains(owner) {
+                return;
+            }
+            order.push(owner.clone());
+            if stop != Some(owner)
+                && let Some(route) = routes.get(owner)
+            {
+                for source in &route.inherits {
+                    expand(source, routes, stop, order);
+                }
+            }
         }
+        // Read the original graph before replacing it. Store only source IDs;
+        // tables and bindings retain their existing owners, including modes
+        // registered later. Cycle protection runs here, never on a key event.
+        let expanded: Vec<_> = routes
+            .iter()
+            .map(|(id, route)| {
+                let mut inherits = Vec::new();
+                expand(id, &routes, None, &mut inherits);
+                inherits.remove(0);
+                let claimed = route
+                    .temporary_mode
+                    .as_ref()
+                    .filter(|owner| *owner != id)
+                    .and_then(|owner| {
+                        let mut order = Vec::new();
+                        expand(owner, &routes, Some(id), &mut order);
+                        order.remove(0);
+                        order.contains(id).then(|| order.into_boxed_slice())
+                    });
+                (inherits, claimed)
+            })
+            .collect();
+        for (route, (inherits, claimed)) in routes.values_mut().zip(expanded) {
+            route.inherits = inherits.into_boxed_slice();
+            route.temporary_inherits_when_claimed = claimed;
+        }
+        self.routes = routes;
     }
 
     pub(super) fn insert(
@@ -91,6 +138,7 @@ impl ModeRegistry {
             pointer_events,
             keyboard_prompt_supported,
             table: None,
+            window_help: None,
             temporary_chords: None,
         });
         self.indices.insert(id, index);
@@ -150,40 +198,16 @@ impl ModeRegistry {
         self.slots.get(index)?.table.as_ref()
     }
 
-    pub(super) fn table_mut_or_default(&mut self, id: &ModeId) -> Option<&mut CompiledKeymap> {
-        let index = self.index_of(id)?;
-        Some(
-            self.slots
-                .get_mut(index)?
-                .table
-                .get_or_insert_with(CompiledKeymap::default),
-        )
-    }
-
     pub(super) fn temporary_chords(&self, id: &ModeId) -> Option<&[KeyChord]> {
         let index = self.index_of(id)?;
         self.slots.get(index)?.temporary_chords.as_deref()
     }
 
-    pub(super) fn clear_routes(&mut self) {
-        for slot in &mut self.slots {
-            slot.table = None;
-            slot.temporary_chords = None;
-        }
-    }
-
-    pub(super) fn set_routes(
-        &mut self,
+    pub(super) fn window_help_plan(
+        &self,
         id: &ModeId,
-        table: Option<CompiledKeymap>,
-        temporary_chords: Vec<KeyChord>,
-    ) {
-        if let Some(index) = self.index_of(id)
-            && let Some(slot) = self.slots.get_mut(index)
-        {
-            slot.table = table;
-            slot.temporary_chords = (!temporary_chords.is_empty()).then_some(temporary_chords);
-        }
+    ) -> Option<&super::key_help::WindowKeyHelpPlan> {
+        self.slots.get(self.index_of(id)?)?.window_help.as_deref()
     }
 
     pub(super) fn merge_plugin_bindings_into_normal(&mut self) {
@@ -225,95 +249,92 @@ impl ModeRegistry {
 impl Engine {
     fn compile_window_help_plans(&mut self) {
         let temporary = self.compile_window_targeting_temporary_help();
-        let plans = self
-            .registry
-            .keys()
-            .filter(|id| id.is_window())
-            .map(|id| {
-                let mut entries = std::collections::BTreeSet::new();
-                for (owner, table) in self.registry.tables() {
-                    for entry in table.iter_entries() {
-                        if matches!(entry.binding.as_ref(), Binding::Disabled) {
-                            continue;
-                        }
-                        // Fixed help is the Window layer, not a preview of
-                        // every binding reachable through its temporary mode.
-                        if self
-                            .lookup_layer_reference::<true>(
-                                id,
-                                id,
-                                entry.chord.activation_key(),
-                                entry.chord.keys(),
-                                true,
-                                &mut smallvec::SmallVec::new(),
-                            )
-                            .is_some_and(|resolved| {
-                                resolved.owner == *owner
-                                    && resolved.binding == entry.binding
-                                    && self.registry.get(id).is_none_or(|mode| {
-                                        match resolved.binding.window_action() {
-                                            Some(
-                                                crate::api::window::WindowAction::NextPage
-                                                | crate::api::window::WindowAction::PreviousPage,
-                                            ) => false,
-                                            Some(action) => mode.window_action_supported(&action),
-                                            _ => true,
-                                        }
-                                    })
-                            })
-                        {
-                            entries.insert(format!(
-                                "{}  ·  {}",
-                                entry.chord.canonical(),
-                                entry.binding.canonical()
-                            ));
-                        }
+        for index in 0..self.registry.slots.len() {
+            let id = &self.registry.slots[index].id;
+            if !id.is_window() {
+                continue;
+            }
+            let mut entries = std::collections::BTreeSet::new();
+            for (owner, table) in self.registry.tables() {
+                for entry in table.iter_entries() {
+                    if matches!(entry.binding.as_ref(), Binding::Disabled) {
+                        continue;
+                    }
+                    // Fixed help is the Window layer, not a preview of
+                    // every binding reachable through its temporary mode.
+                    if self
+                        .lookup_layer_reference::<true>(
+                            id,
+                            id,
+                            entry.chord.activation_key(),
+                            entry.chord.keys(),
+                            Some(&entry.chord),
+                        )
+                        .is_some_and(|(source, matched)| {
+                            source == owner
+                                && matched.binding == entry.binding
+                                && self.registry.get(id).is_none_or(|mode| {
+                                    match matched.binding.window_action() {
+                                        Some(
+                                            crate::api::window::WindowAction::NextPage
+                                            | crate::api::window::WindowAction::PreviousPage,
+                                        ) => false,
+                                        Some(action) => mode.window_action_supported(&action),
+                                        _ => true,
+                                    }
+                                })
+                        })
+                    {
+                        entries.insert(format!(
+                            "{}  ·  {}",
+                            entry.chord.canonical(),
+                            entry.binding.canonical()
+                        ));
                     }
                 }
-                if *id == ModeId::window() {
-                    entries.extend(temporary.iter().cloned());
-                }
-                if let Some(mode) = self.registry.get(id) {
-                    for (key, action) in mode.fixed_key_help() {
-                        if let Ok(chord) = KeyChord::parse(&key)
-                            && self
-                                .lookup_for_help_in(id, chord.activation_key(), chord.keys())
-                                .is_none()
-                        {
-                            entries.insert(format!("{key}  ·  {action}"));
-                        }
+            }
+            if *id == ModeId::window() {
+                entries.extend(temporary.iter().cloned());
+            }
+            if let Some(mode) = self.registry.get(id) {
+                for (key, action) in mode.fixed_key_help() {
+                    if let Ok(chord) = KeyChord::parse(&key)
+                        && self
+                            .lookup_for_help_in(id, chord.activation_key(), chord.keys())
+                            .is_none()
+                    {
+                        entries.insert(format!("{key}  ·  {action}"));
                     }
                 }
-                let entries: Vec<_> = entries.into_iter().collect();
-                let return_target = self.key_help_return_target_in(id, &entries);
-                let move_help =
-                    std::sync::Arc::new(crate::presentation::key_help::compile_window_help(
-                        &entries,
-                        id.as_str(),
-                        return_target.as_deref(),
-                        false,
-                    ));
-                let resize_help = if *id == ModeId::window() {
-                    std::sync::Arc::new(crate::presentation::key_help::compile_window_help(
-                        &entries,
-                        id.as_str(),
-                        return_target.as_deref(),
-                        true,
-                    ))
-                } else {
-                    move_help.clone()
-                };
-                (
-                    id.clone(),
-                    std::sync::Arc::new(super::key_help::WindowKeyHelpPlan {
-                        presentations: [move_help, resize_help],
-                        entries: entries.into(),
-                        return_target,
-                    }),
-                )
-            })
-            .collect();
-        self.registry.window_help_plans = plans;
+            }
+            let entries: Vec<_> = entries.into_iter().collect();
+            let return_target = self
+                .key_help_return_target_in(id, &entries)
+                .map(str::to_owned);
+            let move_help =
+                std::sync::Arc::new(crate::presentation::key_help::compile_window_help(
+                    &entries,
+                    id.as_str(),
+                    return_target.as_deref(),
+                    false,
+                ));
+            let resize_help = if *id == ModeId::window() {
+                std::sync::Arc::new(crate::presentation::key_help::compile_window_help(
+                    &entries,
+                    id.as_str(),
+                    return_target.as_deref(),
+                    true,
+                ))
+            } else {
+                move_help.clone()
+            };
+            self.registry.slots[index].window_help =
+                Some(Box::new(super::key_help::WindowKeyHelpPlan {
+                    presentations: [move_help, resize_help],
+                    entries,
+                    return_target,
+                }));
+        }
     }
     /// Show temporary-layer entrances even before its activation keys are held.
     /// Validate each combined chord through the actual help resolver so local
@@ -429,16 +450,16 @@ impl Engine {
         let id = plugin.id();
 
         if include_suggestions {
-            for chord in plugin.manifest().default_chords.clone() {
+            for chord in &plugin.manifest().default_chords {
                 self.registry
                     .plugin_bindings
-                    .push((chord, Binding::Mode(id.clone())));
+                    .push((chord.clone(), Binding::Mode(id.clone())));
             }
             self.registry
                 .plugin_bindings
-                .extend(plugin.manifest().default_bindings.clone());
+                .extend(plugin.manifest().default_bindings.iter().cloned());
         }
-        for verb in plugin.manifest().verbs.clone() {
+        for verb in &plugin.manifest().verbs {
             if let Some(existing) = self.registry.plugin_verbs.insert(verb.clone(), id.clone()) {
                 return Err(RuntimeError::Fatal(format!(
                     "plugin verb {verb:?} is already owned by {existing}"
@@ -458,7 +479,6 @@ impl Engine {
     }
 
     pub(super) fn set_active(&mut self, active: ModeId) {
-        self.overlay.window_help_plan = None;
         if active.is_window() && !self.registry.active.is_window() {
             self.overlay.window_help_override = None;
         }
@@ -498,14 +518,12 @@ impl Engine {
             .unwrap_or_default()
     }
 
-    pub(super) fn binding_mode_ids(&self) -> Vec<ModeId> {
-        let mut ids: Vec<ModeId> = self.registry.keys().cloned().collect();
-        // Idle must resolve even before any mode registers, so it is always
-        // considered.
-        if !ids.contains(&ModeId::idle()) {
-            ids.push(ModeId::idle());
-        }
-        ids
+    pub(super) fn binding_mode_ids(&self) -> impl Iterator<Item = ModeId> + '_ {
+        // Keep idle in the binding profile even before its instance registers.
+        self.registry
+            .keys()
+            .cloned()
+            .chain((!self.registry.contains_key(&ModeId::idle())).then(ModeId::idle))
     }
 
     pub(super) fn binding_profile_key_for(&self, app: Option<&FocusedApp>) -> Vec<Bindings> {
@@ -518,10 +536,9 @@ impl Engine {
         {
             return Vec::new();
         }
-        let ids = self.binding_mode_ids();
-        let profile: Vec<Bindings> = ids
-            .iter()
-            .map(|id| self.resolved_app_overrides(id, app))
+        let profile: Vec<Bindings> = self
+            .binding_mode_ids()
+            .map(|id| self.resolved_app_overrides(&id, app))
             .collect();
         if profile.iter().all(Bindings::is_empty) {
             Vec::new()
@@ -535,48 +552,38 @@ impl Engine {
     /// Per-app overrides for the focused application are folded in, so a
     /// binding can differ per application, and disabled entries are dropped.
     pub(super) fn rebuild_tables(&mut self) {
-        self.overlay.window_help_plan = None;
+        let profile = self.binding_profile_key_for(self.focused_app.as_ref());
+        self.rebuild_tables_for_profile(profile);
+    }
+
+    pub(super) fn rebuild_tables_for_profile(&mut self, binding_profile_key: Vec<Bindings>) {
         self.overlay.key_help_cache = None;
-        let ids = self.binding_mode_ids();
-        let binding_profile_key = self.binding_profile_key_for(self.focused_app.as_ref());
-
-        let ui_hint_overlap_chord = KeyChord::parse(&self.settings.ui_hint_overlap_key).ok();
-        let mut routes = Vec::with_capacity(ids.len());
-        for id in ids {
-            let temporary_chords = self
-                .registry
-                .routes
-                .get(&id)
-                .map(|route| {
-                    route
-                        .temporary_keys
-                        .iter()
-                        .filter_map(|text| {
-                            let chord = KeyChord::parse(text).ok()?;
-                            // Hint overlap cycling owns its modifier. Resolve
-                            // that conflict at compilation, not on every key.
-                            if (id == ModeId::ui_hint() || id == ModeId::text_select())
-                                && ui_hint_overlap_chord
-                                    .as_ref()
-                                    .is_some_and(|overlap| chords_conflict(overlap, &chord))
-                            {
-                                return None;
-                            }
-                            Some(chord)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let table = self.registry.routes.get(&id).map(|route| {
-                let merged = self.merge_overrides(&id, &route.bindings);
-                CompiledKeymap::compile(merged, &self.settings.resolved_key_aliases)
-            });
-            routes.push((id, table, temporary_chords));
-        }
-
-        self.registry.clear_routes();
-        for (id, table, temporary_chords) in routes {
-            self.registry.set_routes(&id, table, temporary_chords);
+        // The registered ids are the prefix of binding_mode_ids in the same order.
+        for (index, (id, &slot_index)) in self.registry.indices.iter().enumerate() {
+            let slot = &mut self.registry.slots[slot_index];
+            let Some(route) = self.registry.routes.get_mut(id) else {
+                slot.table = None;
+                slot.temporary_chords = None;
+                continue;
+            };
+            // Take new triggers once; disabled routes clear the previous plan.
+            if route.temporary_mode.is_none() || route.temporary_keys.is_some() {
+                slot.temporary_chords = route.temporary_keys.take();
+            }
+            let aliases = &self.settings.resolved_key_aliases;
+            slot.table = Some(
+                match binding_profile_key
+                    .get(index)
+                    .filter(|patch| !patch.is_empty())
+                {
+                    Some(overrides) => {
+                        let merged: BTreeMap<_, _> =
+                            route.bindings.iter().chain(overrides).collect();
+                        CompiledKeymap::compile(merged, aliases)
+                    }
+                    None => CompiledKeymap::compile(&route.bindings, aliases),
+                },
+            );
         }
 
         // A plugin's suggested chord applies in `normal`, which is where the
@@ -610,14 +617,13 @@ impl Engine {
         });
         self.registry.unbound_prefixes =
             super::input_router::compile_unbound_prefixes(&continuations);
-        for id in self.binding_mode_ids() {
-            if let Some(table) = self.registry.table_mut_or_default(&id) {
-                table.compile_prefixes(&continuations);
-            }
+        for slot in &mut self.registry.slots {
+            slot.table
+                .get_or_insert_default()
+                .compile_prefixes(&continuations);
         }
         self.input.pending_chords.clear();
 
-        self.ui_hint_overlap_chord = ui_hint_overlap_chord;
         self.registry.binding_profile_key = binding_profile_key;
         self.compile_window_help_plans();
         #[cfg(test)]
@@ -635,24 +641,13 @@ impl Engine {
             keys.push(self.settings.quick_switch.key.clone());
         }
         if self.settings.quick_switch.enabled {
-            for character in &self.settings.quick_switch.alphabet {
-                if let Ok(key) = Key::new(character.to_string())
-                    && !keys.contains(&key)
-                {
-                    keys.push(key);
+            for key in &self.settings.quick_switch.alphabet {
+                if !keys.contains(key) {
+                    keys.push(key.clone());
                 }
             }
         }
         backend.set_character_bindings(&keys);
-    }
-
-    /// Apply the focused application's overrides to one mode's table.
-    fn merge_overrides(&self, mode_id: &ModeId, base: &Bindings) -> Vec<(String, Binding)> {
-        let mut merged: BTreeMap<String, Binding> = base.clone();
-        for (chord, binding) in self.resolved_app_overrides(mode_id, self.focused_app.as_ref()) {
-            merged.insert(chord, binding);
-        }
-        merged.into_iter().collect()
     }
 
     fn resolved_app_overrides(&self, mode_id: &ModeId, app: Option<&FocusedApp>) -> Bindings {
@@ -663,7 +658,9 @@ impl Engine {
         if let Some(route) = self.registry.routes.get(mode_id) {
             for entry in &route.app_overrides {
                 if app.matches_pattern(&entry.pattern) {
-                    resolved.extend(entry.bindings.clone());
+                    for (key, binding) in &entry.bindings {
+                        resolved.insert(key.clone(), binding.clone());
+                    }
                 }
             }
         }
@@ -718,7 +715,9 @@ impl Engine {
                     "bindings",
                     format!(
                         "  inherits={:?} temporary_mode={:?} temporary_keys={:?}",
-                        route.inherits, route.temporary_mode, route.temporary_keys
+                        route.inherits,
+                        route.temporary_mode,
+                        self.registry.temporary_chords(mode).unwrap_or_default()
                     ),
                 );
             }
@@ -748,8 +747,8 @@ impl Engine {
         self.registry.index_of(owner)
     }
 
-    /// Deliver an event to a specific registered mode. This is used for normal
-    /// pointer controls borrowed by an active label mode.
+    /// Deliver an event, including pointer controls borrowed by another mode.
+    /// Payload consumers and borrowed handlers share this dispatch path.
     pub(super) fn dispatch_to(
         &mut self,
         owner: &ModeId,
@@ -774,36 +773,13 @@ impl Engine {
         let Some(mode) = self.registry.get_index_mut(mode_index) else {
             return Ok(());
         };
-        let commands = mode.handle(&event, &context);
-        crate::support::perf_probe::mark("mode_handled");
-        crate::support::perf_probe::mark("commands_ready");
-        self.execute_for(owner, commands, backend)
-    }
-
-    /// Deliver the one event family whose platform-owned buffers are worth
-    /// consuming. Keeping this separate leaves frame, pointer and key dispatch
-    /// on the original single-vtable-call hot path.
-    pub(super) fn dispatch_owned_to(
-        &mut self,
-        owner: &ModeId,
-        event: ModeEvent,
-        backend: &mut dyn Backend,
-    ) -> Result<(), String> {
-        self.overlay.key_help_cache = None;
-        let Some(mode_index) = self.mode_index_for_dispatch(owner) else {
-            return Ok(());
+        // Frame and pointer notifications contain no owned buffers to reuse.
+        // Keep their borrowed call while sharing lookup, context and command execution.
+        let commands = if matches!(event, ModeEvent::Frame { .. } | ModeEvent::PointerMoved(_)) {
+            mode.handle(&event, &context)
+        } else {
+            mode.handle_owned(event, &context)
         };
-        let context = HostContext {
-            presenter: &crate::presentation::COMPOSER,
-            screens: &self.screens,
-            cursor: self.cursor,
-            focused_app: self.focused_app.as_ref(),
-            palette: &self.palette,
-        };
-        let Some(mode) = self.registry.get_index_mut(mode_index) else {
-            return Ok(());
-        };
-        let commands = mode.handle_owned(event, &context);
         crate::support::perf_probe::mark("mode_handled");
         crate::support::perf_probe::mark("commands_ready");
         self.execute_for(owner, commands, backend)

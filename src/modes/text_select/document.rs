@@ -235,18 +235,6 @@ impl Frame {
         }
     }
 
-    pub fn selected_bounds(&self) -> Vec<Rect> {
-        if self.level != Level::Regions {
-            return Vec::new();
-        }
-        self.region_bounds
-            .iter()
-            .zip(&self.selected)
-            .filter(|(bounds, selected)| **selected && !bounds.is_empty())
-            .map(|(bounds, _)| *bounds)
-            .collect()
-    }
-
     pub fn descend(&self, level: Level) -> Self {
         let text: Arc<str> = self.selected_text().into();
         // Words arrive asynchronously; provisional character choices would
@@ -378,12 +366,11 @@ mod tests {
             UiTarget::recognized_text(last, "  e\u{301}中  ".into()),
         ]);
         root.toggle(0);
-        assert_eq!(root.selected_bounds(), [first.union(&last)]);
+        assert_eq!(root.region_bounds, [first.union(&last)]);
         let mut words = root.descend(Level::Words);
         words.apply_words(&[0..2, 3..5, 6..12]);
         assert_eq!(words.selected_text(), "iW iW e\u{301}中");
         assert!(words.region_bounds.is_empty());
-        assert!(words.selected_bounds().is_empty());
         words.clear_selection();
         words.toggle(0);
         words.toggle(2);
@@ -391,12 +378,12 @@ mod tests {
         let mut chars = words.descend(Level::Characters);
         assert_eq!(chars.selected_text(), "iW e\u{301}中");
         assert!(chars.region_bounds.is_empty());
-        assert!(chars.selected_bounds().is_empty());
         chars.clear_selection();
         chars.toggle(2);
         assert_eq!(chars.selected_text(), "e\u{301}");
         assert_eq!(snapshot.selected_text(), "iW e\u{301}中");
-        assert_eq!(root.selected_bounds(), [first.union(&last)]);
+        assert_eq!(root.region_bounds, [first.union(&last)]);
+        assert_eq!(root.selected, [true]);
     }
 
     #[test]

@@ -35,8 +35,6 @@ pub(in crate::modes) struct ScanSession {
     pub(in crate::modes) search_terms: super::search::SearchTerms,
     pub(in crate::modes) search_selection: crate::api::text_edit::Selection,
     pub(in crate::modes) search_names_initialized: bool,
-    /// Text selection indexes OCR content without synthetic role aliases.
-    pub(in crate::modes) search_text_only: bool,
     /// The current text query is waiting for cooperative index preparation.
     pub(in crate::modes) search_pending: bool,
     // One head per geometry; collision links are contiguous and need no bucket drops.
@@ -480,26 +478,22 @@ impl ScanSession {
         if self.search_names_initialized {
             return true;
         }
-        let prepare = |target: &UiTarget| {
-            if self.search_text_only {
-                super::search::SearchText::content(&target.name)
-            } else {
-                super::search::SearchText::target(target)
-            }
-        };
         while limit > 0 {
             let Some(index) = self.search_dirty.pop() else {
                 break;
             };
-            self.search_text[index] = prepare(&self.scanned[index]);
+            self.search_text[index] = super::search::SearchText::target(&self.scanned[index]);
             limit -= 1;
         }
         let prepared = self.search_text.len();
         debug_assert!(prepared <= self.scanned.len());
         self.search_text.reserve(self.scanned.len() - prepared);
         let end = prepared.saturating_add(limit).min(self.scanned.len());
-        self.search_text
-            .extend(self.scanned[prepared..end].iter().map(prepare));
+        self.search_text.extend(
+            self.scanned[prepared..end]
+                .iter()
+                .map(super::search::SearchText::target),
+        );
         self.search_names_initialized = self.search_dirty.is_empty() && end == self.scanned.len();
         self.search_names_initialized
     }

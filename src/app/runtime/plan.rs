@@ -29,7 +29,7 @@ pub struct EngineSettings {
     pub passthrough_unbound_keys: bool,
     pub invert_scroll: (bool, bool),
     pub default_scan_roles: Vec<String>,
-    pub ui_hint_overlap_key: String,
+    pub ui_hint_overlap_key: crate::api::KeyChord,
     pub mode_indicator: crate::api::style::compiled::ModeIndicator,
     pub key_help: crate::api::style::compiled::KeyHelp,
     pub usage_save_after_entries: u32,
@@ -40,7 +40,7 @@ pub struct EngineSettings {
 pub struct QuickSwitchSettings {
     pub enabled: bool,
     pub key: crate::api::Key,
-    pub alphabet: Vec<char>,
+    pub alphabet: Vec<crate::api::Key>,
     pub hold_ms: u64,
 }
 
@@ -65,12 +65,17 @@ pub struct AppRouteOverride {
     pub bindings: Bindings,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModeRoute {
     pub bindings: Bindings,
-    pub inherits: Vec<ModeId>,
+    /// Direct sources in a plan; flattened in depth-first order on installation.
+    pub inherits: Box<[ModeId]>,
     pub temporary_mode: Option<ModeId>,
-    pub temporary_keys: Vec<String>,
+    /// Only needed when the temporary layer inherits this mode. Its raw input
+    /// claim prunes this mode's descendants, but not the remaining branches.
+    pub temporary_inherits_when_claimed: Option<Box<[ModeId]>>,
+    /// Compiled triggers, moved into the mode slot on the first table build.
+    pub temporary_keys: Option<Vec<crate::api::KeyChord>>,
     pub temporary_passthrough: Vec<crate::api::KeyChord>,
     pub app_overrides: Vec<AppRouteOverride>,
 }

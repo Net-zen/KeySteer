@@ -83,10 +83,6 @@ impl RuntimeError {
         }
     }
 }
-fn chords_conflict(left: &KeyChord, right: &KeyChord) -> bool {
-    left.activation_matches(right.activation_key())
-        || right.activation_matches(left.activation_key())
-}
 
 pub struct Engine {
     settings: EngineSettings,
@@ -95,8 +91,6 @@ pub struct Engine {
     appearance: Appearance,
 
     registry: ModeRegistry,
-
-    ui_hint_overlap_chord: Option<KeyChord>,
 
     screens: Vec<Screen>,
     cursor: Point,
@@ -183,7 +177,6 @@ impl Engine {
             palette,
             appearance,
             registry: ModeRegistry::with_routes(routes),
-            ui_hint_overlap_chord: None,
             screens: Vec::new(),
             cursor: Point::default(),
             focused_app: None,
@@ -776,7 +769,8 @@ impl Engine {
                     .take_if(|(_, id, _)| *id == result.id)
                 {
                     result.id = original;
-                    self.dispatch_owned_to(&owner, ModeEvent::TextSegmented(result), backend)?;
+                    self.overlay.key_help_cache = None;
+                    self.dispatch_to(&owner, ModeEvent::TextSegmented(result), backend)?;
                 }
             }
             BackendEvent::TextPromptResult { id, value } => {
@@ -804,12 +798,14 @@ impl Engine {
             }
             BackendEvent::AudioResult(result) => {
                 if let Some(owner) = self.scheduler.audio_sessions.get(&result.session).cloned() {
-                    self.dispatch_owned_to(&owner, ModeEvent::AudioResult(result), backend)?;
+                    self.overlay.key_help_cache = None;
+                    self.dispatch_to(&owner, ModeEvent::AudioResult(result), backend)?;
                 }
             }
             BackendEvent::WindowResult(result) => {
                 if let Some(owner) = self.scheduler.window_sessions.get(&result.session).cloned() {
-                    self.dispatch_owned_to(&owner, ModeEvent::WindowResult(result), backend)?;
+                    self.overlay.key_help_cache = None;
+                    self.dispatch_to(&owner, ModeEvent::WindowResult(result), backend)?;
                 }
             }
             BackendEvent::Input(_) => unreachable!("input is routed by handle_backend_event"),
@@ -898,14 +894,21 @@ impl Engine {
                 // valid without even walking the override list. A changed
                 // title may affect substring overrides, so compare the exact
                 // resolved profile before deciding whether to recompile.
-                let profile_changed =
+                let changed_profile =
                     if same_binding_app_snapshot(self.focused_app.as_ref(), app.as_ref()) {
-                        false
+                        None
                     } else {
-                        self.binding_profile_key_for(app.as_ref())
-                            != self.registry.binding_profile_key
+                        let profile = self.binding_profile_key_for(app.as_ref());
+                        (profile != self.registry.binding_profile_key).then_some(profile)
                     };
-                self.focused_app = app.clone();
+                match (&mut self.focused_app, &app) {
+                    (Some(current), Some(next)) => {
+                        current.bundle_id.clone_from(&next.bundle_id);
+                        current.window_title.clone_from(&next.window_title);
+                        current.process_id = next.process_id;
+                    }
+                    (current, next) => current.clone_from(next),
+                }
                 self.focused_app_excluded = self.excluded_app_matches(self.focused_app.as_ref());
                 if self.focused_app_excluded {
                     let click_feedback_changed = self.cancel_transient_clicks(backend)?;
@@ -914,8 +917,8 @@ impl Engine {
                         self.refresh_overlay(backend)?;
                     }
                 }
-                if profile_changed {
-                    self.rebuild_tables();
+                if let Some(profile) = changed_profile {
+                    self.rebuild_tables_for_profile(profile);
                     self.sync_character_bindings(backend);
                     self.trace_binding_tables();
                 }
@@ -979,7 +982,8 @@ impl Engine {
                     self.scan_owners.remove(&result.id)
                 };
                 if let Some(owner) = owner.filter(|owner| owner == &self.registry.active) {
-                    self.dispatch_owned_to(&owner, ModeEvent::UiScanned(result), backend)?;
+                    self.overlay.key_help_cache = None;
+                    self.dispatch_to(&owner, ModeEvent::UiScanned(result), backend)?;
                 }
             }
             BackendEvent::ReloadConfig => {
@@ -1085,18 +1089,19 @@ impl Engine {
         let RuntimePlan {
             settings,
             palettes,
-            modes,
+            mut modes,
         } = plan;
+        // Retain unused instances through installation; move only their routes.
         let routes = modes
-            .iter()
-            .map(|spec| (spec.id(), spec.route.clone()))
+            .iter_mut()
+            .map(|spec| (spec.id(), std::mem::take(&mut spec.route)))
             .collect();
         crate::support::logging::set_non_error_enabled(settings.debug.enabled);
         self.input.drag_auto_release.clear();
         self.settings = settings;
         self.quick_switch.pending = None;
         self.palettes = palettes;
-        self.registry.routes = routes;
+        self.registry.replace_routes(routes);
         self.focused_app_excluded = self.excluded_app_matches(self.focused_app.as_ref());
         self.palette = self.palettes.for_appearance(self.appearance);
         self.rebuild_tables();
@@ -1114,10 +1119,10 @@ impl Engine {
             palettes,
             modes,
         } = plan;
-        let routes = modes
-            .iter()
-            .map(|spec| (spec.id(), spec.route.clone()))
-            .collect();
+        let (routes, instances): (std::collections::BTreeMap<_, _>, Vec<_>) = modes
+            .into_iter()
+            .map(|spec| ((spec.id(), spec.route), spec.instance))
+            .unzip();
 
         self.retire_workspace_requests(None);
         // Keep physical pressed/disposition pairs until their real KeyUp, but
@@ -1161,8 +1166,8 @@ impl Engine {
         self.focused_app_excluded = self.excluded_app_matches(self.focused_app.as_ref());
         self.registry = ModeRegistry::with_routes(routes);
         crate::support::logging::set_non_error_enabled(self.settings.debug.enabled);
-        for spec in modes {
-            match spec.instance {
+        for instance in instances {
+            match instance {
                 ModeInstance::BuiltIn(mode) => self.register_deferred(mode),
                 ModeInstance::Plugin(plugin) => {
                     self.register_plugin_dyn_deferred(plugin)?;

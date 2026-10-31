@@ -68,7 +68,7 @@ GPU 设备就绪、首次场景提交完成和输入执行分别记时，不能�
 
 用户文档的中英文页面、章节、示例和图表成对维护；改写导读时保留原有标题锚点。开发导航通过 `developmentSidebar` 共用页面清单，新增译文同时加入语言切换脚本的 `englishPages`；正文目录自动收录二、三级标题。
 
-模式演示共用 `components/ModeVideo.tsx` 的播放器、标题和说明样式。`file` 引用 `docs/public/video/` 下的本地文件；`src` 优先指定视频 URL，支持远程 MP4 或站内路径，并统一通过 `withBase` 处理部署前缀。URL 来源同时提供直接打开链接，便于在站外播放受限时前往视频页面。README 与 Bisect 模式页复用已上传的双语视频 URL，仓库不保留对应成片、生成工程或复制步骤；视频地址使用稳定链接，不保存临时签名地址。
+模式演示共用 `components/ModeVideo.tsx` 的播放器、标题和说明样式。`file` 引用 `docs/public/video/` 下的本地文件；`src` 优先指定视频 URL，支持远程 MP4 或站内路径，并统一通过 `withBase` 处理部署前缀。URL 来源同时提供直接打开链接，便于在站外播放受限时前往视频页面。Bisect 模式页分别引用本地 `bisect-zh.mp4` 与 `bisect-en.mp4`，随站点同源发布。README 使用已上传视频的稳定 URL，不保存临时签名地址；生成工程与复制步骤不纳入仓库。
 
 用户性能页面位于 `docs/performance.md` 与英文对应页；`components/Performance.tsx` 从 `.vitepress/data/performance.json` 读取已核验的公开汇总，复用同一组数值生成亮点、图表和表格，不添加图表依赖。Windows 内存主数据采用任务管理器默认口径的专用工作集，采样峰值与系统峰值工作集分开；响应与内存分批测量时保留各自来源。首页卡片、README 与更新日志使用相同测量口径。公开数据不包含具体硬件型号或本地路径；原始采样与诊断记录继续留在本地。
 

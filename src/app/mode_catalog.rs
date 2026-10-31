@@ -4,13 +4,34 @@
 //! strongly typed settings and remains unaware of TOML or the application
 //! configuration document.
 
-use crate::api::{Mode, ModeId, Plugin};
-use crate::config::{AppOverride, Bindings, Config, UiHintAppOverride};
-use crate::modes::targeting::{BisectGeometry, GridGeometry, LetterGeometry, RecursiveGeometry};
+use crate::api::{KeyChord, Mode, ModeId, Plugin};
+use crate::config::{AppOverride, Bindings, Config, Routing};
+use crate::modes::targeting::{
+    BisectGeometry, GridGeometry, LayerSettings, Layout, LetterGeometry, RecursiveGeometry,
+};
 use crate::modes::{self, GridMode, HintMode, IdleMode, NormalMode};
 use crate::plugins::BundledSettings;
 
 use super::runtime::{AppRouteOverride, ModeRoute, ModeSpec};
+
+impl From<&crate::config::GridLayer> for LayerSettings {
+    fn from(layer: &crate::config::GridLayer) -> Self {
+        Self {
+            depth: layer.depth,
+            grid_cols: layer.grid_cols,
+            grid_rows: layer.grid_rows,
+            keys: layer.keys.clone(),
+        }
+    }
+}
+
+fn grid_layout(rows: u32, cols: u32, keys: &str) -> Layout {
+    Layout {
+        rows: rows as usize,
+        cols: cols as usize,
+        keys: keys.chars().collect(),
+    }
+}
 
 pub(crate) fn normal_settings(config: &Config) -> modes::normal::Settings {
     modes::normal::Settings {
@@ -39,7 +60,6 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
         strategy: config.ui_hint.strategy,
         scan_scope: config.ui_hint.scan_scope,
         vision: config.ui_hint.vision.clone(),
-        hint_characters: config.ui_hint.hint_characters.clone(),
         label_direction: config.ui_hint.label_direction,
         max_depth: config.ui_hint.max_depth,
         scan_timeout_ms: config.ui_hint.scan_timeout_ms,
@@ -120,7 +140,8 @@ pub(crate) fn hint_settings(config: &Config) -> modes::hint::Settings {
             movement: normal_settings(config),
         },
         lifecycle: config.ui_hint.lifecycle.clone(),
-        overlap_cycle_key: config.ui_hint.overlap_cycle_key.clone(),
+        overlap_cycle_key: KeyChord::parse(&config.ui_hint.overlap_cycle_key)
+            .unwrap_or_else(|error| panic!("hint requires validated overlap key: {error}")),
         app_overrides: config
             .ui_hint
             .app_configs
@@ -143,27 +164,14 @@ pub fn normal(config: &Config) -> NormalMode {
 /// object size and frame/input implementation when targeting is absent.
 fn normal_instance(config: &Config) -> Box<dyn Mode> {
     use crate::config::TargetingReset;
-    use modes::targeting::{Layout, TargetingController};
+    use modes::targeting::TargetingController;
     let Some(targeting) = &config.normal.targeting else {
         return Box::new(normal(config));
     };
     let geometry = targeting.resolve(config);
-    let layers: Vec<_> = geometry
-        .layers
-        .iter()
-        .map(|layer| modes::targeting::LayerSettings {
-            depth: layer.depth,
-            grid_cols: layer.grid_cols,
-            grid_rows: layer.grid_rows,
-            keys: layer.keys.clone(),
-        })
-        .collect();
+    let layers: Vec<_> = geometry.layers.iter().map(LayerSettings::from).collect();
     let grid = GridGeometry::new(
-        Layout {
-            rows: geometry.grid_rows as usize,
-            cols: geometry.grid_cols as usize,
-            keys: geometry.keys.chars().collect(),
-        },
+        grid_layout(geometry.grid_rows, geometry.grid_cols, geometry.keys),
         &layers,
         geometry.max_depth,
     );
@@ -305,10 +313,10 @@ pub(crate) fn compile_normal_targeting(
                 ("recursive_grid", &config.recursive_grid.bindings)
             }
         };
-        for (key, binding) in
-            crate::config::with_control_defaults(name, controls, config.resolved_key_aliases())
-                .map_err(|e| e.to_string())?
-        {
+        let mut controls = controls.clone();
+        crate::config::apply_control_defaults(name, &mut controls, config.resolved_key_aliases())
+            .map_err(|e| e.to_string())?;
+        for (key, binding) in controls {
             if matches!(binding, Binding::SelectionReset | Binding::SelectionParent)
                 && !specs[normal].route.bindings.contains_key(&key)
             {
@@ -356,16 +364,17 @@ pub(crate) fn compile_normal_targeting(
 
 #[doc(hidden)]
 pub fn grid(config: &Config) -> GridMode<GridGeometry> {
-    use modes::targeting::{Layout, TargetingController};
+    use modes::targeting::TargetingController;
     let settings = &config.grid;
+    let ui = &settings.ui;
     GridMode::new(
         TargetingController::new(
             GridGeometry::new(
-                Layout {
-                    rows: settings.grid_rows.max(1) as usize,
-                    cols: settings.grid_cols.max(1) as usize,
-                    keys: settings.keys.chars().collect(),
-                },
+                grid_layout(
+                    settings.grid_rows.max(1),
+                    settings.grid_cols.max(1),
+                    &settings.keys,
+                ),
                 &[],
                 settings.max_depth,
             ),
@@ -374,16 +383,12 @@ pub fn grid(config: &Config) -> GridMode<GridGeometry> {
             settings.lifecycle.clone(),
         ),
         crate::api::presentation::GridStyle {
-            label: config.grid.ui.label.compile(),
-            matched_background_color: config
-                .grid
-                .ui
+            label: ui.label.compile(),
+            matched_background_color: ui
                 .matched_background_color
                 .as_ref()
                 .map(crate::api::theme::CompiledColor::from),
-            matched_border_color: config
-                .grid
-                .ui
+            matched_border_color: ui
                 .matched_border_color
                 .as_ref()
                 .map(crate::api::theme::CompiledColor::from),
@@ -393,27 +398,19 @@ pub fn grid(config: &Config) -> GridMode<GridGeometry> {
 
 #[doc(hidden)]
 pub fn recursive_grid(config: &Config) -> GridMode<RecursiveGeometry> {
-    use modes::targeting::{Layout, TargetingController};
+    use modes::targeting::TargetingController;
     let settings = &config.recursive_grid;
-    let layers: Vec<_> = settings
-        .layers
-        .iter()
-        .map(|layer| modes::targeting::LayerSettings {
-            depth: layer.depth,
-            grid_cols: layer.grid_cols,
-            grid_rows: layer.grid_rows,
-            keys: layer.keys.clone(),
-        })
-        .collect();
+    let ui = &settings.ui;
+    let layers: Vec<_> = settings.layers.iter().map(LayerSettings::from).collect();
     GridMode::new(
         TargetingController::new(
             RecursiveGeometry {
                 grid: GridGeometry::new(
-                    Layout {
-                        rows: settings.grid_rows.max(1) as usize,
-                        cols: settings.grid_cols.max(1) as usize,
-                        keys: settings.keys.chars().collect(),
-                    },
+                    grid_layout(
+                        settings.grid_rows.max(1),
+                        settings.grid_cols.max(1),
+                        &settings.keys,
+                    ),
                     &layers,
                     settings.max_depth,
                 ),
@@ -427,42 +424,31 @@ pub fn recursive_grid(config: &Config) -> GridMode<RecursiveGeometry> {
             settings.lifecycle.clone(),
         ),
         crate::api::presentation::RecursiveGridStyle {
-            label: config.recursive_grid.ui.label.compile(),
-            line_width: config.recursive_grid.ui.line_width,
-            line_color: config
-                .recursive_grid
-                .ui
+            label: ui.label.compile(),
+            line_width: ui.line_width,
+            line_color: ui
                 .line_color
                 .as_ref()
                 .map(crate::api::theme::CompiledColor::from),
-            highlight_color: config
-                .recursive_grid
-                .ui
+            highlight_color: ui
                 .highlight_color
                 .as_ref()
                 .map(crate::api::theme::CompiledColor::from),
-            label_background: config.recursive_grid.ui.label_background,
-            label_background_color: config
-                .recursive_grid
-                .ui
+            label_background: ui.label_background,
+            label_background_color: ui
                 .label_background_color
                 .as_ref()
                 .map(crate::api::theme::CompiledColor::from),
-            label_char: config.recursive_grid.ui.label_char.clone(),
-            label_min_font_size: config.recursive_grid.ui.label_min_font_size,
-            label_autohide_multiplier: config.recursive_grid.ui.label_autohide_multiplier,
-            sub_key_preview: config.recursive_grid.ui.sub_key_preview,
-            sub_key_preview_font_size: config.recursive_grid.ui.sub_key_preview_font_size,
-            sub_key_preview_text_color: config
-                .recursive_grid
-                .ui
+            label_char: ui.label_char.clone(),
+            label_min_font_size: ui.label_min_font_size,
+            label_autohide_multiplier: ui.label_autohide_multiplier,
+            sub_key_preview: ui.sub_key_preview,
+            sub_key_preview_font_size: ui.sub_key_preview_font_size,
+            sub_key_preview_text_color: ui
                 .sub_key_preview_text_color
                 .as_ref()
                 .map(crate::api::theme::CompiledColor::from),
-            sub_key_preview_autohide_multiplier: config
-                .recursive_grid
-                .ui
-                .sub_key_preview_autohide_multiplier,
+            sub_key_preview_autohide_multiplier: ui.sub_key_preview_autohide_multiplier,
         },
     )
 }
@@ -500,7 +486,19 @@ pub fn bisect(config: &Config) -> GridMode<BisectGeometry> {
 
 #[doc(hidden)]
 pub fn hint(config: &Config) -> HintMode {
-    HintMode::new(hint_settings(config))
+    HintMode::new(
+        hint_settings(config),
+        config
+            .ui_hint
+            .hint_characters
+            .chars()
+            .filter_map(|character| {
+                crate::api::Key::new(character.encode_utf8(&mut [0; 4]))
+                    .ok()?
+                    .as_char()
+            })
+            .collect(),
+    )
 }
 
 pub(crate) fn quick_switch(config: &Config) -> modes::quick_switch::QuickSwitchMode {
@@ -523,7 +521,7 @@ pub(crate) fn quick_switch(config: &Config) -> modes::quick_switch::QuickSwitchM
             .hint_characters
             .chars()
             .map(|ch| {
-                crate::api::Key::new(ch.to_string())
+                crate::api::Key::new(ch.encode_utf8(&mut [0; 4]))
                     .and_then(|key| {
                         key.as_char()
                             .ok_or_else(|| "expected a character key".into())
@@ -544,52 +542,38 @@ pub(crate) fn text_select(config: &Config) -> modes::text_select::TextSelectMode
     let mut hint = hint_settings(config);
     hint.scan_scope = config.text_select.scan_scope;
     hint.search_info_ui.width = f64::from(config.text_select.ui.panel_width);
+    let mut alphabet: Vec<_> = config.text_select.hint_characters.chars().collect();
+    let mut bindings = Vec::new();
+    for (keys, binding) in &config.text_select.bindings {
+        for key in keys.split_whitespace() {
+            let Ok(chord) = KeyChord::parse_with_aliases(key, config.resolved_key_aliases()) else {
+                continue;
+            };
+            if !matches!(binding, crate::api::Binding::Disabled)
+                && let [key] = chord.keys()
+                && let Some(character) = key.as_char()
+            {
+                alphabet.retain(|&c| c != character);
+            }
+            bindings.push((chord, std::sync::Arc::new(binding.clone())));
+        }
+    }
     modes::text_select::TextSelectMode::new(modes::text_select::Settings {
         hint,
-        alphabet: config.text_select.hint_characters.clone(),
+        alphabet,
         ui: config.text_select.ui.compile(),
         lifecycle: config.text_select.lifecycle.clone(),
-        bindings: config
-            .text_select
-            .bindings
-            .iter()
-            .flat_map(|(keys, binding)| {
-                keys.split_whitespace().filter_map(|key| {
-                    crate::api::KeyChord::parse_with_aliases(key, config.resolved_key_aliases())
-                        .ok()
-                        .map(|chord| (chord, std::sync::Arc::new(binding.clone())))
-                })
-            })
-            .collect(),
+        bindings,
     })
 }
 
 #[doc(hidden)]
 #[allow(dead_code)]
 pub fn built_in(config: &Config) -> Vec<Box<dyn Mode>> {
-    let mut catalog: Vec<Box<dyn Mode>> = vec![
-        Box::new(IdleMode::new()),
-        normal_instance(config),
-        Box::new(modes::text_input::TextInputMode::new()),
-    ];
-    if config.quick_switch.enabled {
-        catalog.push(Box::new(quick_switch(config)));
-    }
-    if config.grid.enabled {
-        catalog.push(Box::new(grid(config)));
-    }
-    if config.recursive_grid.enabled {
-        catalog.push(Box::new(recursive_grid(config)));
-    }
-    if config.bisect.enabled {
-        catalog.push(Box::new(bisect(config)));
-    }
-    if config.ui_hint.enabled {
-        catalog.push(Box::new(hint(config)));
-    }
-    if config.text_select.enabled {
-        catalog.push(Box::new(text_select(config)));
-    }
+    let mut catalog = Vec::with_capacity(ModeId::BUILT_IN.len());
+    catalog.extend(
+        built_in_factories(config, CatalogOrder::Instances).map(|factory| (factory.create)(config)),
+    );
     catalog.extend(
         window_family(config)
             .into_iter()
@@ -598,40 +582,161 @@ pub fn built_in(config: &Config) -> Vec<Box<dyn Mode>> {
     catalog
 }
 
-fn window_settings(config: &Config, kind: modes::window::WindowKind) -> modes::window::Settings {
+struct ModeFactory {
+    enabled: bool,
+    create: fn(&Config) -> Box<dyn Mode>,
+    route: fn(&Config) -> Result<ModeRoute, String>,
+}
+
+enum CatalogOrder {
+    Instances,
+    Runtime,
+}
+
+// Each factory is declared once. Merely enumerating it does not construct a
+// mode, clone bindings or compile routes; callers perform only the work they need.
+fn built_in_factories(config: &Config, order: CatalogOrder) -> impl Iterator<Item = ModeFactory> {
+    let idle = ModeFactory {
+        enabled: true,
+        create: |_| Box::new(IdleMode::new()),
+        route: |config| compile_app_route(&config.hotkeys, Routing::default(), &config.app_configs),
+    };
+    let normal = ModeFactory {
+        enabled: true,
+        create: normal_instance,
+        route: |config| {
+            compile_app_route(
+                &config.normal.bindings,
+                config.normal.routing(),
+                &config.normal.app_configs,
+            )
+        },
+    };
+    let text_input = ModeFactory {
+        enabled: true,
+        create: |_| Box::new(modes::text_input::TextInputMode::new()),
+        route: |config| compile_route(&config.text_input.bindings, config.text_input.routing()),
+    };
+    let quick_switch = ModeFactory {
+        enabled: config.quick_switch.enabled,
+        create: |config| Box::new(quick_switch(config)),
+        route: |config| compile_route(&config.quick_switch.bindings, config.quick_switch.routing()),
+    };
+    let text_select = ModeFactory {
+        enabled: config.text_select.enabled,
+        create: |config| Box::new(text_select(config)),
+        route: |config| {
+            compile_hint_route(
+                &config.text_select.bindings,
+                config.text_select.routing(),
+                &config.ui_hint.overlap_cycle_key,
+            )
+        },
+    };
+    let shared = [
+        ModeFactory {
+            enabled: config.grid.enabled,
+            create: |config| Box::new(grid(config)),
+            route: |config| {
+                compile_app_route(
+                    &config.grid.bindings,
+                    config.grid.routing(),
+                    &config.grid.app_configs,
+                )
+            },
+        },
+        ModeFactory {
+            enabled: config.recursive_grid.enabled,
+            create: |config| Box::new(recursive_grid(config)),
+            route: |config| {
+                compile_app_route(
+                    &config.recursive_grid.bindings,
+                    config.recursive_grid.routing(),
+                    &config.recursive_grid.app_configs,
+                )
+            },
+        },
+        ModeFactory {
+            enabled: config.bisect.enabled,
+            create: |config| Box::new(bisect(config)),
+            route: |config| {
+                compile_app_route(
+                    &config.bisect.bindings,
+                    config.bisect.routing(),
+                    &config.bisect.app_configs,
+                )
+            },
+        },
+        ModeFactory {
+            enabled: config.ui_hint.enabled,
+            create: |config| Box::new(hint(config)),
+            route: compile_ui_hint_route,
+        },
+    ];
+    // The historical entry points differ only around this shared group.
+    // Assemble those positions directly, before invoking any factory.
+    let mut head = match order {
+        CatalogOrder::Instances => [idle, normal, text_input, quick_switch, text_select],
+        CatalogOrder::Runtime => [quick_switch, text_select, text_input, idle, normal],
+    }
+    .into_iter();
+    // Instance enumeration places Text Select after the shared modes.
+    let tail = match order {
+        CatalogOrder::Instances => head.next_back(),
+        CatalogOrder::Runtime => None,
+    };
+    head.chain(shared)
+        .chain(tail)
+        .filter(|factory| factory.enabled)
+}
+
+fn window_common(
+    config: &Config,
+    kind: modes::window::WindowKind,
+) -> &crate::config::WindowModeConfig {
     use modes::window::WindowKind as K;
-    let common = match kind {
+    match kind {
         K::Move => &config.window.common,
         K::Quick => &config.window_quick.common,
         K::Editor => &config.window_editor.common,
         K::Restore => &config.window_restore.common,
         K::Tab => &config.window_tab.common,
-    };
+    }
+}
+
+fn window_settings(config: &Config, kind: modes::window::WindowKind) -> modes::window::Settings {
+    use modes::window::WindowKind as K;
+    let common = window_common(config, kind);
     let card = if kind == K::Editor {
         config.window_editor.card.apply(&config.window.card)
     } else {
         config.window.card.clone()
     };
+    let mut multi_bindings = config.window.multi_select.bindings.clone();
+    crate::config::apply_control_defaults(
+        "window.multi_select",
+        &mut multi_bindings,
+        config.resolved_key_aliases(),
+    )
+    .unwrap_or_else(|error| panic!("window settings require validated configuration: {error}"));
     modes::window::Settings {
-        multi_bindings: crate::config::with_control_defaults(
-            "window.multi_select",
-            &config.window.multi_select.bindings,
-            config.resolved_key_aliases(),
-        )
-        .unwrap_or_else(|error| panic!("window settings require validated configuration: {error}"))
-        .iter()
-        .flat_map(|(keys, binding)| {
-            keys.split_whitespace().map(|key| {
-                (
-                    crate::api::KeyChord::parse_with_aliases(key, config.resolved_key_aliases())
+        multi_bindings: multi_bindings
+            .iter()
+            .flat_map(|(keys, binding)| {
+                keys.split_whitespace().map(|key| {
+                    (
+                        crate::api::KeyChord::parse_with_aliases(
+                            key,
+                            config.resolved_key_aliases(),
+                        )
                         .unwrap_or_else(|error| {
                             panic!("window settings require validated configuration: {error}")
                         }),
-                    std::sync::Arc::new(binding.clone()),
-                )
+                        std::sync::Arc::new(binding.clone()),
+                    )
+                })
             })
-        })
-        .collect(),
+            .collect(),
         target: common.target,
         all_screens: common.screens == crate::config::WindowScreens::All,
         include_minimized: common.include_minimized,
@@ -680,9 +785,8 @@ fn window_family(config: &Config) -> Vec<modes::window::WindowMode> {
     modes::window::WindowMode::family(
         [K::Move, K::Quick, K::Editor, K::Restore, K::Tab]
             .into_iter()
-            .zip(config.window_modes())
-            .filter(|(_, (_, mode))| mode.enabled)
-            .map(|(kind, _)| (kind, window_settings(config, kind))),
+            .filter(|&kind| window_common(config, kind).enabled)
+            .map(|kind| (kind, window_settings(config, kind))),
     )
 }
 #[cfg(test)]
@@ -704,144 +808,29 @@ pub fn bundled_plugins(config: &Config) -> Result<Vec<Box<dyn Plugin>>, String> 
     crate::plugins::bundled(bundled_plugin_settings(config))
 }
 
-/// Build the complete built-in catalog. Instance construction and route
-/// compilation intentionally live together so adding a mode has one assembly
-/// point and cannot produce a route/instance mismatch.
+/// Build the production catalog, pairing each instance with its route here.
 pub(crate) fn built_in_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
-    let mut specs = Vec::with_capacity(5);
-    if config.quick_switch.enabled {
-        specs.push(ModeSpec::built_in(
-            Box::new(quick_switch(config)),
-            compile_route(
-                &config.quick_switch.bindings,
-                &config.quick_switch.inherits,
-                config.quick_switch.temporary_mode.as_deref(),
-                &config.quick_switch.temporary_mode_keys,
-                &config.quick_switch.temporary_mode_passthrough_keys,
-                Vec::new(),
-            )?,
-        ));
+    let mut specs = Vec::with_capacity(ModeId::BUILT_IN.len());
+    for factory in built_in_factories(config, CatalogOrder::Runtime) {
+        let mode = (factory.create)(config);
+        specs.push(ModeSpec::built_in(mode, (factory.route)(config)?));
     }
-    if config.text_select.enabled {
-        specs.push(ModeSpec::built_in(
-            Box::new(text_select(config)),
-            compile_route(
-                &config.text_select.bindings,
-                &config.text_select.inherits,
-                config.text_select.temporary_mode.as_deref(),
-                &config.text_select.temporary_mode_keys,
-                &config.text_select.temporary_mode_passthrough_keys,
-                Vec::new(),
-            )?,
-        ));
-    }
-    specs.push(ModeSpec::built_in(
-        Box::new(modes::text_input::TextInputMode::new()),
-        compile_route(
-            &config.text_input.bindings,
-            &config.text_input.inherits,
-            config.text_input.temporary_mode.as_deref(),
-            &config.text_input.temporary_mode_keys,
-            &config.text_input.temporary_mode_passthrough_keys,
-            Vec::new(),
-        )?,
-    ));
-    specs.push(ModeSpec::built_in(
-        Box::new(IdleMode::new()),
-        compile_route(
-            &config.hotkeys,
-            &[],
-            None,
-            &[],
-            &[],
-            app_overrides(&config.app_configs),
-        )?,
-    ));
-    specs.push(ModeSpec::built_in(
-        normal_instance(config),
-        compile_route(
-            &config.normal.bindings,
-            &config.normal.inherits,
-            config.normal.temporary_mode.as_deref(),
-            &config.normal.temporary_mode_keys,
-            &config.normal.temporary_mode_passthrough_keys,
-            app_overrides(&config.normal.app_configs),
-        )?,
-    ));
-    if config.grid.enabled {
-        specs.push(ModeSpec::built_in(
-            Box::new(grid(config)),
-            compile_route(
-                &config.grid.bindings,
-                &config.grid.inherits,
-                config.grid.temporary_mode.as_deref(),
-                &config.grid.temporary_mode_keys,
-                &config.grid.temporary_mode_passthrough_keys,
-                app_overrides(&config.grid.app_configs),
-            )?,
-        ));
-    }
-    if config.recursive_grid.enabled {
-        specs.push(ModeSpec::built_in(
-            Box::new(recursive_grid(config)),
-            compile_route(
-                &config.recursive_grid.bindings,
-                &config.recursive_grid.inherits,
-                config.recursive_grid.temporary_mode.as_deref(),
-                &config.recursive_grid.temporary_mode_keys,
-                &config.recursive_grid.temporary_mode_passthrough_keys,
-                app_overrides(&config.recursive_grid.app_configs),
-            )?,
-        ));
-    }
-    if config.bisect.enabled {
-        specs.push(ModeSpec::built_in(
-            Box::new(bisect(config)),
-            compile_route(
-                &config.bisect.bindings,
-                &config.bisect.inherits,
-                config.bisect.temporary_mode.as_deref(),
-                &config.bisect.temporary_mode_keys,
-                &config.bisect.temporary_mode_passthrough_keys,
-                app_overrides(&config.bisect.app_configs),
-            )?,
-        ));
-    }
-    if config.ui_hint.enabled {
-        specs.push(ModeSpec::built_in(
-            Box::new(hint(config)),
-            compile_route(
-                &config.ui_hint.bindings,
-                &config.ui_hint.inherits,
-                config.ui_hint.temporary_mode.as_deref(),
-                &config.ui_hint.temporary_mode_keys,
-                &config.ui_hint.temporary_mode_passthrough_keys,
-                ui_hint_overrides(&config.ui_hint.app_configs),
-            )?,
-        ));
-    }
-    for (mode, (_, section)) in window_family(config).into_iter().zip(
-        config
+    for mode in window_family(config) {
+        let id = mode.id();
+        let (_, section) = config
             .window_modes()
             .into_iter()
-            .filter(|(_, section)| section.enabled),
-    ) {
+            .find(|(name, _)| *name == id.as_str())
+            .ok_or_else(|| format!("missing configuration for window mode {id}"))?;
         specs.push(ModeSpec::built_in(
             Box::new(mode),
-            compile_route(
-                &section.bindings,
-                &section.inherits,
-                section.temporary_mode.as_deref(),
-                &section.temporary_mode_keys,
-                &section.temporary_mode_passthrough_keys,
-                app_overrides(&section.app_configs),
-            )?,
+            compile_app_route(&section.bindings, section.routing(), &section.app_configs)?,
         ));
     }
     for spec in &mut specs {
-        spec.route.bindings = crate::config::with_control_defaults(
+        crate::config::apply_control_defaults(
             spec.id().as_str(),
-            &spec.route.bindings,
+            &mut spec.route.bindings,
             config.resolved_key_aliases(),
         )
         .map_err(|e| e.to_string())?;
@@ -855,19 +844,14 @@ pub(crate) fn bundled_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
         .map(|plugin| {
             let id = plugin.id();
             let mut route = match config.plugin_modes.get(id.as_str()) {
-                Some(section) => compile_route(
-                    &section.bindings,
-                    &section.inherits,
-                    section.temporary_mode.as_deref(),
-                    &section.temporary_mode_keys,
-                    &section.temporary_mode_passthrough_keys,
-                    app_overrides(&section.app_configs),
-                )?,
-                None => empty_route(),
+                Some(section) => {
+                    compile_app_route(&section.bindings, section.routing(), &section.app_configs)?
+                }
+                None => ModeRoute::default(),
             };
-            route.bindings = crate::config::with_control_defaults(
+            crate::config::apply_control_defaults(
                 id.as_str(),
-                &route.bindings,
+                &mut route.bindings,
                 config.resolved_key_aliases(),
             )
             .map_err(|e| e.to_string())?;
@@ -876,14 +860,13 @@ pub(crate) fn bundled_specs(config: &Config) -> Result<Vec<ModeSpec>, String> {
         .collect()
 }
 
-fn compile_route(
-    bindings: &Bindings,
-    inherits: &[String],
-    temporary_mode: Option<&str>,
-    temporary_keys: &[String],
-    temporary_passthrough: &[String],
-    app_overrides: Vec<AppRouteOverride>,
-) -> Result<ModeRoute, String> {
+fn compile_route(bindings: &Bindings, routing: Routing<'_>) -> Result<ModeRoute, String> {
+    let Routing {
+        inherits,
+        temporary_mode,
+        temporary_mode_keys: temporary_keys,
+        temporary_mode_passthrough_keys: temporary_passthrough,
+    } = routing;
     // Disabled layers carry no target, trigger list or passthrough matcher.
     // The input hot path only checks the registry's precompiled empty slot.
     let temporary_mode = temporary_mode.filter(|_| !temporary_keys.is_empty());
@@ -898,51 +881,80 @@ fn compile_route(
                     ModeId::parse_borrowed(source)
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?,
+            .collect::<Result<_, _>>()?,
         temporary_mode: temporary_mode.map(ModeId::parse_borrowed).transpose()?,
-        temporary_keys: if temporary_mode.is_some() {
-            temporary_keys.to_vec()
-        } else {
-            Vec::new()
-        },
+        temporary_keys: temporary_mode
+            .map(|_| {
+                temporary_keys
+                    .iter()
+                    .map(|key| KeyChord::parse(key))
+                    .collect()
+            })
+            .transpose()?,
         temporary_passthrough: temporary_passthrough
             .iter()
             .filter(|_| temporary_mode.is_some())
             .map(|key| crate::api::KeyChord::parse(key))
             .collect::<Result<_, _>>()?,
-        app_overrides,
+        app_overrides: Vec::new(),
+        ..ModeRoute::default()
     })
 }
 
-fn empty_route() -> ModeRoute {
-    ModeRoute {
-        bindings: Bindings::new(),
-        inherits: Vec::new(),
-        temporary_mode: None,
-        temporary_keys: Vec::new(),
-        temporary_passthrough: Vec::new(),
-        app_overrides: Vec::new(),
+fn compile_app_override(bundle_id: &str, bindings: &Bindings) -> AppRouteOverride {
+    AppRouteOverride {
+        pattern: bundle_id.to_owned(),
+        bindings: bindings.clone(),
     }
 }
 
-fn app_overrides(values: &[AppOverride]) -> Vec<AppRouteOverride> {
-    values
+fn compile_app_route(
+    bindings: &Bindings,
+    routing: Routing<'_>,
+    app_configs: &[AppOverride],
+) -> Result<ModeRoute, String> {
+    let mut route = compile_route(bindings, routing)?;
+    route.app_overrides = app_configs
         .iter()
-        .map(|value| AppRouteOverride {
-            pattern: value.bundle_id.clone(),
-            bindings: value.bindings.clone(),
-        })
-        .collect()
+        .map(|value| compile_app_override(&value.bundle_id, &value.bindings))
+        .collect();
+    Ok(route)
 }
 
-fn ui_hint_overrides(values: &[UiHintAppOverride]) -> Vec<AppRouteOverride> {
-    values
+fn compile_ui_hint_route(config: &Config) -> Result<ModeRoute, String> {
+    // UI Hint overrides also contain scan strategy; routes only use their bindings.
+    let hint = &config.ui_hint;
+    let mut route = compile_hint_route(&hint.bindings, hint.routing(), &hint.overlap_cycle_key)?;
+    route.app_overrides = hint
+        .app_configs
         .iter()
-        .map(|value| AppRouteOverride {
-            pattern: value.bundle_id.clone(),
-            bindings: value.bindings.clone(),
-        })
-        .collect()
+        .map(|value| compile_app_override(&value.bundle_id, &value.bindings))
+        .collect();
+    Ok(route)
+}
+
+// UI Hint and Text Select reserve the same overlap modifier before routes
+// reach the generic keymap builder. Side-agnostic modifiers match either side.
+fn compile_hint_route(
+    bindings: &Bindings,
+    routing: Routing<'_>,
+    overlap_key: &str,
+) -> Result<ModeRoute, String> {
+    let mut route = compile_route(bindings, routing)?;
+    if let Some(triggers) = &mut route.temporary_keys
+        && let Ok(overlap) = KeyChord::parse(overlap_key)
+    {
+        triggers.retain(|trigger| {
+            !overlap.activation_matches(trigger.activation_key())
+                && !trigger.activation_matches(overlap.activation_key())
+        });
+        if triggers.is_empty() {
+            route.temporary_keys = None;
+            route.temporary_mode = None;
+            route.temporary_passthrough = Vec::new();
+        }
+    }
+    Ok(route)
 }
 
 #[cfg(test)]
@@ -966,20 +978,144 @@ mod tests {
         let ids: Vec<_> = modes.iter().map(|mode| mode.id()).collect();
         let unique: BTreeSet<_> = ids.iter().cloned().collect();
         assert_eq!(ids.len(), unique.len());
-        for expected in [
-            ModeId::idle(),
-            ModeId::normal(),
-            ModeId::grid(),
-            ModeId::recursive_grid(),
-            ModeId::bisect(),
-            ModeId::ui_hint(),
-        ] {
-            assert!(unique.contains(&expected), "missing {expected}");
-        }
+        let expected: BTreeSet<_> = ModeId::BUILT_IN
+            .map(|name| ModeId::new(name).unwrap())
+            .into_iter()
+            .collect();
+        assert_eq!(unique, expected);
+        let specs = built_in_specs(&Config::default()).unwrap();
+        assert_eq!(specs.len(), expected.len());
+        assert_eq!(
+            specs.iter().map(ModeSpec::id).collect::<BTreeSet<_>>(),
+            expected
+        );
+
+        // Both entry points keep their established order.
+        assert_eq!(
+            ids.iter().map(ModeId::as_str).collect::<Vec<_>>(),
+            [
+                "idle",
+                "normal",
+                "text_input",
+                "quick_switch",
+                "grid",
+                "recursive_grid",
+                "bisect",
+                "ui_hint",
+                "text_select",
+                "window",
+                "window_quick",
+                "window_editor",
+                "window_restore",
+                "window_tab",
+            ]
+        );
+        assert_eq!(
+            specs
+                .iter()
+                .map(|spec| spec.id().as_str().to_owned())
+                .collect::<Vec<_>>(),
+            [
+                "quick_switch",
+                "text_select",
+                "text_input",
+                "idle",
+                "normal",
+                "grid",
+                "recursive_grid",
+                "bisect",
+                "ui_hint",
+                "window",
+                "window_quick",
+                "window_editor",
+                "window_restore",
+                "window_tab",
+            ]
+        );
+    }
+
+    #[test]
+    fn instance_enumeration_does_not_compile_routes() {
+        let mut config = Config::default();
+        config.grid.inherits = vec!["not a valid mode id".into()];
+        assert!(built_in_specs(&config).is_err());
+        assert_eq!(
+            built_in(&config)
+                .iter()
+                .map(|mode| mode.id())
+                .collect::<Vec<_>>(),
+            built_in(&Config::default())
+                .iter()
+                .map(|mode| mode.id())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn runtime_catalog_stops_before_constructing_later_modes_on_route_error() {
+        let mut config = Config::default();
+        config.quick_switch.inherits = vec!["invalid quick switch".into()];
+        config.text_select.inherits = vec!["invalid text select".into()];
+        // Later Text Select and window constructors would panic on these settings.
+        config.ui_hint.search_copy_keys.push("invalid+".into());
+        config.window_quick.split_ratios.clear();
+        assert_eq!(
+            built_in_specs(&config).err().as_deref(),
+            Some("invalid mode id: \"invalid quick switch\"")
+        );
+        let _ = config.ui_hint.search_copy_keys.pop();
+        config.quick_switch.enabled = false;
+        assert_eq!(
+            built_in_specs(&config).err().as_deref(),
+            Some("invalid mode id: \"invalid text select\"")
+        );
     }
 
     #[test]
     fn enable_flags_only_remove_optional_modes() {
+        let defaults = Config::default();
+        let expected_instances: Vec<_> = built_in(&defaults).iter().map(|mode| mode.id()).collect();
+        let expected_specs: Vec<_> = built_in_specs(&defaults)
+            .unwrap()
+            .iter()
+            .map(ModeSpec::id)
+            .collect();
+        let document = serde_json::to_value(defaults).unwrap();
+        for (name, section) in document.as_object().unwrap() {
+            if section.get("bindings").is_none() || section.get("enabled").is_none() {
+                continue;
+            }
+            for enabled in [false, true] {
+                let mut source = format!("[{name}]\nenabled = {enabled}");
+                if !enabled {
+                    // Disabled modes must not compile their routes.
+                    source.push_str("\ninherits = ['invalid disabled mode']");
+                }
+                let config = Config::parse(&source).unwrap();
+                let specs = built_in_specs(&config).unwrap();
+                assert_eq!(
+                    specs.iter().map(ModeSpec::id).collect::<Vec<_>>(),
+                    expected_specs
+                        .iter()
+                        .filter(|id| enabled || id.as_str() != name)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    "{name}"
+                );
+                assert_eq!(
+                    built_in(&config)
+                        .iter()
+                        .map(|mode| mode.id())
+                        .collect::<Vec<_>>(),
+                    expected_instances
+                        .iter()
+                        .filter(|id| enabled || id.as_str() != name)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    "{name}"
+                );
+            }
+        }
         let mut config = Config::default();
         config.text_select.enabled = false;
         config.quick_switch.enabled = false;
@@ -996,6 +1132,14 @@ mod tests {
         assert_eq!(
             ids,
             vec![ModeId::idle(), ModeId::normal(), ModeId::text_input()]
+        );
+        assert_eq!(
+            built_in_specs(&config)
+                .unwrap()
+                .iter()
+                .map(ModeSpec::id)
+                .collect::<Vec<_>>(),
+            vec![ModeId::text_input(), ModeId::idle(), ModeId::normal()]
         );
     }
 

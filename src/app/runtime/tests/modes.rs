@@ -3,13 +3,13 @@ fn every_mode_compiles_optional_temporary_layers_with_the_same_precedence() {
     for mode in ["normal", "quick_switch", "text_input", "text_select", "grid", "recursive_grid", "bisect", "ui_hint", "window", "window_quick", "window_editor", "window_restore", "window_tab", "plugin:screen-selector"] {
         let section = if mode.starts_with("plugin:") { format!("plugin_modes.\"{mode}\"") } else { mode.into() };
         let borrowed = if mode == "normal" { "text_input" } else { "normal" };
-        for triggers in ["", "temporary_mode_keys = []", "temporary_mode_keys = ['right_alt']"] {
+        for (temporary, triggers) in [(borrowed, ""), (borrowed, "temporary_mode_keys = []"), (borrowed, "temporary_mode_keys = ['right_alt']"), ("", "temporary_mode_keys = ['right_alt']"), ("   ", "temporary_mode_keys = ['right_alt']")] {
             let config = Config::parse(&format!(r#"
 [hotkeys]
 f12 = 'key_help'
 [{section}]
 inherits = ['hotkeys']
-temporary_mode = '{borrowed}'
+temporary_mode = '{temporary}'
 {triggers}
 temporary_mode_passthrough_keys = ['f11', 'right_alt']
 [{section}.bindings]
@@ -31,11 +31,12 @@ f11 = 'move_left'
             let id = ModeId::new(mode).unwrap();
             engine.set_active(id.clone());
             let route = &engine.registry.routes[&id];
-            let enabled = triggers.contains("right_alt");
+            let enabled = !temporary.trim().is_empty() && triggers.contains("right_alt");
             assert_eq!(route.temporary_mode.is_some(), enabled, "{mode}: {triggers}");
             assert_eq!(engine.registry.temporary_chords(&id).is_some(), enabled, "{mode}");
             if !enabled {
-                assert!(route.temporary_keys.is_empty() && route.temporary_passthrough.is_empty());
+                assert!(route.temporary_passthrough.is_empty());
+                assert!(route.temporary_inherits_when_claimed.is_none());
             }
             let resolve = |key: &str, modifier: bool| {
                 let key = Key::new(key).unwrap();
@@ -50,11 +51,23 @@ f11 = 'move_left'
             if enabled {
                 assert_eq!(resolve("f11", true), Some(Binding::Move(Direction::Up)), "{mode}");
                 assert_eq!(resolve("right_alt", true), Some(Binding::parse("fast").unwrap()), "{mode}");
-                for (companion, direction) in [("f6", Direction::Down), ("f7", Direction::Right)] {
-                    let key = Key::new("f9").unwrap();
-                    let pressed = [Key::new("right_alt").unwrap(), Key::new(companion).unwrap(), key.clone()];
-                    for resolved in [engine.lookup_for_pressed(&key, &pressed), engine.lookup_for_help(&key, &pressed)] {
-                        assert_eq!(resolved.unwrap().binding.as_ref(), &Binding::Move(direction), "{mode}: remaining exact chords win; the temporary layer wins ties");
+                let key = Key::new("f10").unwrap();
+                let pressed = [Key::new("right_alt").unwrap(), Key::new("f5").unwrap(), key.clone()];
+                for resolved in [engine.lookup_for_pressed(&key, &pressed), engine.lookup_for_help(&key, &pressed)] {
+                    let resolved = resolved.unwrap();
+                    assert_eq!(resolved.owner, id, "{mode}: local trigger chords keep priority with unrelated held keys");
+                    assert_eq!(resolved.binding.as_ref(), &Binding::Move(Direction::Up));
+                }
+                for extra in [None, Some(Key::new("f5").unwrap())] {
+                    for (companion, direction) in [("f6", Direction::Left), ("f7", Direction::Right)] {
+                        let key = Key::new("f9").unwrap();
+                        let mut pressed = vec![Key::new("right_alt").unwrap(), Key::new(companion).unwrap(), key.clone()];
+                        pressed.extend(extra.clone());
+                        for resolved in [engine.lookup_for_pressed(&key, &pressed), engine.lookup_for_help(&key, &pressed)] {
+                            let resolved = resolved.unwrap();
+                            assert_eq!(resolved.owner.as_str(), borrowed, "{mode}: temporary priority is independent of chord length and unrelated held keys");
+                            assert_eq!(resolved.binding.as_ref(), &Binding::Move(direction));
+                        }
                     }
                 }
             }
@@ -66,7 +79,7 @@ f11 = 'move_left'
             engine.set_active(id.clone());
             let route = &engine.registry.routes[&id];
             assert!(route.temporary_mode.is_none(), "{id}");
-            assert!(route.temporary_keys.is_empty() && route.temporary_passthrough.is_empty(), "{id}");
+            assert!(route.temporary_passthrough.is_empty(), "{id}");
             assert!(engine.registry.temporary_chords(&id).is_none(), "{id}");
             for modifier in ["left_alt", "right_alt", "left_ctrl", "right_ctrl", "left_shift", "right_shift", "left_win", "right_win"] {
                 let key = Key::new(modifier).unwrap();
@@ -471,38 +484,53 @@ fn label_modes_use_normal_pointer_controls_only_when_allowed_or_temporary() {
 }
 
 #[test]
-fn ui_hint_overlap_key_wins_over_inheritance_and_temporary_mode() {
-    let mut config = Config::default();
-    config.ui_hint.overlap_cycle_key = "alt".into();
-    config.ui_hint.temporary_mode_keys = vec!["alt".into()];
-    config.normal.bindings.insert(
-        "left_alt".into(),
-        Binding::Click(crate::api::binding::Button::Middle),
-    );
-    let mut engine = Engine::new(config.clone(), Appearance::Dark);
-    for mode in crate::app::mode_catalog::built_in(&config) {
-        engine.register(mode);
+fn hint_overlap_key_wins_over_inheritance_and_temporary_mode() {
+    for (source, trigger, physical) in [
+        ("", "shift", ["left_shift", "right_shift"]),
+        ("[ui_hint]\noverlap_cycle_key = 'option'", "alt", ["left_alt", "right_alt"]),
+    ] {
+        let mut config = Config::parse(source).unwrap();
+        config.ui_hint.temporary_mode_keys = vec!["ctrl".into()];
+        config.text_select.temporary_mode = Some("normal".into());
+        config.text_select.temporary_mode_keys = vec!["ctrl".into()];
+        config.ui_hint.temporary_mode_passthrough_keys = vec!["f8".into()];
+        config.text_select.temporary_mode_passthrough_keys = vec!["f8".into()];
+        for key in physical {
+            config.normal.bindings.insert(key.into(), Binding::Click(crate::api::binding::Button::Middle));
+        }
+        let mut engine = text_input_engine(config.clone());
+        for id in [ModeId::ui_hint(), ModeId::text_select()] {
+            assert!(engine.registry.temporary_chords(&id).is_some(), "{id}: {source}");
+        }
+        config.ui_hint.temporary_mode_keys[0] = trigger.into();
+        config.text_select.temporary_mode_keys[0] = trigger.into();
+        engine.apply_config(config).unwrap();
+        // Filtering every trigger disables the layer and clears the old plan.
+        for id in [ModeId::ui_hint(), ModeId::text_select()] {
+            engine.rebuild_tables();
+            assert!(engine.registry.temporary_chords(&id).is_none());
+            let route = &engine.registry.routes[&id];
+            assert!(route.temporary_mode.is_none() && route.temporary_passthrough.is_empty());
+            engine.registry.active = id.clone();
+            for key in physical {
+                let key = Key::new(key).unwrap();
+                assert!(engine.ui_hint_overlap_matches(&key));
+                engine.input.pressed.insert(key.clone());
+                assert_eq!(engine.display_mode(), id);
+                if id == ModeId::ui_hint() {
+                    assert!(engine.lookup(&key).is_none(), "overlap must reach UI Hint as a raw hold event");
+                }
+                engine.input.pressed.clear();
+            }
+        }
+        engine.registry.active = ModeId::normal();
+        for key in physical {
+            let key = Key::new(key).unwrap();
+            engine.input.pressed.insert(key.clone());
+            assert!(engine.lookup(&key).is_some(), "Normal keeps its own binding");
+            engine.input.pressed.clear();
+        }
     }
-    let key = Key::new("left_alt").unwrap();
-    engine.input.pressed.insert(key.clone());
-
-    engine.registry.active = ModeId::ui_hint();
-    assert!(engine.registry.temporary_chords(&ModeId::ui_hint()).is_none());
-    assert!(
-        engine.lookup(&key).is_none(),
-        "the configured key must reach UI Hint as a raw hold event"
-    );
-    assert_eq!(
-        engine.display_mode(),
-        ModeId::ui_hint(),
-        "the same temporary key must not hide overlap cycling"
-    );
-
-    engine.registry.active = ModeId::normal();
-    assert!(
-        engine.lookup(&key).is_some(),
-        "the key must retain its Normal binding outside UI Hint"
-    );
 }
 
 #[test]
@@ -833,11 +861,39 @@ fn ui_hint_screen_shortcut_rescans_without_a_native_pointer_callback() {
 }
 
 #[test]
+fn ui_hint_local_exit_wins_over_temporary_normal_with_other_keys_held() {
+    for companion in [None, Some("h")] {
+        let config = Config::parse(include_str!("../../../../keysteer.default.toml")).unwrap();
+        let primary = primary_key(&config);
+        let mut engine = text_input_engine(config);
+        let (mut backend, _) = FakeBackend::new(Vec::new());
+        engine.screens = backend.screens().unwrap();
+        engine.activate(ModeId::ui_hint(), Some(ModeId::normal()), &mut backend).unwrap();
+        engine.handle_backend_event(key_down(&primary), &mut backend).unwrap();
+        if let Some(key) = companion {
+            engine.handle_backend_event(key_down(key), &mut backend).unwrap();
+        }
+        engine.handle_backend_event(key_down("q"), &mut backend).unwrap();
+        assert_eq!(engine.active_mode(), &ModeId::normal(), "held: {companion:?}");
+        engine.handle_backend_event(key_up("q"), &mut backend).unwrap();
+        if let Some(key) = companion {
+            engine.handle_backend_event(key_up(key), &mut backend).unwrap();
+        }
+        engine.handle_backend_event(key_up(&primary), &mut backend).unwrap();
+        assert_eq!(engine.active_mode(), &ModeId::normal());
+        assert!(engine.input.active_gestures.is_empty());
+    }
+}
+
+#[test]
 fn temporary_layers_keep_local_chords_then_resolve_stripped_keys_and_passthrough() {
     let mut config = Config::default();
     config.grid.temporary_mode_keys = vec!["alt".into()];
-    config.grid.inherits.clear();
-    config.normal.inherits.clear();
+    config.grid.inherits = vec!["normal".into(), "recursive_grid".into()];
+    config.normal.inherits = vec!["hotkeys".into()];
+    config.recursive_grid.inherits.clear();
+    config.hotkeys.insert("f12".into(), Binding::Disabled);
+    config.recursive_grid.bindings.insert("f12".into(), Binding::Mode(ModeId::normal()));
     config.grid.bindings.clear();
     config.normal.bindings.clear();
     for (key, action) in [("s", "window"), ("alt+q", "normal"), ("alt+x", "grid")] {
@@ -885,6 +941,14 @@ fn temporary_layers_keep_local_chords_then_resolve_stripped_keys_and_passthrough
         Some(Binding::parse("grid").unwrap())
     );
     assert_eq!(resolve(&engine, "z"), None); // `none` is terminal, not transparent.
+    let key = Key::new("f12").unwrap();
+    for temporary in [false, true] {
+        let mut pressed = vec![key.clone()];
+        if temporary { pressed.push(Key::new("left_alt").unwrap()); }
+        for resolved in [engine.lookup_for_pressed(&key, &pressed), engine.lookup_for_help(&key, &pressed)] {
+            assert!(resolved.is_none(), "inherited none blocks later siblings, including through another ancestor");
+        }
+    }
     config.grid.bindings.remove("alt+q");
     config
         .grid
@@ -906,6 +970,38 @@ fn temporary_layers_keep_local_chords_then_resolve_stripped_keys_and_passthrough
         resolve(&engine, "s"),
         Some(Binding::parse("screen next").unwrap())
     );
+    let key = Key::new("q").unwrap();
+    let pressed = [Key::new("left_alt").unwrap(), Key::new("h").unwrap(), key.clone()];
+    for resolved in [engine.lookup_for_pressed(&key, &pressed), engine.lookup_for_help(&key, &pressed)] {
+        assert_eq!(resolved.unwrap().binding.as_ref(), &Binding::Mode(ModeId::normal()), "unrelated keys do not cancel explicit passthrough");
+    }
+
+    // A borrowed layer can inherit the active mode. Claiming a raw label prunes
+    // only that branch; shared ancestors remain reachable from later siblings.
+    config.grid.inherits = vec!["recursive_grid".into()];
+    config.normal.inherits = vec!["grid".into(), "text_input".into(), "recursive_grid".into()];
+    config.recursive_grid.inherits = vec!["hotkeys".into()];
+    config.recursive_grid.bindings.clear();
+    config.text_input.inherits = vec!["recursive_grid".into()];
+    config.text_input.bindings.insert("f12".into(), Binding::Move(Direction::Right));
+    config.hotkeys.insert("g".into(), Binding::Move(Direction::Down));
+    for local in [true, false] {
+        config.text_input.bindings.insert("g".into(), Binding::Move(Direction::Up));
+        if !local { config.text_input.bindings.remove("g"); }
+        engine.apply_plan(crate::app::configuration::compile(&config).unwrap()).unwrap();
+        for rebuild in [false, true] {
+            if rebuild { engine.rebuild_tables(); }
+            for (name, expected) in [("g", Some(Binding::Move(if local { Direction::Up } else { Direction::Down }))), ("f12", None)] {
+                let key = Key::new(name).unwrap();
+                let pressed = [Key::new("left_alt").unwrap(), key.clone()];
+                for resolved in [engine.lookup_for_pressed(&key, &pressed), engine.lookup_for_help(&key, &pressed)] {
+                    assert_eq!(resolved.map(|r| (*r.binding).clone()), expected, "{name}: local={local}, rebuild={rebuild}");
+                }
+            }
+        }
+        let g = Key::new("g").unwrap();
+        assert!(engine.lookup_for_pressed(&g, std::slice::from_ref(&g)).is_none(), "the active raw label still blocks its ordinary inheritance");
+    }
 }
 
 #[test]

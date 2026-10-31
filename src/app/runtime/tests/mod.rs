@@ -497,7 +497,8 @@ impl Mode for ProbeMode {
 }
 
 struct OwnedRouteProbe {
-    calls: Arc<Mutex<(usize, usize)>>,
+    calls: Arc<Mutex<usize>>,
+    scan_buffer: Arc<Mutex<Option<usize>>>,
 }
 
 impl Mode for OwnedRouteProbe {
@@ -506,22 +507,26 @@ impl Mode for OwnedRouteProbe {
     }
 
     fn handle(&mut self, _event: &ModeEvent, _ctx: &HostContext<'_>) -> CommandBatch {
-        self.calls.lock().unwrap().0 += 1;
+        *self.calls.lock().unwrap() += 1;
         CommandBatch::new()
     }
 
     fn handle_owned(&mut self, event: ModeEvent, ctx: &HostContext<'_>) -> CommandBatch {
-        self.calls.lock().unwrap().1 += 1;
+        if let ModeEvent::UiScanned(result) = &event {
+            *self.scan_buffer.lock().unwrap() = Some(result.targets.as_ptr() as usize);
+        }
         self.handle(&event, ctx)
     }
 }
 
 #[test]
-fn only_ui_scan_results_use_the_owned_mode_route() {
-    let calls = Arc::new(Mutex::new((0, 0)));
+fn mode_dispatch_moves_payloads_and_preserves_borrowed_handlers() {
+    let calls = Arc::new(Mutex::new(0));
+    let scan_buffer = Arc::new(Mutex::new(None));
     let mut engine = Engine::new(Config::default(), Appearance::Dark);
     engine.register(Box::new(OwnedRouteProbe {
         calls: Arc::clone(&calls),
+        scan_buffer: Arc::clone(&scan_buffer),
     }));
     let (mut backend, _) = FakeBackend::new(Vec::new());
 
@@ -533,21 +538,42 @@ fn only_ui_scan_results_use_the_owned_mode_route() {
             &mut backend,
         )
         .unwrap();
-    assert_eq!(*calls.lock().unwrap(), (1, 0));
+    assert_eq!(*calls.lock().unwrap(), 1);
 
+    let targets = vec![crate::api::UiTarget::recognized_text(
+        Rect::new(1.0, 2.0, 30.0, 40.0),
+        "owned result".into(),
+    )];
+    let buffer = targets.as_ptr() as usize;
     engine.scan_owners.insert(91, ModeId::idle());
     engine
         .handle_backend_event(
             BackendEvent::UiScanned(crate::api::UiScanResult {
                 retired: Vec::new(),
                 id: 91,
-                targets: Vec::new(),
+                targets,
                 status: UiScanStatus::Success,
             }),
             &mut backend,
         )
         .unwrap();
-    assert_eq!(*calls.lock().unwrap(), (2, 1));
+    assert_eq!(*calls.lock().unwrap(), 2);
+    assert_eq!(*scan_buffer.lock().unwrap(), Some(buffer));
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    engine.register(Box::new(ProbeMode::new("normal", Arc::clone(&seen))));
+    engine
+        .dispatch_to(
+            &ModeId::normal(),
+            ModeEvent::Key {
+                key: Key::new("f24").unwrap(),
+                state: KeyState::Down,
+                repeat: false,
+            },
+            &mut backend,
+        )
+        .unwrap();
+    assert_eq!(*seen.lock().unwrap(), ["normal:key"]);
 }
 
 fn key_event(name: &str, state: KeyState) -> BackendEvent {

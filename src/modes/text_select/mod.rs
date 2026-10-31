@@ -7,7 +7,7 @@ use super::hint::{Settings as HintSettings, search, session::ScanSession};
 use crate::api::hint as labeling;
 use crate::api::{
     Binding, Color, Command, CommandBatch, HostContext, Key, KeyChord, KeyState, Mode, ModeEvent,
-    ModeId, Palette, Rect, UiScanRequest, UiScanStrategy, UiTarget,
+    ModeId, Palette, Rect, UiScanRequest, UiScanStrategy,
     command::{UiScanResult, UiScanStatus},
     presentation::{
         HintContent, HintSceneCache, HintStyle, HintView, TextChip, TextSelectView, View,
@@ -23,7 +23,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 pub struct Settings {
     pub hint: HintSettings,
-    pub alphabet: String,
+    pub alphabet: Vec<char>,
     pub ui: crate::api::text_select::Ui<crate::api::theme::CompiledColor>,
     pub lifecycle: Lifecycle,
     pub bindings: Vec<(KeyChord, Arc<Binding>)>,
@@ -31,7 +31,6 @@ pub struct Settings {
 
 pub struct TextSelectMode {
     config: Settings,
-    alphabet: Vec<char>,
     active: bool,
     scan_id: u64,
     segment_id: u64,
@@ -54,7 +53,6 @@ pub struct TextSelectMode {
     copying: bool,
     layers: VisualLayerPlan,
     wide_placements: Option<Vec<(usize, Rect)>>,
-    overlap_chord: Option<KeyChord>,
     held_overlap_keys: Vec<Key>,
     overlap_cycle: usize,
     scene_cache: HintSceneCache,
@@ -95,17 +93,6 @@ impl TextSelectMode {
             }
         }
         config.hint.search_edit_keys = edit_keys.into();
-        let alphabet = config
-            .alphabet
-            .chars()
-            .filter(|c| {
-                !config.bindings.iter().any(|(chord, binding)| {
-                    !matches!(binding.as_ref(), Binding::Disabled)
-                        && chord.keys().len() == 1
-                        && chord.keys()[0].as_char() == Some(*c)
-                })
-            })
-            .collect();
         Self {
             page_keys: config
                 .bindings
@@ -116,9 +103,7 @@ impl TextSelectMode {
                 .map(|(chord, _)| crate::api::input::display_key_chord(&chord.canonical()))
                 .collect::<Vec<_>>()
                 .join(" / "),
-            overlap_chord: KeyChord::parse(&config.hint.overlap_cycle_key).ok(),
             config,
-            alphabet,
             active: false,
             scan_id: 0,
             segment_id: 0,
@@ -155,19 +140,9 @@ impl TextSelectMode {
             self.overlap_cycle = 0;
         }
         self.search.clear_results();
-        self.search.search_text_only = true;
         self.search.search_selection = Selection::default();
         if self.frame.level == Level::Regions {
             self.base_selected.clone_from(&self.frame.selected);
-            self.search.scanned = self
-                .frame
-                .units
-                .iter()
-                .zip(&self.frame.region_bounds)
-                .map(|(range, bounds)| {
-                    UiTarget::recognized_text(*bounds, self.frame.text[range.clone()].into())
-                })
-                .collect();
             let _ = labeling::assign_compact_into(
                 &mut self.search.search_hints,
                 self.frame
@@ -175,7 +150,7 @@ impl TextSelectMode {
                     .iter()
                     .enumerate()
                     .map(|(i, _)| (self.frame.region_bounds[i], i)),
-                &self.alphabet,
+                &self.config.alphabet,
                 self.config.hint.label_direction,
             );
         } else {
@@ -211,12 +186,13 @@ impl TextSelectMode {
         }
         // Transfer the existing query buffer while borrowing the shared session.
         let query = std::mem::take(&mut self.search.search_query);
+        let names_ready = !search::needs_names(&query) || self.prepare_search_text(budget);
         let previous_count = self.search.hints.len();
-        if search::filter_with_budget(
+        if search::filter_prepared(
             &mut self.search,
             &query,
             &self.config.hint.search_match_priority,
-            budget,
+            names_ready,
         ) || self.search.hints.len() != previous_count
         {
             self.scene_cache.invalidate();
@@ -346,9 +322,7 @@ impl TextSelectMode {
             self.rebuild_source();
         }
         let pending = self.search.search_pending;
-        let ready = self
-            .search
-            .prepare_search_names(if pending { 1024 } else { 256 });
+        let ready = self.prepare_search_text(if pending { 1024 } else { 256 });
         if ready && pending {
             self.filter(0);
         }
@@ -693,6 +667,24 @@ impl TextSelectMode {
         false
     }
 
+    fn prepare_search_text(&mut self, budget: usize) -> bool {
+        let prepared = self.search.search_text.len();
+        let end = prepared.saturating_add(budget).min(self.frame.units.len());
+        let ready = end == self.frame.units.len();
+        if self.frame.level == Level::Regions {
+            self.search
+                .search_text
+                .reserve(self.frame.units.len() - prepared);
+            self.search.search_names_initialized = ready;
+        }
+        self.search.search_text.extend(
+            self.frame.units[prepared..end]
+                .iter()
+                .map(|range| search::SearchText::content(&self.frame.text[range.clone()])),
+        );
+        ready
+    }
+
     fn filter_refined(&mut self, budget: usize) {
         let query = self.search.search_query.to_lowercase();
         let terms: smallvec::SmallVec<[&str; 8]> = query
@@ -707,19 +699,13 @@ impl TextSelectMode {
             }
             self.search.search_pending = false;
         } else {
-            let prepared = self.search.search_text.len();
-            let end = prepared.saturating_add(budget).min(self.frame.units.len());
-            self.search.search_text.extend(
-                self.frame.units[prepared..end]
-                    .iter()
-                    .map(|range| search::SearchText::content(&self.frame.text[range.clone()])),
-            );
+            self.search.search_pending = !self.prepare_search_text(budget);
             self.search.hints.clear();
             self.search.hints.extend(
                 self.search
                     .search_hints
                     .iter()
-                    .take(end)
+                    .take(self.search.search_text.len())
                     .filter(|hint| {
                         terms
                             .iter()
@@ -727,7 +713,6 @@ impl TextSelectMode {
                     })
                     .cloned(),
             );
-            self.search.search_pending = end < self.frame.units.len();
         }
         self.page = self
             .page
@@ -934,11 +919,12 @@ impl TextSelectMode {
                     self.search.hints.len().div_ceil(PAGE_SIZE).max(1),
                 ),
                 page_keys: &self.page_keys,
-                selected_bounds: if region_hints {
-                    self.frame.selected_bounds()
+                region_bounds: if region_hints && self.config.ui.border_width > 0.0 {
+                    &self.frame.region_bounds
                 } else {
-                    Vec::new()
+                    &[]
                 },
+                selected: &self.frame.selected,
                 selection_ui: &self.config.ui,
             }),
             ctx,
@@ -1005,17 +991,14 @@ impl Mode for TextSelectMode {
     fn claims_key(&self, key: &Key) -> bool {
         key.as_char().is_some()
             || (self.frame.level == Level::Regions
-                && self
-                    .overlap_chord
-                    .as_ref()
-                    .is_some_and(|chord| chord.activation_matches(key)))
+                && self.config.hint.overlap_cycle_key.activation_matches(key))
     }
     fn available_keys(&self) -> Vec<(String, String)> {
         if self.frame.level == Level::Regions {
-            self.overlap_chord
-                .as_ref()
-                .map(|chord| vec![(chord.canonical(), "cycle overlapping hints".into())])
-                .unwrap_or_default()
+            vec![(
+                self.config.hint.overlap_cycle_key.canonical(),
+                "cycle overlapping hints".into(),
+            )]
         } else {
             Vec::new()
         }
@@ -1067,10 +1050,7 @@ impl Mode for TextSelectMode {
                 state,
                 repeat: false,
             } if self.frame.level == Level::Regions
-                && self
-                    .overlap_chord
-                    .as_ref()
-                    .is_some_and(|chord| chord.activation_matches(key)) =>
+                && self.config.hint.overlap_cycle_key.activation_matches(key) =>
             {
                 self.overlap_key(key, *state, ctx)
             }

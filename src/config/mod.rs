@@ -13,6 +13,7 @@
 
 mod aliases;
 mod compatibility;
+mod macros;
 mod settings;
 mod window;
 pub use window::{
@@ -21,6 +22,8 @@ pub use window::{
 pub mod store;
 pub mod theme;
 mod validation;
+
+use macros::{builtin_mode_fields, config_struct, mode_config};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -45,8 +48,7 @@ use aliases::{
     compile_key_aliases, normalize_binding_keys, normalize_key_if_aliased, normalize_key_list,
     platform_warning,
 };
-#[cfg(test)]
-pub use settings::GridLayer;
+pub(crate) use settings::GridLayer;
 pub use settings::{
     Bisect, Grid, Normal, Pointer, RecursiveGrid, Scroll, TargetingMethod, TargetingReset,
     TextInput, TextSelect, UiHint,
@@ -57,6 +59,16 @@ pub use theme::{Palette, Theme, ThemedColor};
 
 /// A binding table: chord text -> what it does.
 pub type Bindings = BTreeMap<String, Binding>;
+
+/// Borrowed routing fields shared by mode assembly and validation. The document
+/// keeps its flat fields; this view neither clones them nor changes serialization.
+#[derive(Default)]
+pub(crate) struct Routing<'a> {
+    pub inherits: &'a [String],
+    pub temporary_mode: Option<&'a str>,
+    pub temporary_mode_keys: &'a [String],
+    pub temporary_mode_passthrough_keys: &'a [String],
+}
 
 /// Root configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -188,63 +200,35 @@ impl Default for ConfigFile {
     }
 }
 
-/// Usage is checkpointed by events, never by a periodic timer.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ModeUsage {
-    pub save_after_entries: u32,
-}
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct QuickSwitch {
-    pub enabled: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub inherits: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temporary_mode: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub temporary_mode_keys: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    pub key: String,
-    pub hint_characters: String,
-    pub bindings: Bindings,
-    pub hold_ms: u64,
-    pub blacklist: Vec<String>,
-    pub position: crate::api::style::QuickSwitchPosition,
-    pub ui: LabelUi,
-}
-impl Default for QuickSwitch {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            inherits: Vec::new(),
-            temporary_mode: None,
-            temporary_mode_keys: Vec::new(),
-            temporary_mode_passthrough_keys: Vec::new(),
-            key: "q".into(),
-            hint_characters: "wertyuiop".into(),
-            bindings: builtin_bindings(&[
-                ("esc", "cancel_selection"),
-                ("q", "cancel_selection"),
-                ("backspace", "previous_level"),
-            ]),
-            hold_ms: 350,
-            blacklist: vec!["idle".into()],
-            position: Default::default(),
-            ui: LabelUi {
-                font_size: 28,
-                padding_x: 10,
-                ..Default::default()
-            },
-        }
+config_struct! {
+    /// Usage is checkpointed by events, never by a periodic timer.
+    pub struct ModeUsage {
+        save_after_entries: u32 = 100,
     }
 }
-impl Default for ModeUsage {
-    fn default() -> Self {
-        Self {
-            save_after_entries: 100,
+mode_config! {
+    pub struct QuickSwitch {
+        enabled: bool = true,
+        ..routing {
+            omit_empty: all,
+            inherits: Vec::new(),
+            temporary_mode: None,
         }
+        key: String = "q".into(),
+        hint_characters: String = "wertyuiop".into(),
+        bindings: Bindings = builtin_bindings(&[
+            ("esc", "cancel_selection"),
+            ("q", "cancel_selection"),
+            ("backspace", "previous_level"),
+        ]),
+        hold_ms: u64 = 350,
+        blacklist: Vec<String> = vec!["idle".into()],
+        position: crate::api::style::QuickSwitchPosition,
+        ui: LabelUi = LabelUi {
+            font_size: 28,
+            padding_x: 10,
+            ..Default::default()
+        },
     }
 }
 
@@ -253,63 +237,54 @@ fn default_plugin_modes() -> BTreeMap<String, PluginModeConfig> {
         "plugin:screen-selector".into(),
         PluginModeConfig {
             settings: BTreeMap::from([("preserve".into(), toml::Value::Boolean(true))]),
-            bindings: builtin_bindings(&[
-                ("esc", "cancel_selection"),
-                ("enter", "confirm_selection"),
-                ("backspace", "previous_level"),
-            ]),
+            bindings: screen_selector_control_defaults(),
             ..Default::default()
         },
     )])
 }
 
-/// Defaults for controls that were formerly owned by mode key handlers. Keep
-/// their original behavior for sparse/older binding tables; `none` opts out.
-pub(crate) fn with_control_defaults(
+fn screen_selector_control_defaults() -> Bindings {
+    builtin_bindings(&[
+        ("esc", "cancel_selection"),
+        ("enter", "confirm_selection"),
+        ("backspace", "previous_level"),
+    ])
+}
+
+/// Each provider owns the controls also used to construct its full defaults.
+pub(crate) fn apply_control_defaults(
     mode: &str,
-    configured: &Bindings,
+    configured: &mut Bindings,
     aliases: &BTreeMap<String, String>,
-) -> Result<Bindings, ConfigError> {
-    let mut controls = match mode {
-        "grid" => Grid::default().bindings,
-        "recursive_grid" => RecursiveGrid::default().bindings,
-        "bisect" => Bisect::default().bindings,
-        "ui_hint" => UiHint::default().bindings,
-        "window_editor" => WindowEditor::default().bindings.clone(),
-        "window_restore" => WindowRestore::default().bindings.clone(),
-        "window.multi_select" => window::MultiSelect::default().bindings,
-        "plugin:screen-selector" => {
-            default_plugin_modes()
-                .remove(mode)
-                .ok_or_else(|| ConfigError::Parse("missing screen-selector defaults".into()))?
-                .bindings
-        }
-        _ => return Ok(configured.clone()),
+) -> Result<(), ConfigError> {
+    let controls = match mode {
+        "grid" | "recursive_grid" => settings::grid_control_defaults(),
+        "bisect" => settings::bisect_control_defaults(),
+        "ui_hint" => settings::ui_hint_control_defaults(),
+        "window_editor" => window::editor_control_defaults(),
+        "window_restore" => window::restore_control_defaults(),
+        "window.multi_select" => window::multi_select_control_defaults(),
+        "plugin:screen-selector" => screen_selector_control_defaults(),
+        _ => return Ok(()),
     };
-    controls.retain(|key, binding| {
-        matches!(
-            binding,
-            Binding::Bisect(_)
-                | Binding::SelectionReset
-                | Binding::SelectionParent
-                | Binding::SelectionAccept
-                | Binding::SelectionCancel
-                | Binding::SelectionSearch
-                | Binding::SelectionReopen
-                | Binding::Window(
-                    crate::api::window::WindowAction::AreaNumber
-                        | crate::api::window::WindowAction::NextPage
-                        | crate::api::window::WindowAction::PreviousPage
-                        | crate::api::window::WindowAction::MultiCancel
-                )
-        ) || mode == "window.multi_select"
-            && !key.contains('+')
-            && matches!(binding, Binding::Send(_))
-    });
-    normalize_binding_keys(&mut controls, mode, aliases)?;
-    let mut result = configured.clone();
-    normalize_binding_keys(&mut result, mode, aliases)?;
-    let occupied: BTreeSet<_> = result
+    merge_control_defaults(mode, configured, controls, aliases)
+}
+
+/// Fill unoccupied controls; explicit bindings, including `none`, win.
+/// The mode name is only an error label; aliases are already fully validated.
+fn merge_control_defaults(
+    label: &str,
+    configured: &mut Bindings,
+    mut controls: Bindings,
+    aliases: &BTreeMap<String, String>,
+) -> Result<(), ConfigError> {
+    normalize_binding_keys(&mut controls, label, aliases)?;
+    normalize_binding_keys(configured, label, aliases)?;
+    if controls.keys().all(|key| configured.contains_key(key)) {
+        // Normalized defaults already have valid keys; exact matches occupy them.
+        return Ok(());
+    }
+    let occupied: BTreeSet<_> = configured
         .keys()
         .filter_map(|key| {
             KeyChord::parse_with_aliases(key, aliases)
@@ -323,10 +298,10 @@ pub(crate) fn with_control_defaults(
                 .map_err(ConfigError::Parse)?
                 .canonical(),
         ) {
-            result.insert(key, binding);
+            configured.insert(key, binding);
         }
     }
-    Ok(result)
+    Ok(())
 }
 
 /// Defaults for `idle`: only what is needed to wake the program up.
@@ -338,24 +313,20 @@ pub(crate) fn with_control_defaults(
 /// accent), and on Linux, where `Ctrl+Shift+C/V` are taken by terminals. The
 /// letters here avoid both.
 fn default_idle_bindings() -> Bindings {
-    let entries: &[(&str, &str)] = &[
+    builtin_bindings(&[
         // Idle remains silent until an explicitly configured launcher is pressed.
         ("primary+e", "normal"),
         ("alt+w", "window"),
-    ];
-    builtin_bindings(entries)
+    ])
 }
 
 fn builtin_bindings(entries: &[(&str, &str)]) -> Bindings {
     entries
         .iter()
         .map(|&(chord, binding)| {
-            let parsed = match Binding::parse(binding) {
-                Ok(parsed) => parsed,
-                Err(error) => {
-                    panic!("invalid built-in binding `{binding}` for chord `{chord}`: {error}")
-                }
-            };
+            let parsed = Binding::parse(binding).unwrap_or_else(|error| {
+                panic!("invalid built-in binding `{binding}` for chord `{chord}`: {error}")
+            });
             (chord.to_owned(), parsed)
         })
         .collect()
@@ -367,17 +338,17 @@ impl ConfigFile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct PluginModeConfig {
-    pub inherits: Vec<String>,
-    pub temporary_mode: Option<String>,
-    pub temporary_mode_keys: Vec<String>,
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    /// Plugin-owned values exposed through the host settings snapshot.
-    pub settings: BTreeMap<String, toml::Value>,
-    pub bindings: Bindings,
-    pub app_configs: Vec<AppOverride>,
+mode_config! {
+    pub struct PluginModeConfig {
+        ..routing {
+            inherits: Vec::new(),
+            temporary_mode: None,
+        }
+        /// Plugin-owned values exposed through the host settings snapshot.
+        settings: BTreeMap<String, toml::Value>,
+        bindings: Bindings,
+        app_configs: Vec<AppOverride>,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -409,54 +380,32 @@ pub struct MacOsConfig {
     pub scroll: MacOsScrollConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MacOsScrollConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invert_horizontal: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invert_vertical: Option<bool>,
-}
-
-impl Default for MacOsScrollConfig {
-    fn default() -> Self {
-        Self {
-            invert_horizontal: Some(false),
-            invert_vertical: Some(true),
-        }
+config_struct! {
+    pub struct MacOsScrollConfig {
+        // A missing table uses these defaults; a missing field inside a present
+        // table stays None so the platform can apply its fallback.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invert_horizontal: Option<bool> = Some(false),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invert_vertical: Option<bool> = Some(true),
     }
 }
 
-/// Verbose runtime tracing written to stderr for diagnosing native input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct DebugConfig {
-    pub enabled: bool,
-    pub keys: bool,
-    pub actions: bool,
-    pub modes: bool,
-    pub backend: bool,
-    /// Pointer coordinates are extremely high-volume; opt in separately.
-    pub pointer: bool,
-    /// High-volume OS key-repeat, movement and cursor-overlay details.
-    pub motion: bool,
-    pub overlay: bool,
-    pub timers: bool,
-}
-
-impl Default for DebugConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            keys: true,
-            actions: true,
-            modes: true,
-            backend: true,
-            pointer: false,
-            motion: false,
-            overlay: true,
-            timers: true,
-        }
+config_struct! {
+    /// Verbose runtime tracing written to stderr for diagnosing native input.
+    #[derive(Eq)]
+    pub struct DebugConfig {
+        enabled: bool,
+        keys: bool = true,
+        actions: bool = true,
+        modes: bool = true,
+        backend: bool = true,
+        /// Pointer coordinates are extremely high-volume; opt in separately.
+        pointer: bool,
+        /// High-volume OS key-repeat, movement and cursor-overlay details.
+        motion: bool,
+        overlay: bool = true,
+        timers: bool = true,
     }
 }
 
@@ -656,11 +605,10 @@ impl ConfigFile {
                 &mut config.window.multi_select.bindings,
             ),
         ] {
-            *table = with_control_defaults(name, table, &config.resolved_key_aliases)?;
+            apply_control_defaults(name, table, &config.resolved_key_aliases)?;
         }
         for (name, plugin) in &mut config.plugin_modes {
-            plugin.bindings =
-                with_control_defaults(name, &plugin.bindings, &config.resolved_key_aliases)?;
+            apply_control_defaults(name, &mut plugin.bindings, &config.resolved_key_aliases)?;
         }
 
         Ok((config, warnings))
@@ -679,51 +627,52 @@ impl ConfigFile {
             "[window.multi_select.bindings]",
             &aliases,
         )?;
-        normalize_binding_keys(&mut self.normal.bindings, "[normal.bindings]", &aliases)?;
-        normalize_binding_keys(
-            &mut self.quick_switch.bindings,
-            "[quick_switch.bindings]",
-            &aliases,
-        )?;
-        normalize_binding_keys(
-            &mut self.text_select.bindings,
-            "[text_select.bindings]",
-            &aliases,
-        )?;
-        normalize_binding_keys(
-            &mut self.text_input.bindings,
-            "[text_input.bindings]",
-            &aliases,
-        )?;
-        for (name, mode) in self.window_modes_mut() {
-            normalize_binding_keys(&mut mode.bindings, &format!("[{name}.bindings]"), &aliases)?;
-            for over in &mut mode.app_configs {
-                normalize_binding_keys(
-                    &mut over.bindings,
-                    &format!("[[{name}.app_configs]]"),
-                    &aliases,
-                )?;
-            }
-            normalize_passthrough_keys(&mut mode.temporary_mode_passthrough_keys, &aliases)?;
+        // These tables historically report errors before window overrides.
+        for (label, table) in [
+            ("[normal.bindings]", &mut self.normal.bindings),
+            ("[quick_switch.bindings]", &mut self.quick_switch.bindings),
+            ("[text_select.bindings]", &mut self.text_select.bindings),
+            ("[text_input.bindings]", &mut self.text_input.bindings),
+        ] {
+            normalize_binding_keys(table, label, &aliases)?;
         }
-        normalize_binding_keys(&mut self.grid.bindings, "[grid.bindings]", &aliases)?;
-        normalize_binding_keys(&mut self.bisect.bindings, "[bisect.bindings]", &aliases)?;
-        normalize_binding_keys(
-            &mut self.recursive_grid.bindings,
-            "[recursive_grid.bindings]",
-            &aliases,
-        )?;
-        normalize_binding_keys(&mut self.ui_hint.bindings, "[ui_hint.bindings]", &aliases)?;
-        for (id, mode) in &mut self.plugin_modes {
+        for (name, mode) in self.window_modes_mut() {
             normalize_binding_keys(
                 &mut mode.bindings,
-                &format!("[plugin_modes.{id:?}.bindings]"),
+                format_args!("[{name}.bindings]"),
                 &aliases,
             )?;
             for over in &mut mode.app_configs {
                 normalize_binding_keys(
                     &mut over.bindings,
-                    &format!("[[plugin_modes.{id:?}.app_configs]] {:?}", over.bundle_id),
+                    format_args!("[[{name}.app_configs]]"),
+                    &aliases,
+                )?;
+            }
+            normalize_passthrough_keys(&mut mode.temporary_mode_passthrough_keys, &aliases)?;
+        }
+        let windows = self.window_modes().map(|(name, _)| name);
+        for (name, table) in builtin_mode_fields!(self, [&mut], |mode| &mut mode.bindings)
+            .into_iter()
+            .filter(|(name, _)| {
+                !matches!(
+                    *name,
+                    "normal" | "quick_switch" | "text_select" | "text_input"
+                ) && !windows.contains(name)
+            })
+        {
+            normalize_binding_keys(table, format_args!("[{name}.bindings]"), &aliases)?;
+        }
+        for (id, mode) in &mut self.plugin_modes {
+            normalize_binding_keys(
+                &mut mode.bindings,
+                format_args!("[plugin_modes.{id:?}.bindings]"),
+                &aliases,
+            )?;
+            for over in &mut mode.app_configs {
+                normalize_binding_keys(
+                    &mut over.bindings,
+                    format_args!("[[plugin_modes.{id:?}.app_configs]] {:?}", over.bundle_id),
                     &aliases,
                 )?;
             }
@@ -741,7 +690,7 @@ impl ConfigFile {
             for over in overrides {
                 normalize_binding_keys(
                     &mut over.bindings,
-                    &format!("{label} {:?}", over.bundle_id),
+                    format_args!("{label} {:?}", over.bundle_id),
                     &aliases,
                 )?;
             }
@@ -749,7 +698,7 @@ impl ConfigFile {
         for over in &mut self.ui_hint.app_configs {
             normalize_binding_keys(
                 &mut over.bindings,
-                &format!("[[ui_hint.app_configs]] {:?}", over.bundle_id),
+                format_args!("[[ui_hint.app_configs]] {:?}", over.bundle_id),
                 &aliases,
             )?;
         }
@@ -761,6 +710,10 @@ impl ConfigFile {
             &aliases,
         )?;
         for alternatives in self.ui_hint.search_edit_keys.values_mut() {
+            if !alternatives.contains(char::is_whitespace) {
+                normalize_key_if_aliased(alternatives, &aliases)?;
+                continue;
+            }
             let mut keys: Vec<String> =
                 alternatives.split_whitespace().map(str::to_owned).collect();
             normalize_key_list(&mut keys, &aliases)?;
@@ -769,16 +722,12 @@ impl ConfigFile {
         for (_, keys) in self.temporary_key_lists_mut() {
             normalize_key_list(keys, &aliases)?;
         }
-        for keys in [
-            &mut self.normal.temporary_mode_passthrough_keys,
-            &mut self.quick_switch.temporary_mode_passthrough_keys,
-            &mut self.text_input.temporary_mode_passthrough_keys,
-            &mut self.text_select.temporary_mode_passthrough_keys,
-            &mut self.grid.temporary_mode_passthrough_keys,
-            &mut self.bisect.temporary_mode_passthrough_keys,
-            &mut self.recursive_grid.temporary_mode_passthrough_keys,
-            &mut self.ui_hint.temporary_mode_passthrough_keys,
-        ] {
+        // Window passthrough keys were normalized with their application overrides.
+        for (_, keys) in
+            builtin_mode_fields!(self, [&mut], |mode| &mut mode.temporary_mode_passthrough_keys)
+                .into_iter()
+                .filter(|(name, _)| !windows.contains(name))
+        {
             normalize_passthrough_keys(keys, &aliases)?;
         }
         for mode in self.plugin_modes.values_mut() {
@@ -792,37 +741,10 @@ impl ConfigFile {
         &self.resolved_key_aliases
     }
 
-    fn temporary_key_lists_mut(&mut self) -> [(&'static str, &mut Vec<String>); 13] {
-        [
-            ("normal", &mut self.normal.temporary_mode_keys),
-            ("quick_switch", &mut self.quick_switch.temporary_mode_keys),
-            ("text_input", &mut self.text_input.temporary_mode_keys),
-            ("text_select", &mut self.text_select.temporary_mode_keys),
-            ("grid", &mut self.grid.temporary_mode_keys),
-            ("bisect", &mut self.bisect.temporary_mode_keys),
-            (
-                "recursive_grid",
-                &mut self.recursive_grid.temporary_mode_keys,
-            ),
-            ("ui_hint", &mut self.ui_hint.temporary_mode_keys),
-            ("window", &mut self.window.common.temporary_mode_keys),
-            (
-                "window_quick",
-                &mut self.window_quick.common.temporary_mode_keys,
-            ),
-            (
-                "window_editor",
-                &mut self.window_editor.common.temporary_mode_keys,
-            ),
-            (
-                "window_restore",
-                &mut self.window_restore.common.temporary_mode_keys,
-            ),
-            (
-                "window_tab",
-                &mut self.window_tab.common.temporary_mode_keys,
-            ),
-        ]
+    fn temporary_key_lists_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (&'static str, &mut Vec<String>)> {
+        builtin_mode_fields!(self, [&mut], |mode| &mut mode.temporary_mode_keys).into_iter()
     }
 
     pub fn to_toml(&self) -> Result<String, ConfigError> {
@@ -868,6 +790,22 @@ impl ConfigFile {
 mod tests;
 
 impl ConfigFile {
+    fn mode_routing(&self) -> impl Iterator<Item = (&str, Routing<'_>)> {
+        // Keep the historical target-error order: these two sections follow windows.
+        builtin_mode_fields!(self, [&], |mode| mode.routing())
+            .into_iter()
+            .filter(|(name, _)| !matches!(*name, "recursive_grid" | "ui_hint"))
+            .chain([
+                ("recursive_grid", self.recursive_grid.routing()),
+                ("ui_hint", self.ui_hint.routing()),
+            ])
+            .chain(
+                self.plugin_modes
+                    .iter()
+                    .map(|(id, mode)| (id.as_str(), mode.routing())),
+            )
+    }
+
     pub(crate) fn window_modes(&self) -> [(&'static str, &WindowModeConfig); 5] {
         [
             ("window", &self.window.common),

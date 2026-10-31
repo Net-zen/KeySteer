@@ -286,28 +286,20 @@ pub fn compile(config: &ConfigFile) -> Result<RuntimePlan, String> {
             passthrough_unbound_keys: config.normal.passthrough_unbound_keys,
             invert_scroll: config.effective_scroll_invert(),
             default_scan_roles: config.ui_hint.clickable_roles.clone(),
-            ui_hint_overlap_key: config.ui_hint.overlap_cycle_key.clone(),
+            ui_hint_overlap_key: crate::api::KeyChord::parse(&config.ui_hint.overlap_cycle_key)?,
             mode_indicator: config.mode_indicator.compile(),
             key_help: config.key_help.compile(),
             usage_save_after_entries: config.mode_usage.save_after_entries,
-            quick_switch: {
-                super::runtime::QuickSwitchSettings {
-                    enabled: config.quick_switch.enabled,
-                    key: crate::api::Key::new(&config.quick_switch.key)?,
-                    alphabet: config
-                        .quick_switch
-                        .hint_characters
-                        .chars()
-                        .map(|ch| {
-                            crate::api::Key::new(ch.to_string()).and_then(|key| {
-                                key.as_char().ok_or_else(|| {
-                                    "quick_switch.hint_characters requires character keys".into()
-                                })
-                            })
-                        })
-                        .collect::<Result<_, String>>()?,
-                    hold_ms: config.quick_switch.hold_ms,
-                }
+            quick_switch: super::runtime::QuickSwitchSettings {
+                enabled: config.quick_switch.enabled,
+                key: crate::api::Key::new(&config.quick_switch.key)?,
+                alphabet: config
+                    .quick_switch
+                    .hint_characters
+                    .chars()
+                    .map(|ch| crate::api::Key::new(ch.encode_utf8(&mut [0; 4])))
+                    .collect::<Result<_, _>>()?,
+                hold_ms: config.quick_switch.hold_ms,
             },
         },
         palettes: PaletteSet {
@@ -406,7 +398,7 @@ mod tests {
         });
         let plan = compile(&config).unwrap();
         let grid = plan.route(&ModeId::grid()).unwrap();
-        assert_eq!(grid.inherits, [ModeId::idle(), ModeId::normal()]);
+        assert_eq!(grid.inherits.as_ref(), [ModeId::idle(), ModeId::normal()]);
         assert_eq!(
             plan.route(&ModeId::normal()).unwrap().app_overrides[0].pattern,
             "com.example.Editor"

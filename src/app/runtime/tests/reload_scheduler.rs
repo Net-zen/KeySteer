@@ -206,9 +206,11 @@ fn focus_changes_rebuild_only_when_the_effective_binding_profile_changes() {
         process_id,
     };
     fn focus(engine: &mut Engine, backend: &mut FakeBackend, app: FocusedApp) {
+        let expected = app.clone();
         engine
             .handle_backend_event(BackendEvent::FocusChanged(Some(app)), backend)
             .unwrap();
+        assert_eq!(engine.focused_app.as_ref(), Some(&expected));
     }
 
     focus(
@@ -285,6 +287,7 @@ fn focus_changes_rebuild_only_when_the_effective_binding_profile_changes() {
     engine
         .handle_backend_event(BackendEvent::FocusChanged(None), &mut backend)
         .unwrap();
+    assert!(engine.focused_app.is_none());
     assert!(engine.registry.binding_profile_key.is_empty());
     assert_eq!(engine.registry.table_rebuild_count, initial_rebuilds + 5);
     assert_eq!(
@@ -299,18 +302,70 @@ fn focus_changes_rebuild_only_when_the_effective_binding_profile_changes() {
 }
 
 #[test]
-fn bootstrap_registration_compiles_binding_tables_once() {
-    let config = Config::default();
-    let modes = crate::app::mode_catalog::built_in(&config);
-    let plugins = crate::app::mode_catalog::bundled_plugins(&config).unwrap();
-    let mut engine = Engine::new(config, Appearance::Dark);
+fn focus_rebuild_preserves_override_precedence_and_sorted_chord_collisions() {
+    let plan = crate::app::configuration::compile(&Config::default()).unwrap();
+    let mut engine = Engine::from_plan(plan, Appearance::Dark).unwrap();
+    let left = Binding::parse("move_left").unwrap();
+    let right = Binding::parse("move_right").unwrap();
+    let normal = engine.registry.routes.get_mut(&ModeId::normal()).unwrap();
+    normal.bindings = Bindings::from([
+        ("ctrl+j".into(), left.clone()),
+        ("h".into(), left.clone()),
+        ("k".into(), left.clone()),
+    ]);
+    normal.app_overrides = vec![
+        plan::AppRouteOverride {
+            pattern: "Editor".into(),
+            bindings: Bindings::from([("CTRL+j".into(), left.clone())]),
+        },
+        plan::AppRouteOverride {
+            pattern: "Document".into(),
+            bindings: Bindings::from([
+                ("CTRL+j".into(), right.clone()),
+                ("h".into(), Binding::Disabled),
+            ]),
+        },
+    ];
+    engine.registry.routes.get_mut(&ModeId::grid()).unwrap().app_overrides = vec![
+        plan::AppRouteOverride {
+            pattern: "Editor".into(),
+            bindings: Bindings::from([("f12".into(), Binding::Disabled)]),
+        },
+    ];
+    let (mut backend, _) = FakeBackend::new(Vec::new());
+    engine.handle_backend_event(BackendEvent::FocusChanged(Some(FocusedApp {
+        bundle_id: "com.example.editor".into(),
+        window_title: "Editor Document".into(),
+        process_id: 42,
+    })), &mut backend).unwrap();
+    assert_eq!(
+        engine.bindings_in(&ModeId::normal()).into_iter().collect::<Bindings>(),
+        Bindings::from([
+            ("ctrl+j".into(), right),
+            ("h".into(), Binding::Disabled),
+            ("k".into(), left.clone()),
+        ]),
+        "last matching override wins raw keys; sorted raw keys decide canonical collisions"
+    );
+    assert!(engine.bindings_in(&ModeId::grid()).contains(&("f12".into(), Binding::Disabled)));
+    engine.handle_backend_event(BackendEvent::FocusChanged(None), &mut backend).unwrap();
+    assert_eq!(
+        engine.bindings_in(&ModeId::normal()).into_iter().collect::<Bindings>(),
+        Bindings::from([
+            ("ctrl+j".into(), left.clone()),
+            ("h".into(), left.clone()),
+            ("k".into(), left),
+        ])
+    );
+    assert!(!engine.bindings_in(&ModeId::grid()).iter().any(|(key, _)| key == "f12"));
+}
 
-    for mode in modes {
-        engine.register_deferred(mode);
-    }
-    for plugin in plugins {
-        engine.register_plugin_dyn_deferred(plugin).unwrap();
-    }
+#[test]
+fn bootstrap_registration_compiles_binding_tables_once() {
+    let mut config = Config::default();
+    config.grid.temporary_mode_keys = vec!["alt".into()];
+    let plan = crate::app::configuration::compile(&config).unwrap();
+    let mut engine = Engine::from_plan(plan, Appearance::Dark).unwrap();
     assert_eq!(engine.registry.table_rebuild_count, 0);
 
     engine.rebuild_tables();
@@ -319,10 +374,27 @@ fn bootstrap_registration_compiles_binding_tables_once() {
         engine.registry.table_count(),
         engine
             .binding_mode_ids()
-            .into_iter()
             .filter(|id| engine.registry.contains_key(id))
             .count()
     );
+    assert!(engine.registry.temporary_chords(&ModeId::grid()).is_some());
+
+    let trigger_buffer = |engine: &Engine| engine.registry.temporary_chords(&ModeId::grid()).map(|keys| keys.as_ptr());
+    for trigger in ["ctrl", "", "alt"] {
+        config.grid.temporary_mode_keys = trigger.split_whitespace().map(str::to_owned).collect();
+        let plan = crate::app::configuration::compile(&config).unwrap();
+        let compiled = plan.route(&ModeId::grid()).unwrap().temporary_keys.as_ref();
+        let buffer = compiled.map(|keys| keys.as_ptr());
+        engine.apply_plan(plan).unwrap();
+        assert_eq!(trigger_buffer(&engine), buffer, "install moves compiled keys, including disabling");
+        engine.register(Box::new(crate::app::mode_catalog::grid(&config)));
+        assert_eq!(trigger_buffer(&engine), buffer, "re-registration and table rebuilding reuse keys");
+    }
+
+    engine.registry.routes.remove(&ModeId::grid());
+    engine.rebuild_tables();
+    assert!(engine.bindings_in(&ModeId::grid()).is_empty());
+    assert!(engine.registry.temporary_chords(&ModeId::grid()).is_none());
 }
 
 #[test]

@@ -1,4 +1,5 @@
-use super::{AppOverride, Bindings, LabelUi};
+use super::Bindings;
+use super::macros::{config_struct, window_config};
 use crate::api::window::WindowAction as W;
 use crate::api::{Binding, LifecycleAction, ModeId, TargetingLifecycle};
 use serde::{Deserialize, Serialize};
@@ -19,145 +20,123 @@ pub enum WindowScreens {
 }
 
 // Shared schema, not binding inheritance. Each mode owns a separate value.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WindowModeConfig {
-    pub target: Option<crate::api::window::WindowTarget>,
-    pub screens: WindowScreens,
-    pub include_minimized: bool,
-    pub enabled: bool,
-    pub inherits: Vec<String>,
-    pub temporary_mode: Option<String>,
-    pub temporary_mode_keys: Vec<String>,
-    pub temporary_mode_passthrough_keys: Vec<String>,
-    pub number_timeout_ms: u64,
-    pub border_width: f64,
-    pub ui: LabelUi,
-    pub lifecycle: TargetingLifecycle,
-    pub bindings: Bindings,
-    pub app_configs: Vec<AppOverride>,
-}
-impl Default for WindowModeConfig {
-    fn default() -> Self {
-        Self {
-            target: None,
-            screens: WindowScreens::Current,
-            include_minimized: false,
-            enabled: true,
-            inherits: vec!["hotkeys".into()],
-            temporary_mode: Some("normal".into()),
-            temporary_mode_keys: Vec::new(),
-            temporary_mode_passthrough_keys: Vec::new(),
-            number_timeout_ms: 250,
-            border_width: 3.0,
-            ui: LabelUi {
-                font_size: 28,
-                ..Default::default()
-            },
-            lifecycle: TargetingLifecycle::default(),
-            bindings: Bindings::new(),
-            app_configs: Vec::new(),
-        }
+window_config!(common pub struct WindowModeConfig;);
+
+// Sparse window lifecycles inherit the selected mode's finish/click defaults.
+pub(super) fn read_lifecycle<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    defaults: TargetingLifecycle,
+) -> Result<TargetingLifecycle, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Partial {
+        after_finish: Option<LifecycleAction>,
+        after_click: Option<LifecycleAction>,
     }
+    let partial = Partial::deserialize(deserializer)?;
+    Ok(TargetingLifecycle {
+        after_finish: partial.after_finish.unwrap_or(defaults.after_finish),
+        after_click: partial.after_click.unwrap_or(defaults.after_click),
+    })
 }
-macro_rules! window_config {
-    ($name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
-        #[derive(Debug, Clone, PartialEq, Serialize)]
-        pub struct $name {
-            #[serde(flatten)]
-            pub common: WindowModeConfig,
-            $(pub $field: $ty,)*
-        }
-        // Deserialize a flat document with this mode's own defaults. A nested
-        // serde(flatten) default would use WindowModeConfig's empty bindings.
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                #[derive(Deserialize)]
-                #[serde(default, deny_unknown_fields)]
-                struct Document {
-                    target: Option<crate::api::window::WindowTarget>,
-                    screens: WindowScreens, include_minimized: bool,
-                    enabled: bool, inherits: Vec<String>, temporary_mode: Option<String>,
-                    temporary_mode_keys: Vec<String>, temporary_mode_passthrough_keys: Vec<String>, number_timeout_ms: u64, border_width: f64,
-                    ui: LabelUi,
-                    #[serde(deserialize_with = "read_lifecycle")]
-                    lifecycle: TargetingLifecycle, bindings: Bindings,
-                    app_configs: Vec<AppOverride>, $($field: $ty,)*
-                }
-                fn read_lifecycle<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<TargetingLifecycle, D::Error> {
-                    #[derive(Deserialize)]
-                    #[serde(deny_unknown_fields)]
-                    struct Partial { after_finish: Option<LifecycleAction>, after_click: Option<LifecycleAction> }
-                    let partial = Partial::deserialize(deserializer)?;
-                    let defaults = $name::default().common.lifecycle;
-                    Ok(TargetingLifecycle { after_finish: partial.after_finish.unwrap_or(defaults.after_finish), after_click: partial.after_click.unwrap_or(defaults.after_click) })
-                }
-                impl Default for Document {
-                    fn default() -> Self {
-                        let mode = $name::default(); let common = mode.common;
-                        Self { target: common.target, screens: common.screens, include_minimized: common.include_minimized, enabled: common.enabled, inherits: common.inherits, temporary_mode: common.temporary_mode,
-                            temporary_mode_keys: common.temporary_mode_keys, temporary_mode_passthrough_keys: common.temporary_mode_passthrough_keys, number_timeout_ms: common.number_timeout_ms,
-                            border_width: common.border_width, ui: common.ui, lifecycle: common.lifecycle,
-                            bindings: common.bindings, app_configs: common.app_configs, $($field: mode.$field,)* }
-                    }
-                }
-                let doc = Document::deserialize(deserializer)?;
-                Ok(Self { common: WindowModeConfig { target: doc.target, screens: doc.screens, include_minimized: doc.include_minimized, enabled: doc.enabled, inherits: doc.inherits,
-                    temporary_mode: doc.temporary_mode, temporary_mode_keys: doc.temporary_mode_keys, temporary_mode_passthrough_keys: doc.temporary_mode_passthrough_keys,
-                    number_timeout_ms: doc.number_timeout_ms, border_width: doc.border_width, ui: doc.ui,
-                    lifecycle: doc.lifecycle, bindings: doc.bindings, app_configs: doc.app_configs }, $($field: doc.$field,)* })
-            }
-        }
-        impl std::ops::Deref for $name { type Target = WindowModeConfig; fn deref(&self) -> &Self::Target { &self.common } }
-        impl std::ops::DerefMut for $name { fn deref_mut(&mut self) -> &mut Self::Target { &mut self.common } }
-    }
-}
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct MultiSelect {
-    pub bindings: Bindings,
-}
-impl Default for MultiSelect {
-    fn default() -> Self {
-        Self {
-            bindings: super::builtin_bindings(&[
+
+config_struct! {
+    pub struct MultiSelect {
+        bindings: Bindings = {
+            let mut bindings = multi_select_control_defaults();
+            bindings.extend(super::builtin_bindings(&[
                 ("ctrl enter", "window_multi_confirm"),
-                ("esc", "window_multi_cancel"),
-                ("backspace", "send backspace"),
-                ("delete", "send delete"),
-                ("arrow_left", "send arrow_left"),
-                ("arrow_right", "send arrow_right"),
-                ("home", "send home"),
-                ("end", "send end"),
                 ("primary+h", "arrow_left"),
                 ("primary+l", "arrow_right"),
-            ]),
-        }
+            ]));
+            bindings
+        },
     }
 }
-window_config!(Window {
+
+pub(super) fn multi_select_control_defaults() -> Bindings {
+    super::builtin_bindings(&[
+        ("esc", "window_multi_cancel"),
+        ("backspace", "send backspace"),
+        ("delete", "send delete"),
+        ("arrow_left", "send arrow_left"),
+        ("arrow_right", "send arrow_right"),
+        ("home", "send home"),
+        ("end", "send end"),
+    ])
+}
+
+window_config!(pub struct Window {
+    common: {
+        let mut common = editing_common(
+            ModeId::idle(),
+            &[
+                ("h", W::Left),
+                ("j", W::Down),
+                ("k", W::Up),
+                ("l", W::Right),
+                ("s", W::Size),
+                ("d", W::NextScreen),
+                ("f", W::ToggleMaximize),
+                ("shift+f", W::ToggleMinimize),
+                ("c", W::Center),
+                ("x", W::Close),
+            ],
+            &[
+                ("g", ModeId::grid()),
+                ("primary+f", ModeId::recursive_grid()),
+                ("a", ModeId::window_quick()),
+                ("e", ModeId::window_editor()),
+                ("t", ModeId::window_tab()),
+                ("r", ModeId::window_restore()),
+            ],
+        );
+        common.screens = WindowScreens::All;
+        common.temporary_mode_passthrough_keys = vec!["ctrl".into(), "ctrl+x".into()];
+        common.bindings.extend([
+            ("ctrl".into(), Binding::Window(W::MultiSelect)),
+            ("ctrl+x".into(), Binding::Window(W::ClearMulti)),
+        ]);
+
+        common
+    },
     multi_select: MultiSelect,
     card: crate::api::style::WindowCardUi,
-    move_step: f64,
-    move_speed: f64,
-    resize_step: f64,
-    resize_speed: f64
+    move_step: f64 = 20.0,
+    move_speed: f64 = 600.0,
+    resize_step: f64 = 20.0,
+    resize_speed: f64 = 500.0,
 });
-window_config!(WindowQuick { split_ratios: Vec<SplitRatio>, gap: f64 });
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct EditorCard {
-    pub position: [String; 4],
-    pub position_mode: crate::api::style::WindowCardPositionMode,
-}
-impl Default for EditorCard {
-    fn default() -> Self {
-        Self {
-            position: ["0%", "50%", "100%", "50%"].map(String::from),
-            position_mode: crate::api::style::WindowCardPositionMode::Window,
-        }
+window_config!(pub struct WindowQuick {
+    common: {
+        use crate::api::Direction::*;
+        editing_common(
+            ModeId::window(),
+            &[
+                ("h", W::Navigate(Left)),
+                ("j", W::Navigate(Down)),
+                ("k", W::Navigate(Up)),
+                ("l", W::Navigate(Right)),
+            ],
+            &[
+                ("e", ModeId::window_editor()),
+                ("r", ModeId::window_restore()),
+            ],
+        )
+    },
+    split_ratios: Vec<SplitRatio> = ["1/4", "1/3", "1/2", "2/3", "3/4"]
+        .map(|v| SplitRatio::Fraction(v.into()))
+        .to_vec(),
+    gap: f64 = 0.0,
+});
+config_struct! {
+    pub struct EditorCard {
+        position: [String; 4] = ["0%", "50%", "100%", "50%"].map(String::from),
+        position_mode: crate::api::style::WindowCardPositionMode =
+            crate::api::style::WindowCardPositionMode::Window,
     }
 }
+
 impl EditorCard {
     pub fn apply(
         &self,
@@ -170,204 +149,70 @@ impl EditorCard {
         }
     }
 }
-window_config!(WindowEditor {
-    card: EditorCard,
-    resize_step: f64,
-    resize_speed: f64,
-    gap: f64
-});
-window_config!(WindowRestore { gap: f64 });
-window_config!(WindowTab {});
-
-fn common(back: ModeId, actions: &[(&str, W)], modes: &[(&str, ModeId)]) -> WindowModeConfig {
-    let mut common = WindowModeConfig::default();
-    common.bindings.insert("?".into(), Binding::KeyHelp);
-    common.bindings.extend(
-        actions
-            .iter()
-            .map(|(key, action)| ((*key).into(), Binding::Window(*action))),
-    );
-    common.bindings.extend(
-        modes
-            .iter()
-            .cloned()
-            .chain([("q", back), ("primary+q", ModeId::idle())])
-            .map(|(key, mode)| (key.into(), Binding::Mode(mode))),
-    );
-    common
-}
-impl Default for Window {
-    fn default() -> Self {
-        let mut window = Self {
-            multi_select: MultiSelect::default(),
-            card: Default::default(),
-            common: common(
-                ModeId::idle(),
-                &[
-                    ("h", W::Left),
-                    ("j", W::Down),
-                    ("k", W::Up),
-                    ("l", W::Right),
-                    ("s", W::Size),
-                    ("d", W::NextScreen),
-                    ("f", W::ToggleMaximize),
-                    ("shift+f", W::ToggleMinimize),
-                    ("c", W::Center),
-                    ("x", W::Close),
-                    ("tab", W::Select),
-                    ("shift+tab", W::SelectPrevious),
-                    ("v+j", W::VolumeDown),
-                    ("v+k", W::VolumeUp),
-                    ("v+m", W::VolumeMute),
-                    ("shift+v+m", W::SystemVolumeMute),
-                    ("v+h", W::AudioPrevious),
-                    ("v+l", W::AudioNext),
-                    ("shift+v+j", W::SystemVolumeDown),
-                    ("shift+v+k", W::SystemVolumeUp),
-                    ("shift+v+h", W::SystemAudioPrevious),
-                    ("shift+v+l", W::SystemAudioNext),
-                    ("z", W::Undo),
-                    ("shift+z", W::Redo),
-                    ("shift+c", W::ResetInitial),
-                ],
-                &[
-                    ("g", ModeId::grid()),
-                    ("primary+f", ModeId::recursive_grid()),
-                    ("a", ModeId::window_quick()),
-                    ("e", ModeId::window_editor()),
-                    ("t", ModeId::window_tab()),
-                    ("r", ModeId::window_restore()),
-                ],
-            ),
-            move_step: 20.0,
-            move_speed: 600.0,
-            resize_step: 20.0,
-            resize_speed: 500.0,
-        };
-        window.common.screens = WindowScreens::All;
-        let modifier = "ctrl";
-        let clear = format!("{modifier}+x");
-        window.common.temporary_mode_passthrough_keys = vec![modifier.into(), clear.clone()];
-        window
-            .common
-            .bindings
-            .insert(modifier.into(), Binding::Window(W::MultiSelect));
-        window
-            .common
-            .bindings
-            .insert(clear, Binding::Window(W::ClearMulti));
-        window
-    }
-}
-impl Default for WindowQuick {
-    fn default() -> Self {
+window_config!(pub struct WindowEditor {
+    common: {
         use crate::api::Direction::*;
-        Self {
-            common: common(
-                ModeId::window(),
-                &[
-                    ("h", W::Navigate(Left)),
-                    ("j", W::Navigate(Down)),
-                    ("k", W::Navigate(Up)),
-                    ("l", W::Navigate(Right)),
-                    ("tab", W::Select),
-                    ("shift+tab", W::SelectPrevious),
-                    ("v+j", W::VolumeDown),
-                    ("v+k", W::VolumeUp),
-                    ("v+m", W::VolumeMute),
-                    ("shift+v+m", W::SystemVolumeMute),
-                    ("v+h", W::AudioPrevious),
-                    ("v+l", W::AudioNext),
-                    ("shift+v+j", W::SystemVolumeDown),
-                    ("shift+v+k", W::SystemVolumeUp),
-                    ("shift+v+h", W::SystemAudioPrevious),
-                    ("shift+v+l", W::SystemAudioNext),
-                    ("z", W::Undo),
-                    ("shift+z", W::Redo),
-                    ("shift+c", W::ResetInitial),
-                ],
-                &[
-                    ("e", ModeId::window_editor()),
-                    ("r", ModeId::window_restore()),
-                ],
-            ),
-            split_ratios: ["1/4", "1/3", "1/2", "2/3", "3/4"]
-                .map(|v| SplitRatio::Fraction(v.into()))
-                .to_vec(),
-            gap: 0.0,
-        }
-    }
-}
-impl Default for WindowEditor {
-    fn default() -> Self {
-        use crate::api::Direction::*;
-        Self {
-            card: EditorCard::default(),
-            common: common(
-                ModeId::window(),
-                &[
-                    ("h", W::Navigate(Left)),
-                    ("j", W::Navigate(Down)),
-                    ("k", W::Navigate(Up)),
-                    ("l", W::Navigate(Right)),
-                    ("shift+h", W::Split(Left)),
-                    ("shift+j", W::Split(Down)),
-                    ("shift+k", W::Split(Up)),
-                    ("shift+l", W::Split(Right)),
-                    ("ctrl+h", W::Ratio(Left)),
-                    ("ctrl+j", W::Ratio(Down)),
-                    ("ctrl+k", W::Ratio(Up)),
-                    ("ctrl+l", W::Ratio(Right)),
-                    ("tab", W::Select),
-                    ("shift+tab", W::SelectPrevious),
-                    ("v+j", W::VolumeDown),
-                    ("v+k", W::VolumeUp),
-                    ("v+m", W::VolumeMute),
-                    ("shift+v+m", W::SystemVolumeMute),
-                    ("v+h", W::AudioPrevious),
-                    ("v+l", W::AudioNext),
-                    ("shift+v+j", W::SystemVolumeDown),
-                    ("shift+v+k", W::SystemVolumeUp),
-                    ("shift+v+h", W::SystemAudioPrevious),
-                    ("shift+v+l", W::SystemAudioNext),
-                    ("z", W::Undo),
-                    ("shift+z", W::Redo),
-                    ("shift+c", W::ResetInitial),
-                    ("x", W::RemoveRegion),
-                    ("ctrl+s", W::SaveLayout),
-                    ("`", W::AreaNumber),
-                ],
-                &[("r", ModeId::window_restore())],
-            ),
-            resize_step: 20.0,
-            resize_speed: 500.0,
-            gap: 0.0,
-        }
-    }
-}
-impl Default for WindowRestore {
-    fn default() -> Self {
-        let mut common = common(
+        let mut common = editing_common(
             ModeId::window(),
             &[
+                ("h", W::Navigate(Left)),
+                ("j", W::Navigate(Down)),
+                ("k", W::Navigate(Up)),
+                ("l", W::Navigate(Right)),
+                ("shift+h", W::Split(Left)),
+                ("shift+j", W::Split(Down)),
+                ("shift+k", W::Split(Up)),
+                ("shift+l", W::Split(Right)),
+                ("ctrl+h", W::Ratio(Left)),
+                ("ctrl+j", W::Ratio(Down)),
+                ("ctrl+k", W::Ratio(Up)),
+                ("ctrl+l", W::Ratio(Right)),
+                ("x", W::RemoveRegion),
+                ("ctrl+s", W::SaveLayout),
+            ],
+            &[("r", ModeId::window_restore())],
+        );
+        common.bindings.extend(editor_control_defaults());
+        common
+    },
+    card: EditorCard,
+    resize_step: f64 = 20.0,
+    resize_speed: f64 = 500.0,
+    gap: f64 = 0.0,
+});
+pub(super) fn editor_control_defaults() -> Bindings {
+    Bindings::from([("`".into(), Binding::Window(W::AreaNumber))])
+}
+
+window_config!(pub struct WindowRestore {
+    common: {
+        let mut common = common(
+            ModeId::window(),
+            [
                 ("enter", W::Confirm),
                 ("x", W::DeletePreset),
-                ("page_up", W::PreviousPage),
-                ("page_down", W::NextPage),
             ],
             &[],
         );
+        common.bindings.extend(restore_control_defaults());
         common.lifecycle.after_finish = LifecycleAction::Mode(ModeId::window_editor());
-        Self { common, gap: 0.0 }
-    }
+        common
+    },
+    gap: f64 = 0.0,
+});
+pub(super) fn restore_control_defaults() -> Bindings {
+    Bindings::from([
+        ("page_up".into(), Binding::Window(W::PreviousPage)),
+        ("page_down".into(), Binding::Window(W::NextPage)),
+    ])
 }
 
-impl Default for WindowTab {
-    fn default() -> Self {
+window_config!(pub struct WindowTab {
+    common: {
         use crate::api::Direction::{Down, Left, Right, Up};
         let mut common = common(
             ModeId::window(),
-            &[
+            [
                 ("t", W::TabEnd),
                 ("~", W::TabPrefix),
                 ("space", W::TabSeparator),
@@ -387,8 +232,59 @@ impl Default for WindowTab {
         for (key, direction) in [("h", Left), ("j", Down), ("k", Up), ("l", Right)] {
             common.bindings.insert(key.into(), Binding::Move(direction));
         }
-        Self { common }
-    }
+        common
+    },
+});
+
+// Movement/layout modes share selection, audio, undo and reset controls.
+fn editing_common(
+    back: ModeId,
+    actions: &[(&str, W)],
+    modes: &[(&str, ModeId)],
+) -> WindowModeConfig {
+    common(
+        back,
+        actions.iter().copied().chain([
+            ("tab", W::Select),
+            ("shift+tab", W::SelectPrevious),
+            ("v+j", W::VolumeDown),
+            ("v+k", W::VolumeUp),
+            ("v+m", W::VolumeMute),
+            ("shift+v+m", W::SystemVolumeMute),
+            ("v+h", W::AudioPrevious),
+            ("v+l", W::AudioNext),
+            ("shift+v+j", W::SystemVolumeDown),
+            ("shift+v+k", W::SystemVolumeUp),
+            ("shift+v+h", W::SystemAudioPrevious),
+            ("shift+v+l", W::SystemAudioNext),
+            ("z", W::Undo),
+            ("shift+z", W::Redo),
+            ("shift+c", W::ResetInitial),
+        ]),
+        modes,
+    )
+}
+
+fn common<'a>(
+    back: ModeId,
+    actions: impl IntoIterator<Item = (&'a str, W)>,
+    modes: &[(&str, ModeId)],
+) -> WindowModeConfig {
+    let mut common = WindowModeConfig::default();
+    common.bindings.insert("?".into(), Binding::KeyHelp);
+    common.bindings.extend(
+        actions
+            .into_iter()
+            .map(|(key, action)| (key.into(), Binding::Window(action))),
+    );
+    common.bindings.extend(
+        modes
+            .iter()
+            .cloned()
+            .chain([("q", back), ("primary+q", ModeId::idle())])
+            .map(|(key, mode)| (key.into(), Binding::Mode(mode))),
+    );
+    common
 }
 
 impl WindowQuick {
@@ -435,22 +331,17 @@ impl WindowQuick {
         for ratio in &self.split_ratios {
             let value = match ratio {
                 SplitRatio::Decimal(value) => *value,
-                SplitRatio::Fraction(text) => {
-                    let Some((numerator, denominator)) = text.trim().split_once('/') else {
-                        let value = text.trim().parse::<f64>().map_err(|_| ERROR)?;
-                        if !value.is_finite() || value <= 0.0 || value >= 1.0 {
+                SplitRatio::Fraction(text) => match text.trim().split_once('/') {
+                    Some((numerator, denominator)) => {
+                        let numerator = numerator.trim().parse::<u32>().map_err(|_| ERROR)?;
+                        let denominator = denominator.trim().parse::<u32>().map_err(|_| ERROR)?;
+                        if numerator == 0 || numerator >= denominator {
                             return Err(ERROR);
                         }
-                        values.push(value);
-                        continue;
-                    };
-                    let numerator = numerator.trim().parse::<u32>().map_err(|_| ERROR)?;
-                    let denominator = denominator.trim().parse::<u32>().map_err(|_| ERROR)?;
-                    if numerator == 0 || numerator >= denominator {
-                        return Err(ERROR);
+                        f64::from(numerator) / f64::from(denominator)
                     }
-                    f64::from(numerator) / f64::from(denominator)
-                }
+                    None => text.trim().parse::<f64>().map_err(|_| ERROR)?,
+                },
             };
             if !value.is_finite() || value <= 0.0 || value >= 1.0 {
                 return Err(ERROR);

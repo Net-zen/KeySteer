@@ -28,7 +28,7 @@ pub(super) struct KeyHelpCache {
 
 pub(super) struct WindowKeyHelpPlan {
     pub(super) presentations: [Arc<crate::presentation::key_help::PreparedWindowHelp>; 2],
-    pub(super) entries: Arc<[String]>,
+    pub(super) entries: Vec<String>,
     pub(super) return_target: Option<String>,
 }
 
@@ -97,12 +97,9 @@ impl Engine {
     }
 
     fn configured_key_help_entries(&self) -> Vec<String> {
-        let mut entries = std::collections::BTreeSet::new();
+        let mut entries = Vec::new();
         let mut pressed = Vec::new();
-        for id in self.registry.keys() {
-            let Some(table) = self.registry.table(id) else {
-                continue;
-            };
+        for (id, table) in self.registry.tables() {
             for entry in table.iter_entries() {
                 if matches!(entry.binding.as_ref(), Binding::Disabled) {
                     continue;
@@ -131,18 +128,17 @@ impl Engine {
                 {
                     continue;
                 }
-                entries.insert(format!(
+                entries.push(format!(
                     "{}  ·  {}",
                     entry.chord.canonical(),
                     entry.binding.canonical()
                 ));
             }
         }
-        entries.into_iter().collect()
+        entries
     }
 
-    fn extra_key_help_entries(&self, stable: bool) -> Vec<String> {
-        let mut entries = std::collections::BTreeSet::new();
+    fn extra_key_help_entries(&self, stable: bool, mut entries: Vec<String>) -> Vec<String> {
         let mut pressed = Vec::new();
         if self.display_mode() == self.registry.active
             && let Some(mode) = self.registry.get(&self.registry.active)
@@ -157,7 +153,7 @@ impl Engine {
                     ) = entry.binding.window_action()
                         && mode.window_action_available(&action)
                     {
-                        entries.insert(format!(
+                        entries.push(format!(
                             "{}  ·  {}",
                             entry.chord.canonical(),
                             entry.binding.canonical()
@@ -176,11 +172,13 @@ impl Engine {
                     .key_help_binding(&chord, stable, &mut pressed)
                     .is_none()
                 {
-                    entries.insert(format!("{key}  ·  {action}"));
+                    entries.push(format!("{key}  ·  {action}"));
                 }
             }
         }
-        entries.into_iter().collect()
+        entries.sort();
+        entries.dedup();
+        entries
     }
 
     fn window_library_help(&self) -> bool {
@@ -224,20 +222,18 @@ impl Engine {
             }
             return entries.into_iter().collect();
         }
-        let mut entries = if self.registry.active.is_window() {
+        let entries = if self.registry.active.is_window() {
             self.registry
-                .window_help_plans
-                .get(&self.registry.active)
+                .window_help_plan(&self.registry.active)
                 .map_or_else(Vec::new, |plan| plan.entries.to_vec())
         } else {
             self.configured_key_help_entries()
         };
         if !self.registry.active.is_window() || self.window_library_help() {
-            entries.extend(self.extra_key_help_entries(self.registry.active.is_window()));
+            self.extra_key_help_entries(self.registry.active.is_window(), entries)
+        } else {
+            entries
         }
-        entries.sort();
-        entries.dedup();
-        entries
     }
 
     pub(super) fn decorate_key_help(&mut self, scene: &mut OverlayScene) {
@@ -256,13 +252,6 @@ impl Engine {
         {
             self.overlay.key_help_cache = None;
             return;
-        }
-        if self.registry.active.is_window() && self.overlay.window_help_plan.is_none() {
-            self.overlay.window_help_plan = self
-                .registry
-                .window_help_plans
-                .get(&self.registry.active)
-                .cloned();
         }
         let Some(screen) = self.help_screen() else {
             self.overlay.key_help_cache = None;
@@ -301,18 +290,14 @@ impl Engine {
         let source_annotations = scene.window_annotations.clone();
         let source_clip = scene.clip;
         let window_help = self.window_help_visible();
+        let plan = self.registry.window_help_plan(&self.registry.active);
         let dynamic_entries;
-        let (entries, return_target, extra_entries) = if let Some(plan) = self
-            .overlay
-            .window_help_plan
-            .as_ref()
-            .filter(|_| self.registry.active.is_window())
-        {
+        let (entries, return_target, extra_entries) = if let Some(plan) = plan {
             (
-                plan.entries.as_ref(),
-                plan.return_target.clone(),
+                plan.entries.as_slice(),
+                plan.return_target.as_deref(),
                 if self.window_library_help() {
-                    self.extra_key_help_entries(true)
+                    self.extra_key_help_entries(true, Vec::new())
                 } else {
                     Vec::new()
                 },
@@ -325,16 +310,11 @@ impl Engine {
         crate::presentation::key_help::compose(
             scene,
             crate::presentation::key_help::KeyHelpView {
-                prepared: self
-                    .overlay
-                    .window_help_plan
-                    .as_ref()
-                    .filter(|_| !self.window_library_help())
-                    .map(|plan| {
-                        let resizing = display == ModeId::window()
-                            && mode.is_some_and(|mode| !mode.accepts_window_targeting());
-                        plan.presentations[usize::from(resizing)].as_ref()
-                    }),
+                prepared: plan.filter(|_| !self.window_library_help()).map(|plan| {
+                    let resizing = display == ModeId::window()
+                        && mode.is_some_and(|mode| !mode.accepts_window_targeting());
+                    plan.presentations[usize::from(resizing)].as_ref()
+                }),
                 screen,
                 ui: &self.settings.key_help,
                 palette: &self.palette,
@@ -378,7 +358,7 @@ impl Engine {
         &self,
         display_mode: &ModeId,
         entries: &[String],
-    ) -> Option<String> {
+    ) -> Option<&str> {
         self.registry.table(display_mode).and_then(|table| {
             table
                 .iter_entries()
@@ -397,9 +377,9 @@ impl Engine {
                         entry.chord.canonical(),
                         entry.binding.canonical()
                     );
-                    entries.contains(&effective).then(|| target.to_string())
+                    entries.contains(&effective).then(|| target.as_str())
                 })
-                .min_by_key(|target| (target == "idle", target.clone()))
+                .min_by_key(|target| (*target == "idle", *target))
         })
     }
 }

@@ -66,7 +66,10 @@ text_color = { light = "#123456FF", dark = "#FFEEDDFF" }
     assert_eq!(restored.quick_switch, config.quick_switch);
     assert_eq!(Config::default().quick_switch.hint_characters, "wertyuiop");
     let plan = crate::app::configuration::compile(&config).unwrap();
-    assert_eq!(plan.settings.quick_switch.alphabet, ['a', 's', 'd', 'f']);
+    assert_eq!(
+        plan.settings.quick_switch.alphabet,
+        ["a", "s", "d", "f"].map(|key| crate::api::Key::new(key).unwrap())
+    );
     for invalid in [
         "[mode_usage]\nsave_after_entries = 0",
         "[quick_switch.bindings]\nw = 'cancel_selection'",
@@ -182,6 +185,10 @@ fn window_split_ratios_validate_and_round_trip() {
         "[nan]",
         "[inf]",
         "[\"nan\"]",
+        "[\"inf\"]",
+        "[\"0.0\"]",
+        "[\"1.0\"]",
+        "[\"1/2/3\"]",
         "[\"1/4294967296\"]",
     ] {
         let config = Config::parse(&format!("[window_quick]\nsplit_ratios = {values}")).unwrap();
@@ -205,6 +212,7 @@ fn window_split_ratios_sort_and_deduplicate_mixed_inputs_without_rewriting_sourc
         ),
         ("[0.4, 0.3, 0.4]", vec![0.3, 0.4]),
         ("[\"3/5\", \"1/5\", \"2/10\"]", vec![0.2, 0.6]),
+        ("[\"0.25\", \" 1 / 2 \", 0.5]", vec![0.25, 0.5]),
     ] {
         let config = Config::parse(&format!("[window_quick]\nsplit_ratios = {source}")).unwrap();
         config.validate().unwrap();
@@ -478,19 +486,16 @@ fn invalid_key_aliases_are_rejected() {
         "[key_aliases]\nPrimary = 'missing_key'",
         "[key_aliases]\nPrimary = 'left_alt+right_alt'",
         "[key_aliases]\nPrimary = 'Hyper'\nHyper = 'Primary'",
+        "[key_aliases]\nspace = 'x'\nx = ''",
     ] {
         assert!(Config::parse(text).is_err(), "{text}");
     }
 }
 
 #[test]
-fn empty_config_preserves_defaults_except_opt_in_temporary_layers() {
+fn empty_config_preserves_defaults() {
     let config = Config::parse("").unwrap();
-    let mut defaults = Config::default();
-    for (_, keys) in defaults.temporary_key_lists_mut() {
-        keys.clear();
-    }
-    assert_eq!(config, defaults);
+    assert_eq!(config, Config::default());
     config.validate().unwrap();
 }
 
@@ -508,6 +513,138 @@ fn partial_config_keeps_defaults_for_omitted_fields() {
     assert_eq!(config.scroll.scroll_step_half, 500);
     assert_eq!(config.scroll.speed, 500.0);
     assert_eq!(config.grid.keys, Grid::default().keys);
+}
+
+#[test]
+fn config_groups_preserve_surrounding_fields_and_custom_serde_hooks() {
+    // Deliberately omit the Deserialize import and the last field's comma.
+    mod schemas {
+        use crate::config::macros::{mode_config, window_config};
+
+        mode_config! {
+            #[derive(Eq)]
+            pub struct Example {
+                before: u32 = 7,
+                ..routing {
+                    omit_empty: temporary,
+                    inherits: vec!["normal".into()],
+                    temporary_mode: None,
+                    temporary_mode_keys: vec!["ctrl".into()],
+                    temporary_mode_passthrough_keys: vec!["ctrl+x".into()],
+                }
+                #[serde(alias = "old_name")]
+                name: String = "example".into()
+            }
+        }
+        mode_config! {
+            pub struct NewMode {
+                ..routing {}
+                speed: f64 = 300.0,
+            }
+        }
+        window_config!(pub struct Window {
+            common: crate::config::WindowRestore::default().common,
+            #[serde(alias = "old_step")]
+            step: u32 = 17
+        });
+    }
+
+    let parsed: schemas::Example = toml::from_str("old_name = 'custom'").unwrap();
+    assert_eq!(parsed.before, 7);
+    assert_eq!(parsed.routing().inherits, ["normal"]);
+    assert_eq!(parsed.name, "custom");
+    assert_eq!(parsed.temporary_mode_keys, ["ctrl"]);
+    assert_eq!(parsed.temporary_mode_passthrough_keys, ["ctrl+x"]);
+    assert_eq!(
+        toml::from_str::<schemas::Example>("").unwrap(),
+        schemas::Example::default()
+    );
+    let mode: schemas::NewMode = toml::from_str("speed = 250").unwrap();
+    assert_eq!(mode.speed, 250.0);
+    assert_eq!(mode.inherits, ["hotkeys", "normal"]);
+    assert_eq!(mode.routing().temporary_mode, Some("normal"));
+    assert!(mode.temporary_mode_keys.is_empty());
+    assert!(mode.temporary_mode_passthrough_keys.is_empty());
+
+    let window: schemas::Window =
+        toml::from_str("old_step = 9\n[lifecycle]\nafter_click = 'idle'").unwrap();
+    assert_eq!(window.step, 9);
+    assert_eq!(
+        window.lifecycle.after_finish,
+        LifecycleAction::Mode(ModeId::window_editor())
+    );
+    assert_eq!(
+        window.lifecycle.after_click,
+        LifecycleAction::Mode(ModeId::idle())
+    );
+    assert_eq!(toml::from_str::<schemas::Window>("").unwrap().step, 17);
+    for exported in [
+        toml::to_string(&parsed).unwrap(),
+        toml::to_string(&window).unwrap(),
+    ] {
+        assert!(!exported.contains("old_"));
+        assert!(!exported.contains("[common]"));
+    }
+}
+
+#[test]
+fn mode_schemas_preserve_defaults_explicit_overrides_and_flat_roundtrips() {
+    macro_rules! check_modes {
+        ($($mode:ty => ($omit_inherits:expr, $omit_temporary:expr)),+ $(,)?) => {$(
+            let defaults = <$mode>::default();
+            assert_eq!(toml::from_str::<$mode>("").unwrap(), defaults);
+            let mut expected = defaults;
+            expected.inherits.clear();
+            expected.temporary_mode = Some("grid".into());
+            expected.temporary_mode_keys = vec!["ctrl".into()];
+            expected.temporary_mode_passthrough_keys = vec!["ctrl+f8".into()];
+            expected.bindings.clear();
+            for bindings in ["", "f8 = 'none'"] {
+                let source = format!(
+                    "inherits = []\ntemporary_mode = 'grid'\ntemporary_mode_keys = ['ctrl']\n\
+                     temporary_mode_passthrough_keys = ['ctrl+f8']\n[bindings]\n{bindings}"
+                );
+                if !bindings.is_empty() {
+                    expected.bindings = builtin_bindings(&[("f8", "none")]);
+                }
+                let parsed: $mode = toml::from_str(&source).unwrap();
+                assert_eq!(parsed, expected, "{}", stringify!($mode));
+                let exported = toml::to_string(&parsed).unwrap();
+                assert!(!exported.contains("[common]"));
+                assert_eq!(toml::from_str::<$mode>(&exported).unwrap(), parsed);
+            }
+            assert!(toml::from_str::<$mode>("unknown_setting = true").is_err());
+            assert!(toml::from_str::<$mode>("temporary_mode_keys = 1").is_err());
+            expected.temporary_mode = None;
+            expected.temporary_mode_keys.clear();
+            expected.temporary_mode_passthrough_keys.clear();
+            let exported = serde_json::to_value(&expected).unwrap();
+            for (field, omitted) in [
+                ("inherits", $omit_inherits),
+                ("temporary_mode", $omit_temporary),
+                ("temporary_mode_keys", $omit_temporary),
+                ("temporary_mode_passthrough_keys", $omit_temporary),
+            ] {
+                assert_eq!(exported.get(field).is_none(), omitted, "{}.{field}", stringify!($mode));
+            }
+        )+};
+    }
+    check_modes!(
+        Normal => (false, true),
+        TextInput => (false, false),
+        TextSelect => (true, true),
+        UiHint => (false, false),
+        Grid => (false, false),
+        RecursiveGrid => (false, false),
+        Bisect => (false, false),
+        Window => (false, false),
+        WindowQuick => (false, false),
+        WindowEditor => (false, false),
+        WindowRestore => (false, false),
+        WindowTab => (false, false),
+        QuickSwitch => (true, true),
+        PluginModeConfig => (false, false),
+    );
 }
 
 #[test]
@@ -703,7 +840,8 @@ fn default_bindings_avoid_platform_reserved_chords() {
 
 #[test]
 fn normal_defaults_cover_the_requested_controls_and_targeting_modes() {
-    let normal = &Config::default().normal.bindings;
+    let config = Config::default();
+    let normal = &config.normal.bindings;
     assert_eq!(normal["h"], Binding::Move(Direction::Left));
     assert_eq!(normal["j"], Binding::Move(Direction::Down));
     assert_eq!(normal["k"], Binding::Move(Direction::Up));
@@ -727,8 +865,16 @@ fn normal_defaults_cover_the_requested_controls_and_targeting_modes() {
     assert_eq!(normal["n"], Binding::Toggle(Vec::new()));
     assert_eq!(normal["g"], Binding::Mode(ModeId::grid()));
     assert_eq!(normal["f"], Binding::Mode(ModeId::ui_hint()));
-    assert_eq!(normal["primary+g"], Binding::Mode(ModeId::recursive_grid()));
-    assert_eq!(normal["primary+f"], Binding::Mode(ModeId::bisect()));
+    let primary = config
+        .resolved_key_aliases()
+        .get("primary")
+        .map_or("primary", String::as_str);
+    for (key, mode) in [("g", ModeId::recursive_grid()), ("f", ModeId::bisect())] {
+        assert_eq!(
+            normal.get(&format!("{primary}+{key}")),
+            Some(&Binding::Mode(mode))
+        );
+    }
     assert_eq!(normal["q"], Binding::Mode(ModeId::idle()));
 }
 
@@ -883,13 +1029,17 @@ fn whitespace_separates_single_keys_and_chords_in_binding_groups() {
         r#"
             [normal.bindings]
             "v b" = "fast"
+            "  f8  " = "none"
+            "é 中" = "fast"
             [text_select.bindings]
             "mod+c enter" = "text_copy"
             "#,
     )
     .unwrap();
-    assert_eq!(config.normal.bindings["v"], Binding::Speed(Speed::Fast));
-    assert_eq!(config.normal.bindings["b"], Binding::Speed(Speed::Fast));
+    for key in ["v", "b", "é", "中"] {
+        assert_eq!(config.normal.bindings[key], Binding::Speed(Speed::Fast));
+    }
+    assert_eq!(config.normal.bindings["  f8  "], Binding::Disabled);
     assert!(!config.normal.bindings.contains_key("v b"));
     let copy_chord = KeyChord::parse("mod+c").unwrap().canonical();
     let action = Binding::TextSelect(crate::api::text_select::Action::Copy);
@@ -906,6 +1056,7 @@ fn whitespace_separates_single_keys_and_chords_in_binding_groups() {
     for source in [
         "[text_select.bindings]\n'mod+c enter' = 'text_copy'\nenter = 'text_copy'",
         "[text_select.bindings]\n'ctrl+shift enter' = 'text_copy'",
+        "[normal.bindings]\n'v v' = 'fast'",
     ] {
         assert!(Config::parse(source).is_err(), "{source}");
     }
@@ -934,6 +1085,103 @@ fn grid_like_modes_do_not_steal_label_keys_with_exit_bindings() {
 }
 
 #[test]
+fn builtin_inventory_covers_config_sections_and_binding_validation() {
+    let mut config = Config::default();
+    let document = serde_json::to_value(&config).unwrap();
+    let configured: BTreeSet<_> = document
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(_, section)| section.get("bindings").is_some())
+        .map(|(name, _)| name.clone())
+        .collect();
+    let known: BTreeSet<_> = ModeId::BUILT_IN
+        .into_iter()
+        .filter(|name| *name != "idle") // Idle uses the root hotkeys table.
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(configured, known);
+    let routing: BTreeSet<_> = config
+        .mode_routing()
+        .filter(|(name, _)| !config.plugin_modes.contains_key(*name))
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    assert_eq!(routing, configured);
+    let mutable: BTreeSet<_> = config
+        .temporary_key_lists_mut()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    assert_eq!(mutable, configured);
+
+    for name in configured {
+        let mut config = Config::parse(&format!(
+            "[key_aliases]\nModeTest = 'f8'\n[{name}.bindings]\nModeTest = 'none'"
+        ))
+        .unwrap();
+        config.validate().unwrap();
+        let document = serde_json::to_value(&config).unwrap();
+        assert_eq!(document[&name]["bindings"]["f8"], "none", "{name}");
+        let plan = crate::app::configuration::compile(&config).unwrap();
+        let id = ModeId::new(&name).unwrap();
+        assert_eq!(
+            plan.route(&id).unwrap().bindings.get("f8"),
+            Some(&Binding::Disabled),
+            "{name}"
+        );
+        let (_, bindings) = builtin_mode_fields!(config, [&mut], |mode| &mut mode.bindings)
+            .into_iter()
+            .find(|(id, _)| *id == name)
+            .unwrap();
+        bindings.insert("invalid+".into(), Binding::Disabled);
+        assert!(config.validate().is_err(), "{name}");
+
+        let duplicate = Config::parse(&format!(
+            "[key_aliases]\nModeTest = 'f8'\n[{name}.bindings]\nModeTest = 'none'\nf8 = 'none'"
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            duplicate.contains(&format!("[{name}.bindings] binding"))
+                && duplicate.contains("duplicate chord \"f8\""),
+            "{duplicate}"
+        );
+
+        if document[&name].get("app_configs").is_some() {
+            let source = format!(
+                "[key_aliases]\nModeTest = 'f8'\n\
+                 [[{name}.app_configs]]\nbundle_id = 'org.example.Editor'\n\
+                 [{name}.app_configs.bindings]\nModeTest = 'none'"
+            );
+            let config = Config::parse(&source).unwrap();
+            config.validate().unwrap();
+            let plan = crate::app::configuration::compile(&config).unwrap();
+            assert_eq!(
+                plan.route(&id).unwrap().app_overrides[0].bindings.get("f8"),
+                Some(&Binding::Disabled),
+                "{name}.app_configs"
+            );
+            let document = serde_json::to_value(&config).unwrap();
+            assert_eq!(
+                document[&name]["app_configs"][0]["bindings"]["f8"], "none",
+                "{name}"
+            );
+            match Config::parse(&source.replace("ModeTest = 'none'", "'invalid+' = 'none'")) {
+                Err(_) => {}
+                Ok(config) => assert!(config.validate().is_err(), "{name}.app_configs"),
+            }
+            let duplicate = Config::parse(&format!("{source}\nf8 = 'none'"))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                duplicate.contains(&format!("[[{name}.app_configs]]"))
+                    && duplicate.contains("duplicate chord \"f8\""),
+                "{duplicate}"
+            );
+        }
+    }
+}
+
+#[test]
 fn all_modes_default_to_empty_temporary_triggers() {
     let mut defaults = Config::default();
     for (mode, keys) in defaults.temporary_key_lists_mut() {
@@ -951,31 +1199,6 @@ fn temporary_mode_keys_must_be_modifiers() {
     let config = Config::parse("[grid]\ntemporary_mode_keys = [\"h\"]").unwrap();
     let error = config.validate().unwrap_err().to_string();
     assert!(error.contains("temporary_mode_keys"), "{error}");
-}
-
-#[test]
-fn ui_hint_overlap_cycle_key_defaults_to_shift_and_is_configurable() {
-    let default = Config::default();
-    assert_eq!(default.ui_hint.overlap_cycle_key, "shift");
-    assert!(
-        default
-            .ui_hint
-            .overlap_cycle_matches(&Key::new("left_shift").unwrap())
-    );
-    assert!(
-        default
-            .ui_hint
-            .overlap_cycle_matches(&Key::new("right_shift").unwrap())
-    );
-
-    let config = Config::parse("[ui_hint]\noverlap_cycle_key = \"option\"").unwrap();
-    config.validate().unwrap();
-    assert!(
-        config
-            .ui_hint
-            .overlap_cycle_matches(&Key::new("left_alt").unwrap())
-    );
-    assert!(config.ui_hint.overlap_cycle_conflicts_with("alt"));
 }
 
 #[test]
@@ -1021,6 +1244,35 @@ fn inheritance_rejects_unknown_sources_and_cycles() {
     let cycle =
         Config::parse("[normal]\ninherits = [\"grid\"]\n[grid]\ninherits = [\"normal\"]").unwrap();
     assert!(cycle.validate().unwrap_err().to_string().contains("cycle"));
+
+    let mixed_cycle = Config::parse(
+        "[grid]\ninherits = ['window_quick']\n\
+         [window_quick]\ninherits = ['plugin:picker']\n\
+         [plugin_modes.'plugin:picker']\ninherits = ['grid']",
+    )
+    .unwrap();
+    assert!(
+        mixed_cycle
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("inheritance cycle contains \"grid\"")
+    );
+
+    // Invalid targets are still checked when temporary triggers are empty,
+    // and the first error retains the established mode order.
+    let invalid_targets = Config::parse(
+        "[window]\ntemporary_mode = 'missing'\n\
+         [recursive_grid]\ntemporary_mode = 'also_missing'",
+    )
+    .unwrap();
+    assert!(
+        invalid_targets
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("window.temporary_mode names unknown mode \"missing\"")
+    );
 }
 
 #[test]
@@ -1884,16 +2136,31 @@ fn window_modes_have_independent_sparse_defaults_and_migration_errors() {
 }
 
 #[test]
-fn sparse_restore_lifecycle_preserves_default_finish_destination() {
-    let config = Config::parse("[window_restore.lifecycle]\nafter_click = 'idle'").unwrap();
-    assert_eq!(
-        config.window_restore.lifecycle.after_finish,
-        crate::api::LifecycleAction::Mode(ModeId::window_editor())
-    );
-    assert_eq!(
-        config.window_restore.lifecycle.after_click,
-        crate::api::LifecycleAction::Mode(ModeId::idle())
-    );
+fn sparse_window_lifecycles_preserve_each_modes_defaults() {
+    let defaults = Config::default();
+    for (name, mode) in defaults.window_modes() {
+        for field in [None, Some("after_click"), Some("after_finish")] {
+            let mut expected = mode.lifecycle.clone();
+            let mut source = format!("[{name}.lifecycle]\n");
+            if let Some(field) = field {
+                source.push_str(&format!("{field} = 'idle'"));
+                let action = if field == "after_click" {
+                    &mut expected.after_click
+                } else {
+                    &mut expected.after_finish
+                };
+                *action = LifecycleAction::Mode(ModeId::idle());
+            }
+            let config = Config::parse(&source).unwrap();
+            let (_, parsed) = config
+                .window_modes()
+                .into_iter()
+                .find(|(key, _)| *key == name)
+                .unwrap();
+            assert_eq!(parsed.lifecycle, expected, "{source}");
+        }
+        assert!(Config::parse(&format!("[{name}.lifecycle]\nunknown = 'keep'")).is_err());
+    }
 }
 
 #[test]
@@ -2460,6 +2727,8 @@ fn formerly_fixed_controls_keep_defaults_in_sparse_configs_and_allow_none() {
 [grid.bindings]
 f8 = "first_level"
 space = "none"
+[bisect.bindings]
+h = "none"
 [ui_hint.bindings]
 [window.multi_select.bindings]
 f2 = "window_multi_confirm"
@@ -2470,26 +2739,32 @@ preserve = false
 "#,
     )
     .unwrap();
-    assert_eq!(config.grid.bindings["space"], Binding::Disabled);
-    assert_eq!(config.grid.bindings["backspace"], Binding::SelectionParent);
+    let restore = &config.window_restore.bindings;
+    let multi = &config.window.multi_select.bindings;
+    let screen = &config.plugin_modes["plugin:screen-selector"].bindings;
+    for (binding, action) in [
+        (&config.grid.bindings["space"], "none"),
+        (&config.grid.bindings["backspace"], "previous_level"),
+        (&config.bisect.bindings["h"], "none"),
+        (&config.bisect.bindings["j"], "bisect_down"),
+        (&config.bisect.bindings["enter"], "confirm_selection"),
+        (&config.ui_hint.bindings["tab"], "reopen_selection"),
+        (&config.window_editor.bindings["`"], "window_area_number"),
+        (&restore["page_up"], "window_previous_page"),
+        (&multi["backspace"], "send backspace"),
+        (&screen["esc"], "cancel_selection"),
+    ] {
+        assert_eq!(binding, &Binding::parse(action).unwrap(), "{action}");
+    }
     assert!(!config.grid.bindings.contains_key("ctrl+backspace"));
-    assert_eq!(config.ui_hint.bindings["tab"], Binding::SelectionReopen);
-    assert_eq!(
-        config.window_editor.bindings["`"],
-        Binding::parse("window_area_number").unwrap()
-    );
-    assert_eq!(
-        config.window_restore.bindings["page_up"],
-        Binding::parse("window_previous_page").unwrap()
-    );
-    assert_eq!(
-        config.window.multi_select.bindings["backspace"],
-        Binding::parse("send backspace").unwrap()
-    );
-    assert_eq!(
-        config.plugin_modes["plugin:screen-selector"].bindings["esc"],
-        Binding::SelectionCancel
-    );
+    // A complete table takes the fast path and must also preserve explicit none.
+    let mut bindings = config.grid.bindings;
+    bindings
+        .values_mut()
+        .for_each(|binding| *binding = Binding::Disabled);
+    let expected = bindings.clone();
+    apply_control_defaults("grid", &mut bindings, &BTreeMap::new()).unwrap();
+    assert_eq!(bindings, expected);
 }
 
 #[test]
@@ -2583,12 +2858,6 @@ f9 = "bisect_down"
     )
     .unwrap();
     config.validate().unwrap();
-    assert_eq!(config.bisect.bindings["h"], Binding::Disabled);
-    assert_eq!(
-        config.bisect.bindings["j"],
-        Binding::parse("bisect_down").unwrap()
-    );
-    assert_eq!(config.bisect.bindings["enter"], Binding::SelectionAccept);
     assert_eq!(config.recursive_grid, Config::default().recursive_grid);
     assert_eq!(Config::parse(&config.to_toml().unwrap()).unwrap(), config);
     for source in [
